@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from ufor.envelope import Envelope, Segment
 from ufor.events import Release, Trigger
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
@@ -125,3 +126,64 @@ def test_offline_synth_requires_resolved_pitch() -> None:
     )
     with pytest.raises(EngineError, match="pitch_hz"):
         OfflineSynth(prepare(document)).advance(trace.actions, 0, 1)
+
+
+def test_offline_synth_defers_release_until_the_voice_minimum_hold() -> None:
+    document = score()
+    voice = document.body.voices[0].model_copy(
+        update={
+            "minimum_hold_seconds": 1,
+            "envelope": Envelope(
+                segments=[Segment(duration=1, target=1)],
+                release=[Segment(duration=1, target=0)],
+            ),
+        }
+    )
+    instrument = document.body.model_copy(update={"voices": [voice]})
+    document = document.model_copy(update={"body": instrument})
+    trace = prepare_trace(
+        instrument,
+        [
+            Trigger(
+                tick=0,
+                ordinal=0,
+                part="main",
+                trigger_id="note-a",
+                key=69,
+                pitch_hz=440,
+            ),
+            Release(tick=24_000, ordinal=0, part="main", trigger_id="note-a"),
+        ],
+        seed=42,
+    )
+    renderer = OfflineSynth(prepare(document))
+    renderer.advance(trace.actions, 0, 48_000)
+    snapshot = renderer.snapshot()
+    assert snapshot.voices[0].release_frame == 48_000
+    renderer.advance([], 48_000, 96_000)
+    assert renderer.snapshot().voices == []
+
+
+def test_offline_synth_can_use_transport_synchronized_offset_pitch() -> None:
+    document = score()
+    voice = document.body.voices[0].model_copy(
+        update={"frequency_offset_hz": 1, "synchronize_oscillator": True}
+    )
+    instrument = document.body.model_copy(update={"voices": [voice]})
+    document = document.model_copy(update={"body": instrument})
+    trace = prepare_trace(
+        instrument,
+        [
+            Trigger(
+                tick=1,
+                ordinal=0,
+                part="main",
+                trigger_id="note-a",
+                key=69,
+                pitch_hz=440,
+            )
+        ],
+        seed=42,
+    )
+    output = OfflineSynth(prepare(document)).advance(trace.actions, 0, 2)
+    assert output[1, 0] == pytest.approx(-1 + 4 * 441 / 48_000)
