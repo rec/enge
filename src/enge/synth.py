@@ -296,8 +296,28 @@ def _duration(segments: list[Segment]) -> float:
 
 
 def _waveform(oscillator: Oscillator, phase: np.ndarray) -> np.ndarray:
+    return _waveform_angles(oscillator, 2 * np.pi * phase)
+
+
+def waveform_samples(
+    oscillator: Oscillator,
+    start: float | np.ndarray,
+    length: int,
+    period: float | np.ndarray,
+) -> np.ndarray:
+    """Render Tuney's established sample-position oscillator convention."""
+    end = start + length
+    ratio = 2 * np.pi / period
+    return _waveform_angles(
+        oscillator,
+        np.linspace(start * ratio, end * ratio, length, endpoint=False),
+    )
+
+
+def _waveform_angles(oscillator: Oscillator, angles: np.ndarray) -> np.ndarray:
     if oscillator.waveform == Waveform.sine:
-        return np.sin(2 * np.pi * phase)
+        return np.sin(angles)
+    phase = (angles / (2 * np.pi)) % 1
     if oscillator.waveform == Waveform.square:
         return np.where(phase < float(oscillator.duty_cycle), 1.0, -1.0)
     duty = float(oscillator.duty_cycle)

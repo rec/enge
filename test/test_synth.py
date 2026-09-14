@@ -5,7 +5,7 @@ from ufor.events import Release, Trigger
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
-from enge.synth import EngineError, OfflineSynth, prepare
+from enge.synth import EngineError, OfflineSynth, prepare, waveform_samples
 
 
 def score() -> SynthInstrumentScore:
@@ -187,3 +187,9 @@ def test_offline_synth_can_use_transport_synchronized_offset_pitch() -> None:
     )
     output = OfflineSynth(prepare(document)).advance(trace.actions, 0, 2)
     assert output[1, 0] == pytest.approx(-1 + 4 * 441 / 48_000)
+
+
+def test_waveform_samples_uses_tuneys_start_length_and_period_convention() -> None:
+    oscillator = score().body.voices[0].oscillator
+    actual = waveform_samples(oscillator, start=2, length=4, period=8)
+    np.testing.assert_allclose(actual, [0, 0.5, 1, 0.5], atol=0)
