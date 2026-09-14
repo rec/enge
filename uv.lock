@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-09-07T17:31:13.590368Z"
+exclude-newer = "2026-09-07T19:01:23.944737Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -40,7 +40,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "numpy", specifier = ">=2.5.3" },
+    { name = "numpy", specifier = ">=2.4.1" },
     { name = "ufor", editable = "../ufor" },
 ]
 
