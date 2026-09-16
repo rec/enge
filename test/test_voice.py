@@ -1,6 +1,7 @@
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -13,7 +14,7 @@ from enge.synth import PreparedVoice, VoiceRenderer
 
 @pytest.mark.parametrize("block", [64, 997, 1024])
 def test_routed_voice_restores_pending_release_and_retires_exactly(
-    tmp_path: Path, block: int
+    tmp_path: Path, block: int, backend: Literal["numpy", "native"]
 ) -> None:
     definition = PreparedVoice(
         sample_rate=48000,
@@ -27,7 +28,7 @@ def test_routed_voice_restores_pending_release_and_retires_exactly(
         gain=2,
         minimum_hold_seconds=Fraction(8001, 32000),
     )
-    renderer = VoiceRenderer.start(definition)
+    renderer = VoiceRenderer.start(definition, backend=backend)
     boundaries = sorted({0, 120, 6000, 14000, 18002, 48000, *range(0, 48000, block)})
     chunks: list[np.ndarray] = []
     for start, end in pairwise(boundaries):

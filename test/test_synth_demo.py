@@ -2,6 +2,7 @@ import shutil
 import subprocess
 import wave
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -15,7 +16,7 @@ from enge.synth import OfflineSynth, prepare
 
 
 def test_synth_demo_preserves_envelopes_and_live_controls(
-    tmp_path: Path, pytestconfig: pytest.Config
+    tmp_path: Path, pytestconfig: pytest.Config, backend: Literal["numpy", "native"]
 ) -> None:
     """Render an arpeggio and a bent final note, retaining a listenable FLAC."""
     rate = 48000
@@ -100,7 +101,7 @@ def test_synth_demo_preserves_envelopes_and_live_controls(
 
     events.sort(key=lambda e: (e.tick, e.ordinal))
     actions = synth_trace.prepare(document.body, events, seed=0).actions
-    renderer = OfflineSynth(prepare(document))
+    renderer = OfflineSynth(prepare(document), backend)
     actual = renderer.advance(actions, 0, frames)
     assert renderer.snapshot().voices == []
     assert np.max(np.abs(actual)) < 1
@@ -130,4 +131,6 @@ def test_synth_demo_preserves_envelopes_and_live_controls(
     )
     with wave.open(str(source)) as audio:
         assert decoded.stdout == audio.readframes(frames)
-    shutil.copyfile(encoded, pytestconfig.cache.mkdir("audio") / "synth-demo.flac")
+    shutil.copyfile(
+        encoded, pytestconfig.cache.mkdir("audio") / f"synth-demo-{backend}.flac"
+    )

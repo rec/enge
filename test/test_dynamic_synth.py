@@ -1,6 +1,7 @@
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -116,9 +117,12 @@ def change(
 
 
 def render(
-    document: SynthInstrumentScore, actions: list[TraceAction], block: int = 48000
+    document: SynthInstrumentScore,
+    actions: list[TraceAction],
+    backend: Literal["numpy", "native"],
+    block: int = 48000,
 ) -> tuple[np.ndarray, SynthSnapshot]:
-    renderer = OfflineSynth(prepare(document))
+    renderer = OfflineSynth(prepare(document), backend)
     boundaries = (
         sorted(
             {
@@ -146,7 +150,7 @@ def render(
         )
         if block != 48000 and end in (121, 270, 24001):
             saved = renderer.snapshot()
-            restored = OfflineSynth(prepare(document))
+            restored = OfflineSynth(prepare(document), backend)
             restored.restore(SynthSnapshot.model_validate_json(saved.model_dump_json()))
             # Advancing the original cannot mutate the saved or restored state.
             renderer.advance([], end, end + 1)
@@ -155,14 +159,16 @@ def render(
     return np.concatenate(chunks), renderer.snapshot()
 
 
-def test_pitch_steps_preserve_phase_and_gain_ramps_interrupt(tmp_path: Path) -> None:
+def test_pitch_steps_preserve_phase_and_gain_ramps_interrupt(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
     document = dynamic_score()
     actions = synth_trace.prepare(
         document.body,
         [onset(gain=0), change(0, 1), change(120, 1, "bend", 0), change(120, 0)],
         seed=0,
     ).actions
-    actual = OfflineSynth(prepare(document)).advance(actions, 0, 48000)
+    actual = OfflineSynth(prepare(document), backend).advance(actions, 0, 48000)
     frames = np.arange(48000)
     phase = (np.minimum(frames, 120) * 100 + np.maximum(frames - 120, 0) * 200) / 48000
     gain = np.where(
@@ -175,12 +181,14 @@ def test_pitch_steps_preserve_phase_and_gain_ramps_interrupt(tmp_path: Path) -> 
     assert np.all(actual[360:] == 0)
 
 
-def test_square_pitch_steps_switch_on_the_exact_sample(tmp_path: Path) -> None:
+def test_square_pitch_steps_switch_on_the_exact_sample(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
     document = dynamic_score(waveform="square")
     actions = synth_trace.prepare(
         document.body, [onset(gain=1), change(120, 1, "bend")], seed=0
     ).actions
-    actual, _ = render(document, actions)
+    actual, _ = render(document, actions, backend)
     frames = np.arange(48000)
     position = (
         np.minimum(frames, 120) * 100 + np.maximum(frames - 120, 0) * 200
@@ -192,7 +200,7 @@ def test_square_pitch_steps_switch_on_the_exact_sample(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("scope", ["part", "instrument"])
 def test_controls_continue_while_silent_and_are_shared_at_voice_start(
-    scope: str, tmp_path: Path
+    scope: str, tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     document = dynamic_score(scope=scope, waveform="square")
     events = [
@@ -202,7 +210,7 @@ def test_controls_continue_while_silent_and_are_shared_at_voice_start(
         onset(180, "c", "other", pitch=0.1).model_copy(update={"ordinal": 1}),
     ]
     actions = synth_trace.prepare(document.body, events, seed=0).actions
-    actual, _ = render(document, actions)
+    actual, _ = render(document, actions, backend)
     frames = np.arange(48000)
     trajectory = 0.5 + 0.5 * np.minimum(frames / 240, 1)
     expected = np.zeros_like(actual)
@@ -211,7 +219,9 @@ def test_controls_continue_while_silent_and_are_shared_at_voice_start(
     check_audio(tmp_path / "shared-context.wav", actual, expected)
 
 
-def test_reused_trigger_does_not_reassign_an_old_release_tail(tmp_path: Path) -> None:
+def test_reused_trigger_does_not_reassign_an_old_release_tail(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
     document = dynamic_score(waveform="square")
     raw = document.model_dump(mode="json")
     raw["body"]["voices"][0]["envelope"]["release"] = [{"duration": "1", "target": 0}]
@@ -224,7 +234,10 @@ def test_reused_trigger_does_not_reassign_an_old_release_tail(tmp_path: Path) ->
         change(240, 0.4),
     ]
     actual, snapshot = render(
-        document, synth_trace.prepare(document.body, events, seed=0).actions, block=128
+        document,
+        synth_trace.prepare(document.body, events, seed=0).actions,
+        backend,
+        block=128,
     )
     frames = np.arange(48000)
     old_gain = 0.2 + 0.8 * np.clip((frames - 60) / 240, 0, 1)
@@ -240,6 +253,7 @@ def test_reused_trigger_does_not_reassign_an_old_release_tail(tmp_path: Path) ->
 @pytest.fixture(scope="module", params=["sine", "square", "triangle"])
 def partition_case(
     request: pytest.FixtureRequest,
+    backend: Literal["numpy", "native"],
 ) -> tuple[SynthInstrumentScore, list[TraceAction], np.ndarray, SynthSnapshot]:
     document = dynamic_score(smoothing="1/32000", waveform=request.param)
     raw = document.model_dump(mode="json")
@@ -260,7 +274,7 @@ def partition_case(
         change(26000, 0.3),
     ]
     actions = synth_trace.prepare(document.body, events, seed=0).actions
-    actual, snapshot = render(document, actions)
+    actual, snapshot = render(document, actions, backend)
     return document, actions, actual, snapshot
 
 
@@ -271,9 +285,10 @@ def test_dynamic_render_is_partition_invariant_and_restorable(
     ],
     block: int,
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
 ) -> None:
     document, actions, expected, snapshot = partition_case
-    actual, state = render(document, actions, block)
+    actual, state = render(document, actions, backend, block)
     check_audio(tmp_path / "partition.wav", actual, expected)
     assert state == snapshot
     assert np.all(actual[36000:] == 0)
@@ -281,6 +296,7 @@ def test_dynamic_render_is_partition_invariant_and_restorable(
 
 def test_bindings_with_different_smoothing_keep_separate_trajectories(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
 ) -> None:
     raw = dynamic_score(scope="part", waveform="square").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -296,7 +312,7 @@ def test_bindings_with_different_smoothing_keep_separate_trajectories(
     actions = synth_trace.prepare(
         document.body, [change(0, 1, scope="part"), onset(60, pitch=0.1)], seed=0
     ).actions
-    actual, _ = render(document, actions)
+    actual, _ = render(document, actions, backend)
     frames = np.arange(48000)
     expected = np.zeros_like(actual)
     expected[:, 0] = (
@@ -307,7 +323,9 @@ def test_bindings_with_different_smoothing_keep_separate_trajectories(
     check_audio(tmp_path / "two-smoothing-times.wav", actual, expected)
 
 
-def test_equal_frame_control_order_and_stop_are_exact(tmp_path: Path) -> None:
+def test_equal_frame_control_order_and_stop_are_exact(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
     document = dynamic_score(smoothing="0", waveform="square")
     events = [
         change(0, 0),
@@ -325,14 +343,16 @@ def test_equal_frame_control_order_and_stop_are_exact(tmp_path: Path) -> None:
             action="stop",
         )
     )
-    actual, snapshot = render(document, actions)
+    actual, snapshot = render(document, actions, backend)
     expected = np.zeros_like(actual)
     expected[:120, 0] = 0.5
     check_audio(tmp_path / "same-frame-stop.wav", actual, expected)
     assert snapshot.voices == []
 
 
-def test_fractional_release_boundary_and_nonzero_terminal_level(tmp_path: Path) -> None:
+def test_fractional_release_boundary_and_nonzero_terminal_level(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
     document = dynamic_score(waveform="square")
     raw = document.model_dump(mode="json")
     raw["body"]["voices"][0]["minimum_hold_seconds"] = "1/32000"
@@ -346,7 +366,7 @@ def test_fractional_release_boundary_and_nonzero_terminal_level(tmp_path: Path) 
         Release(tick=0, ordinal=1, part="main", trigger_id="note"),
     ]
     actual, state = render(
-        document, synth_trace.prepare(document.body, events, seed=0).actions
+        document, synth_trace.prepare(document.body, events, seed=0).actions, backend
     )
     expected = np.zeros_like(actual)
     expected[:3, 0] = [1, 1, 5 / 6]
@@ -354,14 +374,18 @@ def test_fractional_release_boundary_and_nonzero_terminal_level(tmp_path: Path) 
     assert state.voices == []
 
 
-def test_restore_rejects_a_different_definition() -> None:
-    first = OfflineSynth(prepare(dynamic_score()))
-    second = OfflineSynth(prepare(dynamic_score(smoothing="0")))
+def test_restore_rejects_a_different_definition(
+    backend: Literal["numpy", "native"],
+) -> None:
+    first = OfflineSynth(prepare(dynamic_score()), backend)
+    second = OfflineSynth(prepare(dynamic_score(smoothing="0")), backend)
     with pytest.raises(EngineError, match="different prepared synth"):
         second.restore(first.snapshot())
 
 
-def test_static_tuning_and_hz_offset_are_applied_once(tmp_path: Path) -> None:
+def test_static_tuning_and_hz_offset_are_applied_once(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
     raw = dynamic_score().model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["frequency_offset_hz"] = 5
@@ -372,7 +396,7 @@ def test_static_tuning_and_hz_offset_are_applied_once(tmp_path: Path) -> None:
         update={"controls": {"gain": 1, "bend": 0.5}}
     )
     actions = synth_trace.prepare(document.body, [event], seed=0).actions
-    actual, state = render(document, actions)
+    actual, state = render(document, actions, backend)
     expected = np.zeros_like(actual)
     expected[:, 0] = np.sin(2 * np.pi * np.arange(48000) * 890 / 48000)
     check_audio(tmp_path / "pitch-composition.wav", actual, expected)
@@ -397,8 +421,10 @@ def test_preparation_rejects_unsupported_features(feature: str) -> None:
         prepare(document)
 
 
-def test_unknown_action_is_not_silently_ignored() -> None:
+def test_unknown_action_is_not_silently_ignored(
+    backend: Literal["numpy", "native"],
+) -> None:
     with pytest.raises(EngineError, match="Unsupported synth action"):
-        OfflineSynth(prepare(dynamic_score())).advance(
+        OfflineSynth(prepare(dynamic_score()), backend).advance(
             [TraceAction(tick=0, ordinal=0)], 0, 1
         )

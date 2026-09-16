@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -10,7 +11,7 @@ from enge.synth import OscillatorState, oscillator_samples
 
 @pytest.mark.parametrize("waveform", list(Waveform))
 def test_phase_survives_long_pitch_changes_and_restoration(
-    tmp_path: Path, waveform: Waveform
+    tmp_path: Path, waveform: Waveform, backend: Literal["numpy", "native"]
 ) -> None:
     frames = 480000
     rate = 48000
@@ -34,7 +35,7 @@ def test_phase_survives_long_pitch_changes_and_restoration(
 
     oscillator = Oscillator(waveform=waveform)
     state = OscillatorState.at_frame(origin, 100.25, rate)
-    whole, ending = oscillator_samples(oscillator, state, frequencies, rate)
+    whole, ending = oscillator_samples(oscillator, state, frequencies, rate, backend)
     chunks: list[np.ndarray] = []
     start = 0
     while start < frames:
@@ -42,7 +43,7 @@ def test_phase_survives_long_pitch_changes_and_restoration(
         if start < 240001:
             end = min(end, 240001)
         chunk, state = oscillator_samples(
-            oscillator, state, frequencies[start:end], rate
+            oscillator, state, frequencies[start:end], rate, backend
         )
         chunks.append(chunk)
         start = end

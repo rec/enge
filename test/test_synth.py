@@ -1,5 +1,6 @@
 import wave
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -66,6 +67,7 @@ def score() -> SynthInstrumentScore:
 
 def test_offline_synth_renders_one_second_with_explicit_channel_routes(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
 ) -> None:
     document = score()
     trace = prepare_trace(
@@ -82,7 +84,7 @@ def test_offline_synth_renders_one_second_with_explicit_channel_routes(
         ],
         seed=42,
     )
-    output = OfflineSynth(prepare(document)).advance(trace.actions, 0, 48_000)
+    output = OfflineSynth(prepare(document), backend).advance(trace.actions, 0, 48_000)
     assert output.shape == (48_000, 2)
     assert output[0, 0] == -1
     assert np.all(output[:, 1] == 0)
@@ -92,7 +94,9 @@ def test_offline_synth_renders_one_second_with_explicit_channel_routes(
     check_audio(tmp_path / "triangle.wav", output, expected)
 
 
-def test_offline_synth_is_partition_invariant_and_restorable(tmp_path: Path) -> None:
+def test_offline_synth_is_partition_invariant_and_restorable(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
     document = score()
     trace = prepare_trace(
         document.body,
@@ -110,14 +114,14 @@ def test_offline_synth_is_partition_invariant_and_restorable(tmp_path: Path) -> 
         seed=42,
     )
     definition = prepare(document)
-    whole = OfflineSynth(definition).advance(trace.actions, 0, 48_000)
-    split = OfflineSynth(definition)
+    whole = OfflineSynth(definition, backend).advance(trace.actions, 0, 48_000)
+    split = OfflineSynth(definition, backend)
     first = split.advance([a for a in trace.actions if a.tick < 24_000], 0, 24_000)
     snapshot = split.snapshot()
     second = split.advance(
         [a for a in trace.actions if a.tick >= 24_000], 24_000, 48_000
     )
-    restored = OfflineSynth(definition)
+    restored = OfflineSynth(definition, backend)
     restored.restore(snapshot)
     replay = restored.advance(
         [a for a in trace.actions if a.tick >= 24_000], 24_000, 48_000
@@ -128,7 +132,9 @@ def test_offline_synth_is_partition_invariant_and_restorable(tmp_path: Path) -> 
     check_audio(tmp_path / "restored.wav", np.concatenate([first, replay]), whole)
 
 
-def test_offline_synth_requires_resolved_pitch() -> None:
+def test_offline_synth_requires_resolved_pitch(
+    backend: Literal["numpy", "native"],
+) -> None:
     document = score()
     trace = prepare_trace(
         document.body,
@@ -136,11 +142,12 @@ def test_offline_synth_requires_resolved_pitch() -> None:
         seed=42,
     )
     with pytest.raises(EngineError, match="pitch_hz"):
-        OfflineSynth(prepare(document)).advance(trace.actions, 0, 1)
+        OfflineSynth(prepare(document), backend).advance(trace.actions, 0, 1)
 
 
 def test_offline_synth_defers_release_until_the_voice_minimum_hold(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
 ) -> None:
     document = score()
     voice = document.body.voices[0].model_copy(
@@ -169,7 +176,7 @@ def test_offline_synth_defers_release_until_the_voice_minimum_hold(
         ],
         seed=42,
     )
-    renderer = OfflineSynth(prepare(document))
+    renderer = OfflineSynth(prepare(document), backend)
     first = renderer.advance(trace.actions, 0, 48_000)
     snapshot = renderer.snapshot()
     assert snapshot.voices[0].renderer.release_frame == 48_000
@@ -188,6 +195,7 @@ def test_offline_synth_defers_release_until_the_voice_minimum_hold(
 
 def test_offline_synth_can_use_transport_synchronized_offset_pitch(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
 ) -> None:
     document = score()
     voice = document.body.voices[0].model_copy(
@@ -209,7 +217,7 @@ def test_offline_synth_can_use_transport_synchronized_offset_pitch(
         ],
         seed=42,
     )
-    output = OfflineSynth(prepare(document)).advance(trace.actions, 0, 48000)
+    output = OfflineSynth(prepare(document), backend).advance(trace.actions, 0, 48000)
     assert output[1, 0] == pytest.approx(-1 + 4 * 441 / 48_000)
     phase = np.arange(48000) * 441 / 48000 % 1
     expected = np.zeros_like(output)

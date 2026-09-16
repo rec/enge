@@ -18,6 +18,8 @@ from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, freque
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
+from . import native
+
 
 class EngineError(ValueError):
     """The requested input is invalid or outside Enge's implemented profile."""
@@ -91,13 +93,20 @@ class VoiceRenderer(BaseModel):
 
     definition: PreparedVoice
     oscillators: list[OscillatorState]
+    backend: Literal["numpy", "native"] = "numpy"
     frame_count: int = 0
     release_frame: Fraction | None = None
 
     @classmethod
-    def start(cls, definition: PreparedVoice, phase_origin: int | float = 0) -> Self:
+    def start(
+        cls,
+        definition: PreparedVoice,
+        phase_origin: int | float = 0,
+        backend: Literal["numpy", "native"] = "numpy",
+    ) -> Self:
         return cls(
             definition=definition,
+            backend=backend,
             oscillators=[
                 OscillatorState.at_frame(phase_origin, f, definition.sample_rate)
                 for f in definition.frequencies
@@ -137,7 +146,31 @@ class VoiceRenderer(BaseModel):
         """
         count = self.active_frames(frames)
         definition = self.definition
-        if count:
+        if count and self.backend == "native":
+            states = np.array([[s.position, s.error] for s in self.oscillators])
+            output, states = native.render(
+                definition.oscillator,
+                states,
+                np.tile(definition.frequencies, (count, 1))
+                if frequencies is None
+                else frequencies[:count],
+                definition.sample_rate,
+                definition.gain,
+                np.ones(count) if gains is None else gains[:count],
+                native.envelope_spans(
+                    definition.envelope,
+                    self.frame_count,
+                    count,
+                    definition.sample_rate,
+                    self.release_frame,
+                ),
+                definition.routes,
+                frames,
+            )
+            self.oscillators = [
+                OscillatorState(position=s[0], error=s[1]) for s in states
+            ]
+        elif count:
             waves: list[np.ndarray] = []
             for i, frequency_hz in enumerate(definition.frequencies):
                 wave, self.oscillators[i] = oscillator_samples(
@@ -166,7 +199,7 @@ class VoiceRenderer(BaseModel):
             output *= amplitude[:, None]
         else:
             output = np.zeros((0, len(definition.routes[0])))
-        if count < frames:
+        if count < frames and len(output) != frames:
             padded = np.zeros((frames, len(definition.routes[0])))
             padded[:count] = output
             output = padded
@@ -213,7 +246,12 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
 class OfflineSynth:
     """Render one prepared synth instance with exact frame-boundary actions."""
 
-    def __init__(self, definition: PreparedSynth) -> None:
+    def __init__(
+        self, definition: PreparedSynth, backend: Literal["numpy", "native"] = "numpy"
+    ) -> None:
+        if backend not in ("numpy", "native"):
+            raise EngineError(f"Unknown synth backend: {backend}")
+        self.backend = backend
         self.definition = definition.model_copy(deep=True)
         self.frame = 0
         self.voices: dict[str, VoiceSnapshot] = {}
@@ -257,6 +295,8 @@ class OfflineSynth:
     def restore(self, snapshot: SynthSnapshot) -> None:
         if snapshot.definition != self.definition:
             raise EngineError("Snapshot belongs to a different prepared synth")
+        if any(v.renderer.backend != self.backend for v in snapshot.voices):
+            raise EngineError("Snapshot belongs to a different synth backend")
         snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
@@ -420,6 +460,7 @@ class OfflineSynth:
                     ],
                 ),
                 action.tick if template.synchronize_oscillator else 0,
+                backend=self.backend,
             ),
             sources=sources,
             started_frame=action.tick,
@@ -499,8 +540,26 @@ def oscillator_samples(
     state: OscillatorState,
     frequencies: np.ndarray,
     sample_rate: int,
+    backend: Literal["numpy", "native"] = "numpy",
 ) -> tuple[np.ndarray, OscillatorState]:
     """Render per-sample frequencies and return the phase for the next sample."""
+    if backend == "native":
+        states = np.array([[state.position, state.error]])
+        frames = len(frequencies)
+        output, states = native.render(
+            oscillator,
+            states,
+            frequencies[:, None],
+            sample_rate,
+            1,
+            np.ones(frames),
+            np.array([[0, frames, 1, 0, 0, 1, 0]], dtype=np.float64),
+            [[1]],
+            frames,
+        )
+        return output[:, 0], OscillatorState(position=states[0, 0], error=states[0, 1])
+    if backend != "numpy":
+        raise EngineError(f"Unknown oscillator backend: {backend}")
     # Sum frequency before division, carrying the rounding correction across
     # calls so discontinuous waveforms switch on the same sample in every block.
     position, error = state.position, state.error

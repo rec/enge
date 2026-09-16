@@ -3,9 +3,9 @@
 ## Status and purpose
 
 This is the proposed execution contract for enge's Python/NumPy reference and
-one native implementation. It is a design document, not a claim that the current
-renderer implements these capabilities. The native language remains undecided:
-C++ would use nanobind; Rust would use its corresponding Python bindings.
+one Rust implementation with PyO3 and rust-numpy bindings. Rust is the chosen
+native language. This document records both the implemented synth profile and
+requirements for future sampler and processing extensions.
 
 Both implementations must realize the same prepared uFor definitions and actions,
 using one Python-facing API and one conformance suite. Discrete behavior must
@@ -22,7 +22,9 @@ synth reference: held linear envelopes, explicit routes, minimum hold, phase
 synchronization, static tuning, and live amplitude/tuning control routes. It
 consumes uFor trigger contexts, retains scoped smoothing trajectories, and
 restores them with voice state. Other modulation targets, named generators,
-filters, sample traversal, and native/compiled backends are not implemented.
+filters, and sample traversal are not implemented. The Rust backend realizes
+the same numerical synth profile through explicit `backend="native"` selection;
+`"numpy"` remains the default. PyTorch compilation remains future work.
 Existing waveform start/length/period behavior remains a regression requirement
 during synth consolidation.
 
@@ -451,7 +453,7 @@ Implementation status and remaining order:
    source-to-output route rows. `VoiceRenderer` owns oscillator state, the relative
    frame cursor, effective release, exact completion, and bounded rendering.
    `OfflineSynth` uses it with per-sample frequency and gain arrays; Tuney uses
-   its prepared constant values. Both use `route_samples()` for channel mixing.
+   its prepared constant values. Their NumPy path uses `route_samples()` for mixing.
    Tuney's old `VoiceState` implementation is removed. Its host adapter retains
    mono duplication, stereo-to-mono averaging, and left-channel duplication for
    other output layouts, along with keyboard/polyphony policy and device code.
@@ -463,8 +465,23 @@ Implementation status and remaining order:
    not add a live prepared-action host or change Tuney's note-selection policy.
    Each shared API update is published in enge before updating Tuney's pinned
    revision; tests use the local editable dependency.
-3. The corresponding native slice, after choosing one language, with the same
-   tests and explicit backend selection in the test harness.
+3. The corresponding Rust slice is implemented with PyO3, rust-numpy, and maturin.
+   The shared suite runs with explicit NumPy and native selection, retaining its
+   independent numerical oracles, exact lifecycle checks, irregular partitions,
+   and serialized restores. Direct comparisons cover fractional release during
+   attack, zero-duration stages, duty-cycle endpoints, multiple source routes,
+   and read-only strided parameter arrays. A test disables the reference DSP
+   functions while rendering native output to prevent a silent Python fallback.
+   `src/lib.rs` computes phase recurrence, waveform, envelope arithmetic, gain,
+   and mixing while the GIL is released. The crate forbids `unsafe` code; the
+   binding checks dimensions and span bounds, copies input arrays into owned
+   Rust buffers, and transfers owned audio and next-state arrays back to NumPy.
+   Tests verify that inputs and outputs do not alias. Default Rust floating-point
+   operations preserve the compensated recurrence without fast-math reassociation.
+   `src/enge/native.py` prepares exact rational envelope span boundaries. uFor
+   actions and per-sample control resolution remain in Python. Snapshots retain
+   their renderer backend; active voices cannot be restored into a different
+   backend. Tuney continues to select NumPy by default.
 4. Sampler numerical/traversal vectors and preparation, followed by reference and
    native rendering under the same timing, control, and snapshot rules.
 5. Further generators, processing, and structural changes one specified feature
@@ -511,6 +528,28 @@ After removing an unnecessary render-buffer copy, the isolated run's maxima
 were 563 and 408 microseconds. These results establish the measured cost, not
 live deadline guarantees; scheduler contention and note-on preparation still
 need host-level measurement before claiming reliable live performance.
+
+### Rust voice timing check, 2026-09-16
+
+A local arm64 macOS pytest harness rendered one second at 48 kHz after one
+warm-up block. Each call summed ten triangle oscillators, either ten mono voices
+or five two-oscillator voices, using the public `VoiceRenderer` API. Python buffer
+preparation, binding overhead, and Rust-owned input copies were included. Note-on
+setup, dynamic uFor control evaluation, device I/O, and encoding were excluded.
+Times are microseconds per call.
+
+| Block / voices | NumPy median | Rust median | Rust p95 | Buffer budget |
+| --- | ---: | ---: | ---: | ---: |
+| 32 / ten mono | 209.8 | 132.4 | 150.3 | 667 |
+| 32 / five stereo | 179.0 | 74.2 | 79.7 | 667 |
+| 1024 / ten mono | 1690.2 | 273.2 | 336.6 | 21333 |
+| 1024 / five stereo | 1632.3 | 160.3 | 187.0 | 21333 |
+
+Blocks of 64, 128, and 256 were also faster with Rust. This measures the voice
+API, not the earlier Tuney mixer harness or live deadline reliability. The native
+backend still copies inputs and allocates per call, and the full dynamic-action
+renderer still evaluates controls in Python. These are separate costs to measure
+before choosing a live host integration or optimization.
 
 ## Additional work beyond the prompt
 
