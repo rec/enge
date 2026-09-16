@@ -22,8 +22,8 @@ python-source = "src"
 module-name = "enge._native"
 
 [tool.uv.sources]
-ufor = { path = "../ufor", editable = true }
-reccy = { path = "../reccy", editable = true }
+ufor = { git = "https://github.com/rec/ufor.git", branch = "main" }
+reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }
 
 [dependency-groups]
 dev = [

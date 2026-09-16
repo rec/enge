@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-09-09T15:40:15.842466Z"
+exclude-newer = "2026-09-09T18:33:59.980297Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -53,13 +53,13 @@ dev = [
 requires-dist = [
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "ufor", editable = "../ufor" },
+    { name = "ufor", git = "https://github.com/rec/ufor.git?branch=main" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=9.1.1" },
-    { name = "reccy", editable = "../reccy" },
+    { name = "reccy", git = "https://github.com/rec/reccy.git?branch=main" },
 ]
 
 [[package]]
@@ -298,28 +298,12 @@ wheels = [
 [[package]]
 name = "reccy"
 version = "0.1.0"
-source = { editable = "../reccy" }
+source = { git = "https://github.com/rec/reccy.git?branch=main#88a0b6b34e810cd86a93eb253c4b17131a9ef8e9" }
 dependencies = [
     { name = "pint" },
     { name = "pydantic" },
     { name = "strenum" },
     { name = "tyro" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pint", specifier = ">=0.24.4" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "strenum" },
-    { name = "tyro", specifier = ">=1.0.13" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest" },
-    { name = "pyupgrade", specifier = ">=3.21.2" },
-    { name = "ruff" },
-    { name = "ty", specifier = ">=0.0.14" },
 ]
 
 [[package]]
@@ -390,22 +374,8 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.1.0"
-source = { editable = "../ufor" }
+source = { git = "https://github.com/rec/ufor.git?branch=main#3b3c2ec16052d90ed6afed0ca49ad5d435bcd91d" }
 dependencies = [
     { name = "pydantic" },
     { name = "tomlkit" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "tomlkit", specifier = ">=0.15.1" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest" },
-    { name = "pyupgrade" },
-    { name = "ruff" },
-    { name = "ty" },
 ]
