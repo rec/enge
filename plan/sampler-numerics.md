@@ -6,8 +6,9 @@ This specifies the sampler's source traversal boundary. It extends the
 [execution contract](engine-execution.md) and reuses
 [uFor's playback and sustain-loop rules](../../ufor/doc/sample-performance.md#playback-direction).
 The NumPy source renderer in [sampler.py](../src/enge/sampler.py) passes the
-accompanying [vectors](../conformance/sampler-traversal.json). Rust sampler
-rendering and integration into complete sample voices remain next steps.
+accompanying [vectors](../conformance/sampler-traversal.json). Complete NumPy
+sample voices and prepared-action integration are implemented. Rust sampler
+rendering is the next step.
 
 uFor continues to own sample selection, effective slot settings, trigger IDs,
 sustain, and prepared release/stop actions. Inputs here are already selected and
@@ -22,10 +23,31 @@ release coordinate, and returns source-channel audio plus independent next state
 The input state and audio are unchanged. Serialize `SampleState` as JSON and
 restore it with the same prepared sample; decoded assets stay outside snapshots.
 
-This numerical core does not yet decode files, consume prepared performance
-actions, apply envelopes/minimum hold, resolve controls, or route/mix voices. Its
-caller supplies effective releases and resolved pitch arrays. Those operations
-will be integrated using the existing voice and uFor contracts, before Rust.
+`SampleVoiceRenderer` adds the same `PreparedEnvelope` and `EnvelopeRenderer`
+timing used by oscillator voices, including fractional minimum hold, release
+capture, and exact completion. It uses the common envelope and channel-routing
+functions. Its serialized state contains no decoded audio; rendering and restore
+use the same prepared sample. uFor currently has no minimum-hold field for sample
+instruments, so the instrument adapter uses zero. The standalone voice API accepts
+an explicit minimum hold, as the oscillator voice does.
+
+`sample_instrument.prepare(score, decoded_assets)` validates decoded array shapes,
+integer native/output rates, resolved settings, and the supported profile.
+Immutable asset storage is reused across slots, voices, and instances. Preparation
+fingerprints decoded content separately from the score's encoded-file hashes.
+File decoding remains with the caller.
+
+`OfflineSampler` consumes prepared uFor actions through the same `render_actions`
+scheduler and `ControlRenderer` used by `OfflineSynth`. It combines instrument
+and effective slot volume/tuning in dB/cents, multiplies amplitude routes, applies
+resolved pitch/gain variation once, and uses whole slot/group envelope overrides
+with instrument fallback. Snapshot restore checks the prepared score and decoded
+fingerprints, restores independent voice/control state, and shares audio storage.
+
+The first adapter supports held linear envelopes and control bindings targeting
+amplitude or tuning. Filters/EQ, spatial processing, named generators, event
+bindings, layer crossfades, fade retirement, latched parameter overrides, and
+delayed/aligned/offset starts fail explicitly. They are not silently approximated.
 
 ## Coordinates and source ownership
 
@@ -194,7 +216,7 @@ An envelope completing before that point still ends the voice immediately.
 
 ## Integration and acceptance
 
-The full sample voice will reuse the established envelope, minimum-hold,
+The full sample voice reuses the established envelope, minimum-hold,
 control-scope, channel-routing, and snapshot contracts. Effective release must
 reach the envelope and loop state at the same coordinate. It is distinct from
 physical key release and from uFor's sustain decision.
@@ -203,6 +225,12 @@ Natural source exhaustion and release-envelope completion are separate end
 conditions; the first ends rendering. One-shot voices ignore ordinary key
 release according to prepared uFor actions, but still obey explicit stop/choke
 retirement. Audio exhaustion never reruns selection or trigger ownership.
+
+Live voice parameter evaluation stops at source exhaustion, including release
+at a loop endpoint. A control ramp becoming invalid later cannot make a long
+block fail after the voice has ended. The NumPy adapter resolves modulated voices
+one output frame at a time to preserve that boundary; this reference is not a
+real-time performance claim. Unmodulated voices can render in spans.
 
 Complete voice snapshots must retain fractional progress and its compensation,
 direction, whether a coincident transition is pending, loop enablement, active
@@ -239,8 +267,9 @@ including single-frame splits around release, wrap, reflection, and overlap
 entry/exit. They restore during those states and during changing pitch, and
 check fractional releases, decimal-speed boundary ties, and very large steps.
 The fixture values test source traversal before envelopes or output routing;
-Voice integration tests must separately apply those operations and verify exact
-retirement when that layer is implemented.
+Voice integration tests also apply envelopes, scoped controls, and channel routes,
+and verify exact retirement, prepared sustain/replacement/stop decisions, asset
+sharing, and independent JSON restores.
 
 ## Additional work beyond the prompt
 

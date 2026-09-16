@@ -28,12 +28,23 @@ progress, and `sample_frames()` returns audio plus independent next state.
 It passes the [traversal vectors](conformance/sampler-traversal.json) and longer
 48 kHz WAV regressions under the [numerical specification](plan/sampler-numerics.md).
 
-Complete sampler voices and prepared-action integration come next, followed by
-the Rust sampler. The sampler core currently receives resolved pitch and release
-values; it does not decode files or apply envelopes, gain, or routing. Curved
-envelopes, named generators, filters, other modulation targets, and fade
-retirements remain unsupported by the synth and fail explicitly. The PyTorch
-backend is not yet implemented.
+`OfflineSampler` in [sample_instrument.py](src/enge/sample_instrument.py) now
+consumes prepared uFor sample actions. It applies held linear envelopes,
+instrument/slot amplitude and tuning controls, static dB gain, resolved pitch/gain
+variation, and explicit channel routes. Selection, sustain, replacement, and
+one-shot release decisions come from uFor. Source exhaustion or envelope
+completion ends each voice; prepared stops are immediate.
+
+Prepare with `sample_instrument.prepare(score, decoded_assets)`, where the asset
+dictionary maps uFor asset IDs to float64 frame/channel arrays, then construct
+`OfflineSampler(prepared)` and call `advance(actions, start, end)`. Snapshots
+serialize voices and control ramps, and verify the score and decoded-content
+fingerprints on restore. Decoded audio is shared across slots and instances.
+
+The sampler is currently NumPy only; Rust is next. Decoding remains with the
+caller. Curved envelopes, named generators, filters, layer crossfades, delayed or
+offset sample starts, event bindings, other modulation targets, and fade
+retirements fail explicitly. The PyTorch backend is not yet implemented.
 
 Select the Rust backend with `OfflineSynth(prepare(score), backend="native")`
 or `VoiceRenderer.start(definition, backend="native")`. The default is `"numpy"`;

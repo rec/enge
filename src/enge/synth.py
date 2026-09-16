@@ -1,5 +1,6 @@
 """Offline rendering for Ufor's oscillator synth profile."""
 
+from collections.abc import Callable
 from fractions import Fraction
 from functools import cached_property
 from math import ceil, isfinite
@@ -12,7 +13,7 @@ from ufor.base import Model
 from ufor.envelope import Envelope, Segment
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls
-from ufor.samples.processing import ControlBinding, Processing
+from ufor.samples.processing import ControlBinding, Processing, SoundSettings
 from ufor.streams import AudioType
 from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, frequency
 from ufor.synth_trace import VoiceStart
@@ -57,26 +58,16 @@ class OscillatorState(Model, frozen=True):
         return cls(position=(Fraction(frame) * Fraction(frequency_hz)) % sample_rate)
 
 
-class PreparedVoice(Model, frozen=True):
-    """Resolved voice settings; route rows map oscillators to output channels."""
+class PreparedEnvelope(Model, frozen=True):
+    """The shared amplitude lifetime of an oscillator or sample voice."""
 
     sample_rate: int = Field(gt=0)
-    oscillator: Oscillator
     envelope: Envelope
-    frequencies: list[float] = Field(min_length=1)
-    routes: list[list[float]] = Field(min_length=1)
-    gain: float = 1
     minimum_hold_seconds: Fraction = Field(default=Fraction(0), ge=0)
 
     @model_validator(mode="after")
-    def rendering_profile(self) -> Self:
-        _validate_envelope(self.envelope)
-        if len(self.routes) != len(self.frequencies) or not self.routes[0]:
-            raise EngineError(
-                "Voice routes must map each oscillator to output channels"
-            )
-        if any(len(r) != len(self.routes[0]) for r in self.routes):
-            raise EngineError("Voice route rows must have the same output channels")
+    def envelope_profile(self) -> Self:
+        validate_envelope(self.envelope)
         return self
 
     @cached_property
@@ -88,30 +79,12 @@ class PreparedVoice(Model, frozen=True):
         return self.minimum_hold_seconds * self.sample_rate
 
 
-class VoiceRenderer(BaseModel):
-    """One held voice with explicit oscillator routes and resumable audio state."""
+class EnvelopeRenderer(BaseModel):
+    """Shared release timing; source state remains with the concrete renderer."""
 
-    definition: PreparedVoice
-    oscillators: list[OscillatorState]
-    backend: Literal["numpy", "native"] = "numpy"
+    definition: PreparedEnvelope
     frame_count: int = 0
     release_frame: Fraction | None = None
-
-    @classmethod
-    def start(
-        cls,
-        definition: PreparedVoice,
-        phase_origin: int | float = 0,
-        backend: Literal["numpy", "native"] = "numpy",
-    ) -> Self:
-        return cls(
-            definition=definition,
-            backend=backend,
-            oscillators=[
-                OscillatorState.at_frame(phase_origin, f, definition.sample_rate)
-                for f in definition.frequencies
-            ],
-        )
 
     @property
     def complete(self) -> bool:
@@ -132,6 +105,53 @@ class VoiceRenderer(BaseModel):
             return frames
         end = self.release_frame + self.definition.release_frames
         return max(0, min(frames, ceil(end) - self.frame_count))
+
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, validate_default=True
+    )
+
+
+class PreparedVoice(PreparedEnvelope, frozen=True):
+    """Resolved voice settings; route rows map oscillators to output channels."""
+
+    oscillator: Oscillator
+    frequencies: list[float] = Field(min_length=1)
+    routes: list[list[float]] = Field(min_length=1)
+    gain: float = 1
+
+    @model_validator(mode="after")
+    def rendering_profile(self) -> Self:
+        if len(self.routes) != len(self.frequencies) or not self.routes[0]:
+            raise EngineError(
+                "Voice routes must map each oscillator to output channels"
+            )
+        if any(len(r) != len(self.routes[0]) for r in self.routes):
+            raise EngineError("Voice route rows must have the same output channels")
+        return self
+
+
+class VoiceRenderer(EnvelopeRenderer):
+    """One held voice with explicit oscillator routes and resumable audio state."""
+
+    definition: PreparedVoice
+    oscillators: list[OscillatorState]
+    backend: Literal["numpy", "native"] = "numpy"
+
+    @classmethod
+    def start(
+        cls,
+        definition: PreparedVoice,
+        phase_origin: int | float = 0,
+        backend: Literal["numpy", "native"] = "numpy",
+    ) -> Self:
+        return cls(
+            definition=definition,
+            backend=backend,
+            oscillators=[
+                OscillatorState.at_frame(phase_origin, f, definition.sample_rate)
+                for f in definition.frequencies
+            ],
+        )
 
     def render(
         self,
@@ -206,10 +226,6 @@ class VoiceRenderer(BaseModel):
         self.frame_count += frames
         return output
 
-    model_config = ConfigDict(
-        extra="forbid", allow_inf_nan=False, validate_default=True
-    )
-
 
 class VoiceSnapshot(Model, frozen=True):
     voice_id: str
@@ -243,66 +259,22 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
     )
 
 
-class OfflineSynth:
-    """Render one prepared synth instance with exact frame-boundary actions."""
+class ControlRenderer:
+    """Scoped control trajectories shared by synth and sampler instances."""
 
     def __init__(
-        self, definition: PreparedSynth, backend: Literal["numpy", "native"] = "numpy"
+        self,
+        sample_rate: int,
+        declarations: dict[str, controls.ControlDeclaration],
+        settings: list[SoundSettings],
     ) -> None:
-        if backend not in ("numpy", "native"):
-            raise EngineError(f"Unknown synth backend: {backend}")
-        self.backend = backend
-        self.definition = definition.model_copy(deep=True)
-        self.frame = 0
-        self.voices: dict[str, VoiceSnapshot] = {}
+        self.sample_rate = sample_rate
+        self.declarations = declarations
+        self.settings = settings
         self.contexts: list[ControlContext] = []
-        self.templates = {v.name: v for v in self.definition.instrument.voices}
-        self._new_context("instrument", None, None, 0, {})
+        self.new_context("instrument", None, None, 0, {})
 
-    def advance(
-        self, actions: list[instrument_trace.TraceAction], start: int, end: int
-    ) -> np.ndarray:
-        """Render [start, end), applying actions before their addressed sample."""
-        if start != self.frame or end <= start:
-            raise EngineError(
-                "advance must continue from the current nonempty interval"
-            )
-        ordered = sorted(actions, key=lambda a: (a.tick, a.ordinal))
-        if any(a.tick < start or a.tick >= end for a in ordered):
-            raise EngineError("actions must belong to the rendered interval")
-        output = np.zeros(
-            (end - start, len(self.definition.channels)), dtype=np.float64
-        )
-        cursor = start
-        for action in ordered:
-            output[cursor - start : action.tick - start] = self._render(
-                cursor, action.tick - cursor
-            )
-            self._apply(action)
-            cursor = action.tick
-        output[cursor - start :] = self._render(cursor, end - cursor)
-        self.frame = end
-        return output
-
-    def snapshot(self) -> SynthSnapshot:
-        return SynthSnapshot(
-            definition=self.definition,
-            frame=self.frame,
-            voices=list(self.voices.values()),
-            contexts=self.contexts,
-        ).model_copy(deep=True)
-
-    def restore(self, snapshot: SynthSnapshot) -> None:
-        if snapshot.definition != self.definition:
-            raise EngineError("Snapshot belongs to a different prepared synth")
-        if any(v.renderer.backend != self.backend for v in snapshot.voices):
-            raise EngineError("Snapshot belongs to a different synth backend")
-        snapshot = snapshot.model_copy(deep=True)
-        self.frame = snapshot.frame
-        self.voices = {v.voice_id: v for v in snapshot.voices}
-        self.contexts = snapshot.contexts
-
-    def _new_context(
+    def new_context(
         self,
         scope: Literal["instrument", "part", "trigger"],
         part: str | None,
@@ -311,9 +283,9 @@ class OfflineSynth:
         values: dict[str, float],
     ) -> int:
         ramps: list[ControlRamp] = []
-        for voice in self.templates.values():
-            sources = {s.name: s.scope for s in voice.modulation.sources}
-            for binding in voice.bindings:
+        for setting in self.settings:
+            sources = {s.name: s.scope for s in setting.modulation.sources}
+            for binding in setting.bindings:
                 assert isinstance(binding, ControlBinding)
                 if sources[binding.name] != scope or any(
                     r.control == binding.control
@@ -321,13 +293,12 @@ class OfflineSynth:
                     for r in ramps
                 ):
                     continue
-                declaration = self.definition.instrument.controls[binding.control]
                 ramps.append(
                     ControlRamp(
                         control=binding.control,
                         state=controls.initial_control(
-                            declaration,
-                            Fraction(frame, self.definition.sample_rate),
+                            self.declarations[binding.control],
+                            Fraction(frame, self.sample_rate),
                             binding.smoothing,
                             values.get(binding.control),
                         ),
@@ -338,7 +309,7 @@ class OfflineSynth:
         )
         return len(self.contexts) - 1
 
-    def _context(
+    def context(
         self, scope: str, part: str | None, trigger_id: str | None
     ) -> int | None:
         return next(
@@ -355,29 +326,30 @@ class OfflineSynth:
             None,
         )
 
-    def _apply(self, action: instrument_trace.TraceAction) -> None:
+    def apply(self, action: instrument_trace.TraceAction) -> bool:
         if isinstance(action, instrument_trace.TriggerContext):
-            declarations = self.definition.instrument.controls
-            if action.controls.keys() != declarations.keys():
+            if action.controls.keys() != self.declarations.keys():
                 raise EngineError("Trigger context must contain all declared controls")
             for name, value in action.controls.items():
-                declarations[name].validate_value(value)
-            self._new_context(
+                self.declarations[name].validate_value(value)
+            self.new_context(
                 "trigger", action.part, action.trigger_id, action.tick, action.controls
             )
         elif isinstance(action, instrument_trace.ControlObservation):
-            declaration = self.definition.instrument.require_control(action.control)
+            if action.control not in self.declarations:
+                raise EngineError(f"Unknown control: {action.control}")
+            declaration = self.declarations[action.control]
             declaration.validate_value(action.value)
-            context_id = self._context(action.scope, action.part, action.trigger_id)
+            context_id = self.context(action.scope, action.part, action.trigger_id)
             if context_id is None:
                 if action.scope == "trigger":
-                    return
-                context_id = self._new_context(
+                    return True
+                context_id = self.new_context(
                     action.scope, action.part, action.trigger_id, 0, {}
                 )
             context = self.contexts[context_id]
             event = controls.ControlValueEvent(
-                at=Fraction(action.tick, self.definition.sample_rate),
+                at=Fraction(action.tick, self.sample_rate),
                 ordinal=action.ordinal,
                 value=action.value,
             )
@@ -397,6 +369,115 @@ class OfflineSynth:
                     ]
                 }
             )
+        else:
+            return False
+        return True
+
+    def sources(
+        self, settings: SoundSettings, action: instrument_trace.VoiceStart
+    ) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for source in settings.modulation.sources:
+            part = None if source.scope == "instrument" else action.part
+            trigger_id = action.trigger_id if source.scope == "trigger" else None
+            context_id = self.context(source.scope, part, trigger_id)
+            if context_id is None:
+                if source.scope == "trigger" and trigger_id is not None:
+                    raise EngineError("Voice start is missing its trigger context")
+                assert source.scope in ("instrument", "part", "trigger")
+                context_id = self.new_context(source.scope, part, trigger_id, 0, {})
+            result[source.name] = context_id
+        return result
+
+    def parameters(
+        self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        tuning = np.full(frames, settings.processing.tuning_cents, dtype=np.float64)
+        gains = np.ones(frames)
+        ramps: dict[str, controls.ControlState] = {}
+        for binding in settings.bindings:
+            assert isinstance(binding, ControlBinding)
+            context = self.contexts[sources[binding.name]]
+            ramps[binding.name] = next(
+                r.state
+                for r in context.ramps
+                if r.control == binding.control
+                and r.state.smoothing == binding.smoothing
+            )
+        if settings.modulation.parameters:
+            for i in range(frames):
+                at = Fraction(start + i, self.sample_rate)
+                values = modulation.evaluate(
+                    settings.modulation,
+                    {
+                        n: modulation.SourceValue(value=controls.control_at(s, at))
+                        for n, s in ramps.items()
+                    },
+                )
+                for value in values:
+                    if value.target.parameter == "amplitude":
+                        gains[i] = value.value
+                    else:
+                        tuning[i] = value.value
+        return tuning, gains
+
+
+class OfflineSynth:
+    """Render one prepared synth instance with exact frame-boundary actions."""
+
+    def __init__(
+        self, definition: PreparedSynth, backend: Literal["numpy", "native"] = "numpy"
+    ) -> None:
+        if backend not in ("numpy", "native"):
+            raise EngineError(f"Unknown synth backend: {backend}")
+        self.backend = backend
+        self.definition = definition.model_copy(deep=True)
+        self.frame = 0
+        self.voices: dict[str, VoiceSnapshot] = {}
+        self.templates = {v.name: v for v in self.definition.instrument.voices}
+        self.controls = ControlRenderer(
+            self.definition.sample_rate,
+            self.definition.instrument.controls,
+            list(self.templates.values()),
+        )
+
+    def advance(
+        self, actions: list[instrument_trace.TraceAction], start: int, end: int
+    ) -> np.ndarray:
+        """Render [start, end), applying actions before their addressed sample."""
+        output = render_actions(
+            actions,
+            start,
+            end,
+            self.frame,
+            len(self.definition.channels),
+            self._render,
+            self._apply,
+        )
+        self.frame = end
+        return output
+
+    def snapshot(self) -> SynthSnapshot:
+        return SynthSnapshot(
+            definition=self.definition,
+            frame=self.frame,
+            voices=list(self.voices.values()),
+            contexts=self.controls.contexts,
+        ).model_copy(deep=True)
+
+    def restore(self, snapshot: SynthSnapshot) -> None:
+        if snapshot.definition != self.definition:
+            raise EngineError("Snapshot belongs to a different prepared synth")
+        if any(v.renderer.backend != self.backend for v in snapshot.voices):
+            raise EngineError("Snapshot belongs to a different synth backend")
+        snapshot = snapshot.model_copy(deep=True)
+        self.frame = snapshot.frame
+        self.voices = {v.voice_id: v for v in snapshot.voices}
+        self.controls.contexts = snapshot.contexts
+
+    def _apply(self, action: instrument_trace.TraceAction) -> None:
+        if self.controls.apply(action):
+            return
         elif isinstance(action, VoiceStart):
             self._start_voice(action)
         elif isinstance(action, instrument_trace.VoiceRetirement):
@@ -429,17 +510,7 @@ class OfflineSynth:
             or action.channels != template.channels
         ):
             raise EngineError("Voice start must match its prepared synth template")
-        sources: dict[str, int] = {}
-        for source in template.modulation.sources:
-            part = None if source.scope == "instrument" else action.part
-            trigger_id = action.trigger_id if source.scope == "trigger" else None
-            context_id = self._context(source.scope, part, trigger_id)
-            if context_id is None:
-                if source.scope == "trigger" and trigger_id is not None:
-                    raise EngineError("Voice start is missing its trigger context")
-                assert source.scope in ("instrument", "part", "trigger")
-                context_id = self._new_context(source.scope, part, trigger_id, 0, {})
-            sources[source.name] = context_id
+        sources = self.controls.sources(template, action)
         self.voices[action.voice_id] = VoiceSnapshot(
             voice_id=action.voice_id,
             template=template.name,
@@ -470,35 +541,10 @@ class OfflineSynth:
         self, voice: VoiceSnapshot, start: int, frames: int
     ) -> tuple[np.ndarray, np.ndarray]:
         template = self.templates[voice.template]
-        frequencies = np.full(
-            frames, frequency(voice.frequency_hz, template.processing.tuning_cents)
+        tuning, gains = self.controls.parameters(template, voice.sources, start, frames)
+        frequencies = np.array(
+            [frequency(voice.frequency_hz, float(c)) for c in tuning]
         )
-        gains = np.ones(frames)
-        ramps: dict[str, controls.ControlState] = {}
-        for binding in template.bindings:
-            assert isinstance(binding, ControlBinding)
-            context = self.contexts[voice.sources[binding.name]]
-            ramps[binding.name] = next(
-                r.state
-                for r in context.ramps
-                if r.control == binding.control
-                and r.state.smoothing == binding.smoothing
-            )
-        if template.modulation.parameters:
-            for i in range(frames):
-                at = Fraction(start + i, self.definition.sample_rate)
-                values = modulation.evaluate(
-                    template.modulation,
-                    {
-                        n: modulation.SourceValue(value=controls.control_at(s, at))
-                        for n, s in ramps.items()
-                    },
-                )
-                for value in values:
-                    if value.target.parameter == "amplitude":
-                        gains[i] = value.value
-                    else:
-                        frequencies[i] = frequency(voice.frequency_hz, value.value)
         if not np.all(np.isfinite(frequencies) & (frequencies > 0)):
             raise EngineError(
                 f"Invalid frequency for {voice.voice_id} at frame {start}"
@@ -514,6 +560,33 @@ class OfflineSynth:
             if voice.renderer.complete:
                 del self.voices[voice.voice_id]
         return output
+
+
+def render_actions(
+    actions: list[instrument_trace.TraceAction],
+    start: int,
+    end: int,
+    frame: int,
+    channels: int,
+    render: Callable[[int, int], np.ndarray],
+    apply: Callable[[instrument_trace.TraceAction], None],
+) -> np.ndarray:
+    """Shared half-open scheduling; preserve trace order for equal coordinates."""
+    if start != frame or end <= start:
+        raise EngineError("advance must continue from the current nonempty interval")
+    ordered = sorted(actions, key=lambda a: (a.tick, a.ordinal))
+    if any(a.tick < start or a.tick >= end for a in ordered):
+        raise EngineError("actions must belong to the rendered interval")
+    output = np.zeros((end - start, channels), dtype=np.float64)
+    cursor = start
+    for action in ordered:
+        output[cursor - start : action.tick - start] = render(
+            cursor, action.tick - cursor
+        )
+        apply(action)
+        cursor = action.tick
+    output[cursor - start :] = render(cursor, end - cursor)
+    return output
 
 
 def waveform_samples(
@@ -617,6 +690,16 @@ def envelope_samples(
     return values
 
 
+def validate_envelope(envelope: Envelope) -> None:
+    """Validate the amplitude-envelope profile shared by both voice renderers."""
+    if envelope.clock != "seconds" or envelope.scope != "voice":
+        raise EngineError("Envelopes must use the voice seconds clock")
+    if not envelope.hold or any(
+        s.curve != 0 for s in [*envelope.segments, *envelope.release]
+    ):
+        raise EngineError("Only held linear envelopes are implemented")
+
+
 def _sample_rate(timebase: Timebase) -> int:
     if timebase.rate.denominator != 1:
         raise EngineError(
@@ -626,7 +709,7 @@ def _sample_rate(timebase: Timebase) -> int:
 
 
 def _validate_voice(voice: SynthVoice) -> None:
-    _validate_envelope(voice.envelope)
+    validate_envelope(voice.envelope)
     if voice.processing != Processing(tuning_cents=voice.processing.tuning_cents):
         raise EngineError("Only tuning processing is implemented")
     if voice.envelopes or voice.lfos:
@@ -641,15 +724,6 @@ def _validate_voice(voice: SynthVoice) -> None:
         for p in voice.modulation.parameters
     ):
         raise EngineError("Only amplitude and tuning modulation are implemented")
-
-
-def _validate_envelope(envelope: Envelope) -> None:
-    if envelope.clock != "seconds" or envelope.scope != "voice":
-        raise EngineError("Synth envelopes must use the voice seconds clock")
-    if not envelope.hold or any(
-        s.curve != 0 for s in [*envelope.segments, *envelope.release]
-    ):
-        raise EngineError("Only held linear synth envelopes are implemented")
 
 
 def _envelope_values(

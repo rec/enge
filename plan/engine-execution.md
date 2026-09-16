@@ -30,8 +30,9 @@ during synth consolidation.
 
 `src/enge/sampler.py` now implements the NumPy source-traversal core with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
-effective releases, and serializable cursor state. Full sampler voices and
-prepared-action integration remain next, followed by the Rust sampler.
+effective releases, and serializable cursor state. `SampleVoiceRenderer` and
+`src/enge/sample_instrument.py` now integrate shared envelope timing, scoped
+controls, routing, and prepared uFor actions. The Rust sampler is next.
 
 ## Ownership and existing contracts
 
@@ -494,10 +495,16 @@ Implementation status and remaining order:
    and passes all 34 [traversal vectors](../conformance/sampler-traversal.json).
    `PreparedSample` validates and isolates decoded audio; `SampleState` and
    `sample_frames()` preserve position through live pitch, fractional releases,
-   loop transitions, block partitions, and JSON restores. The next slice adds
-   complete sample voices and prepared-action integration using the common
-   envelope, minimum-hold, control, and routing rules. Then implement Rust against
-   the same sampler conformance tests.
+   loop transitions, block partitions, and JSON restores. `SampleVoiceRenderer`
+   shares `PreparedEnvelope`, `EnvelopeRenderer`, envelope evaluation, and routing
+   with the synth. `OfflineSampler` shares `ControlRenderer` and `render_actions`
+   scheduling, consumes prepared uFor actions, composes instrument/slot processing,
+   and restores voices against shared decoded assets with content fingerprints.
+   Tests cover sustain, group envelope overrides, gain/pitch variation, scoped
+   controls, source exhaustion, one-shot release, replacement, and stop. Sample
+   minimum hold is available on the reusable voice; uFor sample instruments have
+   no authored minimum-hold field and therefore use zero. Next implement Rust
+   against the same sampler conformance tests.
 5. Further generators, processing, and structural changes one specified feature
    at a time. Do not introduce a generic DSP graph or host to complete these steps.
 

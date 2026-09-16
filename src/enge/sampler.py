@@ -10,6 +10,7 @@ from ufor.base import Model
 from ufor.samples.enums import Direction, LoopMode, PlaybackMode
 from ufor.samples.playback import Playback, Slice
 
+from . import synth
 from .synth import EngineError
 
 
@@ -29,6 +30,11 @@ class PreparedSample(Model, frozen=True):
             raise EngineError("Sample audio must have shape (frames, channels)")
         if samples.dtype != np.float64 or not np.all(np.isfinite(samples)):
             raise EngineError("Sample audio must contain finite float64 values")
+        owner = samples
+        while isinstance(owner, np.ndarray):
+            owner = owner.base
+        if isinstance(owner, bytes) and samples.flags.c_contiguous:
+            return samples
         # Bytes own the prepared copy, so callers cannot re-enable writes through
         # a view or mutate the asset by changing the original decoding buffer.
         return np.frombuffer(samples.tobytes(), dtype=np.float64).reshape(samples.shape)
@@ -78,6 +84,109 @@ class SampleState(Model, frozen=True):
             direction=-1 if backward else 1,
             looping=definition.slice.loop is not None,
         )
+
+
+class PreparedSampleVoice(synth.PreparedEnvelope, frozen=True):
+    """Resolved voice settings; decoded audio stays in the prepared sample."""
+
+    slice: Slice
+    routes: list[list[float]] = Field(min_length=1)
+    pitch_ratio: float = Field(default=1, gt=0)
+    gain: float = 1
+
+    @model_validator(mode="after")
+    def channel_routes(self) -> Self:
+        if not self.routes[0] or any(
+            len(r) != len(self.routes[0]) for r in self.routes
+        ):
+            raise EngineError("Sample route rows must have the same output channels")
+        return self
+
+
+class SampleVoiceRenderer(synth.EnvelopeRenderer):
+    """A resumable sample voice, with the same envelope timing as the synth."""
+
+    definition: PreparedSampleVoice
+    source: SampleState
+
+    @classmethod
+    def start(cls, definition: PreparedSampleVoice, sample: PreparedSample) -> Self:
+        if (
+            definition.slice != sample.slice
+            or definition.sample_rate != sample.sample_rate
+        ):
+            raise EngineError("Sample voice must match its prepared source")
+        if len(definition.routes) != sample.samples.shape[1]:
+            raise EngineError("Sample routes must map every source channel")
+        return cls(definition=definition, source=SampleState.start(sample))
+
+    @property
+    def complete(self) -> bool:
+        source = self.source
+        loop = self.definition.slice.loop
+        looping = source.looping and not (
+            loop is not None
+            and loop.mode == LoopMode.until_release
+            and self.release_frame is not None
+            and self.release_frame <= self.frame_count
+        )
+        exhausted = source.exhaustion_frame is not None or (
+            not looping
+            and not source.overlap
+            and not self.definition.slice.start_frame
+            <= source.index
+            < self.definition.slice.end_frame
+        )
+        return exhausted or super().complete
+
+    def release(self) -> bool:
+        if self.complete:
+            return False
+        return super().release()
+
+    def active_frames(self, frames: int) -> int:
+        return 0 if self.complete else super().active_frames(frames)
+
+    def render(
+        self,
+        sample: PreparedSample,
+        frames: int,
+        pitch_ratios: np.ndarray | None = None,
+        gains: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Render source channels through the voice envelope and explicit routes.
+
+        Restore serialized voices with the same immutable prepared source. Pitch
+        arrays replace the prepared ratio; gain arrays multiply prepared gain.
+        """
+        count = self.active_frames(frames)
+        output = np.zeros((frames, len(self.definition.routes[0])))
+        if count:
+            audio, self.source = sample_frames(
+                sample,
+                self.source,
+                np.full(count, self.definition.pitch_ratio)
+                if pitch_ratios is None
+                else pitch_ratios[:count],
+                self.release_frame,
+            )
+            amplitude = (
+                synth.envelope_samples(
+                    self.definition.envelope,
+                    self.frame_count,
+                    count,
+                    self.definition.sample_rate,
+                    self.release_frame,
+                )
+                * self.definition.gain
+            )
+            if gains is not None:
+                amplitude *= gains[:count]
+            output[:count] = (
+                synth.route_samples(audio, self.definition.routes) * amplitude[:, None]
+            )
+        self.frame_count += frames
+        return output
 
 
 def sample_frames(
