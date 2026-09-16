@@ -6,6 +6,7 @@ from typing import Literal
 
 import numpy as np
 import pytest
+from reccy.runtime.files import atomic_output
 from test_dynamic_synth import change, dynamic_score
 from test_synth import check_audio
 from ufor import synth_trace
@@ -131,6 +132,7 @@ def test_synth_demo_preserves_envelopes_and_live_controls(
     )
     with wave.open(str(source)) as audio:
         assert decoded.stdout == audio.readframes(frames)
-    shutil.copyfile(
-        encoded, pytestconfig.cache.mkdir("audio") / f"synth-demo-{backend}.flac"
-    )
+    destination = pytestconfig.cache.mkdir("audio") / f"synth-demo-{backend}.flac"
+    with atomic_output(destination) as temporary:
+        shutil.copyfile(encoded, temporary)
+    assert destination.read_bytes() == encoded.read_bytes()

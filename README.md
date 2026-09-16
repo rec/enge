@@ -60,3 +60,5 @@ waveform, writes WAV artifacts, and verifies lossless FLAC encoding using the
 `flac` command (required on PATH). Listen to
 `.pytest_cache/d/audio/synth-demo-numpy.flac` and
 `.pytest_cache/d/audio/synth-demo-native.flac`.
+Completed demos are published with Reccy's shared `atomic_output` helper, so a
+failed copy preserves the previous demo. Reccy is a development dependency.
