@@ -2,7 +2,7 @@
 
 from fractions import Fraction
 from math import ceil, isfinite
-from typing import Literal
+from typing import Literal, Self
 
 import numpy as np
 from ufor import instrument_trace, modulation
@@ -39,12 +39,25 @@ class ControlContext(Model, frozen=True):
     ramps: list[ControlRamp]
 
 
+class OscillatorState(Model, frozen=True):
+    """Phase in sample-rate units, with compensated-addition error."""
+
+    position: float = 0
+    error: float = 0
+
+    @classmethod
+    def at_frame(
+        cls, frame: int | float, frequency_hz: float, sample_rate: int
+    ) -> Self:
+        """Initialize phase without losing precision at large frame coordinates."""
+        return cls(position=(Fraction(frame) * Fraction(frequency_hz)) % sample_rate)
+
+
 class VoiceSnapshot(Model, frozen=True):
     voice_id: str
     template: str
     frequency_hz: float
-    phase_position: float
-    phase_error: float = 0
+    oscillator: OscillatorState
     sources: dict[str, int]
     gain: float
     started_frame: int
@@ -278,10 +291,11 @@ class OfflineSynth:
             voice_id=action.voice_id,
             template=template.name,
             frequency_hz=action.pitch_hz,
-            phase_position=(action.tick * Fraction(action.pitch_hz))
-            % self.definition.sample_rate
-            if template.synchronize_oscillator
-            else 0,
+            oscillator=OscillatorState.at_frame(
+                action.tick if template.synchronize_oscillator else 0,
+                action.pitch_hz,
+                self.definition.sample_rate,
+            ),
             sources=sources,
             gain=template.oscillator.gain(action.key),
             started_frame=action.tick,
@@ -350,14 +364,13 @@ class OfflineSynth:
                 )
                 * voice.gain
             )
-            wave, position, error = _oscillator_block(
+            wave, oscillator = oscillator_samples(
                 template.oscillator,
-                voice.phase_position,
-                voice.phase_error,
+                voice.oscillator,
                 frequencies,
-                gains,
                 self.definition.sample_rate,
             )
+            wave *= gains
             for route in template.channels:
                 output[:count, self.definition.channels.index(route.output)] += (
                     wave * route.gain
@@ -366,7 +379,7 @@ class OfflineSynth:
                 del self.voices[voice.voice_id]
             else:
                 self.voices[voice.voice_id] = voice.model_copy(
-                    update={"phase_position": position, "phase_error": error}
+                    update={"oscillator": oscillator}
                 )
         return output
 
@@ -382,6 +395,28 @@ def waveform_samples(
     ratio = 2 * np.pi / period
     return _waveform_angles(
         oscillator, np.linspace(start * ratio, end * ratio, length, endpoint=False)
+    )
+
+
+def oscillator_samples(
+    oscillator: Oscillator,
+    state: OscillatorState,
+    frequencies: np.ndarray,
+    sample_rate: int,
+) -> tuple[np.ndarray, OscillatorState]:
+    """Render per-sample frequencies and return the phase for the next sample."""
+    # Sum frequency before division, carrying the rounding correction across
+    # calls so discontinuous waveforms switch on the same sample in every block.
+    position, error = state.position, state.error
+    phases = np.empty(len(frequencies))
+    for i, value in enumerate(frequencies):
+        phases[i] = position / sample_rate
+        increment = float(value) - error
+        total = position + increment
+        error = (total - position) - increment
+        position = total % sample_rate
+    return _waveform_angles(oscillator, 2 * np.pi * phases), OscillatorState(
+        position=position, error=error
     )
 
 
@@ -457,27 +492,6 @@ def _validate_voice(voice: SynthVoice) -> None:
         for p in voice.modulation.parameters
     ):
         raise EngineError("Only amplitude and tuning modulation are implemented")
-
-
-def _oscillator_block(
-    oscillator: Oscillator,
-    position: float,
-    error: float,
-    frequencies: np.ndarray,
-    gains: np.ndarray,
-    sample_rate: int,
-) -> tuple[np.ndarray, float, float]:
-    # Sum frequency before division, keeping the rounding correction across calls.
-    # This preserves exact boundaries for representable frequency sums, including
-    # integer-frequency square waves that drift when summing frequency / rate.
-    phases = np.empty(len(frequencies))
-    for i, value in enumerate(frequencies):
-        phases[i] = position / sample_rate
-        increment = float(value) - error
-        total = position + increment
-        error = (total - position) - increment
-        position = total % sample_rate
-    return _waveform_angles(oscillator, 2 * np.pi * phases) * gains, position, error
 
 
 def _envelope_values(

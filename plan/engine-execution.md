@@ -261,13 +261,20 @@ oscillators and other synchronization behavior need an explicit extension.
 
 The recurrence defines discrete audio phase integration, including during ramps.
 It does not replace uFor's separately specified scalar LFO clock mathematics.
-The NumPy reference accumulates frequency in output-rate units with compensated
-addition, observes phase by dividing by R, and carries both accumulator and
-rounding correction across blocks and snapshots. This avoids the one-sample
+The NumPy reference and Tuney share `OscillatorState` and `oscillator_samples()`.
+They accumulate frequency in output-rate units with compensated addition,
+observe phase by dividing by R, and carry both accumulator and rounding
+correction across blocks and snapshots. This avoids the one-sample
 square-wave boundary errors caused by repeatedly adding rounded `frequency / R`.
 These are numerical state details, not an alternative musical phase convention.
 Square and triangle retain their existing endpoint rules; band-limiting is a
 future declared rendering profile, not an optimization allowed to change output.
+
+Tuney preserves its existing synchronized-onset adapter: it wraps the transport
+frame at the base note's period, then uses that sample-position origin for each
+oscillator, including both binaural frequencies. Its running oscillators now use
+the common state recurrence. This preserves existing onset behavior rather than
+silently changing binaural synchronization to enge's absolute-frame convention.
 
 ### Sampler
 
@@ -435,24 +442,48 @@ Implementation status and remaining order:
    restores inside active ramps and release, trigger-ID reuse with an old tail,
    multiple smoothing durations, and exact fractional release boundaries. The
    reference uses uFor scalar control/route evaluation before a numerical
-   oscillator function with explicit phase input/output. Performance optimization
-   and the longer-duration drift acceptance cases remain future work.
-2. Tuney waveform and held-envelope calculations now use enge's shared functions.
+   oscillator function with explicit phase input/output. Ten-second integer-oracle
+   regressions cover changing and held pitch, all three waveforms, starts beyond
+   2^53 frames, irregular partitions, and serialized oscillator-state restoration.
+   Longer stress runs and performance optimization remain future work.
+2. Tuney phase state, waveform, and held-envelope calculations now use enge's
+   shared state and functions.
    Its fade settings map to uFor envelope segments, including release during
    attack and fractional minimum hold. Existing audio fixtures remain unchanged;
-   new mono/binaural WAV regressions cover the shared envelope adapter. Phase
-   state, voice lifecycle, and routing consolidation remain outstanding. The
+   new mono/binaural WAV regressions cover envelopes, square edges, and synchronized
+   onset. Voice lifecycle and routing consolidation remain outstanding. The
    full action renderer is still the offline reference; integration into Tuney's
    live callback requires measuring render cost against its buffer deadlines.
-   Publishing the Tuney change also requires committing/publishing enge and then
-   updating Tuney's pinned enge revision; the local editable dependency is used
-   for validation until that coordinated publication can happen.
+   Each shared API update is published in enge before updating Tuney's pinned
+   revision; tests use the local editable dependency.
 3. The corresponding native slice, after choosing one language, with the same
    tests and explicit backend selection in the test harness.
 4. Sampler numerical/traversal vectors and preparation, followed by reference and
    native rendering under the same timing, control, and snapshot rules.
 5. Further generators, processing, and structural changes one specified feature
    at a time. Do not introduce a generic DSP graph or host to complete these steps.
+
+### Phase consolidation timing check, 2026-09-16
+
+A local arm64 macOS test measured one second of `Mixer.render()` calls at 48 kHz
+after one warm-up block, using ten triangle oscillators: either ten mono notes
+or five binaural notes. Blocks of 32, 64, 128, 256, and 1024 were measured. The
+figures below are microseconds per call; setup, device callbacks, encoding, and
+the dynamic-action preparer were excluded.
+
+| Block / notes | Previous median | Shared median | Shared p95 | Buffer budget |
+| --- | ---: | ---: | ---: | ---: |
+| 32 / ten mono | 157 | 200 | 253 | 667 |
+| 32 / five binaural | 133 | 198 | 247 | 667 |
+| 1024 / ten mono | 277 | 1581 | 1741 | 21333 |
+| 1024 / five binaural | 296 | 1595 | 1803 | 21333 |
+
+The scalar compensated recurrence costs more than Tuney's previous vectorized
+constant-pitch calculation. At 32 frames the largest observed shared-render call
+was 480 microseconds for mono and 438 for binaural. These short mixer measurements
+support this consolidation on the measured host; they do not establish live
+deadline guarantees or the cost of the complete dynamic-action renderer. Retain
+the recurrence as the correctness reference when evaluating a faster backend.
 
 ## Additional work beyond the prompt
 
