@@ -1,0 +1,282 @@
+{
+  "output_rate": 48000,
+  "sources": {
+    "four": {"native_rate": 48000, "samples": [[0], [10], [20], [30]]},
+    "six": {"native_rate": 48000, "samples": [[0], [10], [20], [30], [40], [50]]},
+    "ten": {"native_rate": 48000, "samples": [[0], [10], [20], [30], [40], [50], [60], [70], [80], [90]]},
+    "single": {"native_rate": 48000, "samples": [[7]]},
+    "half-rate": {"native_rate": 24000, "samples": [[0], [10], [20], [30]]},
+    "trimmed": {"native_rate": 48000, "samples": [[999], [10], [20], [999]]},
+    "stereo": {"native_rate": 48000, "samples": [[0, 100], [10, 80], [20, 60]]},
+    "curved-overlap": {"native_rate": 48000, "samples": [[0], [0], [4], [0], [0], [10], [30], [50], [0]]}
+  },
+  "cases": [
+    {
+      "name": "forward-finite",
+      "source": "four", "slice": [0, 4], "direction": "forward",
+      "pitch_ratios": [1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [0]],
+      "exhaustion_frame": 4
+    },
+    {
+      "name": "backward-finite",
+      "source": "four", "slice": [0, 4], "direction": "backward",
+      "pitch_ratios": [1, 1, 1, 1, 1],
+      "expected_samples": [[30], [20], [10], [0], [0]],
+      "exhaustion_frame": 4
+    },
+    {
+      "name": "mirror-finite-no-duplicated-turn",
+      "source": "four", "slice": [0, 4], "direction": "mirror",
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [20], [10], [0], [0]],
+      "exhaustion_frame": 7
+    },
+    {
+      "name": "single-frame-forward",
+      "source": "single", "slice": [0, 1], "direction": "forward",
+      "pitch_ratios": [1, 1], "expected_samples": [[7], [0]],
+      "exhaustion_frame": 1
+    },
+    {
+      "name": "single-frame-backward",
+      "source": "single", "slice": [0, 1], "direction": "backward",
+      "pitch_ratios": [1, 1], "expected_samples": [[7], [0]],
+      "exhaustion_frame": 1
+    },
+    {
+      "name": "single-frame-mirror",
+      "source": "single", "slice": [0, 1], "direction": "mirror",
+      "pitch_ratios": [1, 1], "expected_samples": [[7], [0]],
+      "exhaustion_frame": 1
+    },
+    {
+      "name": "forward-loop",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [10], [20], [30], [10]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "backward-loop",
+      "source": "six", "slice": [0, 6], "direction": "backward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[50], [40], [30], [20], [10], [30], [20], [10]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "mirror-loop",
+      "source": "six", "slice": [0, 6], "direction": "mirror",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [20], [10], [20], [30], [20]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "release-before-loop-entry",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 2, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 1,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [40], [50], [0]],
+      "exhaustion_frame": 6
+    },
+    {
+      "name": "release-at-forward-wrap",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 4,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [40], [50], [0]],
+      "exhaustion_frame": 6
+    },
+    {
+      "name": "release-at-backward-wrap",
+      "source": "six", "slice": [0, 6], "direction": "backward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 5,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[50], [40], [30], [20], [10], [0], [0]],
+      "exhaustion_frame": 6
+    },
+    {
+      "name": "release-at-upper-mirror-turn",
+      "source": "six", "slice": [0, 6], "direction": "mirror",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 3,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [40], [50], [0]],
+      "exhaustion_frame": 6
+    },
+    {
+      "name": "release-at-lower-mirror-turn",
+      "source": "six", "slice": [0, 6], "direction": "mirror",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 5,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [20], [10], [0], [0]],
+      "exhaustion_frame": 7
+    },
+    {
+      "name": "through-release-keeps-looping",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "through_release", "crossfade_frames": 0},
+      "release_at": 4,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [10], [20], [30], [10]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "forward-overlap-consumes-head",
+      "source": "ten", "slice": [0, 10], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 8, "mode": "until_release", "crossfade_frames": 3},
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [40], [50], [40], [30], [40], [50], [40], [30], [40]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "backward-overlap-consumes-head",
+      "source": "ten", "slice": [0, 10], "direction": "backward",
+      "loop": {"start_frame": 1, "end_frame": 8, "mode": "until_release", "crossfade_frames": 3},
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[90], [80], [70], [60], [50], [40], [30], [40], [50], [40], [30], [40], [50]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "release-at-overlap-entry",
+      "source": "ten", "slice": [0, 10], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 8, "mode": "until_release", "crossfade_frames": 3},
+      "release_at": 5,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [40], [50], [60], [70], [80], [90], [0]],
+      "exhaustion_frame": 10
+    },
+    {
+      "name": "release-during-forward-overlap",
+      "source": "ten", "slice": [0, 10], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 8, "mode": "until_release", "crossfade_frames": 3},
+      "release_at": 6,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [40], [50], [40], [30], [40], [50], [60], [70], [80], [90], [0]],
+      "exhaustion_frame": 14
+    },
+    {
+      "name": "release-during-backward-overlap",
+      "source": "ten", "slice": [0, 10], "direction": "backward",
+      "loop": {"start_frame": 1, "end_frame": 8, "mode": "until_release", "crossfade_frames": 3},
+      "release_at": 7,
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[90], [80], [70], [60], [50], [40], [30], [40], [50], [40], [30], [20], [10], [0], [0]],
+      "exhaustion_frame": 14
+    },
+    {
+      "name": "linear-forward-half-speed-final-cell",
+      "source": "four", "slice": [0, 4], "direction": "forward",
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[0], [5], [10], [15], [20], [25], [30], [30], [0]],
+      "exhaustion_frame": 8
+    },
+    {
+      "name": "linear-backward-half-speed-final-cell",
+      "source": "four", "slice": [0, 4], "direction": "backward",
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[30], [25], [20], [15], [10], [5], [0], [0], [0]],
+      "exhaustion_frame": 8
+    },
+    {
+      "name": "linear-mirror-half-speed-turn-and-final-cell",
+      "source": "four", "slice": [0, 4], "direction": "mirror",
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[0], [5], [10], [15], [20], [25], [30], [25], [20], [15], [10], [5], [0], [0], [0]],
+      "exhaustion_frame": 14
+    },
+    {
+      "name": "linear-native-rate-factor-applied-once",
+      "source": "half-rate", "slice": [0, 4], "direction": "forward",
+      "pitch_ratios": [1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [5], [10], [15], [20], [25], [30], [30], [0]],
+      "exhaustion_frame": 8
+    },
+    {
+      "name": "linear-pitch-changes-preserve-progress",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "pitch_ratios": [0.5, 0.5, 1, 2, 1, 1, 1],
+      "expected_samples": [[0], [5], [10], [20], [40], [50], [0]],
+      "exhaustion_frame": 6
+    },
+    {
+      "name": "linear-trim-does-not-read-adjacent-asset-frames",
+      "source": "trimmed", "slice": [1, 3], "direction": "forward",
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[10], [15], [20], [20], [0]],
+      "exhaustion_frame": 4
+    },
+    {
+      "name": "linear-stereo-shares-position-not-values",
+      "source": "stereo", "slice": [0, 3], "direction": "forward",
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[0, 100], [5, 90], [10, 80], [15, 70], [20, 60], [20, 60], [0, 0]],
+      "exhaustion_frame": 6
+    },
+    {
+      "name": "linear-single-frame-half-speed",
+      "source": "single", "slice": [0, 1], "direction": "mirror",
+      "pitch_ratios": [0.5, 0.5, 0.5], "expected_samples": [[7], [7], [0]],
+      "exhaustion_frame": 2
+    },
+    {
+      "name": "linear-forward-wrap-lookahead",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[0], [5], [10], [15], [20], [25], [30], [20], [10], [15]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "linear-release-changes-wrap-lookahead",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 7,
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[0], [5], [10], [15], [20], [25], [30], [35], [40], [45], [50], [50], [0]],
+      "exhaustion_frame": 12
+    },
+    {
+      "name": "linear-lookahead-does-not-commit-wrap",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 8,
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[0], [5], [10], [15], [20], [25], [30], [20], [40], [45], [50], [50], [0]],
+      "exhaustion_frame": 12
+    },
+    {
+      "name": "linear-interpolate-overlap-knots-before-resampling",
+      "source": "curved-overlap", "slice": [0, 9], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 8, "mode": "until_release", "crossfade_frames": 3},
+      "pitch_ratios": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+      "expected_samples": [[0], [0], [0], [2], [4], [2], [0], [0], [0], [5], [10], [13.5], [17], [8.5], [0], [0], [0]],
+      "exhaustion_frame": null
+    },
+    {
+      "name": "linear-large-step-release-does-not-undo-crossed-wraps",
+      "source": "six", "slice": [0, 6], "direction": "forward",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 2,
+      "pitch_ratios": [1, 7, 1, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [30], [40], [50], [0]],
+      "exhaustion_frame": 6
+    },
+    {
+      "name": "linear-large-step-release-does-not-undo-crossed-turns",
+      "source": "six", "slice": [0, 6], "direction": "mirror",
+      "loop": {"start_frame": 1, "end_frame": 4, "mode": "until_release", "crossfade_frames": 0},
+      "release_at": 2,
+      "pitch_ratios": [1, 7, 1, 1, 1, 1],
+      "expected_samples": [[0], [10], [20], [10], [0], [0]],
+      "exhaustion_frame": 5
+    }
+  ]
+}

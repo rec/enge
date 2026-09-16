@@ -24,6 +24,12 @@ Sample traversal, curved envelopes, named generators, filters, other modulation
 targets, and fade retirements remain unsupported and fail explicitly. The PyTorch
 backend is not yet implemented.
 
+The next roadmap step is sampler preparation and rendering. Its
+[numerical specification](plan/sampler-numerics.md) and
+[expected traversal vectors](conformance/sampler-traversal.json) are available;
+the proposed linear interpolation profile awaits a quality decision before
+implementation.
+
 Select the Rust backend with `OfflineSynth(prepare(score), backend="native")`
 or `VoiceRenderer.start(definition, backend="native")`. The default is `"numpy"`;
 there is no fallback if the native extension is unavailable. Active-voice snapshots

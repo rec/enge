@@ -291,11 +291,14 @@ Decoded immutable arrays are shared across voices and restored instances;
 traversal, envelopes, and processing state are private. Stereo channels share
 the voice's traversal position and weights without collapsing their audio.
 
-The first sampler extension must additionally specify its interpolation kernel,
-finite-sample edge treatment, fractional loop/reversal behavior, and exhaustion
-coordinate through exact small traversal vectors and 48 kHz audio regressions.
-These choices are not yet fixed here. Native and Python backends may not select
-different resamplers and call the difference a numerical tolerance.
+The [sampler numerical contract](sampler-numerics.md) specifies traversal and
+release ordering, with exact small [vectors](../conformance/sampler-traversal.json).
+Its linear interpolation kernel, finite-sample edge treatment, fractional
+loop/reversal behavior, and exhaustion coordinate remain a proposal awaiting
+the interpolation choice. The vectors are expected results, not passing sampler
+tests yet. Implementation must add shared 48 kHz audio regressions. Native and
+Python backends may not select different resamplers and call the difference a
+numerical tolerance.
 
 ### Release and processing
 
@@ -482,8 +485,13 @@ Implementation status and remaining order:
    actions and per-sample control resolution remain in Python. Snapshots retain
    their renderer backend; active voices cannot be restored into a different
    backend. Tuney continues to select NumPy by default.
-4. Sampler numerical/traversal vectors and preparation, followed by reference and
-   native rendering under the same timing, control, and snapshot rules.
+4. Sampler: the [numerical contract](sampler-numerics.md) and
+   [traversal vectors](../conformance/sampler-traversal.json) now describe native
+   direction, loop, overlap, and release cases plus a proposed linear profile.
+   Confirm the interpolation profile, then add preparation and NumPy reference
+   rendering with shared audio regressions, followed by Rust rendering under the
+   same timing, control, and snapshot rules. No sampler renderer is implemented
+   yet.
 5. Further generators, processing, and structural changes one specified feature
    at a time. Do not introduce a generic DSP graph or host to complete these steps.
 
