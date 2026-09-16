@@ -11,12 +11,14 @@ smooths controls in their declared scopes, preserves phase through pitch changes
 and snapshots active ramps and release tails. Static tuning and the prepared Hz
 offset are applied once. Output is float64 in `(frames, channels)` order.
 
-Tuney and the offline synth share `OscillatorState`, `oscillator_samples()`, and
-`envelope_samples()`. Oscillator state preserves phase and its rounding correction
-across blocks; the envelope function uses exact voice-relative frame coordinates,
-including fractional release positions. The stateless `waveform_samples()` keeps
-the established sample-position/period interface. Tuney adapts its fade settings
-to uFor envelopes; its mixer and device handling remain application code.
+Tuney and the offline synth use the same `PreparedVoice` and `VoiceRenderer` for
+oscillator state, gain, envelopes, minimum hold, release, completion, and explicit
+channel routes. Each voice renders float64 `(frames, channels)` buffers and can
+serialize its state for restoration. Completed voices return silence without
+advancing their oscillators. `OscillatorState` retains the phase rounding
+correction, and the stateless `waveform_samples()` keeps the established
+sample-position/period interface. Tuney translates its mono/binaural settings
+and output-layout policy into routes; note policy and device handling stay local.
 
 Sample traversal, curved envelopes, named generators, filters, other modulation
 targets, and fade retirements remain unsupported and fail explicitly. Native and

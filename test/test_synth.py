@@ -172,7 +172,7 @@ def test_offline_synth_defers_release_until_the_voice_minimum_hold(
     renderer = OfflineSynth(prepare(document))
     first = renderer.advance(trace.actions, 0, 48_000)
     snapshot = renderer.snapshot()
-    assert snapshot.voices[0].release_frame == 48_000
+    assert snapshot.voices[0].renderer.release_frame == 48_000
     second = renderer.advance([], 48_000, 96_000)
     assert renderer.snapshot().voices == []
     frames = np.arange(96000)

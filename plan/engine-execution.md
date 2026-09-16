@@ -446,14 +446,21 @@ Implementation status and remaining order:
    regressions cover changing and held pitch, all three waveforms, starts beyond
    2^53 frames, irregular partitions, and serialized oscillator-state restoration.
    Longer stress runs and performance optimization remain future work.
-2. Tuney phase state, waveform, and held-envelope calculations now use enge's
-   shared state and functions.
-   Its fade settings map to uFor envelope segments, including release during
-   attack and fractional minimum hold. Existing audio fixtures remain unchanged;
-   new mono/binaural WAV regressions cover envelopes, square edges, and synchronized
-   onset. Voice lifecycle and routing consolidation remain outstanding. The
-   full action renderer is still the offline reference; integration into Tuney's
-   live callback requires measuring render cost against its buffer deadlines.
+2. The reusable Tuney voice renderer is consolidated in enge. `PreparedVoice`
+   carries oscillator frequencies, envelope, minimum hold, gain, and explicit
+   source-to-output route rows. `VoiceRenderer` owns oscillator state, the relative
+   frame cursor, effective release, exact completion, and bounded rendering.
+   `OfflineSynth` uses it with per-sample frequency and gain arrays; Tuney uses
+   its prepared constant values. Both use `route_samples()` for channel mixing.
+   Tuney's old `VoiceState` implementation is removed. Its host adapter retains
+   mono duplication, stereo-to-mono averaging, and left-channel duplication for
+   other output layouts, along with keyboard/polyphony policy and device code.
+   Existing audio fixtures remain unchanged. Shared regressions cover restoration
+   before and during release, fractional retirement with a nonzero terminal
+   level, explicit routes, and exact silence after completion. Prepared definitions
+   are shared; mutable renderer snapshots use deep copies or serialized state.
+   The full prepared-action renderer remains offline; this consolidation does
+   not add a live prepared-action host or change Tuney's note-selection policy.
    Each shared API update is published in enge before updating Tuney's pinned
    revision; tests use the local editable dependency.
 3. The corresponding native slice, after choosing one language, with the same
@@ -484,6 +491,26 @@ was 480 microseconds for mono and 438 for binaural. These short mixer measuremen
 support this consolidation on the measured host; they do not establish live
 deadline guarantees or the cost of the complete dynamic-action renderer. Retain
 the recurrence as the correctness reference when evaluating a faster backend.
+
+### Voice and routing consolidation timing check, 2026-09-16
+
+The same one-second, ten-oscillator mixer test was repeated before and after
+sharing the complete voice renderer. Final measurements ran without concurrent
+checks. Times are microseconds per call, with setup and device I/O excluded.
+
+| Block / notes | Previous median | Shared median | Shared p95 | Buffer budget |
+| --- | ---: | ---: | ---: | ---: |
+| 32 / ten mono | 197 | 223 | 283 | 667 |
+| 32 / five binaural | 193 | 182 | 228 | 667 |
+| 1024 / ten mono | 1529 | 1621 | 1795 | 21333 |
+| 1024 / five binaural | 1552 | 1576 | 1835 | 21333 |
+
+An initial run while other checks were active observed 32-frame calls up to
+766 microseconds for mono and 945 for binaural, above the 667-microsecond budget.
+After removing an unnecessary render-buffer copy, the isolated run's maxima
+were 563 and 408 microseconds. These results establish the measured cost, not
+live deadline guarantees; scheduler contention and note-on preparation still
+need host-level measurement before claiming reliable live performance.
 
 ## Additional work beyond the prompt
 

@@ -1,10 +1,12 @@
 """Offline rendering for Ufor's oscillator synth profile."""
 
 from fractions import Fraction
+from functools import cached_property
 from math import ceil, isfinite
 from typing import Literal, Self
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import instrument_trace, modulation
 from ufor.base import Model
 from ufor.envelope import Envelope, Segment
@@ -53,15 +55,136 @@ class OscillatorState(Model, frozen=True):
         return cls(position=(Fraction(frame) * Fraction(frequency_hz)) % sample_rate)
 
 
+class PreparedVoice(Model, frozen=True):
+    """Resolved voice settings; route rows map oscillators to output channels."""
+
+    sample_rate: int = Field(gt=0)
+    oscillator: Oscillator
+    envelope: Envelope
+    frequencies: list[float] = Field(min_length=1)
+    routes: list[list[float]] = Field(min_length=1)
+    gain: float = 1
+    minimum_hold_seconds: Fraction = Field(default=Fraction(0), ge=0)
+
+    @model_validator(mode="after")
+    def rendering_profile(self) -> Self:
+        _validate_envelope(self.envelope)
+        if len(self.routes) != len(self.frequencies) or not self.routes[0]:
+            raise EngineError(
+                "Voice routes must map each oscillator to output channels"
+            )
+        if any(len(r) != len(self.routes[0]) for r in self.routes):
+            raise EngineError("Voice route rows must have the same output channels")
+        return self
+
+    @cached_property
+    def release_frames(self) -> Fraction:
+        return _duration(self.envelope.release) * self.sample_rate
+
+    @cached_property
+    def minimum_hold_frames(self) -> Fraction:
+        return self.minimum_hold_seconds * self.sample_rate
+
+
+class VoiceRenderer(BaseModel):
+    """One held voice with explicit oscillator routes and resumable audio state."""
+
+    definition: PreparedVoice
+    oscillators: list[OscillatorState]
+    frame_count: int = 0
+    release_frame: Fraction | None = None
+
+    @classmethod
+    def start(cls, definition: PreparedVoice, phase_origin: int | float = 0) -> Self:
+        return cls(
+            definition=definition,
+            oscillators=[
+                OscillatorState.at_frame(phase_origin, f, definition.sample_rate)
+                for f in definition.frequencies
+            ],
+        )
+
+    @property
+    def complete(self) -> bool:
+        return self.release_frame is not None and self.frame_count >= (
+            self.release_frame + self.definition.release_frames
+        )
+
+    def release(self) -> bool:
+        if self.release_frame is not None:
+            return False
+        self.release_frame = max(
+            Fraction(self.frame_count), self.definition.minimum_hold_frames
+        )
+        return True
+
+    def active_frames(self, frames: int) -> int:
+        if self.release_frame is None:
+            return frames
+        end = self.release_frame + self.definition.release_frames
+        return max(0, min(frames, ceil(end) - self.frame_count))
+
+    def render(
+        self,
+        frames: int,
+        frequencies: np.ndarray | None = None,
+        gains: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Render (frames, channels), padding completed tails with exact silence.
+
+        Optional frequencies have shape (active frames, oscillators); gains have
+        shape (active frames,). They replace pitch and multiply prepared gain.
+        """
+        count = self.active_frames(frames)
+        definition = self.definition
+        if count:
+            waves: list[np.ndarray] = []
+            for i, frequency_hz in enumerate(definition.frequencies):
+                wave, self.oscillators[i] = oscillator_samples(
+                    definition.oscillator,
+                    self.oscillators[i],
+                    np.full(count, frequency_hz)
+                    if frequencies is None
+                    else frequencies[:count, i],
+                    definition.sample_rate,
+                )
+                waves.append(wave)
+            amplitude = (
+                envelope_samples(
+                    definition.envelope,
+                    self.frame_count,
+                    count,
+                    definition.sample_rate,
+                    self.release_frame,
+                )
+                * definition.gain
+            )
+            if gains is not None:
+                amplitude *= gains[:count]
+            samples = waves[0][:, None] if len(waves) == 1 else np.column_stack(waves)
+            output = route_samples(samples, definition.routes)
+            output *= amplitude[:, None]
+        else:
+            output = np.zeros((0, len(definition.routes[0])))
+        if count < frames:
+            padded = np.zeros((frames, len(definition.routes[0])))
+            padded[:count] = output
+            output = padded
+        self.frame_count += frames
+        return output
+
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, validate_default=True
+    )
+
+
 class VoiceSnapshot(Model, frozen=True):
     voice_id: str
     template: str
     frequency_hz: float
-    oscillator: OscillatorState
+    renderer: VoiceRenderer
     sources: dict[str, int]
-    gain: float
     started_frame: int
-    release_frame: Fraction | None = None
 
 
 class SynthSnapshot(Model, frozen=True):
@@ -241,18 +364,8 @@ class OfflineSynth:
                 raise EngineError("Fade retirement is not implemented")
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
-            elif (
-                voice := self.voices.get(action.voice_id)
-            ) and voice.release_frame is None:
-                template = self.templates[voice.template]
-                release = max(
-                    Fraction(action.tick),
-                    voice.started_frame
-                    + template.minimum_hold_seconds * self.definition.sample_rate,
-                )
-                self.voices[action.voice_id] = voice.model_copy(
-                    update={"release_frame": release}
-                )
+            elif voice := self.voices.get(action.voice_id):
+                voice.renderer.release()
         else:
             raise EngineError(
                 f"Unsupported synth action at frame {action.tick}: "
@@ -291,13 +404,24 @@ class OfflineSynth:
             voice_id=action.voice_id,
             template=template.name,
             frequency_hz=action.pitch_hz,
-            oscillator=OscillatorState.at_frame(
+            renderer=VoiceRenderer.start(
+                PreparedVoice(
+                    sample_rate=self.definition.sample_rate,
+                    oscillator=template.oscillator,
+                    envelope=template.envelope,
+                    frequencies=[action.pitch_hz],
+                    gain=template.oscillator.gain(action.key),
+                    minimum_hold_seconds=template.minimum_hold_seconds,
+                    routes=[
+                        [
+                            sum(r.gain for r in template.channels if r.output == c)
+                            for c in self.definition.channels
+                        ]
+                    ],
+                ),
                 action.tick if template.synchronize_oscillator else 0,
-                action.pitch_hz,
-                self.definition.sample_rate,
             ),
             sources=sources,
-            gain=template.oscillator.gain(action.key),
             started_frame=action.tick,
         )
 
@@ -343,44 +467,11 @@ class OfflineSynth:
     def _render(self, start: int, frames: int) -> np.ndarray:
         output = np.zeros((frames, len(self.definition.channels)), dtype=np.float64)
         for voice in list(self.voices.values()):
-            template = self.templates[voice.template]
-            end = (
-                None
-                if voice.release_frame is None
-                else voice.release_frame
-                + _duration(template.envelope.release) * self.definition.sample_rate
-            )
-            count = frames if end is None else max(0, min(frames, ceil(end) - start))
+            count = voice.renderer.active_frames(frames)
             frequencies, gains = self._parameters(voice, start, count)
-            gains *= (
-                envelope_samples(
-                    template.envelope,
-                    start - voice.started_frame,
-                    count,
-                    self.definition.sample_rate,
-                    None
-                    if voice.release_frame is None
-                    else voice.release_frame - voice.started_frame,
-                )
-                * voice.gain
-            )
-            wave, oscillator = oscillator_samples(
-                template.oscillator,
-                voice.oscillator,
-                frequencies,
-                self.definition.sample_rate,
-            )
-            wave *= gains
-            for route in template.channels:
-                output[:count, self.definition.channels.index(route.output)] += (
-                    wave * route.gain
-                )
-            if end is not None and start + frames >= end:
+            output += voice.renderer.render(frames, frequencies[:, None], gains)
+            if voice.renderer.complete:
                 del self.voices[voice.voice_id]
-            else:
-                self.voices[voice.voice_id] = voice.model_copy(
-                    update={"oscillator": oscillator}
-                )
         return output
 
 
@@ -396,6 +487,11 @@ def waveform_samples(
     return _waveform_angles(
         oscillator, np.linspace(start * ratio, end * ratio, length, endpoint=False)
     )
+
+
+def route_samples(samples: np.ndarray, routes: list[list[float]]) -> np.ndarray:
+    """Mix explicit source-to-output gains without clipping or normalization."""
+    return samples @ np.asarray(routes)
 
 
 def oscillator_samples(
@@ -471,13 +567,7 @@ def _sample_rate(timebase: Timebase) -> int:
 
 
 def _validate_voice(voice: SynthVoice) -> None:
-    envelope = voice.envelope
-    if envelope.clock != "seconds" or envelope.scope != "voice":
-        raise EngineError("Synth envelopes must use the voice seconds clock")
-    if not envelope.hold or any(
-        s.curve != 0 for s in [*envelope.segments, *envelope.release]
-    ):
-        raise EngineError("Only held linear synth envelopes are implemented")
+    _validate_envelope(voice.envelope)
     if voice.processing != Processing(tuning_cents=voice.processing.tuning_cents):
         raise EngineError("Only tuning processing is implemented")
     if voice.envelopes or voice.lfos:
@@ -492,6 +582,15 @@ def _validate_voice(voice: SynthVoice) -> None:
         for p in voice.modulation.parameters
     ):
         raise EngineError("Only amplitude and tuning modulation are implemented")
+
+
+def _validate_envelope(envelope: Envelope) -> None:
+    if envelope.clock != "seconds" or envelope.scope != "voice":
+        raise EngineError("Synth envelopes must use the voice seconds clock")
+    if not envelope.hold or any(
+        s.curve != 0 for s in [*envelope.segments, *envelope.release]
+    ):
+        raise EngineError("Only held linear synth envelopes are implemented")
 
 
 def _envelope_values(
