@@ -20,15 +20,20 @@ correction, and the stateless `waveform_samples()` keeps the established
 sample-position/period interface. Tuney translates its mono/binaural settings
 and output-layout policy into routes; note policy and device handling stay local.
 
-Sample traversal, curved envelopes, named generators, filters, other modulation
-targets, and fade retirements remain unsupported and fail explicitly. The PyTorch
-backend is not yet implemented.
+The NumPy sampler core in [sampler.py](src/enge/sampler.py) renders decoded
+float64 assets with linear interpolation, forward/backward/mirror traversal,
+loops, overlaps, live pitch ratios, and fractional effective releases.
+`PreparedSample` owns immutable audio shared by cursors; `SampleState` serializes
+progress, and `sample_frames()` returns audio plus independent next state.
+It passes the [traversal vectors](conformance/sampler-traversal.json) and longer
+48 kHz WAV regressions under the [numerical specification](plan/sampler-numerics.md).
 
-The next roadmap step is sampler preparation and rendering. Its
-[numerical specification](plan/sampler-numerics.md) and
-[expected traversal vectors](conformance/sampler-traversal.json) are available;
-the proposed linear interpolation profile awaits a quality decision before
-implementation.
+Complete sampler voices and prepared-action integration come next, followed by
+the Rust sampler. The sampler core currently receives resolved pitch and release
+values; it does not decode files or apply envelopes, gain, or routing. Curved
+envelopes, named generators, filters, other modulation targets, and fade
+retirements remain unsupported by the synth and fail explicitly. The PyTorch
+backend is not yet implemented.
 
 Select the Rust backend with `OfflineSynth(prepare(score), backend="native")`
 or `VoiceRenderer.start(definition, backend="native")`. The default is `"numpy"`;

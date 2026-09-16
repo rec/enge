@@ -5,15 +5,27 @@
 This specifies the sampler's source traversal boundary. It extends the
 [execution contract](engine-execution.md) and reuses
 [uFor's playback and sustain-loop rules](../../ufor/doc/sample-performance.md#playback-direction).
-It does not add an audio renderer yet. The accompanying
-[vectors](../conformance/sampler-traversal.json) are expected results for the
-forthcoming NumPy reference and Rust implementation, not passing engine tests.
+The NumPy source renderer in [sampler.py](../src/enge/sampler.py) passes the
+accompanying [vectors](../conformance/sampler-traversal.json). Rust sampler
+rendering and integration into complete sample voices remain next steps.
 
 uFor continues to own sample selection, effective slot settings, trigger IDs,
 sustain, and prepared release/stop actions. Inputs here are already selected and
-resolved. The linear interpolation and edge rules below are a concrete proposal
-awaiting the user's choice. They are not an implemented or accepted quality
-setting. The native-rate direction/loop examples follow the existing uFor rules.
+resolved. Linear interpolation is the first implemented reference profile. The
+native-rate direction/loop examples follow the existing uFor rules.
+
+`PreparedSample` validates already-decoded float64 audio and owns one immutable
+copy, shared by every cursor rendering that prepared sample. It reuses uFor's
+`Slice` and `Playback` definitions. `SampleState.start()` initializes a cursor;
+`sample_frames()` accepts per-output-frame pitch ratios and an optional effective
+release coordinate, and returns source-channel audio plus independent next state.
+The input state and audio are unchanged. Serialize `SampleState` as JSON and
+restore it with the same prepared sample; decoded assets stay outside snapshots.
+
+This numerical core does not yet decode files, consume prepared performance
+actions, apply envelopes/minimum hold, resolve controls, or route/mix voices. Its
+caller supplies effective releases and resolved pitch arrays. Those operations
+will be integrated using the existing voice and uFor contracts, before Rust.
 
 ## Coordinates and source ownership
 
@@ -30,6 +42,12 @@ At output frame `n`, read at the current position, then advance by
 direction is a separate resolved uFor setting. A changed ratio affects the next
 position and never recalculates position from total elapsed time. The native-rate
 factor is applied once, after uFor's pitch-ratio composition.
+
+Accumulate `pitch_ratio[n] * native_rate` in output-rate units with compensated
+addition, dividing by `output_rate` only to obtain interpolation progress. This
+avoids committing a mirror turn early through repeated rounded division, such
+as a release at native frame 3 after thirty 0.1-speed increments. Retain the
+addition correction across calls and serialized restores, like the oscillator.
 
 Output-frame scheduling remains integer and half-open. Fractional native-frame
 progress belongs to the voice, persists across blocks, and is restored with it.
@@ -51,11 +69,11 @@ and return traversal, not perpetual ping-pong playback. A one-frame slice has
 one knot in all three directions. Selected source boundaries exclude other
 asset frames, including during interpolation.
 
-## Proposed linear interpolation profile
+## Linear interpolation profile
 
 Let `V[k]` be a native-frame knot in the ordered traversal, after any loop
 overlap blend. For native progress `x`, let `k = floor(x)` and `a = x - k`.
-The proposed output in each source channel is:
+The output in each source channel is:
 
 ```text
 y = V[k] + a * (V[k + 1] - V[k])
@@ -186,7 +204,7 @@ conditions; the first ends rendering. One-shot voices ignore ordinary key
 release according to prepared uFor actions, but still obey explicit stop/choke
 retirement. Audio exhaustion never reruns selection or trigger ownership.
 
-Snapshots must retain fractional progress and its numerical compensation,
+Complete voice snapshots must retain fractional progress and its compensation,
 direction, whether a coincident transition is pending, loop enablement, active
 overlap progress, and the shared prepared-asset identity. The exact internal
 layout is an implementation choice; no speculative interpolation state may leak
@@ -207,21 +225,22 @@ Loop cases assume `while_held`; non-loop cases observe source exhaustion only.
 first output-frame coordinate where the source is exhausted, or null if it has
 not exhausted within that prefix. This distinguishes a zero-valued source frame
 from completion. Source state must stop advancing after exhaustion. Fractional
-cases currently describe the proposed linear profile; they must be revised if
-the user chooses a different interpolation profile.
+cases describe the implemented linear profile.
 
-When implemented, each vector becomes a regression writing at least one second
+Each vector now has a NumPy regression writing at least one second
 of 48 kHz WAV output and comparing float arrays before encoding. Finite cases pad
-with exact silence after exhaustion. Repeating cases end with an explicit stop
+with exact silence after exhaustion. Repeating cases stop source calls in the harness
 after the observed prefix. The expected prefix is not repeated to fabricate a
 long recording. Both backends must pass the same vectors and independent audio
 oracles, with the existing `atol=1e-10`, `rtol=1e-9` budget.
 
-Repeat cases with 64/128/256/1024-frame and irregular partitions, including
-single-frame splits immediately before, at, and after release, wrap, reflection,
-and overlap entry/exit. Restore during those states and during changing pitch.
+The NumPy tests repeat cases with 64/128/256/1024-frame and irregular partitions,
+including single-frame splits around release, wrap, reflection, and overlap
+entry/exit. They restore during those states and during changing pitch, and
+check fractional releases, decimal-speed boundary ties, and very large steps.
 The fixture values test source traversal before envelopes or output routing;
-integration tests separately apply those operations and verify exact retirement.
+Voice integration tests must separately apply those operations and verify exact
+retirement when that layer is implemented.
 
 ## Additional work beyond the prompt
 
