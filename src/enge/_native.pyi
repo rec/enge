@@ -2,6 +2,9 @@ from typing import Literal
 
 import numpy as np
 
+def render_lfo(
+    waveform: int, phases: np.ndarray, envelope: np.ndarray, frames: int
+) -> np.ndarray: ...
 def render(
     waveform: int,
     duty: float,

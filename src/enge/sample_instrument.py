@@ -36,6 +36,7 @@ class SamplerSnapshot(Model, frozen=True):
     frame: int
     voices: list[SampleVoiceSnapshot]
     contexts: list[synth.ControlContext]
+    lfos: list[synth.LFOSource]
     backend: Literal["numpy", "native"]
 
 
@@ -133,6 +134,7 @@ class OfflineSampler:
             definition.sample_rate,
             definition.document.body.settings.controls,
             [definition.document.body.settings, *definition.settings.values()],
+            backend,
         )
 
     def advance(
@@ -157,6 +159,7 @@ class OfflineSampler:
             frame=self.frame,
             voices=list(self.voices.values()),
             contexts=self.controls.contexts,
+            lfos=self.controls.lfos,
             backend=self.backend,
         ).model_copy(deep=True)
 
@@ -176,6 +179,7 @@ class OfflineSampler:
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
         self.controls.contexts = snapshot.contexts
+        self.controls.lfos = snapshot.lfos
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if self.controls.apply(action) or isinstance(
@@ -327,10 +331,7 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
         raise synth.EngineError(
             "Only sample volume and tuning processing are implemented"
         )
-    if settings.envelopes or settings.lfos:
-        raise synth.EngineError("Named sample generators are not implemented")
-    if any(not isinstance(b, processing.ControlBinding) for b in settings.bindings):
-        raise synth.EngineError("Only control bindings are implemented")
+    synth.validate_generators(settings)
     if any(
         p.target.name != "processing"
         or p.target.parameter not in ("amplitude", "tuning_cents")

@@ -21,18 +21,20 @@ The current implementation in `src/enge/synth.py` provides the first dynamic
 synth reference: held linear envelopes, explicit routes, minimum hold, phase
 synchronization, static tuning, and live amplitude/tuning control routes. It
 consumes uFor trigger contexts, retains scoped smoothing trajectories, and
-restores them with voice state. Other modulation targets, named generators,
-and filters are not implemented. The Rust backend realizes
+restores them with voice state. Named seconds-clock LFOs now drive the same
+amplitude/tuning routes; other targets, named envelopes, and filters remain
+unimplemented. The Rust backend realizes
 the same numerical synth profile through explicit `backend="native"` selection;
 `"numpy"` remains the default. PyTorch compilation remains future work.
 Existing waveform start/length/period behavior remains a regression requirement
 during synth consolidation.
 
-`src/enge/sampler.py` now implements the NumPy source-traversal core with linear
+`src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and
 `src/enge/sample_instrument.py` now integrate shared envelope timing, scoped
-controls, routing, and prepared uFor actions. The Rust sampler is next.
+controls, routing, and prepared uFor actions. Both instrument renderers now share
+scoped LFO sources under the [LFO numerical contract](lfo-numerics.md).
 
 ## Ownership and existing contracts
 
@@ -238,7 +240,8 @@ is still distinct from another voice's source, even when both use one template.
 | Logical gate and retirement | Exact prepared actions; never smoothed with expression controls. Sustain decisions remain in uFor. |
 | Envelope durations derived from key/velocity | Latched at onset, following the existing uFor contract. |
 | Envelope structure, waveform shape/duty, sample identity, slice/loop bounds, direction, output layout, routing topology | Fixed for the prepared voice definition; no active-voice mutation API in this profile. |
-| LFOs, filters, richer automation, and structural transitions | Separate declared extensions with their own dynamic conformance cases before support is enabled. |
+| LFOs | Seconds-clock value/weight realization is implemented; addressed instrument rate/reset actions remain a future uFor extension. |
+| Filters, richer automation, and structural transitions | Separate declared extensions with their own dynamic conformance cases before support is enabled. |
 
 This is an initial support boundary, not a claim that structural edits can never
 be supported. Such edits need explicit state transfer or crossfade semantics.
@@ -517,7 +520,17 @@ Implementation status and remaining order:
    Sampler snapshots reject backend mismatches even when silent. Modulated
    voices retain scalar Python control resolution to stop at natural exhaustion;
    this milestone does not claim real-time callback performance.
-5. Further generators, processing, and structural changes one specified feature
+5. Named seconds-clock LFOs now render through NumPy and Rust with shared
+   conformance. They retain uFor's exact phase anchors, rate/reset semantics,
+   separate activation weight, and scope ownership. Both synth and sampler
+   consume them through existing amplitude/tuning routes and restore their
+   source identities. Tests cover silent shared sources, release tails, exact
+   duty ties, fractional timing, and large clocks. A two-second FLAC regression
+   demonstrates tremolo, vibrato, and live gain on synth and sampled tones.
+   The standalone source API accepts canonical LFO event states; prepared
+   instrument traces still need a portable addressed rate/reset action before
+   those events can be delivered through `advance`. See [details](lfo-numerics.md).
+6. Further generators, processing, and structural changes one specified feature
    at a time. Do not introduce a generic DSP graph or host to complete these steps.
 
 ### Phase consolidation timing check, 2026-09-16

@@ -410,7 +410,7 @@ def test_preparation_rejects_unsupported_features(feature: str) -> None:
     if feature == "pan":
         voice["processing"]["pan"] = 0.5
     elif feature == "generator":
-        voice["lfos"] = {"vibrato": {"rate": "1"}}
+        voice["lfos"] = {"vibrato": {"rate": "1", "clock": "beats"}}
     elif feature == "curve":
         voice["envelope"]["segments"][0]["curve"] = 5
     else:

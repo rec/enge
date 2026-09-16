@@ -55,7 +55,15 @@ disable Python DSP to prevent a fallback. Modulated sample voices still resolve
 controls one frame at a time so evaluation stops at source exhaustion. This API
 allocates per call and does not establish live callback deadline guarantees.
 
-Decoding remains with the caller. Curved envelopes, named generators, filters,
+Named seconds-clock LFOs now drive amplitude and tuning in both instruments.
+They support sine, square, and triangle shapes, delay/fade-in, and voice, part,
+or instrument ownership as allowed by uFor. Shared sources continue through
+silence, and snapshots retain their exact phase anchors. Standalone
+`enge.lfo.lfo_samples()` also samples canonical uFor rate/reset event states.
+Prepared instrument traces do not yet carry addressed LFO events; their LFO
+rates remain authored settings. See the [LFO contract](plan/lfo-numerics.md).
+
+Decoding remains with the caller. Curved envelopes, named envelopes, filters,
 layer crossfades, delayed or offset sample starts, event bindings, other
 modulation targets, and fade
 retirements fail explicitly. The PyTorch backend is not yet implemented.
@@ -98,3 +106,9 @@ waveform, writes WAV artifacts, and verifies lossless FLAC encoding using the
 `.pytest_cache/d/audio/synth-demo-native.flac`.
 Completed demos are published with Reccy's shared `atomic_output` helper, so a
 failed copy preserves the previous demo. Reccy is a development dependency.
+
+Run `uv run pytest test/test_lfo_demo.py` for a two-second vibrato/tremolo demo,
+with a sine synth on the left and a sampled harmonic tone on the right. Both
+receive a live gain change. Listen to `.pytest_cache/d/audio/lfo-demo-numpy.flac`
+or `.pytest_cache/d/audio/lfo-demo-native.flac`; the test compares independent
+audio oracles and verifies lossless encoding before publishing either file.

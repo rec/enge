@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod lfo;
 mod sampler;
 
 use numpy::ndarray::Array2;
@@ -138,5 +139,6 @@ fn render<'py>(
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(render, module)?)?;
     module.add_class::<sampler::SampleBuffer>()?;
-    module.add_function(wrap_pyfunction!(sampler::render_sample, module)?)
+    module.add_function(wrap_pyfunction!(sampler::render_sample, module)?)?;
+    module.add_function(wrap_pyfunction!(lfo::render_lfo, module)?)
 }

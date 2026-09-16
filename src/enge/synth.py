@@ -8,11 +8,11 @@ from typing import Literal, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import instrument_trace, modulation
+from ufor import instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.envelope import Envelope, Segment
 from ufor.oscillator import Oscillator, Waveform
-from ufor.samples import controls
+from ufor.samples import controls, processing
 from ufor.samples.processing import ControlBinding, Processing, SoundSettings
 from ufor.streams import AudioType
 from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, frequency
@@ -20,6 +20,7 @@ from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
 from . import native
+from .lfo import lfo_samples
 
 
 class EngineError(ValueError):
@@ -42,6 +43,14 @@ class ControlContext(Model, frozen=True):
     part: str | None
     trigger_id: str | None
     ramps: list[ControlRamp]
+
+
+class LFOSource(Model, frozen=True):
+    setting: int
+    name: str
+    part: str | None
+    voice_id: str | None
+    state: lfo.LFOState
 
 
 class OscillatorState(Model, frozen=True):
@@ -241,6 +250,7 @@ class SynthSnapshot(Model, frozen=True):
     frame: int
     voices: list[VoiceSnapshot]
     contexts: list[ControlContext]
+    lfos: list[LFOSource]
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedSynth:
@@ -260,18 +270,21 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
 
 
 class ControlRenderer:
-    """Scoped control trajectories shared by synth and sampler instances."""
+    """Resolve scoped controls and LFO sources for one instrument instance."""
 
     def __init__(
         self,
         sample_rate: int,
         declarations: dict[str, controls.ControlDeclaration],
         settings: list[SoundSettings],
+        backend: Literal["numpy", "native"] = "numpy",
     ) -> None:
         self.sample_rate = sample_rate
         self.declarations = declarations
         self.settings = settings
+        self.backend = backend
         self.contexts: list[ControlContext] = []
+        self.lfos: list[LFOSource] = []
         self.new_context("instrument", None, None, 0, {})
 
     def new_context(
@@ -286,7 +299,8 @@ class ControlRenderer:
         for setting in self.settings:
             sources = {s.name: s.scope for s in setting.modulation.sources}
             for binding in setting.bindings:
-                assert isinstance(binding, ControlBinding)
+                if not isinstance(binding, ControlBinding):
+                    continue
                 if sources[binding.name] != scope or any(
                     r.control == binding.control
                     and r.state.smoothing == binding.smoothing
@@ -377,7 +391,42 @@ class ControlRenderer:
         self, settings: SoundSettings, action: instrument_trace.VoiceStart
     ) -> dict[str, int]:
         result: dict[str, int] = {}
+        bindings = {b.name: b for b in settings.bindings}
         for source in settings.modulation.sources:
+            binding = bindings[source.name]
+            if isinstance(binding, processing.GeneratorBinding):
+                definition = settings.lfos[binding.reference]
+                setting = next(i for i, s in enumerate(self.settings) if s is settings)
+                part = action.part if definition.scope == "part" else None
+                voice_id = action.voice_id if definition.scope == "voice" else None
+                index = next(
+                    (
+                        i
+                        for i, s in enumerate(self.lfos)
+                        if (s.setting, s.name, s.part, s.voice_id)
+                        == (setting, binding.reference, part, voice_id)
+                    ),
+                    None,
+                )
+                if index is None:
+                    index = len(self.lfos)
+                    self.lfos.append(
+                        LFOSource(
+                            setting=setting,
+                            name=binding.reference,
+                            part=part,
+                            voice_id=voice_id,
+                            state=lfo.initial_lfo(
+                                definition,
+                                Fraction(
+                                    action.tick if voice_id is not None else 0,
+                                    self.sample_rate,
+                                ),
+                            ),
+                        )
+                    )
+                result[source.name] = index
+                continue
             part = None if source.scope == "instrument" else action.part
             trigger_id = action.trigger_id if source.scope == "trigger" else None
             context_id = self.context(source.scope, part, trigger_id)
@@ -395,7 +444,22 @@ class ControlRenderer:
         tuning = np.full(frames, settings.processing.tuning_cents, dtype=np.float64)
         gains = np.ones(frames)
         ramps: dict[str, controls.ControlState] = {}
+        signals: dict[str, np.ndarray] = {}
+        rendered: dict[int, np.ndarray] = {}
         for binding in settings.bindings:
+            if isinstance(binding, processing.GeneratorBinding):
+                index = sources[binding.name]
+                if index not in rendered:
+                    rendered[index] = lfo_samples(
+                        settings.lfos[binding.reference],
+                        self.lfos[index].state,
+                        start,
+                        frames,
+                        self.sample_rate,
+                        self.backend,
+                    )
+                signals[binding.name] = rendered[index]
+                continue
             assert isinstance(binding, ControlBinding)
             context = self.contexts[sources[binding.name]]
             ramps[binding.name] = next(
@@ -412,6 +476,10 @@ class ControlRenderer:
                     {
                         n: modulation.SourceValue(value=controls.control_at(s, at))
                         for n, s in ramps.items()
+                    }
+                    | {
+                        n: modulation.SourceValue(value=s[i, 0], weight=s[i, 1])
+                        for n, s in signals.items()
                     },
                 )
                 for value in values:
@@ -439,6 +507,7 @@ class OfflineSynth:
             self.definition.sample_rate,
             self.definition.instrument.controls,
             list(self.templates.values()),
+            backend,
         )
 
     def advance(
@@ -463,6 +532,7 @@ class OfflineSynth:
             frame=self.frame,
             voices=list(self.voices.values()),
             contexts=self.controls.contexts,
+            lfos=self.controls.lfos,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: SynthSnapshot) -> None:
@@ -474,6 +544,7 @@ class OfflineSynth:
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
         self.controls.contexts = snapshot.contexts
+        self.controls.lfos = snapshot.lfos
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if self.controls.apply(action):
@@ -700,6 +771,20 @@ def validate_envelope(envelope: Envelope) -> None:
         raise EngineError("Only held linear envelopes are implemented")
 
 
+def validate_generators(settings: SoundSettings) -> None:
+    """Supported named sources share the seconds-clock LFO contract."""
+    if settings.envelopes:
+        raise EngineError("Named envelopes are not implemented")
+    if any(g.clock != "seconds" for g in settings.lfos.values()):
+        raise EngineError("LFOs must use the seconds clock")
+    if any(
+        not isinstance(b, ControlBinding)
+        and not (isinstance(b, processing.GeneratorBinding) and b.kind == "lfo")
+        for b in settings.bindings
+    ):
+        raise EngineError("Only control and LFO bindings are implemented")
+
+
 def _sample_rate(timebase: Timebase) -> int:
     if timebase.rate.denominator != 1:
         raise EngineError(
@@ -712,12 +797,9 @@ def _validate_voice(voice: SynthVoice) -> None:
     validate_envelope(voice.envelope)
     if voice.processing != Processing(tuning_cents=voice.processing.tuning_cents):
         raise EngineError("Only tuning processing is implemented")
-    if voice.envelopes or voice.lfos:
-        raise EngineError("Named synth generators are not implemented")
+    validate_generators(voice)
     if any(c.mode == "fade" for c in voice.chokes):
         raise EngineError("Fade retirement is not implemented")
-    if any(not isinstance(b, ControlBinding) for b in voice.bindings):
-        raise EngineError("Only control bindings are implemented")
     if any(
         p.target.name != "processing"
         or p.target.parameter not in ("amplitude", "tuning_cents")

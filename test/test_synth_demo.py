@@ -109,9 +109,17 @@ def test_synth_demo_preserves_envelopes_and_live_controls(
     assert np.all(actual[192000:] == 0)
     check_audio(tmp_path / "synth-demo.wav", actual, expected)
 
+    publish_flac(
+        tmp_path / "synth-demo-actual.wav",
+        pytestconfig.cache.mkdir("audio") / f"synth-demo-{backend}.flac",
+    )
+
+
+def publish_flac(source: Path, destination: Path) -> None:
+    """Verify lossless PCM encoding and atomically publish a listening artifact."""
+
     # Verify the lossless file contains exactly the PCM we compared above.
-    source = tmp_path / "synth-demo-actual.wav"
-    encoded = tmp_path / "synth-demo.flac"
+    encoded = source.with_suffix(".flac")
     subprocess.run(
         ["flac", "--silent", "--output-name", str(encoded), str(source)],
         check=True,
@@ -131,8 +139,7 @@ def test_synth_demo_preserves_envelopes_and_live_controls(
         capture_output=True,
     )
     with wave.open(str(source)) as audio:
-        assert decoded.stdout == audio.readframes(frames)
-    destination = pytestconfig.cache.mkdir("audio") / f"synth-demo-{backend}.flac"
+        assert decoded.stdout == audio.readframes(audio.getnframes())
     with atomic_output(destination) as temporary:
         shutil.copyfile(encoded, temporary)
     assert destination.read_bytes() == encoded.read_bytes()
