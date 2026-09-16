@@ -1,0 +1,459 @@
+# Synth and sampler execution contract
+
+## Status and purpose
+
+This is the proposed execution contract for enge's Python/NumPy reference and
+one native implementation. It is a design document, not a claim that the current
+renderer implements these capabilities. The native language remains undecided:
+C++ would use nanobind; Rust would use its corresponding Python bindings.
+
+Both implementations must realize the same prepared uFor definitions and actions,
+using one Python-facing API and one conformance suite. Discrete behavior must
+agree exactly; floating-point results agree within declared numerical tolerances.
+Bitwise floating-point identity is not a requirement.
+
+Synth and sampler share scheduling, control evolution, lifecycle realization,
+routing, and snapshot rules within each implementation. Their source-generation
+state differs. The Python reference remains independent of native DSP code and
+prioritizes readable equations and transitions over speed.
+
+The current implementation in `src/enge/synth.py` provides the first dynamic
+synth reference: held linear envelopes, explicit routes, minimum hold, phase
+synchronization, static tuning, and live amplitude/tuning control routes. It
+consumes uFor trigger contexts, retains scoped smoothing trajectories, and
+restores them with voice state. Other modulation targets, named generators,
+filters, sample traversal, and native/compiled backends are not implemented.
+Existing waveform start/length/period behavior remains a regression requirement
+during synth consolidation.
+
+## Ownership and existing contracts
+
+uFor owns portable definitions, parameter units/domains, source scope, performance
+preparation, selection, trigger ownership, sustain, and retirement decisions.
+enge consumes the resulting actions and owns audio realization and its state.
+It must not infer sample selection or pedal policy again from raw events.
+
+Sample decoding and immutable asset preparation can belong to enge preparation.
+Asset discovery, session management, input adaptation, device clocks, MIDI/OSC,
+GUI, output files, encoding, and plugin integration remain outside the engine.
+No decoding, file access, or Python callbacks belong inside a native render call.
+
+The existing specifications to reuse are:
+
+- [Instrument definitions and routing](../../ufor/doc/instrument-format.md).
+- [Sample performance and traversal](../../ufor/doc/sample-performance.md).
+- [Oscillator and synth definitions](../../ufor/doc/musical-format.md).
+- [Envelope, LFO, and modulation semantics](../../ufor/doc/modulation-format.md).
+- [Scalar timeline automation](../../ufor/doc/automation-format.md).
+- [Shared lifecycle actions](../../ufor/ufor/instrument_trace.py).
+
+The [corrected enge handover](../../recs/plan/enge.md) governs the project boundary.
+The older [Recs offline contract](../../recs/plan/sample-playback.md) also describes
+a combined performance preparer and renderer, and planar output. This proposal
+uses the corrected prepared-action boundary and preserves enge's existing
+`(frames, channels)` output layout. It does not introduce a second raw-event API.
+
+Control smoothing, trigger-context initialization, and pitch composition are now
+specified in [uFor control evolution](../../ufor/doc/control-evolution.md), with
+language-neutral cases in uFor commit `2e5b02e`. Reuse those definitions rather
+than maintaining an enge-specific version of their musical meaning.
+
+## Designing numerical functions for torch.compile
+
+A future PyTorch realization should run the same numerical function eagerly and
+through `torch.compile` against the shared conformance cases. PyTorch is not a
+dependency of this first NumPy implementation, and this guidance does not choose
+the native backend or replace the independent reference requirement.
+
+Use an explicit numerical boundary:
+
+```text
+render(parameter arrays, previous numerical state) -> audio, next numerical state
+```
+
+Keep changing pitch, gain, phase, ramp, and DSP values in tensor inputs rather
+than Python scalar arguments that can cause specialization and recompilation.
+Keep static configuration separate. Treat shapes, dtypes, devices, strides, and
+voice counts as deliberate compilation choices; do not assume arbitrary changing
+block sizes will reuse one compiled graph. Preserve arbitrary-partition semantics
+even if an implementation uses several compiled shape variants.
+
+Use tensor operations for numerical computation. Avoid extracting tensor values
+into Python with `.item()` or branching in Python on those values. Use suitable
+tensor selection or supported structured control flow; selection must not evaluate
+invalid arithmetic in an unselected branch. Tensorization must preserve the
+specified recurrence and state transitions, including phase and loop boundaries.
+
+Keep Pydantic validation, rational-clock resolution, context lookup, event
+interpretation, asset loading, and logging outside the compiled numerical region.
+Pass state explicitly and return its replacement. This is a design preference for
+clear ownership and testing, not a claim that PyTorch forbids all mutation.
+
+During development, compile numerical kernels with `fullgraph=True` to expose
+graph breaks, inspect `TORCH_LOGS="graph_breaks,recompiles"`, and compare eager and
+compiled results. Benchmark steady-state calls after warm-up on the intended CPU
+or accelerator, separately from compilation cost. Successful compilation does
+not demonstrate a speedup or suitability for live audio deadlines.
+
+Oscillators, gain trajectories, and mixing are early candidates. Recurrent filters,
+changing voice populations, and small 64/128-frame calls need early measurement.
+Avoid a large unrolled Python sample loop in the compiled path; choose a supported
+recurrence formulation only after verifying its numerical behavior and performance.
+The NumPy reference may retain a clear scalar recurrence where it establishes the
+required behavior. No compiled performance claim is made for that reference.
+
+Sources: [graph breaks](https://docs.pytorch.org/docs/2.14/user_guide/torch_compiler/compile/programming_model.common_graph_breaks.html),
+[recompilation](https://docs.pytorch.org/docs/2.14/user_guide/torch_compiler/compile/programming_model.recompilation.html),
+and [torch.compile](https://docs.pytorch.org/docs/stable/generated/torch.compile.html).
+
+## Common API behavior
+
+Keep the existing operations as the common behavioral surface; concrete sample
+types and native bindings can be named when their profiles are implemented.
+
+| Operation | Required behavior |
+| --- | --- |
+| `prepare(...)` | Accept a validated instrument and the immutable assets needed by its declared profile. Resolve the output rate, channel order, supported source/processing settings, and asset bounds. Return a prepared definition or an explicit unsupported/invalid-input error. |
+| New instance | Begin at output frame zero with no voices and controls at declared defaults. Share immutable prepared data only; all mutable state belongs to this instance. Random selection/variation has already been resolved by uFor. |
+| `advance(actions, start, end)` | Require `start` to equal the instance cursor and `end > start`. Render exactly `[start, end)` and move the cursor to `end`. Supply only actions in this interval. Return audio, not another preparation trace. |
+| `snapshot()` | Capture state at the current cursor without advancing it. The state describes the next sample to render, before any actions at that cursor. |
+| `restore(snapshot)` | Restore into an instance with the same prepared definition, assets, output rate, and channel order. Replaying the same future actions must reproduce the continuation. |
+
+The output is a C-contiguous float64 array of shape `(end - start, channels)`.
+The first profile uses float64 for DSP state and accumulation too. There is no
+implicit clipping, normalization, integer encoding, or channel conversion.
+Values outside [-1, 1] are permitted. Output ownership must keep returned buffers
+valid and unchanged after later engine calls; they must not alias mutable engine
+scratch storage.
+
+Known unsupported settings must fail during preparation. Unknown action kinds,
+unresolved required targets, and unsupported runtime operations must fail
+explicitly rather than being silently ignored. Errors identify the feature or
+target and, for runtime failures, the action or frame. Matching error categories
+and relevant context is required across backends; identical prose is not.
+After a failed render, continuation requires restoring a valid snapshot or
+creating a fresh instance; transactional rollback is not required.
+
+## Frame timing and ordering
+
+The execution clock is integer output frames at a positive integer rate `R`.
+The caller resolves native uFor event ticks onto that clock before rendering.
+enge performs no implicit rounding of non-frame event coordinates. A host must
+declare any quantization used when adapting another clock.
+
+At frame `n`, apply the actions for that frame before rendering sample `n`.
+Order actions by `(tick, ordinal)`, preserving trace-list order for records
+with equal coordinates. A single prepared performance event can produce several
+actions; do not invent an action-type priority or reorder its fan-out.
+An action at `end` belongs to the next call, never the current call.
+
+Advance continuous state to the frame coordinate before applying its actions.
+Consume envelope segment endpoints and zero-duration segments according to
+uFor's existing rules. Apply ordered actions, resolve parameter values, generate
+the sample, and update source/DSP state for the next frame. A sample-loop boundary
+transition at the frame is resolved after its release actions, as required by
+uFor's release-at-loop-boundary rule.
+
+Block boundaries have no musical meaning. They do not reset phase, restart a
+ramp, quantize a release, update a parameter early, or change a filter cadence.
+Controls delivered in later calls can change the future but cannot revise
+already rendered audio. Late actions are errors, not instructions to rewind.
+The engine needs only the current interval's actions, not a complete performance.
+
+## Parameters over time
+
+Every supported live numeric parameter has a defined value at each output sample.
+Constant spans and ramps may use compact representations or vectorized evaluation,
+but the result must match the same sample-by-sample semantics. Evaluating one
+value per caller-supplied block is not conforming.
+
+Use uFor's existing control IDs, scoped source bindings, structured parameter
+addresses, and units. Do not add a parallel string-path setter API. The first
+dynamic profile uses addressed control actions routed to amplitude and tuning
+in cents. Standalone automation and generated modulation must use the same final
+parameter evaluation when their bindings are supported; they are not implicitly
+connected merely because uFor can describe them.
+
+For each frame and resolved voice context:
+
+1. Observe the relevant control trajectories and envelope/LFO states.
+2. Resolve the base value, including a supported explicit replacement automation.
+3. Apply uFor source mappings, activation weights, and route arithmetic in its
+   specified stable order.
+4. Validate the resulting domain and apply only explicitly declared boundary
+   policies, such as a filter's clamp policy.
+5. Use the result for that frame's gain, phase increment, traversal, or processing.
+
+Do not smooth the final sum again or introduce a hidden conversion between Hz,
+cents, dB, and ratios. Frequency automation declared in Hz is linear in Hz;
+a linear cents trajectory becomes an exponential frequency trajectory. A source
+explicitly configured for immediate changes remains immediate.
+
+### Control smoothing contract
+
+Interpret a control binding's existing `smoothing` duration as a finite linear
+transition in the source's declared numeric domain, before route mapping. This
+is the portable rule implemented by uFor's scalar control reference.
+
+For a target `b` received at frame `k`, let `a` be the trajectory's value at `k`
+before that action. For duration `S` seconds and exact rational `D = S * R`:
+
+```text
+S = 0:  value(x) = b for x >= k
+S > 0:  value(x) = a + (b - a) * min((x - k) / D, 1) for x >= k
+```
+
+Observe this trajectory at integer sample coordinates. Keep `D` exact for
+endpoint comparisons; do not round each duration to whole frames. The target
+is observed at the first sample at or after the endpoint. A second action
+captures the first trajectory's current value and starts a new full-duration
+transition there. Same-frame actions execute in their trace order. A positive
+duration does not jump at entry; a zero-duration action does.
+
+Contexts begin at the declared default or an explicit initial control value,
+without an artificial ramp from zero. Instrument and part controls retain their
+history when no voices are sounding. Voices joining a shared context observe its
+current trajectory, rather than restarting it. Trigger contexts remain independent
+and survive physical release while their voices still need them. Scopes do not
+implicitly override one another: bindings select the addressed context.
+
+Bindings with different smoothing durations can share the raw control history
+but require distinct trajectories. Bindings sharing context, control, and
+smoothing behavior observe the same trajectory. A voice-local modulation source
+is still distinct from another voice's source, even when both use one template.
+
+### What may change in the first dynamic profile
+
+| Setting | Treatment |
+| --- | --- |
+| Amplitude and tuning cents through declared control routes | Live per-sample values, including during release. |
+| Logical gate and retirement | Exact prepared actions; never smoothed with expression controls. Sustain decisions remain in uFor. |
+| Envelope durations derived from key/velocity | Latched at onset, following the existing uFor contract. |
+| Envelope structure, waveform shape/duty, sample identity, slice/loop bounds, direction, output layout, routing topology | Fixed for the prepared voice definition; no active-voice mutation API in this profile. |
+| LFOs, filters, richer automation, and structural transitions | Separate declared extensions with their own dynamic conformance cases before support is enabled. |
+
+This is an initial support boundary, not a claim that structural edits can never
+be supported. Such edits need explicit state transfer or crossfade semantics.
+Rebuilding a voice silently when a control changes is not an acceptable substitute.
+
+## Persistent source and processing state
+
+### Synth
+
+Let `p[n]` be the phase used to produce sample `n`, and `f[n]` its resolved Hz:
+
+```text
+source[n] = waveform(p[n])
+p[n+1] = (p[n] + f[n] / R) modulo 1
+```
+
+Frequency changes preserve `p[n]`. Never derive a running voice's phase as
+`elapsed * current_frequency`. For the first dynamic profile, resolved onset
+frequency is the base and tuning modulation contributes cents according to uFor's
+parameter-base rules; the preparer must make clear which static adjustments are
+already included so no offset or tuning is applied twice.
+
+Preserve the current phase convention: ordinary voices start at phase zero;
+transport-synchronized starts initialize phase from the absolute start frame
+and resolved onset frequency. Later modulation advances that phase; it does not
+retroactively change the start or continuously relock the voice. Shared evolving
+oscillators and other synchronization behavior need an explicit extension.
+
+The recurrence defines discrete audio phase integration, including during ramps.
+It does not replace uFor's separately specified scalar LFO clock mathematics.
+The NumPy reference accumulates frequency in output-rate units with compensated
+addition, observes phase by dividing by R, and carries both accumulator and
+rounding correction across blocks and snapshots. This avoids the one-sample
+square-wave boundary errors caused by repeatedly adding rounded `frequency / R`.
+These are numerical state details, not an alternative musical phase convention.
+Square and triangle retain their existing endpoint rules; band-limiting is a
+future declared rendering profile, not an optimization allowed to change output.
+
+### Sampler
+
+A voice owns a position along its selected traversal, loop/direction state, and
+any active loop overlap. At frame `n`, read the current position, then advance by
+the resolved positive pitch ratio times `native_rate / R`. Pitch changes affect
+future progress without resetting position. Direction determines how progress
+maps to source frames; it is not inferred from a negative pitch ratio.
+
+Reuse uFor's forward/backward/mirror endpoint, loop, overlap, and release rules.
+Decoded immutable arrays are shared across voices and restored instances;
+traversal, envelopes, and processing state are private. Stereo channels share
+the voice's traversal position and weights without collapsing their audio.
+
+The first sampler extension must additionally specify its interpolation kernel,
+finite-sample edge treatment, fractional loop/reversal behavior, and exhaustion
+coordinate through exact small traversal vectors and 48 kHz audio regressions.
+These choices are not yet fixed here. Native and Python backends may not select
+different resamplers and call the difference a numerical tolerance.
+
+### Release and processing
+
+Apply prepared stop immediately before the addressed sample. Apply prepared
+release through the declared envelope and minimum-hold behavior; capture the
+envelope level at the effective release coordinate. A duplicate release does
+not restart the tail. Gain/pitch controls continue evolving through release.
+Ending audible output must not make enge rerun uFor's trigger ownership policy.
+
+Natural completion and release completion must retire audio state at their
+defined coordinates, not merely at the end of whichever block contains them.
+The sample profile must specify whether exhaustion or envelope completion ends
+each traversal, using uFor's playback-mode rules. No amplitude threshold may
+silently terminate a voice or discard a nonzero authored tail.
+
+Future dynamic filters must preserve their declared delay state when parameters
+change and define when coefficients are calculated and installed. Existing uFor
+RBJ coefficient equations alone do not settle time-varying stability or transition
+behavior. Coefficient interpolation, resets, or control-rate approximations need
+their own contract and rapidly changing-parameter cases before acceptance.
+
+## Snapshots and restoration
+
+An audio snapshot must preserve all mutable information needed for continuation:
+
+- Cursor, active voice identities, and pending effective release coordinates.
+- Oscillator phase or sample traversal position, direction, loop overlap, and
+  delayed-start state where applicable.
+- Envelope traversal, captured entry/release values, and generator state.
+- Control contexts, current ramp anchors/targets/endpoints, and applicable
+  modulation state, including histories still needed by future joining voices.
+- Independent filter histories and other processing state for supported profiles.
+
+For the fixed linear-envelope profile, the release level is reconstructed from
+the immutable envelope definition and exact effective release coordinate. It
+does not need a second stored value. `envelope_samples()` performs the same
+calculation for the offline synth and Tuney's fade-setting adapter.
+
+A snapshot must not alias mutable live state. Immutable definitions and decoded
+assets can be referenced and shared, not copied per voice or snapshot. Prepared
+data identity and output configuration must be checked on restoration.
+The caller owns undelivered future actions; a snapshot is not a copy of that
+future stream. Retaining a pending scheduled transition already accepted by the
+engine is nevertheless part of its state.
+
+uFor's semantic snapshots and enge's audio snapshots serve different purposes.
+Seeking a combined performance requires appropriate preparation state as well
+as audio state. enge cannot reconstruct missing sustain, selection, or control
+history from a list of active voices.
+
+Within-backend restoration is required. Cross-backend snapshot exchange and a
+durable on-disk snapshot format are not requirements of the first profile.
+Shared tests compare logical state and restored behavior without requiring
+identical private layouts or exposing a second mutable control interface.
+
+## Numerical and behavioral conformance
+
+Use one parameterized suite against the reference and native API. Also compare
+the implementations directly on identical prepared inputs. Retain independent
+expected values and uFor vectors so agreement cannot hide a shared mistake.
+The native backend must execute native rendering, not delegate DSP to Python.
+
+| Value | Comparison |
+| --- | --- |
+| Frame coordinates, action order, identities, routing destinations, lifecycle status, array shapes | Exact. |
+| Rational durations and discrete endpoint decisions | Exact, regardless of floating representation used for arithmetic. |
+| Floating controls and audio/state values | Explicit finite absolute/relative tolerances, declared before validating a backend. No bitwise requirement. |
+| Deliberately silent/unrouted output and stopped voices | Exact zero. |
+
+Initial float64 audio comparisons use elementwise
+`abs(actual - expected) <= 1e-10 + 1e-9 * abs(expected)`.
+Scalar uFor conformance retains its existing tolerances, including `1e-12` where
+specified. Check finite output explicitly. Do not use relative error alone near
+zero or an average error metric that could conceal a click. Report peak absolute
+error and its frame/channel for failed audio comparisons.
+
+Phase comparisons account for wraparound, but waveform discontinuities and
+sample-loop boundary choices must still occur on the same samples. Numerical
+tolerance does not excuse a one-frame branch error. If a future algorithm or
+long-duration case needs a different numerical budget, document its error source
+and agree that case's bound before implementation acceptance; do not relax a
+test merely to make a backend pass.
+
+Every audio regression writes at least one second of 48 kHz WAV output through
+the test harness. Compare float arrays before WAV encoding so quantization cannot
+hide errors. Short exact scalar/traversal vectors supplement those audio cases.
+WAV writing is a test responsibility, not an engine output feature.
+
+Render each continuity case uninterrupted and in 64, 128, 256, and 1024-frame
+partitions, plus irregular partitions and boundaries immediately before, at,
+and after changes. Include one-frame calls around critical boundaries. Restore
+inside ramps, during release, and near source discontinuities and loop edges;
+compare the continuation and logical ending state. Both fixed and changing
+parameters need long-duration phase/traversal drift coverage as well.
+
+### First dynamic-control acceptance cases
+
+1. At 48 kHz, start a 100 Hz sine at phase zero and step to 200 Hz at frame 120
+   through a declared tuning route. Phase at frame 120 is 1/4 cycle, sample 120
+   is 1 before gain, and phase at frame 121 is `1/4 + 1/240`. Repeat through
+   release and after snapshot restoration.
+2. Route a control directly to amplitude. Start at zero, target one at frame zero
+   with smoothing `1/200` second, then target zero at frame 120. Values at frames
+   0, 120, 240, and 360 are respectively 0, 1/2, 1/4, and 0. Include repeated
+   same-frame targets and zero smoothing as separate cases.
+3. Deliver a part control while silent, then start two overlapping voices at
+   different points in its ramp. They must observe the same continuing control
+   trajectory. Trigger-scoped controls must remain isolated from the other voice.
+4. Exercise gain and pitch changes at the same frame as starts, releases, stops,
+   and minimum-hold endpoints, in both meaningful ordinal orders. Pair synth and
+   sampler cases with identical lifecycle expectations when the sampler exists.
+5. Cover fractional smoothing endpoints, large absolute frame coordinates,
+   interrupted ramps, zero-duration envelope stages, nonzero terminal levels,
+   and square/triangle phase transitions under pitch changes.
+6. Require matching explicit rejection of unsupported settings and operations;
+   a backend cannot pass by ignoring a parameter it does not implement.
+
+Sampler acceptance adds forward/backward/mirror vectors, loop entry/exit and
+overlap, fractional pitch, stereo routing, release tails, and decoded-asset reuse
+without shared mutable voice state. Backend-specific allocation tests may verify
+asset reuse separately from the common behavioral suite.
+
+## uFor prerequisites and implementation order
+
+The portable prerequisites below were completed in uFor commit `2e5b02e`:
+
+1. Specify the smoothing equation, interruption, initial values, scope lifetime,
+   and behavior of voices joining an already evolving control context. Add scalar
+   language-neutral vectors for the examples above.
+2. Ensure prepared inputs preserve trigger-initial controls and relevant scoped
+   control history. An onset's evaluated parameters alone cannot initialize all
+   future modulation correctly. Reuse the canonical uFor representation rather
+   than inventing an enge-only substitute.
+3. Confirm that resolved onset pitch, static tuning, and routed tuning have one
+   unambiguous composition rule, with no double application across preparation
+   and realization.
+4. Use the corrected lifecycle contract. uFor snapshots are explicitly
+   observational, not resumable preparation checkpoints; audio state belongs to
+   enge. Recheck contracts after future uFor changes rather than preserving defects
+   as compatibility behavior.
+
+Implementation status and remaining order:
+
+1. The first dynamic synth reference and its timing/control conformance are
+   implemented. Tests cover 64/128/256/1024-frame and irregular partitions,
+   restores inside active ramps and release, trigger-ID reuse with an old tail,
+   multiple smoothing durations, and exact fractional release boundaries. The
+   reference uses uFor scalar control/route evaluation before a numerical
+   oscillator function with explicit phase input/output. Performance optimization
+   and the longer-duration drift acceptance cases remain future work.
+2. Tuney waveform and held-envelope calculations now use enge's shared functions.
+   Its fade settings map to uFor envelope segments, including release during
+   attack and fractional minimum hold. Existing audio fixtures remain unchanged;
+   new mono/binaural WAV regressions cover the shared envelope adapter. Phase
+   state, voice lifecycle, and routing consolidation remain outstanding. The
+   full action renderer is still the offline reference; integration into Tuney's
+   live callback requires measuring render cost against its buffer deadlines.
+   Publishing the Tuney change also requires committing/publishing enge and then
+   updating Tuney's pinned enge revision; the local editable dependency is used
+   for validation until that coordinated publication can happen.
+3. The corresponding native slice, after choosing one language, with the same
+   tests and explicit backend selection in the test harness.
+4. Sampler numerical/traversal vectors and preparation, followed by reference and
+   native rendering under the same timing, control, and snapshot rules.
+5. Further generators, processing, and structural changes one specified feature
+   at a time. Do not introduce a generic DSP graph or host to complete these steps.
+
+## Additional work beyond the prompt
+
+None.

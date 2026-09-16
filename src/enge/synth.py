@@ -1,94 +1,94 @@
-"""Offline rendering for Ufor's canonical oscillator synth profile."""
+"""Offline rendering for Ufor's oscillator synth profile."""
 
-from dataclasses import dataclass
 from fractions import Fraction
+from math import ceil, isfinite
+from typing import Literal
 
 import numpy as np
+from ufor import instrument_trace, modulation
+from ufor.base import Model
 from ufor.envelope import Envelope, Segment
-from ufor.instrument_trace import TraceAction, VoiceRetirement
 from ufor.oscillator import Oscillator, Waveform
-from ufor.samples.processing import Processing
+from ufor.samples import controls
+from ufor.samples.processing import ControlBinding, Processing
 from ufor.streams import AudioType
-from ufor.synth import SynthInstrumentScore, SynthVoice
+from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, frequency
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
 
 class EngineError(ValueError):
-    """The requested Ufor definition is outside Enge's implemented profile."""
+    """The requested input is invalid or outside Enge's implemented profile."""
 
 
-@dataclass(frozen=True)
-class PreparedSynth:
+class PreparedSynth(Model, frozen=True):
     sample_rate: int
     channels: list[str]
+    instrument: SynthInstrument
 
 
-@dataclass(frozen=True)
-class VoiceSnapshot:
+class ControlRamp(Model, frozen=True):
+    control: str
+    state: controls.ControlState
+
+
+class ControlContext(Model, frozen=True):
+    scope: Literal["instrument", "part", "trigger"]
+    part: str | None
+    trigger_id: str | None
+    ramps: list[ControlRamp]
+
+
+class VoiceSnapshot(Model, frozen=True):
     voice_id: str
-    oscillator: Oscillator
+    template: str
     frequency_hz: float
-    phase: float
-    routes: list[tuple[int, float]]
+    phase_position: float
+    phase_error: float = 0
+    sources: dict[str, int]
     gain: float
     started_frame: int
-    envelope: Envelope
-    minimum_hold_seconds: Fraction
-    release_frame: float | None
-    release_gain: float
+    release_frame: Fraction | None = None
 
 
-@dataclass(frozen=True)
-class SynthSnapshot:
+class SynthSnapshot(Model, frozen=True):
+    definition: PreparedSynth
     frame: int
     voices: list[VoiceSnapshot]
-
-
-@dataclass
-class _Voice:
-    oscillator: Oscillator
-    frequency_hz: float
-    phase: float
-    routes: list[tuple[int, float]]
-    gain: float
-    started_frame: int
-    envelope: Envelope
-    minimum_hold_seconds: Fraction
-    release_frame: float | None = None
-    release_gain: float = 1
+    contexts: list[ControlContext]
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedSynth:
-    """Validate the first rendering profile and return immutable engine inputs."""
+    """Validate the supported profile and isolate its prepared definitions."""
+    score = SynthInstrumentScore.model_validate(score.model_dump())
     output = score.outputs[0].stream
     if not isinstance(output, AudioType):
         raise EngineError("Synth output must be sampled audio")
     timebase = next(t for t in score.timebases if t.name == output.timebase)
-    sample_rate = _sample_rate(timebase)
     for voice in score.body.voices:
         _validate_voice(voice)
-        if (
-            voice.modulation.sources
-            or voice.modulation.parameters
-            or voice.modulation.routes
-        ):
-            raise EngineError("Synth modulation is not implemented")
-        if voice.bindings:
-            raise EngineError("Synth bindings are not implemented")
-    return PreparedSynth(sample_rate=sample_rate, channels=output.channels)
+    return PreparedSynth(
+        sample_rate=_sample_rate(timebase),
+        channels=output.channels,
+        instrument=score.body,
+    )
 
 
 class OfflineSynth:
     """Render one prepared synth instance with exact frame-boundary actions."""
 
     def __init__(self, definition: PreparedSynth) -> None:
-        self.definition = definition
+        self.definition = definition.model_copy(deep=True)
         self.frame = 0
-        self.voices: dict[str, _Voice] = {}
+        self.voices: dict[str, VoiceSnapshot] = {}
+        self.contexts: list[ControlContext] = []
+        self.templates = {v.name: v for v in self.definition.instrument.voices}
+        self._new_context("instrument", None, None, 0, {})
 
-    def advance(self, actions: list[TraceAction], start: int, end: int) -> np.ndarray:
-        """Render [start, end), applying actions at their exact frame boundaries."""
+    def advance(
+        self, actions: list[instrument_trace.TraceAction], start: int, end: int
+    ) -> np.ndarray:
+        """Render [start, end), applying actions before their addressed sample."""
         if start != self.frame or end <= start:
             raise EngineError(
                 "advance must continue from the current nonempty interval"
@@ -96,7 +96,9 @@ class OfflineSynth:
         ordered = sorted(actions, key=lambda a: (a.tick, a.ordinal))
         if any(a.tick < start or a.tick >= end for a in ordered):
             raise EngineError("actions must belong to the rendered interval")
-        output = np.zeros((end - start, len(self.definition.channels)), dtype=float)
+        output = np.zeros(
+            (end - start, len(self.definition.channels)), dtype=np.float64
+        )
         cursor = start
         for action in ordered:
             output[cursor - start : action.tick - start] = self._render(
@@ -110,112 +112,319 @@ class OfflineSynth:
 
     def snapshot(self) -> SynthSnapshot:
         return SynthSnapshot(
+            definition=self.definition,
             frame=self.frame,
-            voices=[
-                VoiceSnapshot(
-                    voice_id=voice_id,
-                    oscillator=voice.oscillator,
-                    frequency_hz=voice.frequency_hz,
-                    phase=voice.phase,
-                    routes=voice.routes,
-                    gain=voice.gain,
-                    started_frame=voice.started_frame,
-                    envelope=voice.envelope,
-                    minimum_hold_seconds=voice.minimum_hold_seconds,
-                    release_frame=voice.release_frame,
-                    release_gain=voice.release_gain,
-                )
-                for voice_id, voice in self.voices.items()
-            ],
-        )
+            voices=list(self.voices.values()),
+            contexts=self.contexts,
+        ).model_copy(deep=True)
 
     def restore(self, snapshot: SynthSnapshot) -> None:
+        if snapshot.definition != self.definition:
+            raise EngineError("Snapshot belongs to a different prepared synth")
+        snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
-        self.voices = {
-            voice.voice_id: _Voice(
-                oscillator=voice.oscillator,
-                frequency_hz=voice.frequency_hz,
-                phase=voice.phase,
-                routes=voice.routes,
-                gain=voice.gain,
-                started_frame=voice.started_frame,
-                envelope=voice.envelope,
-                minimum_hold_seconds=voice.minimum_hold_seconds,
-                release_frame=voice.release_frame,
-                release_gain=voice.release_gain,
-            )
-            for voice in snapshot.voices
-        }
+        self.voices = {v.voice_id: v for v in snapshot.voices}
+        self.contexts = snapshot.contexts
 
-    def _apply(self, action: TraceAction) -> None:
-        if isinstance(action, VoiceStart):
-            if action.pitch_hz is None:
-                raise EngineError("Pitch-tracked synth voice requires Trigger.pitch_hz")
-            if action.voice_id in self.voices:
-                raise EngineError(f"Duplicate active voice: {action.voice_id}")
-            if not isinstance(action.settings, SynthVoice):
-                raise EngineError("Synth voice start must carry a synth voice template")
-            phase = (
-                action.tick * action.pitch_hz / self.definition.sample_rate % 1
-                if action.settings.synchronize_oscillator
-                else 0
+    def _new_context(
+        self,
+        scope: Literal["instrument", "part", "trigger"],
+        part: str | None,
+        trigger_id: str | None,
+        frame: int,
+        values: dict[str, float],
+    ) -> int:
+        ramps: list[ControlRamp] = []
+        for voice in self.templates.values():
+            sources = {s.name: s.scope for s in voice.modulation.sources}
+            for binding in voice.bindings:
+                assert isinstance(binding, ControlBinding)
+                if sources[binding.name] != scope or any(
+                    r.control == binding.control
+                    and r.state.smoothing == binding.smoothing
+                    for r in ramps
+                ):
+                    continue
+                declaration = self.definition.instrument.controls[binding.control]
+                ramps.append(
+                    ControlRamp(
+                        control=binding.control,
+                        state=controls.initial_control(
+                            declaration,
+                            Fraction(frame, self.definition.sample_rate),
+                            binding.smoothing,
+                            values.get(binding.control),
+                        ),
+                    )
+                )
+        self.contexts.append(
+            ControlContext(scope=scope, part=part, trigger_id=trigger_id, ramps=ramps)
+        )
+        return len(self.contexts) - 1
+
+    def _context(
+        self, scope: str, part: str | None, trigger_id: str | None
+    ) -> int | None:
+        return next(
+            (
+                i
+                for i in range(len(self.contexts) - 1, -1, -1)
+                if (
+                    self.contexts[i].scope,
+                    self.contexts[i].part,
+                    self.contexts[i].trigger_id,
+                )
+                == (scope, part, trigger_id)
+            ),
+            None,
+        )
+
+    def _apply(self, action: instrument_trace.TraceAction) -> None:
+        if isinstance(action, instrument_trace.TriggerContext):
+            declarations = self.definition.instrument.controls
+            if action.controls.keys() != declarations.keys():
+                raise EngineError("Trigger context must contain all declared controls")
+            for name, value in action.controls.items():
+                declarations[name].validate_value(value)
+            self._new_context(
+                "trigger", action.part, action.trigger_id, action.tick, action.controls
             )
-            self.voices[action.voice_id] = _Voice(
-                oscillator=action.oscillator,
-                frequency_hz=action.pitch_hz,
-                phase=phase,
-                routes=[
-                    (self.definition.channels.index(route.output), route.gain)
-                    for route in action.channels
-                ],
-                gain=action.oscillator.gain(action.key),
-                started_frame=action.tick,
-                envelope=action.settings.envelope,
-                minimum_hold_seconds=action.settings.minimum_hold_seconds,
+        elif isinstance(action, instrument_trace.ControlObservation):
+            declaration = self.definition.instrument.require_control(action.control)
+            declaration.validate_value(action.value)
+            context_id = self._context(action.scope, action.part, action.trigger_id)
+            if context_id is None:
+                if action.scope == "trigger":
+                    return
+                context_id = self._new_context(
+                    action.scope, action.part, action.trigger_id, 0, {}
+                )
+            context = self.contexts[context_id]
+            event = controls.ControlValueEvent(
+                at=Fraction(action.tick, self.definition.sample_rate),
+                ordinal=action.ordinal,
+                value=action.value,
             )
-        elif isinstance(action, VoiceRetirement):
+            self.contexts[context_id] = context.model_copy(
+                update={
+                    "ramps": [
+                        r.model_copy(
+                            update={
+                                "state": controls.control_event(
+                                    declaration, r.state, event
+                                )
+                            }
+                        )
+                        if r.control == action.control
+                        else r
+                        for r in context.ramps
+                    ]
+                }
+            )
+        elif isinstance(action, VoiceStart):
+            self._start_voice(action)
+        elif isinstance(action, instrument_trace.VoiceRetirement):
+            if action.action == "fade":
+                raise EngineError("Fade retirement is not implemented")
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
-            elif voice := self.voices.get(action.voice_id):
-                if voice.release_frame is None:
-                    voice.release_frame = max(
-                        float(action.tick),
-                        voice.started_frame
-                        + float(voice.minimum_hold_seconds)
-                        * self.definition.sample_rate,
-                    )
-                    voice.release_gain = _envelope_value(
-                        voice.envelope,
-                        (voice.release_frame - voice.started_frame)
-                        / self.definition.sample_rate,
-                    )
+            elif (
+                voice := self.voices.get(action.voice_id)
+            ) and voice.release_frame is None:
+                template = self.templates[voice.template]
+                release = max(
+                    Fraction(action.tick),
+                    voice.started_frame
+                    + template.minimum_hold_seconds * self.definition.sample_rate,
+                )
+                self.voices[action.voice_id] = voice.model_copy(
+                    update={"release_frame": release}
+                )
+        else:
+            raise EngineError(
+                f"Unsupported synth action at frame {action.tick}: "
+                f"{type(action).__name__}"
+            )
+
+    def _start_voice(self, action: VoiceStart) -> None:
+        if (
+            action.pitch_hz is None
+            or not isfinite(action.pitch_hz)
+            or action.pitch_hz <= 0
+        ):
+            raise EngineError("Synth voice requires positive resolved pitch_hz")
+        if action.voice_id in self.voices:
+            raise EngineError(f"Duplicate active voice: {action.voice_id}")
+        template = self.templates.get(action.template)
+        if (
+            template is None
+            or action.settings != template
+            or action.oscillator != template.oscillator
+            or action.channels != template.channels
+        ):
+            raise EngineError("Voice start must match its prepared synth template")
+        sources: dict[str, int] = {}
+        for source in template.modulation.sources:
+            part = None if source.scope == "instrument" else action.part
+            trigger_id = action.trigger_id if source.scope == "trigger" else None
+            context_id = self._context(source.scope, part, trigger_id)
+            if context_id is None:
+                if source.scope == "trigger" and trigger_id is not None:
+                    raise EngineError("Voice start is missing its trigger context")
+                assert source.scope in ("instrument", "part", "trigger")
+                context_id = self._new_context(source.scope, part, trigger_id, 0, {})
+            sources[source.name] = context_id
+        self.voices[action.voice_id] = VoiceSnapshot(
+            voice_id=action.voice_id,
+            template=template.name,
+            frequency_hz=action.pitch_hz,
+            phase_position=(action.tick * Fraction(action.pitch_hz))
+            % self.definition.sample_rate
+            if template.synchronize_oscillator
+            else 0,
+            sources=sources,
+            gain=template.oscillator.gain(action.key),
+            started_frame=action.tick,
+        )
+
+    def _parameters(
+        self, voice: VoiceSnapshot, start: int, frames: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        template = self.templates[voice.template]
+        frequencies = np.full(
+            frames, frequency(voice.frequency_hz, template.processing.tuning_cents)
+        )
+        gains = np.ones(frames)
+        ramps: dict[str, controls.ControlState] = {}
+        for binding in template.bindings:
+            assert isinstance(binding, ControlBinding)
+            context = self.contexts[voice.sources[binding.name]]
+            ramps[binding.name] = next(
+                r.state
+                for r in context.ramps
+                if r.control == binding.control
+                and r.state.smoothing == binding.smoothing
+            )
+        if template.modulation.parameters:
+            for i in range(frames):
+                at = Fraction(start + i, self.definition.sample_rate)
+                values = modulation.evaluate(
+                    template.modulation,
+                    {
+                        n: modulation.SourceValue(value=controls.control_at(s, at))
+                        for n, s in ramps.items()
+                    },
+                )
+                for value in values:
+                    if value.target.parameter == "amplitude":
+                        gains[i] = value.value
+                    else:
+                        frequencies[i] = frequency(voice.frequency_hz, value.value)
+        if not np.all(np.isfinite(frequencies) & (frequencies > 0)):
+            raise EngineError(
+                f"Invalid frequency for {voice.voice_id} at frame {start}"
+            )
+        return frequencies, gains
 
     def _render(self, start: int, frames: int) -> np.ndarray:
-        output = np.zeros((frames, len(self.definition.channels)), dtype=float)
-        complete: list[str] = []
-        for voice_id, voice in self.voices.items():
-            phases = (
-                voice.phase
-                + np.arange(frames, dtype=float)
-                * voice.frequency_hz
-                / self.definition.sample_rate
-            ) % 1
-            wave = _waveform(voice.oscillator, phases)
-            wave *= _voice_envelope(voice, start, frames, self.definition.sample_rate)
-            wave *= voice.gain
-            for channel, gain in voice.routes:
-                output[:, channel] += wave * gain
-            voice.phase = (
-                voice.phase + frames * voice.frequency_hz / self.definition.sample_rate
-            ) % 1
-            if voice.release_frame is not None and start + frames >= (
-                voice.release_frame
-                + _duration(voice.envelope.release) * self.definition.sample_rate
-            ):
-                complete.append(voice_id)
-        for voice_id in complete:
-            self.voices.pop(voice_id)
+        output = np.zeros((frames, len(self.definition.channels)), dtype=np.float64)
+        for voice in list(self.voices.values()):
+            template = self.templates[voice.template]
+            end = (
+                None
+                if voice.release_frame is None
+                else voice.release_frame
+                + _duration(template.envelope.release) * self.definition.sample_rate
+            )
+            count = frames if end is None else max(0, min(frames, ceil(end) - start))
+            frequencies, gains = self._parameters(voice, start, count)
+            gains *= (
+                envelope_samples(
+                    template.envelope,
+                    start - voice.started_frame,
+                    count,
+                    self.definition.sample_rate,
+                    None
+                    if voice.release_frame is None
+                    else voice.release_frame - voice.started_frame,
+                )
+                * voice.gain
+            )
+            wave, position, error = _oscillator_block(
+                template.oscillator,
+                voice.phase_position,
+                voice.phase_error,
+                frequencies,
+                gains,
+                self.definition.sample_rate,
+            )
+            for route in template.channels:
+                output[:count, self.definition.channels.index(route.output)] += (
+                    wave * route.gain
+                )
+            if end is not None and start + frames >= end:
+                del self.voices[voice.voice_id]
+            else:
+                self.voices[voice.voice_id] = voice.model_copy(
+                    update={"phase_position": position, "phase_error": error}
+                )
         return output
+
+
+def waveform_samples(
+    oscillator: Oscillator,
+    start: float | np.ndarray,
+    length: int,
+    period: float | np.ndarray,
+) -> np.ndarray:
+    """Render Tuney's established sample-position oscillator convention."""
+    end = start + length
+    ratio = 2 * np.pi / period
+    return _waveform_angles(
+        oscillator, np.linspace(start * ratio, end * ratio, length, endpoint=False)
+    )
+
+
+def envelope_samples(
+    envelope: Envelope,
+    start: int,
+    length: int,
+    sample_rate: int,
+    release_frame: Fraction | None = None,
+) -> np.ndarray:
+    """Render a prepared held linear envelope in voice-relative sample frames.
+
+    The caller resolves minimum hold into release_frame. Release begins at the
+    exact fractional coordinate and captures the level there, even between
+    samples. The final authored target is held; voice retirement is separate.
+    """
+    values = _envelope_values(
+        envelope.initial,
+        envelope.segments,
+        Fraction(start, sample_rate),
+        length,
+        sample_rate,
+    )
+    if release_frame is not None:
+        offset = max(0, ceil(release_frame) - start)
+        if offset < length:
+            release_gain = float(
+                _envelope_values(
+                    envelope.initial,
+                    envelope.segments,
+                    release_frame / sample_rate,
+                    1,
+                    sample_rate,
+                )[0]
+            )
+            values[offset:] = _envelope_values(
+                release_gain,
+                envelope.release,
+                (start + offset - release_frame) / sample_rate,
+                length - offset,
+                sample_rate,
+            )
+    return values
 
 
 def _sample_rate(timebase: Timebase) -> int:
@@ -234,84 +443,68 @@ def _validate_voice(voice: SynthVoice) -> None:
         s.curve != 0 for s in [*envelope.segments, *envelope.release]
     ):
         raise EngineError("Only held linear synth envelopes are implemented")
-    if voice.processing != Processing():
-        raise EngineError("Synth processing is not implemented")
+    if voice.processing != Processing(tuning_cents=voice.processing.tuning_cents):
+        raise EngineError("Only tuning processing is implemented")
     if voice.envelopes or voice.lfos:
         raise EngineError("Named synth generators are not implemented")
+    if any(c.mode == "fade" for c in voice.chokes):
+        raise EngineError("Fade retirement is not implemented")
+    if any(not isinstance(b, ControlBinding) for b in voice.bindings):
+        raise EngineError("Only control bindings are implemented")
+    if any(
+        p.target.name != "processing"
+        or p.target.parameter not in ("amplitude", "tuning_cents")
+        for p in voice.modulation.parameters
+    ):
+        raise EngineError("Only amplitude and tuning modulation are implemented")
 
 
-def _voice_envelope(
-    voice: _Voice, start: int, frames: int, sample_rate: int
-) -> np.ndarray:
-    elapsed = (
-        np.arange(start, start + frames, dtype=float) - voice.started_frame
-    ) / sample_rate
-    values = _envelope_values(voice.envelope.initial, voice.envelope.segments, elapsed)
-    if voice.release_frame is None:
-        return values
-    released = (
-        np.arange(start, start + frames, dtype=float) - voice.release_frame
-    ) / sample_rate
-    mask = released >= 0
-    values[mask] = _envelope_values(
-        voice.release_gain,
-        voice.envelope.release,
-        released[mask],
-    )
-    return values
-
-
-def _envelope_value(envelope: Envelope, elapsed: float) -> float:
-    return float(
-        _envelope_values(
-            envelope.initial,
-            envelope.segments,
-            np.array([elapsed], dtype=float),
-        )[0]
-    )
+def _oscillator_block(
+    oscillator: Oscillator,
+    position: float,
+    error: float,
+    frequencies: np.ndarray,
+    gains: np.ndarray,
+    sample_rate: int,
+) -> tuple[np.ndarray, float, float]:
+    # Sum frequency before division, keeping the rounding correction across calls.
+    # This preserves exact boundaries for representable frequency sums, including
+    # integer-frequency square waves that drift when summing frequency / rate.
+    phases = np.empty(len(frequencies))
+    for i, value in enumerate(frequencies):
+        phases[i] = position / sample_rate
+        increment = float(value) - error
+        total = position + increment
+        error = (total - position) - increment
+        position = total % sample_rate
+    return _waveform_angles(oscillator, 2 * np.pi * phases) * gains, position, error
 
 
 def _envelope_values(
-    initial: float, segments: list[Segment], elapsed: np.ndarray
+    initial: float,
+    segments: list[Segment],
+    elapsed: Fraction,
+    frames: int,
+    sample_rate: int,
 ) -> np.ndarray:
-    values = np.full(elapsed.shape, initial, dtype=float)
-    remaining = elapsed.copy()
-    active = np.ones(elapsed.shape, dtype=bool)
+    values = np.full(frames, segments[-1].target)
+    boundary = Fraction(0)
+    entry = initial
     for segment in segments:
-        duration = float(segment.duration)
-        current = active & (remaining < duration)
-        if duration:
-            values[current] += (segment.target - values[current]) * (
-                remaining[current] / duration
-            )
-        completed = active & ~current
-        values[completed] = segment.target
-        remaining[completed] -= duration
-        active = current
+        end = boundary + segment.duration
+        first = max(0, ceil((boundary - elapsed) * sample_rate))
+        last = min(frames, ceil((end - elapsed) * sample_rate))
+        if segment.duration and first < last:
+            progress = float((elapsed - boundary) / segment.duration) + np.arange(
+                first, last
+            ) / float(segment.duration * sample_rate)
+            values[first:last] = entry + (segment.target - entry) * progress
+        boundary, entry = end, segment.target
     return values
 
 
-def _duration(segments: list[Segment]) -> float:
-    return float(sum(segment.duration for segment in segments))
-
-
-def _waveform(oscillator: Oscillator, phase: np.ndarray) -> np.ndarray:
-    return _waveform_angles(oscillator, 2 * np.pi * phase)
-
-
-def waveform_samples(
-    oscillator: Oscillator,
-    start: float | np.ndarray,
-    length: int,
-    period: float | np.ndarray,
-) -> np.ndarray:
-    """Render Tuney's established sample-position oscillator convention."""
-    end = start + length
-    ratio = 2 * np.pi / period
-    return _waveform_angles(
-        oscillator,
-        np.linspace(start * ratio, end * ratio, length, endpoint=False),
-    )
+def _duration(segments: list[Segment]) -> Fraction:
+    return sum((s.duration for s in segments), Fraction(0))
 
 
 def _waveform_angles(oscillator: Oscillator, angles: np.ndarray) -> np.ndarray:
@@ -326,7 +519,5 @@ def _waveform_angles(oscillator: Oscillator, angles: np.ndarray) -> np.ndarray:
     if duty == 1:
         return 2 * phase - 1
     return np.where(
-        phase < duty,
-        2 * phase / duty - 1,
-        (1 + duty - 2 * phase) / (1 - duty),
+        phase < duty, 2 * phase / duty - 1, (1 + duty - 2 * phase) / (1 - duty)
     )

@@ -1,3 +1,6 @@
+import wave
+from pathlib import Path
+
 import numpy as np
 import pytest
 from ufor.envelope import Envelope, Segment
@@ -61,7 +64,9 @@ def score() -> SynthInstrumentScore:
     )
 
 
-def test_offline_synth_renders_one_second_with_explicit_channel_routes() -> None:
+def test_offline_synth_renders_one_second_with_explicit_channel_routes(
+    tmp_path: Path,
+) -> None:
     document = score()
     trace = prepare_trace(
         document.body,
@@ -81,9 +86,13 @@ def test_offline_synth_renders_one_second_with_explicit_channel_routes() -> None
     assert output.shape == (48_000, 2)
     assert output[0, 0] == -1
     assert np.all(output[:, 1] == 0)
+    phase = (np.arange(48000) * 440 / 48000) % 1
+    expected = np.zeros_like(output)
+    expected[:, 0] = np.where(phase < 0.5, 4 * phase - 1, 3 - 4 * phase)
+    check_audio(tmp_path / "triangle.wav", output, expected)
 
 
-def test_offline_synth_is_partition_invariant_and_restorable() -> None:
+def test_offline_synth_is_partition_invariant_and_restorable(tmp_path: Path) -> None:
     document = score()
     trace = prepare_trace(
         document.body,
@@ -115,6 +124,8 @@ def test_offline_synth_is_partition_invariant_and_restorable() -> None:
     )
     np.testing.assert_allclose(np.concatenate([first, second]), whole, atol=0)
     np.testing.assert_allclose(replay, second, atol=0)
+    check_audio(tmp_path / "partition.wav", np.concatenate([first, second]), whole)
+    check_audio(tmp_path / "restored.wav", np.concatenate([first, replay]), whole)
 
 
 def test_offline_synth_requires_resolved_pitch() -> None:
@@ -128,7 +139,9 @@ def test_offline_synth_requires_resolved_pitch() -> None:
         OfflineSynth(prepare(document)).advance(trace.actions, 0, 1)
 
 
-def test_offline_synth_defers_release_until_the_voice_minimum_hold() -> None:
+def test_offline_synth_defers_release_until_the_voice_minimum_hold(
+    tmp_path: Path,
+) -> None:
     document = score()
     voice = document.body.voices[0].model_copy(
         update={
@@ -157,14 +170,25 @@ def test_offline_synth_defers_release_until_the_voice_minimum_hold() -> None:
         seed=42,
     )
     renderer = OfflineSynth(prepare(document))
-    renderer.advance(trace.actions, 0, 48_000)
+    first = renderer.advance(trace.actions, 0, 48_000)
     snapshot = renderer.snapshot()
     assert snapshot.voices[0].release_frame == 48_000
-    renderer.advance([], 48_000, 96_000)
+    second = renderer.advance([], 48_000, 96_000)
     assert renderer.snapshot().voices == []
+    frames = np.arange(96000)
+    phase = frames * 440 / 48000 % 1
+    expected = np.zeros((96000, 2))
+    expected[:, 0] = np.where(phase < 0.5, 4 * phase - 1, 3 - 4 * phase) * np.where(
+        frames < 48000, frames / 48000, 2 - frames / 48000
+    )
+    check_audio(
+        tmp_path / "minimum-hold.wav", np.concatenate([first, second]), expected
+    )
 
 
-def test_offline_synth_can_use_transport_synchronized_offset_pitch() -> None:
+def test_offline_synth_can_use_transport_synchronized_offset_pitch(
+    tmp_path: Path,
+) -> None:
     document = score()
     voice = document.body.voices[0].model_copy(
         update={"frequency_offset_hz": 1, "synchronize_oscillator": True}
@@ -185,11 +209,36 @@ def test_offline_synth_can_use_transport_synchronized_offset_pitch() -> None:
         ],
         seed=42,
     )
-    output = OfflineSynth(prepare(document)).advance(trace.actions, 0, 2)
+    output = OfflineSynth(prepare(document)).advance(trace.actions, 0, 48000)
     assert output[1, 0] == pytest.approx(-1 + 4 * 441 / 48_000)
+    phase = np.arange(48000) * 441 / 48000 % 1
+    expected = np.zeros_like(output)
+    expected[1:, 0] = np.where(phase[1:] < 0.5, 4 * phase[1:] - 1, 3 - 4 * phase[1:])
+    check_audio(tmp_path / "synchronized.wav", output, expected)
 
 
-def test_waveform_samples_uses_tuneys_start_length_and_period_convention() -> None:
+def test_waveform_samples_uses_tuneys_start_length_and_period_convention(
+    tmp_path: Path,
+) -> None:
     oscillator = score().body.voices[0].oscillator
     actual = waveform_samples(oscillator, start=2, length=4, period=8)
     np.testing.assert_allclose(actual, [0, 0.5, 1, 0.5], atol=0)
+    actual = waveform_samples(oscillator, start=2, length=48000, period=8)[:, None]
+    expected = np.tile([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5], 6000)[:, None]
+    check_audio(tmp_path / "waveform-buffer.wav", actual, expected)
+
+
+def check_audio(path: Path, actual: np.ndarray, expected: np.ndarray) -> None:
+    """Keep one-second WAV regressions and compare before PCM quantization."""
+    assert actual.shape == expected.shape
+    assert actual.shape[0] >= 48000
+    assert actual.dtype == np.float64
+    assert np.all(np.isfinite(actual))
+    peak = max(1.0, float(np.max(np.abs(actual))), float(np.max(np.abs(expected))))
+    for name, values in (("actual", actual), ("expected", expected)):
+        with wave.open(str(path.with_stem(f"{path.stem}-{name}")), "wb") as output:
+            output.setnchannels(values.shape[1])
+            output.setsampwidth(4)
+            output.setframerate(48000)
+            output.writeframes((values / peak * (2**31 - 1)).astype("<i4").tobytes())
+    np.testing.assert_allclose(actual, expected, atol=1e-10, rtol=1e-9)
