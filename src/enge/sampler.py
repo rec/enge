@@ -10,8 +10,9 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from ufor.base import Model
 from ufor.samples.enums import Direction, LoopMode, PlaybackMode
 from ufor.samples.playback import Playback, Slice
+from ufor.samples.processing import ResonantFilter
 
-from . import synth
+from . import filters, synth
 from .synth import EngineError
 
 if TYPE_CHECKING:
@@ -104,9 +105,11 @@ class PreparedSampleVoice(synth.PreparedEnvelope, frozen=True):
     routes: list[list[float]] = Field(min_length=1)
     pitch_ratio: float = Field(default=1, gt=0)
     gain: float = 1
+    filters: list[ResonantFilter] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def channel_routes(self) -> Self:
+        filters.parameters(self.filters, self.sample_rate, 1)
         if not self.routes[0] or any(
             len(r) != len(self.routes[0]) for r in self.routes
         ):
@@ -119,6 +122,7 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
 
     definition: PreparedSampleVoice
     source: SampleState
+    filter_states: list[filters.FilterState] = Field(default_factory=list)
     backend: Literal["numpy", "native"] = "numpy"
 
     @classmethod
@@ -136,7 +140,12 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
         if len(definition.routes) != sample.samples.shape[1]:
             raise EngineError("Sample routes must map every source channel")
         return cls(
-            definition=definition, source=SampleState.start(sample), backend=backend
+            definition=definition,
+            source=SampleState.start(sample),
+            backend=backend,
+            filter_states=filters.initial_states(
+                definition.filters, sample.samples.shape[1]
+            ),
         )
 
     @property
@@ -172,17 +181,26 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
         frames: int,
         pitch_ratios: np.ndarray | None = None,
         gains: np.ndarray | None = None,
+        filter_parameters: np.ndarray | None = None,
     ) -> np.ndarray:
         """Render source channels through the voice envelope and explicit routes.
 
         Restore serialized voices with the same immutable prepared source. Pitch
         arrays replace the prepared ratio; gain arrays multiply prepared gain.
+        Filter parameters have shape (active frames, filters, 2): cutoff Hz, Q.
         """
         count = self.active_frames(frames)
+        values = filters.parameters(
+            self.definition.filters,
+            self.definition.sample_rate,
+            count,
+            None if filter_parameters is None else filter_parameters[:count],
+            self.frame_count,
+        )
         if count and self.backend == "native":
             from . import native, native_sample
 
-            output, self.source = native_sample.render(
+            output, self.source, memory = native_sample.render(
                 sample,
                 self.source,
                 pitch_steps(
@@ -205,7 +223,11 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
                 ),
                 np.asarray(self.definition.routes, dtype=np.float64),
                 frames,
+                filters.native_inputs(
+                    self.definition.filters, self.filter_states, values
+                ),
             )
+            self.filter_states = filters.restored_states(memory)
             self.frame_count += frames
             return output
         output = np.zeros((frames, len(self.definition.routes[0])))
@@ -218,6 +240,21 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
                 else pitch_ratios[:count],
                 self.release_frame,
             )
+            if self.definition.filters:
+                active = (
+                    count
+                    if self.source.exhaustion_frame is None
+                    else max(
+                        0, min(count, self.source.exhaustion_frame - self.frame_count)
+                    )
+                )
+                audio[:active], self.filter_states = filters.filter_samples(
+                    self.definition.filters,
+                    self.filter_states,
+                    audio[:active],
+                    values[:active],
+                    self.definition.sample_rate,
+                )
             amplitude = (
                 synth.envelope_samples(
                     self.definition.envelope,
@@ -256,7 +293,7 @@ def sample_frames(
         from . import native_sample
 
         count = len(steps)
-        return native_sample.render(
+        audio, state, _ = native_sample.render(
             definition,
             state,
             steps,
@@ -267,6 +304,7 @@ def sample_frames(
             np.eye(definition.samples.shape[1]),
             count,
         )
+        return audio, state
     if backend != "numpy":
         raise EngineError(f"Unknown sampler backend: {backend}")
 

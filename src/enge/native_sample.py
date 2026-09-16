@@ -18,7 +18,8 @@ def render(
     spans: np.ndarray,
     routes: np.ndarray,
     frames: int,
-) -> tuple[np.ndarray, sampler.SampleState]:
+    filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
+) -> tuple[np.ndarray, sampler.SampleState, np.ndarray]:
     from . import _native
 
     release = None
@@ -37,7 +38,7 @@ def render(
         )
     selection = definition.slice
     loop = selection.loop
-    audio, values = _native.render_sample(
+    audio, values, filter_states = _native.render_sample(
         definition.native_buffer,
         (
             selection.start_frame,
@@ -71,16 +72,21 @@ def render(
         spans,
         np.ascontiguousarray(routes, dtype=np.float64),
         frames,
+        filters,
     )
     index, position, error, direction, looping, overlap, released, exhaustion = values
-    return audio, sampler.SampleState(
-        frame=state.frame + len(steps),
-        index=index,
-        position=position,
-        error=error,
-        direction=direction,
-        looping=looping,
-        overlap=overlap,
-        released=released,
-        exhaustion_frame=exhaustion,
+    return (
+        audio,
+        sampler.SampleState(
+            frame=state.frame + len(steps),
+            index=index,
+            position=position,
+            error=error,
+            direction=direction,
+            looping=looping,
+            overlap=overlap,
+            released=released,
+            exhaustion_frame=exhaustion,
+        ),
+        filter_states,
     )

@@ -55,7 +55,7 @@ disable Python DSP to prevent a fallback. Modulated sample voices still resolve
 controls one frame at a time so evaluation stops at source exhaustion. This API
 allocates per call and does not establish live callback deadline guarantees.
 
-Named seconds-clock LFOs now drive amplitude and tuning in both instruments.
+Named seconds-clock LFOs drive amplitude, tuning, and filters in both instruments.
 They support sine, square, and triangle shapes, delay/fade-in, and voice, part,
 or instrument ownership as allowed by uFor. Shared sources continue through
 silence, and snapshots retain their exact phase anchors. Standalone
@@ -63,7 +63,15 @@ silence, and snapshots retain their exact phase anchors. Standalone
 Prepared instrument traces do not yet carry addressed LFO events; their LFO
 rates remain authored settings. See the [LFO contract](plan/lfo-numerics.md).
 
-Decoding remains with the caller. Curved envelopes, named envelopes, filters,
+Both backends render ordered lowpass, highpass, bandpass, and notch filters with
+one or two stages. Cutoff and Q follow per-sample control/LFO routes. Each source
+channel owns trapezoidal integrator state, preserved through parameter changes
+and snapshots. Filters run before the amplitude envelope and routing; sampler
+slot/group filters precede instrument filters. Voice completion discards their
+state without adding a tail. See the revised [uFor filter contract](../ufor/doc/instrument-format.md#resonant-filters)
+and [enge's realization](plan/engine-execution.md#dynamic-filters).
+
+Decoding remains with the caller. Curved envelopes, named envelopes, equalizers,
 layer crossfades, delayed or offset sample starts, event bindings, other
 modulation targets, and fade
 retirements fail explicitly. The PyTorch backend is not yet implemented.
@@ -74,8 +82,8 @@ there is no fallback if the native extension is unavailable. Active-voice snapsh
 retain their backend and restore only into that backend. Tuney continues to use
 the default NumPy renderer.
 
-Rust computes oscillator phase, waveforms, linear-envelope samples, gain, and
-channel mixing. Python resolves uFor actions, control values, and exact rational
+Rust computes oscillator phase, waveforms, filter coefficients/state, envelope
+samples, gain, and channel mixing. Python resolves uFor actions, control values, and exact rational
 envelope boundaries before the call. The Rust kernel owns its working buffers,
 releases the GIL during rendering, and returns new audio and state arrays without
 mutating its inputs. It contains no Python callbacks or `unsafe` code. Copying
@@ -112,3 +120,9 @@ with a sine synth on the left and a sampled harmonic tone on the right. Both
 receive a live gain change. Listen to `.pytest_cache/d/audio/lfo-demo-numpy.flac`
 or `.pytest_cache/d/audio/lfo-demo-native.flac`; the test compares independent
 audio oracles and verifies lossless encoding before publishing either file.
+
+Run `uv run pytest test/test_filter_demo.py` for a two-second cutoff sweep with
+LFO-modulated resonance: triangle synth on the left, sampled harmonics on the
+right. The test checks an independent matrix-equation oracle before publishing
+`.pytest_cache/d/audio/filter-demo-numpy.flac` and
+`.pytest_cache/d/audio/filter-demo-native.flac`.

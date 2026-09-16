@@ -2,6 +2,11 @@ from typing import Literal
 
 import numpy as np
 
+def render_filters(
+    samples: np.ndarray,
+    rate: float,
+    filters: tuple[list[int], np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]: ...
 def render_lfo(
     waveform: int, phases: np.ndarray, envelope: np.ndarray, frames: int
 ) -> np.ndarray: ...
@@ -16,7 +21,8 @@ def render(
     envelope: np.ndarray,
     routes: np.ndarray,
     frames: int,
-) -> tuple[np.ndarray, np.ndarray]: ...
+    filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
 
 class SampleBuffer:
     def __init__(self, samples: np.ndarray) -> None: ...
@@ -38,4 +44,5 @@ def render_sample(
     envelope: np.ndarray,
     routes: np.ndarray,
     frames: int,
-) -> tuple[np.ndarray, SampleState]: ...
+    filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
+) -> tuple[np.ndarray, SampleState, np.ndarray]: ...

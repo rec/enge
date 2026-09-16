@@ -10,7 +10,7 @@ from ufor.base import Model
 from ufor.samples import instrument, playback, processing, trace
 from ufor.streams import AudioType
 
-from . import sampler, synth
+from . import filters, sampler, synth
 
 
 class PreparedSampler(Model, frozen=True):
@@ -76,6 +76,7 @@ def prepare(
         digests[name] = sha256(decoded[name].tobytes()).hexdigest()
 
     _validate_settings(score.body.settings)
+    filters.parameters(score.body.settings.processing.filters, sample_rate, 1)
     samples: dict[str, sampler.PreparedSample] = {}
     settings: dict[str, processing.SoundSettings] = {}
     for slot in score.body.slots:
@@ -83,6 +84,7 @@ def prepare(
             slot, groups.get(slot.group) if slot.group is not None else None
         )
         _validate_settings(settings[slot.name])
+        filters.parameters(settings[slot.name].processing.filters, sample_rate, 1)
         if slot.crossfades:
             raise synth.EngineError("Sample layer crossfades are not implemented")
         if (
@@ -252,6 +254,7 @@ class OfflineSampler:
                     sample_rate=self.definition.sample_rate,
                     slice=sample.slice,
                     envelope=envelope,
+                    filters=[*settings.processing.filters, *common.processing.filters],
                     pitch_ratio=playback.pitch_ratio(
                         slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
                     ),
@@ -301,10 +304,10 @@ class OfflineSampler:
                 if voice.renderer.complete:
                     break
                 size = min(span, count - offset)
-                tuning, gains = self.controls.parameters(
+                tuning, gains, common_filters = self.controls.parameters(
                     common, voice.instrument_sources, start + offset, size
                 )
-                slot_tuning, slot_gains = self.controls.parameters(
+                slot_tuning, slot_gains, slot_filters = self.controls.parameters(
                     settings, voice.slot_sources, start + offset, size
                 )
                 ratios = voice.renderer.definition.pitch_ratio * np.exp2(
@@ -315,6 +318,7 @@ class OfflineSampler:
                     size,
                     ratios,
                     gains * slot_gains,
+                    np.concatenate((slot_filters, common_filters), axis=1),
                 )
             if voice.renderer.complete:
                 del self.voices[voice.voice_id]
@@ -327,14 +331,10 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
     if settings.processing != processing.Processing(
         volume_db=settings.processing.volume_db,
         tuning_cents=settings.processing.tuning_cents,
+        filters=settings.processing.filters,
     ):
         raise synth.EngineError(
-            "Only sample volume and tuning processing are implemented"
+            "Only sample volume, tuning, and filter processing are implemented"
         )
     synth.validate_generators(settings)
-    if any(
-        p.target.name != "processing"
-        or p.target.parameter not in ("amplitude", "tuning_cents")
-        for p in settings.modulation.parameters
-    ):
-        raise synth.EngineError("Only amplitude and tuning modulation are implemented")
+    synth.validate_modulation(settings)

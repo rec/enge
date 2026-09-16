@@ -436,13 +436,13 @@ def test_unpitched_samples_inherit_direction_without_inventing_pitch(
     assert renderer.snapshot().voices == []
 
 
-def test_preparation_rejects_filters_before_rendering() -> None:
+def test_preparation_rejects_invalid_filter_bounds_before_rendering() -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
     raw["body"]["settings"]["processing"]["filters"] = [
-        {"name": "low", "response": "lowpass", "cutoff_hz": 1000}
+        {"name": "low", "response": "lowpass", "cutoff_hz": 24000}
     ]
     document = instrument.SampleInstrumentScore.model_validate(raw)
-    with pytest.raises(EngineError, match="Only sample volume and tuning"):
+    with pytest.raises(ValueError, match="Filter low: invalid cutoff"):
         sample_instrument.prepare(document, {"asset": np.ones((4, 2))})
 
 

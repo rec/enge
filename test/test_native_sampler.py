@@ -9,8 +9,9 @@ from test_synth import check_audio
 from ufor.envelope import Envelope, Segment
 from ufor.samples.enums import Direction
 from ufor.samples.playback import Loop, Playback, Slice
+from ufor.samples.processing import ResonantFilter
 
-from enge import _native, sample_instrument, sampler, synth
+from enge import _native, filters, sample_instrument, sampler, synth
 
 
 @pytest.mark.parametrize("direction", list(Direction))
@@ -39,6 +40,7 @@ def test_native_sample_voice_matches_reference_without_python_dsp(
         slice=sample.slice,
         routes=[[1, -0.5, 0], [0.25, 0.75, 0]],
         gain=1.3,
+        filters=[ResonantFilter(name="tone", response="notch", cutoff_hz=500, q=2)],
         minimum_hold_seconds=Fraction(48005, 192000),
         envelope=Envelope(
             initial=0.2,
@@ -73,6 +75,7 @@ def test_native_sample_voice_matches_reference_without_python_dsp(
         pytest.fail("Native sample rendering called Python DSP or recopied its asset")
 
     monkeypatch.setattr(sampler, "sample_frames", forbidden)
+    monkeypatch.setattr(filters, "filter_samples", forbidden)
     monkeypatch.setattr(_native, "SampleBuffer", forbidden)
     for name in ("envelope_samples", "route_samples"):
         monkeypatch.setattr(synth, name, forbidden)
@@ -111,7 +114,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
     buffer = _native.SampleBuffer(source)
     original[:] = -1
     origin = 2**53 + 125
-    actual, state = _native.render_sample(
+    actual, state, _ = _native.render_sample(
         buffer,
         (0, 48000, False, None),
         (0, 0, 0, 1, False, False, False, None),
@@ -127,7 +130,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
     )
     check_audio(tmp_path / "owned-sample.wav", actual, expected)
     assert state == (48000, 0, 0, 1, False, False, True, None)
-    tail, ended = _native.render_sample(
+    tail, ended, _ = _native.render_sample(
         buffer,
         (0, 48000, False, None),
         state,

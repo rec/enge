@@ -22,8 +22,8 @@ synth reference: held linear envelopes, explicit routes, minimum hold, phase
 synchronization, static tuning, and live amplitude/tuning control routes. It
 consumes uFor trigger contexts, retains scoped smoothing trajectories, and
 restores them with voice state. Named seconds-clock LFOs now drive the same
-amplitude/tuning routes; other targets, named envelopes, and filters remain
-unimplemented. The Rust backend realizes
+amplitude/tuning routes. Both backends now implement dynamic resonant filters;
+named envelopes and other targets remain unimplemented. The Rust backend realizes
 the same numerical synth profile through explicit `backend="native"` selection;
 `"numpy"` remains the default. PyTorch compilation remains future work.
 Existing waveform start/length/period behavior remains a regression requirement
@@ -241,7 +241,8 @@ is still distinct from another voice's source, even when both use one template.
 | Envelope durations derived from key/velocity | Latched at onset, following the existing uFor contract. |
 | Envelope structure, waveform shape/duty, sample identity, slice/loop bounds, direction, output layout, routing topology | Fixed for the prepared voice definition; no active-voice mutation API in this profile. |
 | LFOs | Seconds-clock value/weight realization is implemented; addressed instrument rate/reset actions remain a future uFor extension. |
-| Filters, richer automation, and structural transitions | Separate declared extensions with their own dynamic conformance cases before support is enabled. |
+| Filter cutoff and Q | Live per-sample control/LFO values, with retained trapezoidal integrator state. Response, stage count, and list order stay fixed. |
+| Richer automation and structural transitions | Separate declared extensions with their own dynamic conformance cases before support is enabled. |
 
 This is an initial support boundary, not a claim that structural edits can never
 be supported. Such edits need explicit state transfer or crossfade semantics.
@@ -323,11 +324,37 @@ The sample profile must specify whether exhaustion or envelope completion ends
 each traversal, using uFor's playback-mode rules. No amplitude threshold may
 silently terminate a voice or discard a nonzero authored tail.
 
-Future dynamic filters must preserve their declared delay state when parameters
-change and define when coefficients are calculated and installed. Existing uFor
-RBJ coefficient equations alone do not settle time-varying stability or transition
-behavior. Coefficient interpolation, resets, or control-rate approximations need
-their own contract and rapidly changing-parameter cases before acceptance.
+### Dynamic filters
+
+Implemented under the revised [uFor filter contract](../../ufor/doc/instrument-format.md#resonant-filters),
+uFor commit `1239e45`. The static RBJ transfer functions remain the reference for
+frequency response. The former direct-form II transposed recurrence is replaced
+by the specified trapezoidal state-variable recurrence for both constant and
+changing parameters. There is one realization per backend, with no legacy path.
+
+`src/enge/filters.py` supplies the NumPy reference and shared parameter validation;
+`src/filters.rs` computes coefficients and advances filter state inside the native
+synth/sample kernels. Each voice has two integrators per stage per source channel.
+Values have shape `(active frames, filters, 2)`, with cutoff in Hz then Q. Resolve
+modulation before checking the filter's authored clamp/error bounds. At a sample,
+install its values and retain both integrators without extra smoothing or reset.
+The kernels reject non-finite output/state; they do not clip audio.
+
+Filters run in list order before amplitude, gain, and routing. Sample effective
+slot/group filters precede instrument filters, whose local parameter namespaces
+remain distinct even when names match. All states are voice-owned and captured
+in snapshots. Release keeps the existing lifetime; source exhaustion, envelope
+completion, or stop discards filter state. Modulated samplers still resolve only
+one active frame at a time, so parameters after exhaustion cannot cause errors.
+
+Acceptance tests compare all four responses and one/two stages against uFor's
+independent RBJ transfer functions. Dynamic cases use a coupled matrix solve,
+alternate cutoff between 1 kHz and 20 kHz, change Q per sample, check zero-input
+state decay, cover 64/128/256/1024/997-frame partitions and JSON restoration, and
+exercise independent voices/channels, control ramps, LFOs, and sample exhaustion.
+The two-second FLAC demo has independent audio expectations and lossless encoding
+verification. These are numerical conformance checks, not live deadline or
+alias-free modulation guarantees. Named envelopes remain the next discussion.
 
 ## Snapshots and restoration
 
@@ -530,7 +557,11 @@ Implementation status and remaining order:
    The standalone source API accepts canonical LFO event states; prepared
    instrument traces still need a portable addressed rate/reset action before
    those events can be delivered through `advance`. See [details](lfo-numerics.md).
-6. Further generators, processing, and structural changes one specified feature
+6. Dynamic filters are implemented in NumPy and Rust under the revised uFor
+   contract. Cutoff/Q controls and LFOs preserve independent stage/channel states;
+   static responses, rapid modulation, boundaries, lifetime, restores, and a
+   listening demo have shared coverage. See [dynamic filters](#dynamic-filters).
+7. Further generators, processing, and structural changes one specified feature
    at a time. Do not introduce a generic DSP graph or host to complete these steps.
 
 ### Phase consolidation timing check, 2026-09-16

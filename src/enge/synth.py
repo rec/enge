@@ -19,7 +19,7 @@ from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, freque
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
-from . import native
+from . import filters, native
 from .lfo import lfo_samples
 
 
@@ -127,9 +127,11 @@ class PreparedVoice(PreparedEnvelope, frozen=True):
     frequencies: list[float] = Field(min_length=1)
     routes: list[list[float]] = Field(min_length=1)
     gain: float = 1
+    filters: list[processing.ResonantFilter] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def rendering_profile(self) -> Self:
+        filters.parameters(self.filters, self.sample_rate, 1)
         if len(self.routes) != len(self.frequencies) or not self.routes[0]:
             raise EngineError(
                 "Voice routes must map each oscillator to output channels"
@@ -144,6 +146,7 @@ class VoiceRenderer(EnvelopeRenderer):
 
     definition: PreparedVoice
     oscillators: list[OscillatorState]
+    filter_states: list[filters.FilterState] = Field(default_factory=list)
     backend: Literal["numpy", "native"] = "numpy"
 
     @classmethod
@@ -156,6 +159,9 @@ class VoiceRenderer(EnvelopeRenderer):
         return cls(
             definition=definition,
             backend=backend,
+            filter_states=filters.initial_states(
+                definition.filters, len(definition.frequencies)
+            ),
             oscillators=[
                 OscillatorState.at_frame(phase_origin, f, definition.sample_rate)
                 for f in definition.frequencies
@@ -167,17 +173,26 @@ class VoiceRenderer(EnvelopeRenderer):
         frames: int,
         frequencies: np.ndarray | None = None,
         gains: np.ndarray | None = None,
+        filter_parameters: np.ndarray | None = None,
     ) -> np.ndarray:
         """Render (frames, channels), padding completed tails with exact silence.
 
         Optional frequencies have shape (active frames, oscillators); gains have
         shape (active frames,). They replace pitch and multiply prepared gain.
+        Filter parameters have shape (active frames, filters, 2): cutoff Hz, Q.
         """
         count = self.active_frames(frames)
         definition = self.definition
+        values = filters.parameters(
+            definition.filters,
+            definition.sample_rate,
+            count,
+            None if filter_parameters is None else filter_parameters[:count],
+            self.frame_count,
+        )
         if count and self.backend == "native":
             states = np.array([[s.position, s.error] for s in self.oscillators])
-            output, states = native.render(
+            output, states, memory = native.render(
                 definition.oscillator,
                 states,
                 np.tile(definition.frequencies, (count, 1))
@@ -195,7 +210,9 @@ class VoiceRenderer(EnvelopeRenderer):
                 ),
                 definition.routes,
                 frames,
+                filters.native_inputs(definition.filters, self.filter_states, values),
             )
+            self.filter_states = filters.restored_states(memory)
             self.oscillators = [
                 OscillatorState(position=s[0], error=s[1]) for s in states
             ]
@@ -224,6 +241,14 @@ class VoiceRenderer(EnvelopeRenderer):
             if gains is not None:
                 amplitude *= gains[:count]
             samples = waves[0][:, None] if len(waves) == 1 else np.column_stack(waves)
+            if definition.filters:
+                samples, self.filter_states = filters.filter_samples(
+                    definition.filters,
+                    self.filter_states,
+                    samples,
+                    values,
+                    definition.sample_rate,
+                )
             output = route_samples(samples, definition.routes)
             output *= amplitude[:, None]
         else:
@@ -262,6 +287,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
     timebase = next(t for t in score.timebases if t.name == output.timebase)
     for voice in score.body.voices:
         _validate_voice(voice)
+        filters.parameters(voice.processing.filters, _sample_rate(timebase), 1)
     return PreparedSynth(
         sample_rate=_sample_rate(timebase),
         channels=output.channels,
@@ -440,9 +466,18 @@ class ControlRenderer:
 
     def parameters(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         tuning = np.full(frames, settings.processing.tuning_cents, dtype=np.float64)
         gains = np.ones(frames)
+        filter_values = np.tile(
+            np.array([[f.cutoff_hz, f.q] for f in settings.processing.filters]).reshape(
+                -1, 2
+            ),
+            (frames, 1, 1),
+        )
+        filter_indices = {
+            f"filter-{f.name}": i for i, f in enumerate(settings.processing.filters)
+        }
         ramps: dict[str, controls.ControlState] = {}
         signals: dict[str, np.ndarray] = {}
         rendered: dict[int, np.ndarray] = {}
@@ -483,11 +518,27 @@ class ControlRenderer:
                     },
                 )
                 for value in values:
-                    if value.target.parameter == "amplitude":
+                    if value.target.name in filter_indices:
+                        filter_values[
+                            i,
+                            filter_indices[value.target.name],
+                            0 if value.target.parameter == "cutoff_hz" else 1,
+                        ] = value.value
+                    elif value.target.parameter == "amplitude":
                         gains[i] = value.value
                     else:
                         tuning[i] = value.value
-        return tuning, gains
+        return (
+            tuning,
+            gains,
+            filters.parameters(
+                settings.processing.filters,
+                self.sample_rate,
+                frames,
+                filter_values,
+                start,
+            ),
+        )
 
 
 class OfflineSynth:
@@ -593,6 +644,7 @@ class OfflineSynth:
                     envelope=template.envelope,
                     frequencies=[action.pitch_hz],
                     gain=template.oscillator.gain(action.key),
+                    filters=template.processing.filters,
                     minimum_hold_seconds=template.minimum_hold_seconds,
                     routes=[
                         [
@@ -610,9 +662,11 @@ class OfflineSynth:
 
     def _parameters(
         self, voice: VoiceSnapshot, start: int, frames: int
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         template = self.templates[voice.template]
-        tuning, gains = self.controls.parameters(template, voice.sources, start, frames)
+        tuning, gains, filter_values = self.controls.parameters(
+            template, voice.sources, start, frames
+        )
         frequencies = np.array(
             [frequency(voice.frequency_hz, float(c)) for c in tuning]
         )
@@ -620,14 +674,16 @@ class OfflineSynth:
             raise EngineError(
                 f"Invalid frequency for {voice.voice_id} at frame {start}"
             )
-        return frequencies, gains
+        return frequencies, gains, filter_values
 
     def _render(self, start: int, frames: int) -> np.ndarray:
         output = np.zeros((frames, len(self.definition.channels)), dtype=np.float64)
         for voice in list(self.voices.values()):
             count = voice.renderer.active_frames(frames)
-            frequencies, gains = self._parameters(voice, start, count)
-            output += voice.renderer.render(frames, frequencies[:, None], gains)
+            frequencies, gains, filter_values = self._parameters(voice, start, count)
+            output += voice.renderer.render(
+                frames, frequencies[:, None], gains, filter_values
+            )
             if voice.renderer.complete:
                 del self.voices[voice.voice_id]
         return output
@@ -690,7 +746,7 @@ def oscillator_samples(
     if backend == "native":
         states = np.array([[state.position, state.error]])
         frames = len(frequencies)
-        output, states = native.render(
+        output, states, _ = native.render(
             oscillator,
             states,
             frequencies[:, None],
@@ -785,6 +841,24 @@ def validate_generators(settings: SoundSettings) -> None:
         raise EngineError("Only control and LFO bindings are implemented")
 
 
+def validate_modulation(settings: SoundSettings) -> None:
+    """Accept only targets realized by the common voice processing path."""
+    targets = {f"filter-{f.name}" for f in settings.processing.filters}
+    if any(
+        not (
+            (
+                p.target.name == "processing"
+                and p.target.parameter in ("amplitude", "tuning_cents")
+            )
+            or (p.target.name in targets and p.target.parameter in ("cutoff_hz", "q"))
+        )
+        for p in settings.modulation.parameters
+    ):
+        raise EngineError(
+            "Only amplitude, tuning, and filter modulation are implemented"
+        )
+
+
 def _sample_rate(timebase: Timebase) -> int:
     if timebase.rate.denominator != 1:
         raise EngineError(
@@ -795,17 +869,14 @@ def _sample_rate(timebase: Timebase) -> int:
 
 def _validate_voice(voice: SynthVoice) -> None:
     validate_envelope(voice.envelope)
-    if voice.processing != Processing(tuning_cents=voice.processing.tuning_cents):
-        raise EngineError("Only tuning processing is implemented")
+    if voice.processing != Processing(
+        tuning_cents=voice.processing.tuning_cents, filters=voice.processing.filters
+    ):
+        raise EngineError("Only tuning and filter processing are implemented")
     validate_generators(voice)
     if any(c.mode == "fade" for c in voice.chokes):
         raise EngineError("Fade retirement is not implemented")
-    if any(
-        p.target.name != "processing"
-        or p.target.parameter not in ("amplitude", "tuning_cents")
-        for p in voice.modulation.parameters
-    ):
-        raise EngineError("Only amplitude and tuning modulation are implemented")
+    validate_modulation(voice)
 
 
 def _envelope_values(

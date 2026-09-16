@@ -1,6 +1,8 @@
 //! Sample traversal uses pending boundary choices, exactly as the reference does.
 use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{
+    IntoPyArray, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -8,7 +10,7 @@ use std::sync::Arc;
 // Integers stay integers across the binding, including frames beyond 2**53.
 type State = (i64, f64, f64, i64, bool, bool, bool, Option<i64>);
 type Selection = (i64, i64, bool, Option<(i64, i64, i64, bool)>);
-type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State);
+type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
 
 #[pyclass(frozen)]
 pub struct SampleBuffer {
@@ -200,6 +202,7 @@ impl Cursor {
 }
 
 #[pyfunction]
+#[pyo3(signature = (buffer, selection, state, frame, rate, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn render_sample<'py>(
     py: Python<'py>,
@@ -215,6 +218,7 @@ pub fn render_sample<'py>(
     envelope: PyReadonlyArray2<'py, f64>,
     routes: PyReadonlyArray2<'py, f64>,
     frames: usize,
+    filters: Option<super::filters::Inputs<'py>>,
 ) -> PyResult<RenderedSample<'py>> {
     let count = steps.len();
     let channels = routes.shape()[1];
@@ -297,7 +301,8 @@ pub fn render_sample<'py>(
     let gains = gains.as_slice()?.to_vec();
     let routes = routes.as_slice()?.to_vec();
     let audio = Arc::clone(&buffer.audio);
-    let (output, state) = py.detach(move || {
+    let mut filters = super::filters::FilterBank::new(filters, rate, count, audio.ncols())?;
+    let (output, state, filter_states) = py.detach(move || -> PyResult<_> {
         let amplitude = super::envelope_amplitudes(&envelope, count);
         let mut cursor = initial;
         let mut output = Array2::zeros((frames, channels));
@@ -334,6 +339,7 @@ pub fn render_sample<'py>(
                     first + (cursor.position / rate) * (last - first)
                 };
             }
+            filters.process(i, &mut sources)?;
             for c in 0..channels {
                 let mut mixed = 0.0;
                 for (s, source) in sources.iter().enumerate() {
@@ -352,7 +358,7 @@ pub fn render_sample<'py>(
                 cursor.advance(step, current + 1);
             }
         }
-        (
+        Ok((
             output,
             (
                 cursor.index,
@@ -364,7 +370,12 @@ pub fn render_sample<'py>(
                 cursor.released,
                 cursor.exhausted,
             ),
-        )
-    });
-    Ok((output.into_pyarray(py), state))
+            filters.states,
+        ))
+    })?;
+    Ok((
+        output.into_pyarray(py),
+        state,
+        filter_states.into_pyarray(py),
+    ))
 }

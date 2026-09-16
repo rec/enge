@@ -8,9 +8,10 @@ from test_dynamic_synth import dynamic_score, onset
 from test_synth import check_audio
 from ufor.envelope import Envelope, Segment
 from ufor.oscillator import Oscillator, Waveform
+from ufor.samples.processing import ResonantFilter
 from ufor.synth_trace import prepare
 
-from enge import native, synth
+from enge import filters, native, synth
 
 
 @pytest.mark.parametrize(
@@ -43,6 +44,11 @@ def test_native_matches_reference_without_python_dsp(
         frequencies=[100.25, 200.5],
         routes=[[1, -0.5, 0], [0.25, 0.75, 0]],
         gain=1.3,
+        filters=[
+            ResonantFilter(
+                name="tone", response="lowpass", cutoff_hz=700, q=2, stages=2
+            )
+        ],
         minimum_hold_seconds=Fraction(8001, 32000),
     )
     reference = synth.VoiceRenderer.start(definition, phase_origin=2**53 + 125)
@@ -62,6 +68,7 @@ def test_native_matches_reference_without_python_dsp(
 
     for name in ("oscillator_samples", "envelope_samples", "route_samples"):
         monkeypatch.setattr(synth, name, forbidden)
+    monkeypatch.setattr(filters, "filter_samples", forbidden)
     chunks: list[np.ndarray] = []
     for start, end in pairwise([0, 120, 12001, 12002, 18002, 24002, 48000]):
         chunks.append(
@@ -111,7 +118,7 @@ def test_native_returns_owned_audio_and_state_from_readonly_inputs(
     frequencies = np.full((48000, 1), 100.25)
     gains = np.ones(48000)
     spans = np.array([[0, 48000, 1, 0, 0, 1, 0]], dtype=np.float64)
-    actual, next_states = native.render(
+    actual, next_states, _ = native.render(
         Oscillator(waveform=Waveform.sine),
         states,
         frequencies,

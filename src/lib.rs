@@ -1,15 +1,22 @@
 #![forbid(unsafe_code)]
 
+mod filters;
 mod lfo;
 mod sampler;
 
 use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{
+    IntoPyArray, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
 
-type RenderedBlock<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>);
+type RenderedBlock<'py> = (
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray3<f64>>,
+);
 
 fn envelope_spans(envelope: PyReadonlyArray2<'_, f64>, count: usize) -> PyResult<Vec<f64>> {
     if envelope.shape()[1] != 7 || !envelope.is_c_contiguous() {
@@ -51,6 +58,7 @@ fn envelope_amplitudes(spans: &[f64], count: usize) -> Vec<f64> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (waveform, duty, rate, prepared_gain, frequencies, states, gains, envelope, routes, frames, filters=None))]
 #[allow(clippy::too_many_arguments)]
 fn render<'py>(
     py: Python<'py>,
@@ -64,6 +72,7 @@ fn render<'py>(
     envelope: PyReadonlyArray2<'py, f64>,
     routes: PyReadonlyArray2<'py, f64>,
     frames: usize,
+    filters: Option<filters::Inputs<'py>>,
 ) -> PyResult<RenderedBlock<'py>> {
     let count = frequencies.shape()[0];
     let sources = frequencies.shape()[1];
@@ -93,7 +102,8 @@ fn render<'py>(
     let gains = gains.as_slice()?.to_vec();
     let routes = routes.as_slice()?.to_vec();
     let states = states.as_array().to_owned();
-    let (output, states) = py.detach(move || {
+    let mut filters = filters::FilterBank::new(filters, rate, count, sources)?;
+    let (output, states, filter_states) = py.detach(move || -> PyResult<_> {
         let mut states = states;
         let mut output = Array2::zeros((frames, channels));
         let amplitude = envelope_amplitudes(&envelope, count);
@@ -122,6 +132,7 @@ fn render<'py>(
                 states[[s, 1]] = (total - states[[s, 0]]) - increment;
                 states[[s, 0]] = total.rem_euclid(rate);
             }
+            filters.process(i, &mut waves)?;
             for c in 0..channels {
                 let mut mixed = 0.0;
                 for s in 0..sources {
@@ -130,13 +141,18 @@ fn render<'py>(
                 output[[i, c]] = mixed * ((amplitude[i] * prepared_gain) * gains[i]);
             }
         }
-        (output, states)
-    });
-    Ok((output.into_pyarray(py), states.into_pyarray(py)))
+        Ok((output, states, filters.states))
+    })?;
+    Ok((
+        output.into_pyarray(py),
+        states.into_pyarray(py),
+        filter_states.into_pyarray(py),
+    ))
 }
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(filters::render_filters, module)?)?;
     module.add_function(wrap_pyfunction!(render, module)?)?;
     module.add_class::<sampler::SampleBuffer>()?;
     module.add_function(wrap_pyfunction!(sampler::render_sample, module)?)?;
