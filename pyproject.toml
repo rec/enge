@@ -1,7 +1,7 @@
 [project]
 name = "enge"
 version = "0.1.0"
-description = "Offline sound-engine contracts for Ufor instruments"
+description = "🚂 an audio synthesizer engine in Python and Rust 🚂"
 readme = "README.md"
 authors = [
     { name = "Tom Ritchford", email = "tom@swirly.com" }
