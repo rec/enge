@@ -228,8 +228,8 @@ retirement. Audio exhaustion never reruns selection or trigger ownership.
 
 Live voice parameter evaluation stops at source exhaustion, including release
 at a loop endpoint. A control ramp becoming invalid later cannot make a long
-block fail after the voice has ended. The NumPy adapter resolves modulated voices
-one output frame at a time to preserve that boundary; this reference is not a
+block fail after the voice has ended. Both backends resolve modulated voices
+one output frame at a time to preserve that boundary; this API is not a
 real-time performance claim. Unmodulated voices can render in spans.
 
 Complete voice snapshots must retain fractional progress and its compensation,
@@ -255,14 +255,14 @@ not exhausted within that prefix. This distinguishes a zero-valued source frame
 from completion. Source state must stop advancing after exhaustion. Fractional
 cases describe the implemented linear profile.
 
-Each vector now has a NumPy regression writing at least one second
+Each vector now has NumPy and Rust regressions writing at least one second
 of 48 kHz WAV output and comparing float arrays before encoding. Finite cases pad
 with exact silence after exhaustion. Repeating cases stop source calls in the harness
 after the observed prefix. The expected prefix is not repeated to fabricate a
 long recording. Both backends must pass the same vectors and independent audio
 oracles, with the existing `atol=1e-10`, `rtol=1e-9` budget.
 
-The NumPy tests repeat cases with 64/128/256/1024-frame and irregular partitions,
+The shared tests repeat cases with 64/128/256/1024-frame and irregular partitions,
 including single-frame splits around release, wrap, reflection, and overlap
 entry/exit. They restore during those states and during changing pitch, and
 check fractional releases, decimal-speed boundary ties, and very large steps.
@@ -270,6 +270,16 @@ The fixture values test source traversal before envelopes or output routing;
 Voice integration tests also apply envelopes, scoped controls, and channel routes,
 and verify exact retirement, prepared sustain/replacement/stop decisions, asset
 sharing, and independent JSON restores.
+
+The native kernel retains an owned immutable audio buffer per prepared source
+and runs without the GIL or Python callbacks. Python converts a rational release
+into before/after source distances only after exact multiplication by that
+interval's step. Rust retains compensated progress and pending transitions;
+large steps skip complete cycles without narrowing their counts to machine
+integers. Frame and native-knot coordinates use signed 64-bit integers at the
+binding, with checked frame advancement. Voice and instrument snapshots retain
+their backend. Direct native regressions disable reference DSP and verify
+buffer ownership and integer timing beyond `2**53`.
 
 ## Additional work beyond the prompt
 

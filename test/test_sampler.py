@@ -2,6 +2,7 @@ import json
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -45,7 +46,7 @@ VECTORS = TraversalVectors.model_validate_json(
 
 @pytest.mark.parametrize("vector", VECTORS.cases, ids=lambda c: c.name)
 def test_traversal_vectors_survive_single_frame_restores(
-    tmp_path: Path, vector: TraversalVector
+    backend: Literal["numpy", "native"], tmp_path: Path, vector: TraversalVector
 ) -> None:
     source = VECTORS.sources[vector.source]
     definition = PreparedSample(
@@ -65,7 +66,7 @@ def test_traversal_vectors_survive_single_frame_restores(
     saved = initial.model_dump_json()
     ratios = np.array(vector.pitch_ratios)
     release = None if vector.release_at is None else Fraction(vector.release_at)
-    whole, final = sample_frames(definition, initial, ratios, release)
+    whole, final = sample_frames(definition, initial, ratios, release, backend=backend)
     assert initial.model_dump_json() == saved
     state = initial
     chunks: list[np.ndarray] = []
@@ -78,6 +79,7 @@ def test_traversal_vectors_survive_single_frame_restores(
             state,
             np.array([ratio]),
             release if release is not None and release <= state.frame else None,
+            backend=backend,
         )
         chunks.append(audio)
     np.testing.assert_array_equal(np.concatenate(chunks), whole)
@@ -90,7 +92,9 @@ def test_traversal_vectors_survive_single_frame_restores(
     # The harness stops repeating sources after the specified prefix. Finite
     # sources must themselves return silence and preserve exhausted state.
     if vector.exhaustion_frame is not None:
-        tail, ended = sample_frames(definition, final, np.ones(48000 - len(whole)))
+        tail, ended = sample_frames(
+            definition, final, np.ones(48000 - len(whole)), backend=backend
+        )
         actual[len(whole) :] = tail
         assert ended.model_dump(exclude={"frame"}) == final.model_dump(
             exclude={"frame"}
@@ -100,7 +104,7 @@ def test_traversal_vectors_survive_single_frame_restores(
 
 @pytest.mark.parametrize("block", [64, 128, 256, 1024, 997])
 def test_live_pitch_preserves_fractional_progress_across_blocks(
-    tmp_path: Path, block: int
+    backend: Literal["numpy", "native"], tmp_path: Path, block: int
 ) -> None:
     source_frames = np.arange(60000, dtype=np.float64)
     source = np.column_stack([source_frames / 60000, 1 - source_frames / 60000])
@@ -120,7 +124,9 @@ def test_live_pitch_preserves_fractional_progress_across_blocks(
     boundaries = sorted({0, 48000, 11999, 12000, 12001, *range(0, 48000, block)})
     for start, end in pairwise(boundaries):
         state = SampleState.model_validate_json(state.model_dump_json())
-        output, state = sample_frames(definition, state, ratios[start:end])
+        output, state = sample_frames(
+            definition, state, ratios[start:end], backend=backend
+        )
         chunks.append(output)
     frames = np.arange(48000)
     progress = (
@@ -132,7 +138,9 @@ def test_live_pitch_preserves_fractional_progress_across_blocks(
     expected = np.column_stack([progress / 60000, 1 - progress / 60000])
     actual = np.concatenate(chunks)
     check_audio(tmp_path / "live-pitch.wav", actual, expected)
-    whole, final = sample_frames(definition, SampleState.start(definition), ratios)
+    whole, final = sample_frames(
+        definition, SampleState.start(definition), ratios, backend=backend
+    )
     np.testing.assert_array_equal(actual, whole)
     assert state == final
     assert state.exhaustion_frame is None
@@ -151,6 +159,7 @@ def test_live_pitch_preserves_fractional_progress_across_blocks(
     ],
 )
 def test_loop_resampling_matches_authored_traversal_over_live_pitch_changes(
+    backend: Literal["numpy", "native"],
     tmp_path: Path,
     block: int,
     direction: Direction,
@@ -186,11 +195,15 @@ def test_loop_resampling_matches_authored_traversal_over_live_pitch_changes(
     boundaries = sorted({0, 48000, 11999, 12000, 12001, *range(0, 48000, block)})
     for start, end in pairwise(boundaries):
         state = SampleState.model_validate_json(state.model_dump_json())
-        audio, state = sample_frames(definition, state, ratios[start:end])
+        audio, state = sample_frames(
+            definition, state, ratios[start:end], backend=backend
+        )
         chunks.append(audio)
     actual = np.concatenate(chunks)
     check_audio(tmp_path / "resampled-loop.wav", actual, expected)
-    whole, final = sample_frames(definition, SampleState.start(definition), ratios)
+    whole, final = sample_frames(
+        definition, SampleState.start(definition), ratios, backend=backend
+    )
     np.testing.assert_array_equal(actual, whole)
     assert state == final
 
@@ -206,6 +219,7 @@ def test_loop_resampling_matches_authored_traversal_over_live_pitch_changes(
     ],
 )
 def test_fractional_release_is_ordered_against_source_boundaries(
+    backend: Literal["numpy", "native"],
     tmp_path: Path,
     direction: Direction,
     overlap: int,
@@ -227,7 +241,7 @@ def test_fractional_release_is_ordered_against_source_boundaries(
     )
     ratios = np.full(48000, 2.0)
     actual, final = sample_frames(
-        definition, SampleState.start(definition), ratios, release
+        definition, SampleState.start(definition), ratios, release, backend=backend
     )
     expected = np.zeros_like(actual)
     expected[: len(expected_prefix), 0] = expected_prefix
@@ -237,7 +251,11 @@ def test_fractional_release_is_ordered_against_source_boundaries(
     for start, end in pairwise([0, 1, 2, 3, 4, 48000]):
         state = SampleState.model_validate_json(state.model_dump_json())
         audio, state = sample_frames(
-            definition, state, ratios[start:end], release if release < end else None
+            definition,
+            state,
+            ratios[start:end],
+            release if release < end else None,
+            backend=backend,
         )
         chunks.append(audio)
     np.testing.assert_array_equal(np.concatenate(chunks), actual)
@@ -250,9 +268,12 @@ def test_fractional_release_is_ordered_against_source_boundaries(
         ("forward", 0, 1, 3e12, [0, 10, 40, 50, 0]),
         ("mirror", 0, 1, 4e12, [0, 10, 10, 0, 0]),
         ("forward", 3, 5, 4e12, [0, 50, 50, 60, 70, 80, 90, 0]),
+        ("forward", 0, 1, 3 * 2**64, [0, 10, 40, 50, 0]),
+        ("forward", 0, 3 * 2**64, 1, [0, 30, 40, 50, 0]),
     ],
 )
 def test_large_steps_preserve_the_final_pending_boundary(
+    backend: Literal["numpy", "native"],
     tmp_path: Path,
     direction: Direction,
     overlap: int,
@@ -276,7 +297,7 @@ def test_large_steps_preserve_the_final_pending_boundary(
     ratios = np.ones(48000)
     ratios[:2] = first, large
     actual, state = sample_frames(
-        definition, SampleState.start(definition), ratios, Fraction(2)
+        definition, SampleState.start(definition), ratios, Fraction(2), backend=backend
     )
     expected = np.zeros_like(actual)
     expected[: len(expected_prefix), 0] = expected_prefix
@@ -285,6 +306,7 @@ def test_large_steps_preserve_the_final_pending_boundary(
 
 
 def test_decimal_pitch_release_at_mirror_turn_keeps_incoming_direction(
+    backend: Literal["numpy", "native"],
     tmp_path: Path,
 ) -> None:
     definition = PreparedSample(
@@ -300,7 +322,11 @@ def test_decimal_pitch_release_at_mirror_turn_keeps_incoming_direction(
         playback=Playback(direction="mirror"),
     )
     actual, final = sample_frames(
-        definition, SampleState.start(definition), np.full(48000, 0.1), Fraction(30)
+        definition,
+        SampleState.start(definition),
+        np.full(48000, 0.1),
+        Fraction(30),
+        backend=backend,
     )
     expected = np.zeros_like(actual)
     expected[:60, 0] = np.minimum(np.arange(60) / 10, 5) / 6
@@ -310,7 +336,7 @@ def test_decimal_pitch_release_at_mirror_turn_keeps_incoming_direction(
 
 @pytest.mark.parametrize("speed", [7, 187])
 def test_rational_release_at_a_turn_is_not_rounded_past_it(
-    tmp_path: Path, speed: int
+    backend: Literal["numpy", "native"], tmp_path: Path, speed: int
 ) -> None:
     definition = PreparedSample(
         samples=np.arange(3 * speed, dtype=np.float64)[:, None] / speed,
@@ -329,6 +355,7 @@ def test_rational_release_at_a_turn_is_not_rounded_past_it(
         SampleState.start(definition),
         np.full(48000, float(speed)),
         Fraction(3, speed),
+        backend=backend,
     )
     expected = np.zeros_like(actual)
     expected[:3, 0] = [0, 1, 2]
@@ -338,7 +365,7 @@ def test_rational_release_at_a_turn_is_not_rounded_past_it(
 
 @pytest.mark.parametrize("release", [Fraction(1, 2), Fraction(2)])
 def test_exhausted_source_ignores_later_releases(
-    tmp_path: Path, release: Fraction
+    backend: Literal["numpy", "native"], tmp_path: Path, release: Fraction
 ) -> None:
     definition = PreparedSample(
         samples=np.array([[0.5]]),
@@ -347,20 +374,30 @@ def test_exhausted_source_ignores_later_releases(
         slice=Slice(name="slice", asset="asset", end_frame=1),
     )
     actual, final = sample_frames(
-        definition, SampleState.start(definition), np.full(48000, 4.0), release
+        definition,
+        SampleState.start(definition),
+        np.full(48000, 4.0),
+        release,
+        backend=backend,
     )
     expected = np.zeros_like(actual)
     expected[0] = 0.5
     check_audio(tmp_path / "exhausted-release.wav", actual, expected)
     assert final.exhaustion_frame == 1
     assert not final.released
-    tail, ended = sample_frames(definition, final, np.ones(48000), Fraction(48000))
+    tail, ended = sample_frames(
+        definition, final, np.ones(48000), Fraction(48000), backend=backend
+    )
     assert not np.any(tail)
     assert ended.model_dump(exclude={"frame"}) == final.model_dump(exclude={"frame"})
 
 
-@pytest.mark.parametrize("ratios", [[0], [-1], [float("nan")], [float("inf")], [[1]]])
-def test_invalid_pitch_does_not_change_source_state(ratios: list[object]) -> None:
+@pytest.mark.parametrize(
+    "ratios", [[0], [-1], [float("nan")], [float("inf")], [[1]], 1]
+)
+def test_invalid_pitch_does_not_change_source_state(
+    backend: Literal["numpy", "native"], ratios: object
+) -> None:
     definition = PreparedSample(
         samples=np.zeros((2, 1)),
         native_rate=48000,
@@ -370,5 +407,5 @@ def test_invalid_pitch_does_not_change_source_state(ratios: list[object]) -> Non
     state = SampleState.start(definition)
     before = json.loads(state.model_dump_json())
     with pytest.raises(EngineError, match="pitch ratios"):
-        sample_frames(definition, state, np.array(ratios))
+        sample_frames(definition, state, np.array(ratios), backend=backend)
     assert state.model_dump() == before

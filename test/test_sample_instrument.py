@@ -1,6 +1,7 @@
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -60,7 +61,7 @@ def sample_score(
 
 @pytest.mark.parametrize("block", [64, 997, 1024])
 def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
-    tmp_path: Path, block: int
+    backend: Literal["numpy", "native"], tmp_path: Path, block: int
 ) -> None:
     raw = sample_score(native_rate=24000).model_dump(mode="json")
     dynamic = dynamic_score().model_dump(mode="json")["body"]
@@ -109,7 +110,7 @@ def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
         ],
         seed=0,
     ).actions
-    renderer = sample_instrument.OfflineSampler(prepared)
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
     boundaries = sorted(
         {
             0,
@@ -133,7 +134,7 @@ def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
         assert bool(saved.voices) == (end < 36000)
         if end in (121, 24000, 24001, 27001, 35999):
             encoded = saved.model_dump_json()
-            restored = sample_instrument.OfflineSampler(prepared)
+            restored = sample_instrument.OfflineSampler(prepared, backend=backend)
             restored.restore(
                 sample_instrument.SamplerSnapshot.model_validate_json(encoded)
             )
@@ -166,7 +167,7 @@ def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
 
 @pytest.mark.parametrize("mode", [LoopMode.until_release, LoopMode.through_release])
 def test_sample_voice_shares_fractional_minimum_hold_with_loop_and_envelope(
-    tmp_path: Path, mode: LoopMode
+    backend: Literal["numpy", "native"], tmp_path: Path, mode: LoopMode
 ) -> None:
     sample = sampler.PreparedSample(
         samples=np.arange(6, dtype=np.float64)[:, None] / 10,
@@ -191,7 +192,7 @@ def test_sample_voice_shares_fractional_minimum_hold_with_loop_and_envelope(
             release=[Segment(duration=Fraction(5, 96000), target=0.25)],
         ),
     )
-    renderer = sampler.SampleVoiceRenderer.start(definition, sample)
+    renderer = sampler.SampleVoiceRenderer.start(definition, sample, backend=backend)
     assert renderer.release()
     assert not renderer.release()
     chunks: list[np.ndarray] = []
@@ -218,7 +219,7 @@ def test_sample_voice_shares_fractional_minimum_hold_with_loop_and_envelope(
 
 @pytest.mark.parametrize("mode", ["while_held", "one_shot"])
 def test_source_exhaustion_and_one_shot_release_retire_at_exact_frames(
-    tmp_path: Path, mode: str
+    backend: Literal["numpy", "native"], tmp_path: Path, mode: str
 ) -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
     raw["body"]["settings"]["playback"]["mode"] = mode
@@ -232,7 +233,7 @@ def test_source_exhaustion_and_one_shot_release_retire_at_exact_frames(
         ],
         seed=0,
     ).actions
-    renderer = sample_instrument.OfflineSampler(prepared)
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
     chunks: list[np.ndarray] = []
     for start, end in pairwise([0, 1, 2, 3, 4, 48000]):
         chunks.append(
@@ -245,9 +246,9 @@ def test_source_exhaustion_and_one_shot_release_retire_at_exact_frames(
     check_audio(tmp_path / "source-exhaustion.wav", np.concatenate(chunks), expected)
 
 
-def test_preparation_shares_audio_but_restore_rejects_different_decoded_content() -> (
-    None
-):
+def test_preparation_shares_audio_but_restore_rejects_different_decoded_content(
+    backend: Literal["numpy", "native"],
+) -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
     raw["body"]["slots"].append({**raw["body"]["slots"][0], "name": "other"})
     document = instrument.SampleInstrumentScore.model_validate(raw)
@@ -256,9 +257,9 @@ def test_preparation_shares_audio_but_restore_rejects_different_decoded_content(
     assert prepared.samples["sample"].samples is prepared.samples["other"].samples
     audio[:] = 0
     different = sample_instrument.prepare(document, {"asset": audio})
-    snapshot = sample_instrument.OfflineSampler(prepared).snapshot()
+    snapshot = sample_instrument.OfflineSampler(prepared, backend=backend).snapshot()
     with pytest.raises(EngineError, match="decoded audio"):
-        sample_instrument.OfflineSampler(different).restore(snapshot)
+        sample_instrument.OfflineSampler(different, backend=backend).restore(snapshot)
 
 
 @pytest.mark.parametrize("field,value", [("delay_seconds", 0.5), ("offset_frames", 1)])
@@ -273,6 +274,7 @@ def test_unsupported_sample_start_variation_is_not_silently_ignored(
 
 
 def test_prepared_replacement_and_transport_stop_apply_before_the_sample(
+    backend: Literal["numpy", "native"],
     tmp_path: Path,
 ) -> None:
     raw = sample_score(frames=100).model_dump(mode="json")
@@ -302,7 +304,7 @@ def test_prepared_replacement_and_transport_stop_apply_before_the_sample(
             action="stop",
         )
     )
-    renderer = sample_instrument.OfflineSampler(prepared)
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
     actual = renderer.advance(actions, 0, 48000)
     expected = np.zeros_like(actual)
     expected[:5, 0] = [0, 0.01, 0, 0.02, 0.04]
@@ -311,7 +313,9 @@ def test_prepared_replacement_and_transport_stop_apply_before_the_sample(
     assert renderer.snapshot().voices == []
 
 
-def test_resolved_variation_and_static_tuning_are_applied_once(tmp_path: Path) -> None:
+def test_resolved_variation_and_static_tuning_are_applied_once(
+    backend: Literal["numpy", "native"], tmp_path: Path
+) -> None:
     raw = sample_score().model_dump(mode="json")
     raw["body"]["settings"]["processing"] = {"tuning_cents": 100, "volume_db": 3}
     slot = raw["body"]["slots"][0]
@@ -331,7 +335,9 @@ def test_resolved_variation_and_static_tuning_are_applied_once(tmp_path: Path) -
         seed=123,
     ).actions
     start = next(a for a in actions if isinstance(a, trace.VoiceStart))
-    actual = sample_instrument.OfflineSampler(prepared).advance(actions, 0, 48000)
+    actual = sample_instrument.OfflineSampler(prepared, backend=backend).advance(
+        actions, 0, 48000
+    )
     progress = (
         np.arange(10000) * 0.5 * 2 ** ((300 + start.variation.pitch_cents) / 1200)
     )
@@ -343,6 +349,7 @@ def test_resolved_variation_and_static_tuning_are_applied_once(tmp_path: Path) -
 
 
 def test_instrument_ramps_continue_in_silence_and_multiply_independent_trigger_gains(
+    backend: Literal["numpy", "native"],
     tmp_path: Path,
 ) -> None:
     raw = sample_score().model_dump(mode="json")
@@ -374,7 +381,9 @@ def test_instrument_ramps_continue_in_silence_and_multiply_independent_trigger_g
         ],
         seed=0,
     ).actions
-    actual = sample_instrument.OfflineSampler(prepared).advance(actions, 0, 48000)
+    actual = sample_instrument.OfflineSampler(prepared, backend=backend).advance(
+        actions, 0, 48000
+    )
     frames = np.arange(48000)
     gain = (0.5 + 0.5 * np.minimum(frames / 240, 1)) * np.where(
         frames < 120, 0, np.where(frames < 180, 0.25, np.where(frames < 300, 1, 0))
@@ -384,7 +393,9 @@ def test_instrument_ramps_continue_in_silence_and_multiply_independent_trigger_g
     independent = trace.prepare(
         document.body, [onset(gain=1, pitch=440)], seed=0
     ).actions
-    isolated = sample_instrument.OfflineSampler(prepared).advance(independent, 0, 48000)
+    isolated = sample_instrument.OfflineSampler(prepared, backend=backend).advance(
+        independent, 0, 48000
+    )
     check_audio(
         tmp_path / "independent-instance.wav",
         isolated,
@@ -396,7 +407,10 @@ def test_instrument_ramps_continue_in_silence_and_multiply_independent_trigger_g
     "direction,prefix", [("backward", [3, 2, 1, 0]), ("mirror", [0, 1, 2, 3, 2, 1, 0])]
 )
 def test_unpitched_samples_inherit_direction_without_inventing_pitch(
-    tmp_path: Path, direction: str, prefix: list[float]
+    backend: Literal["numpy", "native"],
+    tmp_path: Path,
+    direction: str,
+    prefix: list[float],
 ) -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
     raw["body"]["settings"]["playback"]["direction"] = direction
@@ -413,7 +427,7 @@ def test_unpitched_samples_inherit_direction_without_inventing_pitch(
         [onset().model_copy(update={"controls": {}, "pitch_hz": None})],
         seed=0,
     ).actions
-    renderer = sample_instrument.OfflineSampler(prepared)
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
     actual = renderer.advance(actions, 0, 48000)
     expected = np.zeros_like(actual)
     expected[: len(prefix), 0] = prefix
@@ -434,6 +448,7 @@ def test_preparation_rejects_filters_before_rendering() -> None:
 
 @pytest.mark.parametrize("loop", [False, True])
 def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
+    backend: Literal["numpy", "native"],
     tmp_path: Path,
     loop: bool,
 ) -> None:
@@ -469,7 +484,7 @@ def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
     ).actions
     expected = np.zeros((48000, 2))
     expected[:2] = [[1, 1.25], [1.25, 1.5625]]
-    renderer = sample_instrument.OfflineSampler(prepared)
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
     actual = renderer.advance(actions, 0, 48000)
     check_audio(tmp_path / "exhausted-control-ramp.wav", actual, expected)
     assert renderer.snapshot().voices == []

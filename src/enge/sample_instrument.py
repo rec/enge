@@ -1,7 +1,8 @@
-"""Offline NumPy sample instruments driven by prepared uFor actions."""
+"""Offline sample instruments driven by prepared uFor actions."""
 
 from hashlib import sha256
 from math import isfinite
+from typing import Literal
 
 import numpy as np
 from ufor import instrument_trace
@@ -35,6 +36,7 @@ class SamplerSnapshot(Model, frozen=True):
     frame: int
     voices: list[SampleVoiceSnapshot]
     contexts: list[synth.ControlContext]
+    backend: Literal["numpy", "native"]
 
 
 def prepare(
@@ -117,8 +119,13 @@ def prepare(
 class OfflineSampler:
     """Render one sample instrument with the synth's scheduling and controls."""
 
-    def __init__(self, definition: PreparedSampler) -> None:
+    def __init__(
+        self, definition: PreparedSampler, backend: Literal["numpy", "native"] = "numpy"
+    ) -> None:
+        if backend not in ("numpy", "native"):
+            raise synth.EngineError(f"Unknown sampler backend: {backend}")
         self.definition = definition
+        self.backend: Literal["numpy", "native"] = backend
         self.frame = 0
         self.voices: dict[str, SampleVoiceSnapshot] = {}
         self.slots = {s.name: s for s in definition.document.body.slots}
@@ -150,9 +157,14 @@ class OfflineSampler:
             frame=self.frame,
             voices=list(self.voices.values()),
             contexts=self.controls.contexts,
+            backend=self.backend,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: SamplerSnapshot) -> None:
+        if snapshot.backend != self.backend or any(
+            v.renderer.backend != self.backend for v in snapshot.voices
+        ):
+            raise synth.EngineError("Snapshot belongs to a different sampler backend")
         if (
             snapshot.definition != self.definition.document
             or snapshot.audio_digests != self.definition.audio_digests
@@ -261,6 +273,7 @@ class OfflineSampler:
                     ],
                 ),
                 sample,
+                backend=self.backend,
             ),
             instrument_sources=self.controls.sources(common, action),
             slot_sources=self.controls.sources(settings, action),

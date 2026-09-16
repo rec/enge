@@ -20,7 +20,7 @@ correction, and the stateless `waveform_samples()` keeps the established
 sample-position/period interface. Tuney translates its mono/binaural settings
 and output-layout policy into routes; note policy and device handling stay local.
 
-The NumPy sampler core in [sampler.py](src/enge/sampler.py) renders decoded
+The NumPy and Rust sampler core in [sampler.py](src/enge/sampler.py) renders decoded
 float64 assets with linear interpolation, forward/backward/mirror traversal,
 loops, overlaps, live pitch ratios, and fractional effective releases.
 `PreparedSample` owns immutable audio shared by cursors; `SampleState` serializes
@@ -37,13 +37,27 @@ completion ends each voice; prepared stops are immediate.
 
 Prepare with `sample_instrument.prepare(score, decoded_assets)`, where the asset
 dictionary maps uFor asset IDs to float64 frame/channel arrays, then construct
-`OfflineSampler(prepared)` and call `advance(actions, start, end)`. Snapshots
+`OfflineSampler(prepared, backend="native")` for Rust, or omit the backend for
+NumPy, and call `advance(actions, start, end)`. The same selection is available on
+`SampleVoiceRenderer.start()` and `sample_frames()`. Snapshots
 serialize voices and control ramps, and verify the score and decoded-content
-fingerprints on restore. Decoded audio is shared across slots and instances.
+fingerprints on restore. Sampler snapshots also retain their backend and reject
+restoration into a different backend, including when no voices are active.
+Decoded NumPy audio is shared across slots and instances. Each `PreparedSample`
+lazily retains one Rust-owned audio copy, reused by its voices and restored
+cursors across calls and engine instances.
 
-The sampler is currently NumPy only; Rust is next. Decoding remains with the
-caller. Curved envelopes, named generators, filters, layer crossfades, delayed or
-offset sample starts, event bindings, other modulation targets, and fade
+Rust computes sample traversal, loop overlap, interpolation, envelopes, gain, and
+routing while the GIL is released. Python resolves controls and exact rational
+release splits; frame/index coordinates cross the binding as signed 64-bit
+integers. The shared conformance suite covers both backends, and direct tests
+disable Python DSP to prevent a fallback. Modulated sample voices still resolve
+controls one frame at a time so evaluation stops at source exhaustion. This API
+allocates per call and does not establish live callback deadline guarantees.
+
+Decoding remains with the caller. Curved envelopes, named generators, filters,
+layer crossfades, delayed or offset sample starts, event bindings, other
+modulation targets, and fade
 retirements fail explicitly. The PyTorch backend is not yet implemented.
 
 Select the Rust backend with `OfflineSynth(prepare(score), backend="native")`

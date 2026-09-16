@@ -491,8 +491,8 @@ Implementation status and remaining order:
    actions and per-sample control resolution remain in Python. Snapshots retain
    their renderer backend; active voices cannot be restored into a different
    backend. Tuney continues to select NumPy by default.
-4. Sampler: the NumPy core now implements the [numerical contract](sampler-numerics.md)
-   and passes all 34 [traversal vectors](../conformance/sampler-traversal.json).
+4. Sampler: the NumPy and Rust cores implement the [numerical contract](sampler-numerics.md)
+   and pass all 34 [traversal vectors](../conformance/sampler-traversal.json).
    `PreparedSample` validates and isolates decoded audio; `SampleState` and
    `sample_frames()` preserve position through live pitch, fractional releases,
    loop transitions, block partitions, and JSON restores. `SampleVoiceRenderer`
@@ -503,8 +503,20 @@ Implementation status and remaining order:
    Tests cover sustain, group envelope overrides, gain/pitch variation, scoped
    controls, source exhaustion, one-shot release, replacement, and stop. Sample
    minimum hold is available on the reusable voice; uFor sample instruments have
-   no authored minimum-hold field and therefore use zero. Next implement Rust
-   against the same sampler conformance tests.
+   no authored minimum-hold field and therefore use zero.
+   Explicit `backend="native"` selects Rust for the source, voice, or offline
+   instrument API. `src/sampler.rs` performs traversal, overlaps, interpolation,
+   gain, and routing with the shared Rust envelope arithmetic. Python prepares
+   rational release splits before converting distances to float, preserving
+   release-before-turn ties. Each prepared source caches a Rust-owned audio
+   buffer; detached render calls share that buffer and own their control arrays.
+   Integer frame/index state is never packed into float arrays. The same vectors,
+   WAV oracles, changing controls, and restore tests now run on both backends.
+   Direct native checks cover no Python DSP fallback, owned strided inputs,
+   invalid binding inputs, and frame coordinates beyond float integer precision.
+   Sampler snapshots reject backend mismatches even when silent. Modulated
+   voices retain scalar Python control resolution to stop at natural exhaustion;
+   this milestone does not claim real-time callback performance.
 5. Further generators, processing, and structural changes one specified feature
    at a time. Do not introduce a generic DSP graph or host to complete these steps.
 

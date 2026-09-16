@@ -1,8 +1,9 @@
-"""NumPy reference for resolved uFor sample traversal and linear interpolation."""
+"""Reference and native rendering of resolved uFor sample traversal."""
 
 from copy import copy
 from fractions import Fraction
-from typing import Literal, Self
+from functools import cached_property
+from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -13,6 +14,9 @@ from ufor.samples.playback import Playback, Slice
 from . import synth
 from .synth import EngineError
 
+if TYPE_CHECKING:
+    from ._native import SampleBuffer
+
 
 class PreparedSample(Model, frozen=True):
     """One shared decoded asset and a resolved slice; no file I/O during render."""
@@ -22,6 +26,13 @@ class PreparedSample(Model, frozen=True):
     sample_rate: int = Field(strict=True, gt=0)
     slice: Slice
     playback: Playback = Playback()
+
+    @cached_property
+    def native_buffer(self) -> "SampleBuffer":
+        """One owned Rust audio copy, reused by voices and restored cursors."""
+        from . import _native
+
+        return _native.SampleBuffer(self.samples)
 
     @field_validator("samples")
     @classmethod
@@ -108,9 +119,15 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
 
     definition: PreparedSampleVoice
     source: SampleState
+    backend: Literal["numpy", "native"] = "numpy"
 
     @classmethod
-    def start(cls, definition: PreparedSampleVoice, sample: PreparedSample) -> Self:
+    def start(
+        cls,
+        definition: PreparedSampleVoice,
+        sample: PreparedSample,
+        backend: Literal["numpy", "native"] = "numpy",
+    ) -> Self:
         if (
             definition.slice != sample.slice
             or definition.sample_rate != sample.sample_rate
@@ -118,7 +135,9 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
             raise EngineError("Sample voice must match its prepared source")
         if len(definition.routes) != sample.samples.shape[1]:
             raise EngineError("Sample routes must map every source channel")
-        return cls(definition=definition, source=SampleState.start(sample))
+        return cls(
+            definition=definition, source=SampleState.start(sample), backend=backend
+        )
 
     @property
     def complete(self) -> bool:
@@ -160,6 +179,35 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
         arrays replace the prepared ratio; gain arrays multiply prepared gain.
         """
         count = self.active_frames(frames)
+        if count and self.backend == "native":
+            from . import native, native_sample
+
+            output, self.source = native_sample.render(
+                sample,
+                self.source,
+                pitch_steps(
+                    sample,
+                    self.source,
+                    np.full(count, self.definition.pitch_ratio)
+                    if pitch_ratios is None
+                    else pitch_ratios[:count],
+                    self.release_frame,
+                ),
+                self.release_frame,
+                self.definition.gain,
+                np.ones(count) if gains is None else gains[:count],
+                native.envelope_spans(
+                    self.definition.envelope,
+                    self.frame_count,
+                    count,
+                    self.definition.sample_rate,
+                    self.release_frame,
+                ),
+                np.asarray(self.definition.routes, dtype=np.float64),
+                frames,
+            )
+            self.frame_count += frames
+            return output
         output = np.zeros((frames, len(self.definition.routes[0])))
         if count:
             audio, self.source = sample_frames(
@@ -194,6 +242,7 @@ def sample_frames(
     state: SampleState,
     pitch_ratios: np.ndarray,
     release_frame: Fraction | None = None,
+    backend: Literal["numpy", "native"] = "numpy",
 ) -> tuple[np.ndarray, SampleState]:
     """Read, then advance for each ratio; return audio and independent next state.
 
@@ -202,16 +251,24 @@ def sample_frames(
     gain, routing and stop. Ratios already contain resolved tuning, but not the
     native/output rate factor. One-shot key-release policy belongs to uFor.
     """
-    if pitch_ratios.ndim != 1 or not np.all(
-        np.isfinite(pitch_ratios) & (pitch_ratios > 0)
-    ):
-        raise EngineError("Sample pitch ratios must be a positive finite vector")
-    with np.errstate(over="ignore"):
-        steps = pitch_ratios.astype(np.float64) * definition.native_rate
-    if not np.all(np.isfinite(steps)):
-        raise EngineError("Sample rate-adjusted pitch steps must be finite")
-    if release_frame is not None and release_frame < state.frame and not state.released:
-        raise EngineError("Sample release cannot precede the current cursor")
+    steps = pitch_steps(definition, state, pitch_ratios, release_frame)
+    if backend == "native":
+        from . import native_sample
+
+        count = len(steps)
+        return native_sample.render(
+            definition,
+            state,
+            steps,
+            release_frame,
+            1,
+            np.ones(count),
+            np.array([[0, count, 1, 0, 0, 1, 0]], dtype=np.float64),
+            np.eye(definition.samples.shape[1]),
+            count,
+        )
+    if backend != "numpy":
+        raise EngineError(f"Unknown sampler backend: {backend}")
 
     # A local mutable cursor avoids constructing a Pydantic model at every knot.
     cursor = _Cursor(definition, state)
@@ -261,6 +318,26 @@ def sample_frames(
         released=cursor.released,
         exhaustion_frame=cursor.exhaustion_frame,
     )
+
+
+def pitch_steps(
+    definition: PreparedSample,
+    state: SampleState,
+    pitch_ratios: np.ndarray,
+    release_frame: Fraction | None,
+) -> np.ndarray:
+    """Validate control inputs and convert ratios to output-rate cursor units."""
+    if pitch_ratios.ndim != 1 or not np.all(
+        np.isfinite(pitch_ratios) & (pitch_ratios > 0)
+    ):
+        raise EngineError("Sample pitch ratios must be a positive finite vector")
+    with np.errstate(over="ignore"):
+        steps = pitch_ratios.astype(np.float64) * definition.native_rate
+    if not np.all(np.isfinite(steps)):
+        raise EngineError("Sample rate-adjusted pitch steps must be finite")
+    if release_frame is not None and release_frame < state.frame and not state.released:
+        raise EngineError("Sample release cannot precede the current cursor")
+    return steps
 
 
 class _Cursor:

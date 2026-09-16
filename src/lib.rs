@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod sampler;
+
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -7,6 +9,45 @@ use pyo3::prelude::*;
 use std::f64::consts::TAU;
 
 type RenderedBlock<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>);
+
+fn envelope_spans(envelope: PyReadonlyArray2<'_, f64>, count: usize) -> PyResult<Vec<f64>> {
+    if envelope.shape()[1] != 7 || !envelope.is_c_contiguous() {
+        return Err(PyValueError::new_err("Invalid native envelope layout"));
+    }
+    let spans = envelope.as_slice()?.to_vec();
+    for span in spans.chunks_exact(7) {
+        let (first, last) = (span[0], span[1]);
+        if !first.is_finite()
+            || !last.is_finite()
+            || first < 0.0
+            || last < first
+            || last > count as f64
+            || first != first.floor()
+            || last != last.floor()
+            || !span[5].is_finite()
+            || span[5] <= 0.0
+        {
+            return Err(PyValueError::new_err("Invalid native envelope span"));
+        }
+    }
+    Ok(spans)
+}
+
+fn envelope_amplitudes(spans: &[f64], count: usize) -> Vec<f64> {
+    let mut amplitude = vec![0.0; count];
+    for span in spans.chunks_exact(7) {
+        for (i, value) in amplitude
+            .iter_mut()
+            .enumerate()
+            .take(span[1] as usize)
+            .skip(span[0] as usize)
+        {
+            let progress = span[4] + (i as f64 - span[6]) / span[5];
+            *value = span[2] + span[3] * progress;
+        }
+    }
+    amplitude
+}
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
@@ -44,22 +85,7 @@ fn render<'py>(
             "Invalid native voice dimensions, layout, or oscillator settings",
         ));
     }
-    let envelope = envelope.as_slice()?.to_vec();
-    for span in envelope.chunks_exact(7) {
-        let (first, last) = (span[0], span[1]);
-        if !first.is_finite()
-            || !last.is_finite()
-            || first < 0.0
-            || last < first
-            || last > count as f64
-            || first != first.floor()
-            || last != last.floor()
-            || !span[5].is_finite()
-            || span[5] <= 0.0
-        {
-            return Err(PyValueError::new_err("Invalid native envelope span"));
-        }
-    }
+    let envelope = envelope_spans(envelope, count)?;
     // Own every working buffer before releasing the GIL. No borrowed Python
     // memory or Python callbacks cross into the numerical loop.
     let frequencies = frequencies.as_slice()?.to_vec();
@@ -69,19 +95,8 @@ fn render<'py>(
     let (output, states) = py.detach(move || {
         let mut states = states;
         let mut output = Array2::zeros((frames, channels));
-        let mut amplitude = vec![0.0; count];
+        let amplitude = envelope_amplitudes(&envelope, count);
         let mut waves = vec![0.0; sources];
-        for span in envelope.chunks_exact(7) {
-            for (i, value) in amplitude
-                .iter_mut()
-                .enumerate()
-                .take(span[1] as usize)
-                .skip(span[0] as usize)
-            {
-                let progress = span[4] + (i as f64 - span[6]) / span[5];
-                *value = span[2] + span[3] * progress;
-            }
-        }
         for i in 0..count {
             for s in 0..sources {
                 let angle = TAU * (states[[s, 0]] / rate);
@@ -121,5 +136,7 @@ fn render<'py>(
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(render, module)?)
+    module.add_function(wrap_pyfunction!(render, module)?)?;
+    module.add_class::<sampler::SampleBuffer>()?;
+    module.add_function(wrap_pyfunction!(sampler::render_sample, module)?)
 }
