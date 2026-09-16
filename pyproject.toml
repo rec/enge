@@ -23,8 +23,10 @@ module-name = "enge._native"
 
 [tool.uv.sources]
 ufor = { path = "../ufor", editable = true }
+reccy = { path = "../reccy", editable = true }
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "reccy",
 ]
