@@ -28,5 +28,6 @@ reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
     "reccy",
 ]
