@@ -286,6 +286,8 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
         raise EngineError("Synth output must be sampled audio")
     timebase = next(t for t in score.timebases if t.name == output.timebase)
     for voice in score.body.voices:
+        if not isinstance(voice, SynthVoice):
+            raise EngineError("Oscillator engine requires oscillator voice templates")
         _validate_voice(voice)
         filters.parameters(voice.processing.filters, _sample_rate(timebase), 1)
     return PreparedSynth(
@@ -464,19 +466,13 @@ class ControlRenderer:
             result[source.name] = context_id
         return result
 
-    def parameters(
+    def values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        tuning = np.full(frames, settings.processing.tuning_cents, dtype=np.float64)
-        gains = np.ones(frames)
-        filter_values = np.tile(
-            np.array([[f.cutoff_hz, f.q] for f in settings.processing.filters]).reshape(
-                -1, 2
-            ),
-            (frames, 1, 1),
-        )
-        filter_indices = {
-            f"filter-{f.name}": i for i, f in enumerate(settings.processing.filters)
+    ) -> dict[tuple[str, str], np.ndarray]:
+        """Resolve every declared target once, independently of its DSP consumer."""
+        output = {
+            (p.target.name, p.target.parameter): np.empty(frames)
+            for p in settings.modulation.parameters
         }
         ramps: dict[str, controls.ControlState] = {}
         signals: dict[str, np.ndarray] = {}
@@ -518,26 +514,18 @@ class ControlRenderer:
                     },
                 )
                 for value in values:
-                    if value.target.name in filter_indices:
-                        filter_values[
-                            i,
-                            filter_indices[value.target.name],
-                            0 if value.target.parameter == "cutoff_hz" else 1,
-                        ] = value.value
-                    elif value.target.parameter == "amplitude":
-                        gains[i] = value.value
-                    else:
-                        tuning[i] = value.value
-        return (
-            tuning,
-            gains,
-            filters.parameters(
-                settings.processing.filters,
-                self.sample_rate,
-                frames,
-                filter_values,
-                start,
-            ),
+                    output[value.target.name, value.target.parameter][i] = value.value
+        return output
+
+    def parameters(
+        self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return processing_parameters(
+            settings,
+            self.values(settings, sources, start, frames),
+            self.sample_rate,
+            start,
+            frames,
         )
 
 
@@ -553,7 +541,11 @@ class OfflineSynth:
         self.definition = definition.model_copy(deep=True)
         self.frame = 0
         self.voices: dict[str, VoiceSnapshot] = {}
-        self.templates = {v.name: v for v in self.definition.instrument.voices}
+        self.templates = {
+            v.name: v
+            for v in self.definition.instrument.voices
+            if isinstance(v, SynthVoice)
+        }
         self.controls = ControlRenderer(
             self.definition.sample_rate,
             self.definition.instrument.controls,
@@ -714,6 +706,42 @@ def render_actions(
         cursor = action.tick
     output[cursor - start :] = render(cursor, end - cursor)
     return output
+
+
+def processing_parameters(
+    settings: SoundSettings,
+    values: dict[tuple[str, str], np.ndarray],
+    rate: int,
+    start: int,
+    frames: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract shared processing arrays from resolved instrument targets."""
+    tuning = values.get(
+        ("processing", "tuning_cents"),
+        np.full(frames, settings.processing.tuning_cents, dtype=np.float64),
+    )
+    gains = values.get(("processing", "amplitude"), np.ones(frames))
+    filter_values = np.tile(
+        np.array([[f.cutoff_hz, f.q] for f in settings.processing.filters]).reshape(
+            -1, 2
+        ),
+        (frames, 1, 1),
+    )
+    for j, definition in enumerate(settings.processing.filters):
+        for k, parameter in enumerate(("cutoff_hz", "q")):
+            if (key := (f"filter-{definition.name}", parameter)) in values:
+                filter_values[:, j, k] = values[key]
+    return (
+        tuning,
+        gains,
+        filters.parameters(
+            settings.processing.filters,
+            rate,
+            frames,
+            filter_values,
+            start,
+        ),
+    )
 
 
 def waveform_samples(

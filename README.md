@@ -78,6 +78,29 @@ layer crossfades, delayed or offset sample starts, event bindings, other
 modulation targets, and fade
 retirements fail explicitly. The PyTorch backend is not yet implemented.
 
+The NumPy-only two-operator FM engine in [fm.py](src/enge/fm.py) uses explicit
+phase modulation: a sine modulator drives a sine carrier, with independent held
+linear envelopes and optional one-sample modulator feedback. Operator ratios and
+tuning, modulation index, feedback, carrier level, common amplitude/tuning, and
+filters support the existing control/LFO routes. Pitch changes retain phase;
+snapshots retain phase corrections and feedback history. Carrier completion ends
+the voice. Rendering is at output rate and permits aliasing.
+
+Load a `SynthInstrumentScore` containing `fm` voice definitions, such as
+[the FM fixture](conformance/fm-instrument.json), and prepare its performance with
+`ufor.synth_trace.prepare`. Use `fm.OfflineFM(fm.prepare(score))`, then the same
+`advance(actions, start, end)`, `snapshot()`, and `restore(snapshot)` operations
+as the other engines. Each engine rejects a score containing another source
+profile. FM has no native backend yet.
+
+`fm.fm_samples` is the pure numerical boundary: parameter/envelope arrays plus
+phase and feedback arrays produce audio and independent next-state arrays.
+Validation, models, control evaluation, and rational envelope boundaries stay
+outside it. This is a NumPy reference for a future tensor port, not an existing
+`torch.compile` implementation; feedback still requires a sequential recurrence.
+See the [FM plan and implementation status](plan/fm-synthesis.md) and
+[uFor FM semantics](../ufor/doc/fm-synthesis.md).
+
 Select the Rust backend with `OfflineSynth(prepare(score), backend="native")`
 or `VoiceRenderer.start(definition, backend="native")`. The default is `"numpy"`;
 there is no fallback if the native extension is unavailable. Active-voice snapshots
@@ -130,3 +153,9 @@ LFO-modulated resonance: triangle synth on the left, sampled harmonics on the
 right. The test checks an independent matrix-equation oracle before publishing
 `.pytest_cache/d/audio/filter-demo-numpy.flac` and
 `.pytest_cache/d/audio/filter-demo-native.flac`.
+
+Run `uv run pytest test/test_fm.py` for FM conformance and a one-second demo with
+feedback, interrupted timbre smoothing, and independent operator release tails.
+The test checks an independent scalar oracle, writes 48 kHz WAV regressions, and
+verifies lossless encoding before publishing
+`.pytest_cache/d/audio/fm-demo-numpy.flac`.

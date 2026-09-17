@@ -29,6 +29,12 @@ the same numerical synth profile through explicit `backend="native"` selection;
 Existing waveform start/length/period behavior remains a regression requirement
 during synth consolidation.
 
+The third source profile is now the NumPy-only two-operator FM engine in
+`src/enge/fm.py`, under the [FM plan and status](fm-synthesis.md). It shares uFor
+synth lifecycle preparation, scoped controls/LFOs, envelope arithmetic, filters,
+and routing. Its pure array kernel keeps phase and one-sample feedback state
+explicit for a future tensor port. Rust FM and PyTorch remain deferred.
+
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and

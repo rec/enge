@@ -2,10 +2,12 @@
 
 ## Purpose and scope
 
-Add FM as a third sound engine beside enge's oscillator synth and sampler, with
-an independent NumPy reference and a Rust implementation selected through the
-same Python API. Both backends run the same conformance tests. Discrete behavior
-must agree exactly; audio and floating-point state use explicit tolerances.
+Add FM as a third sound engine beside enge's oscillator synth and sampler.
+The current scope is the independent NumPy reference, with explicit array/state
+boundaries suitable for a future tensor implementation. PyTorch, Rust FM, C++,
+and JUCE integration are deferred. A later native backend must run the same
+conformance tests: discrete behavior agrees exactly; audio and floating-point
+state use explicit tolerances.
 
 The first profile has two sine operators, one modulation connection, independent
 operator envelopes, and optional delayed self-feedback on the modulator. It must
@@ -13,8 +15,11 @@ handle live controls, release, arbitrary render partitions, and snapshot/restore
 from its first implementation. It is preparation for larger FM instruments, not
 an emulation of a particular hardware synth or preset format.
 
-This document is a proposed implementation plan. Writing it does not implement
-the engine or change uFor's current contract.
+The NumPy profile is now implemented in `src/enge/fm.py`. It exposes `prepare`,
+`OfflineFM.advance`, JSON-serializable snapshots, and restore. The independent
+audio regressions and listenable demo are in `test/test_fm.py`. uFor now defines
+the portable source and parameter semantics in
+[its FM contract](../../ufor/doc/fm-synthesis.md).
 
 ## Existing contracts and ownership
 
@@ -29,12 +34,11 @@ trigger contexts, and prepared lifecycle actions. enge owns phase, feedback,
 envelope/filter realization, and audio snapshots. Hosts retain device I/O,
 transport, raw event adaptation, output files, and encoding.
 
-The current `ufor.synth.SynthVoice` and `ufor.synth_trace.VoiceStart` explicitly
-carry an oscillator. FM therefore needs a deliberate uFor definition and prepared
-start representation before enge integration; do not disguise it as a waveform
-or create a second event-policy implementation. Reuse common lifecycle actions
-and existing preparation logic where applicable, with only the extraction needed
-to support the third engine.
+`ufor.synth.FMVoice` shares `VoiceTemplate` and performance preparation with the
+oscillator voice. `SynthInstrumentScore` accepts either source definition. Its
+existing `VoiceStart` carries FM settings and a null oscillator for FM voices.
+This preserves one lifecycle preparer without disguising FM as a waveform.
+enge's FM and oscillator engines each reject scores with another source profile.
 
 ## Initial musical model
 
@@ -116,9 +120,10 @@ onset; live topology editing is excluded.
 
 Snapshots retain both phases and numerical corrections, the previous modulator
 sample, operator envelope/release state, controls and scoped LFOs, filter state,
-voice identity, cursor, prepared-definition identity, and backend. Restore must
-reject incompatible definitions/backends and reproduce the continuation,
-including silent instances and release tails.
+voice identity, cursor, and prepared-definition identity. Restore rejects
+incompatible definitions and reproduces the continuation, including silent
+instances and release tails. FM currently has only one backend; a future backend
+must add explicit backend identity and mismatch rejection.
 
 ## Implementation sequence
 
@@ -135,7 +140,7 @@ including silent instances and release tails.
    preparation, backend selection, `advance(actions, start, end)`, snapshot, and
    restore. Reuse control resolution and lifecycle infrastructure. Verify live
    changes, overlapping voices, release, and filters together.
-4. **Implement the Rust kernel.** Use the existing PyO3/rust-numpy packaging and
+4. **Deferred: implement the Rust kernel.** Use the existing PyO3/rust-numpy packaging and
    explicit `backend="native"` selection, with no fallback. Own native working
    buffers, release the GIL, and perform no Python callbacks during DSP. Move
    both operator recurrences and feedback into the kernel, not one binding call
@@ -143,6 +148,18 @@ including silent instances and release tails.
 5. **Publish the audible regression and document the API.** Add a short musical
    demo, verified WAV/FLAC artifacts, README usage, and measured render/test costs.
    Update the execution roadmap to record the supported FM profile and limits.
+
+Steps 1–3 and the NumPy portion of step 5 are complete. The shipped demo is one
+second, with delayed feedback, an interrupted smoothed index sweep, and release.
+Separate closed-form tests cover constant index, initial phases, tuning and
+operator order; other tests cover live targets, LFO/filter composition, stop,
+minimum hold, overlapping voices, and partitioned JSON continuation.
+
+The public NumPy kernel contains no Pydantic models, `.item()`/Python scalar
+extraction, or data-dependent Python branches. Its compensated phase and delayed
+feedback loop is intentionally sequential. A future PyTorch port must establish
+a supported recurrence and eager/compiled parity; compilation performance has
+not been measured or promised.
 
 Keep numerical inputs as parameter arrays plus explicit previous state. Follow
 the existing `torch.compile` guidance: Python model validation, rational boundary
