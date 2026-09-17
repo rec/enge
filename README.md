@@ -140,7 +140,8 @@ waveform, writes WAV artifacts, and verifies lossless FLAC encoding using the
 `.pytest_cache/d/audio/synth-demo-numpy.flac` and
 `.pytest_cache/d/audio/synth-demo-native.flac`.
 Completed demos are published with Reccy's shared `atomic_output` helper, so a
-failed copy preserves the previous demo. Reccy is a development dependency.
+failed copy preserves the previous demo. Reccy also supplies atomic publication
+for offline rendering.
 
 Run `uv run pytest test/test_lfo_demo.py` for a two-second vibrato/tremolo demo,
 with a sine synth on the left and a sampled harmonic tone on the right. Both
@@ -159,3 +160,12 @@ feedback, interrupted timbre smoothing, and independent operator release tails.
 The test checks an independent scalar oracle, writes 48 kHz WAV regressions, and
 verifies lossless encoding before publishing
 `.pytest_cache/d/audio/fm-demo-numpy.flac`.
+
+For a longer benchmark, run `uv run python scripts/bach.py`. It renders the
+four-minute [BWV 578 MIDI adaptation](scripts/bwv-578.md) to `bwv-578.flac` at
+48 kHz using FM bass/soprano, triangle tenor, and sampled alto, with subtle
+expression, timbre, and pitch automation. `--block-size` controls render blocks;
+`--backend native` selects Rust for the oscillator and sampler while FM remains
+NumPy. MIDI adaptation, reusable presets, and streaming FLAC rendering live in
+`enge.midi`, `enge.presets`, and `enge.render`. Reccy is now a runtime dependency
+for atomic output publication.
