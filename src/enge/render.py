@@ -40,7 +40,7 @@ def render_midi(
 ) -> RenderReport:
     """Render fixed channel patches, including their 80ms tails and 170ms silence.
 
-    Native selection applies to oscillator/sampler engines; FM stays NumPy.
+    Native selection applies to oscillator, sampler, and FM engines.
     Runtime includes preparation, rendering, and FLAC encoding. No normalization
     is applied; a non-finite or overloaded mix fails before replacing output.
     """
@@ -64,7 +64,7 @@ def render_midi(
             actions = trace.prepare(score.body, events, seed=0).actions
         else:
             renderer = (
-                fm.OfflineFM(fm.prepare(score))
+                fm.OfflineFM(fm.prepare(score), backend)
                 if patch.engine == "fm"
                 else synth.OfflineSynth(synth.prepare(score), backend)
             )

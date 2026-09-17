@@ -78,7 +78,7 @@ layer crossfades, delayed or offset sample starts, event bindings, other
 modulation targets, and fade
 retirements fail explicitly. The PyTorch backend is not yet implemented.
 
-The NumPy-only two-operator FM engine in [fm.py](src/enge/fm.py) uses explicit
+The NumPy and Rust two-operator FM engine in [fm.py](src/enge/fm.py) uses explicit
 phase modulation: a sine modulator drives a sine carrier, with independent held
 linear envelopes and optional one-sample modulator feedback. Operator ratios and
 tuning, modulation index, feedback, carrier level, common amplitude/tuning, and
@@ -91,7 +91,10 @@ Load a `SynthInstrumentScore` containing `fm` voice definitions, such as
 `ufor.synth_trace.prepare`. Use `fm.OfflineFM(fm.prepare(score))`, then the same
 `advance(actions, start, end)`, `snapshot()`, and `restore(snapshot)` operations
 as the other engines. Each engine rejects a score containing another source
-profile. FM has no native backend yet.
+profile. Select Rust with `fm.OfflineFM(fm.prepare(score), backend="native")`.
+Rust computes both envelopes, operator phases, feedback, filters, gain, and
+routing in one call with owned buffers and the GIL released. Snapshots reject
+a different backend, including when no voices are active.
 
 `fm.fm_samples` is the pure numerical boundary: parameter/envelope arrays plus
 phase and feedback arrays produce audio and independent next-state arrays.
@@ -159,13 +162,14 @@ Run `uv run pytest test/test_fm.py` for FM conformance and a one-second demo wit
 feedback, interrupted timbre smoothing, and independent operator release tails.
 The test checks an independent scalar oracle, writes 48 kHz WAV regressions, and
 verifies lossless encoding before publishing
-`.pytest_cache/d/audio/fm-demo-numpy.flac`.
+`.pytest_cache/d/audio/fm-demo-numpy.flac` and
+`.pytest_cache/d/audio/fm-demo-native.flac`.
 
 For a longer benchmark, run `uv run python scripts/bach.py`. It renders the
 four-minute [BWV 578 MIDI adaptation](scripts/bwv-578.md) to `bwv-578.flac` at
 48 kHz using FM bass/soprano, triangle tenor, and sampled alto, with subtle
 expression, timbre, and pitch automation. `--block-size` controls render blocks;
-`--backend native` selects Rust for the oscillator and sampler while FM remains
-NumPy. MIDI adaptation, reusable presets, and streaming FLAC rendering live in
+`--backend native` selects Rust for all three engines. MIDI adaptation, reusable
+presets, and streaming FLAC rendering live in
 `enge.midi`, `enge.presets`, and `enge.render`. Reccy is now a runtime dependency
 for atomic output publication.

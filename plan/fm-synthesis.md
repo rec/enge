@@ -3,9 +3,9 @@
 ## Purpose and scope
 
 Add FM as a third sound engine beside enge's oscillator synth and sampler.
-The current scope is the independent NumPy reference, with explicit array/state
-boundaries suitable for a future tensor implementation. PyTorch, Rust FM, C++,
-and JUCE integration are deferred. A later native backend must run the same
+The current scope is the independent NumPy reference and Rust backend, with
+explicit array/state boundaries suitable for a future tensor implementation.
+PyTorch, C++, and JUCE integration are deferred. Both backends run the same
 conformance tests: discrete behavior agrees exactly; audio and floating-point
 state use explicit tolerances.
 
@@ -15,7 +15,8 @@ handle live controls, release, arbitrary render partitions, and snapshot/restore
 from its first implementation. It is preparation for larger FM instruments, not
 an emulation of a particular hardware synth or preset format.
 
-The NumPy profile is now implemented in `src/enge/fm.py`. It exposes `prepare`,
+The NumPy profile is implemented in `src/enge/fm.py`, with the Rust kernel in
+`src/fm.rs` selected using `backend="native"`. It exposes `prepare`,
 `OfflineFM.advance`, JSON-serializable snapshots, and restore. The independent
 audio regressions and listenable demo are in `test/test_fm.py`. uFor now defines
 the portable source and parameter semantics in
@@ -122,8 +123,9 @@ Snapshots retain both phases and numerical corrections, the previous modulator
 sample, operator envelope/release state, controls and scoped LFOs, filter state,
 voice identity, cursor, and prepared-definition identity. Restore rejects
 incompatible definitions and reproduces the continuation, including silent
-instances and release tails. FM currently has only one backend; a future backend
-must add explicit backend identity and mismatch rejection.
+instances and release tails. Snapshots include explicit backend identity and
+reject backend mismatches, including silent snapshots and mismatched active-voice
+state.
 
 ## Implementation sequence
 
@@ -140,7 +142,7 @@ must add explicit backend identity and mismatch rejection.
    preparation, backend selection, `advance(actions, start, end)`, snapshot, and
    restore. Reuse control resolution and lifecycle infrastructure. Verify live
    changes, overlapping voices, release, and filters together.
-4. **Deferred: implement the Rust kernel.** Use the existing PyO3/rust-numpy packaging and
+4. **Implement the Rust kernel.** Use the existing PyO3/rust-numpy packaging and
    explicit `backend="native"` selection, with no fallback. Own native working
    buffers, release the GIL, and perform no Python callbacks during DSP. Move
    both operator recurrences and feedback into the kernel, not one binding call
@@ -149,8 +151,9 @@ must add explicit backend identity and mismatch rejection.
    demo, verified WAV/FLAC artifacts, README usage, and measured render/test costs.
    Update the execution roadmap to record the supported FM profile and limits.
 
-Steps 1–3 and the NumPy portion of step 5 are complete. The shipped demo is one
-second, with delayed feedback, an interrupted smoothed index sweep, and release.
+Steps 1–4 and the audio regression portion of step 5 are complete for both backends.
+End-to-end Bach timing remains to be measured with native FM. The shipped demo
+is one second, with delayed feedback, an interrupted smoothed index sweep, and release.
 Separate closed-form tests cover constant index, initial phases, tuning and
 operator order; other tests cover live targets, LFO/filter composition, stop,
 minimum hold, overlapping voices, and partitioned JSON continuation.

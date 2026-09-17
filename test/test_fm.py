@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -39,7 +40,7 @@ def change(frame: int, value: float) -> ControlChange:
 
 @pytest.mark.parametrize("index", [0, 2, 8])
 def test_fm_matches_closed_form_and_named_operator_order(
-    tmp_path: Path, index: float
+    tmp_path: Path, index: float, backend: Literal["numpy", "native"]
 ) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
@@ -53,7 +54,7 @@ def test_fm_matches_closed_form_and_named_operator_order(
     voice["fm"]["operators"].reverse()
     document = SynthInstrumentScore.model_validate(raw)
     actions = synth_trace.prepare(document.body, [trigger()], seed=0).actions
-    actual = fm.OfflineFM(fm.prepare(document)).advance(actions, 0, 48000)
+    actual = fm.OfflineFM(fm.prepare(document), backend).advance(actions, 0, 48000)
     t = np.arange(48000) / 48000
     modulator = np.sin(2 * np.pi * (920 * t + 0.125))
     carrier = 0.2 * np.sin(2 * np.pi * (460 * t + 0.25) + index * modulator)
@@ -63,6 +64,7 @@ def test_fm_matches_closed_form_and_named_operator_order(
 
 def test_fm_feedback_control_smoothing_and_release_match_independent_recurrence(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
     pytestconfig: pytest.Config,
 ) -> None:
     raw = score().model_dump()
@@ -75,7 +77,7 @@ def test_fm_feedback_control_smoothing_and_release_match_independent_recurrence(
         Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
     ]
     actions = synth_trace.prepare(document.body, events, seed=0).actions
-    engine = fm.OfflineFM(fm.prepare(document))
+    engine = fm.OfflineFM(fm.prepare(document), backend)
     actual = engine.advance(actions, 0, 48000)
     expected = np.zeros((48000, 2))
     previous = 0.0
@@ -106,13 +108,14 @@ def test_fm_feedback_control_smoothing_and_release_match_independent_recurrence(
     assert engine.snapshot().voices == []
     publish_flac(
         tmp_path / "fm-demo-actual.wav",
-        pytestconfig.cache.mkdir("audio") / "fm-demo-numpy.flac",
+        pytestconfig.cache.mkdir("audio") / f"fm-demo-{backend}.flac",
     )
 
 
 @pytest.mark.parametrize("block", [64, 128, 256, 997, 1024])
 def test_fm_partitions_and_json_restore_preserve_feedback_and_release(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
     block: int,
 ) -> None:
     raw = score().model_dump()
@@ -126,9 +129,9 @@ def test_fm_partitions_and_json_restore_preserve_feedback_and_release(
     ]
     actions = synth_trace.prepare(document.body, events, seed=0).actions
     definition = fm.prepare(document)
-    whole = fm.OfflineFM(definition)
+    whole = fm.OfflineFM(definition, backend)
     expected = whole.advance(actions, 0, 48000)
-    partitioned = fm.OfflineFM(definition)
+    partitioned = fm.OfflineFM(definition, backend)
     actual = np.empty_like(expected)
     for start in range(0, 48000, block):
         end = min(48000, start + block)
@@ -138,7 +141,7 @@ def test_fm_partitions_and_json_restore_preserve_feedback_and_release(
         snapshot = fm.FMSnapshot.model_validate_json(
             partitioned.snapshot().model_dump_json()
         )
-        partitioned = fm.OfflineFM(definition)
+        partitioned = fm.OfflineFM(definition, backend)
         partitioned.restore(snapshot)
     check_audio(tmp_path / "fm-partitions.wav", actual, expected)
     assert partitioned.snapshot() == whole.snapshot()
@@ -146,6 +149,7 @@ def test_fm_partitions_and_json_restore_preserve_feedback_and_release(
 
 def test_fm_minimum_hold_and_duplicate_release_preserve_carrier_lifetime(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
 ) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
@@ -164,7 +168,7 @@ def test_fm_minimum_hold_and_duplicate_release_preserve_carrier_lifetime(
         )
         for i in (100, 101)
     ]
-    engine = fm.OfflineFM(fm.prepare(document))
+    engine = fm.OfflineFM(fm.prepare(document), backend)
     actual = engine.advance(actions, 0, 48000)
     t = np.arange(48000)
     modulator = np.where(t < 24000, np.sin(2 * np.pi * t * 440 / 48000), 0)
@@ -200,6 +204,7 @@ def test_fm_rejects_wrong_source_profile_and_snapshot() -> None:
 )
 def test_fm_live_targets_preserve_phase_and_use_declared_units(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
     name: str,
     parameter: str,
     unit: str,
@@ -229,7 +234,7 @@ def test_fm_live_targets_preserve_phase_and_use_declared_units(
     actions = synth_trace.prepare(
         document.body, [trigger(), change(12001, 1)], seed=0
     ).actions
-    actual = fm.OfflineFM(fm.prepare(document)).advance(actions, 0, 48000)
+    actual = fm.OfflineFM(fm.prepare(document), backend).advance(actions, 0, 48000)
     expected = np.empty_like(actual)
     pm = pc = previous = 0.0
     for i in range(48000):
@@ -249,6 +254,7 @@ def test_fm_live_targets_preserve_phase_and_use_declared_units(
 
 def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
     tmp_path: Path,
+    backend: Literal["numpy", "native"],
 ) -> None:
     from test_filters import matrix_filter
 
@@ -275,7 +281,7 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
             action="stop",
         )
     )
-    engine = fm.OfflineFM(fm.prepare(document))
+    engine = fm.OfflineFM(fm.prepare(document), backend)
     actual = engine.advance(actions, 0, 48000)
     t = np.arange(36000) / 48000
     index = 2 + np.sin(2 * np.pi * 2 * t)
@@ -286,3 +292,136 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
     expected[:36000] = matrix_filter(definitions, audio[:, None], values) * [[1, 0.5]]
     check_audio(tmp_path / "fm-lfo-filter.wav", actual, expected)
     assert engine.snapshot().voices == []
+
+
+def test_fm_snapshot_rejects_backend_mismatch() -> None:
+    definition = fm.prepare(score())
+    reference = fm.OfflineFM(definition)
+    native = fm.OfflineFM(definition, "native")
+    with pytest.raises(synth.EngineError, match="different FM backend"):
+        native.restore(reference.snapshot())
+    with pytest.raises(synth.EngineError, match="Unknown FM backend"):
+        fm.OfflineFM(definition, "invalid")  # type: ignore[arg-type]
+
+
+def test_native_fm_preserves_sound_and_state_without_python_dsp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from enge import filters
+
+    raw = score().model_dump()
+    raw["body"]["voices"][0]["fm"]["feedback"] = 0.7
+    raw["body"]["voices"][0]["processing"]["filters"] = [
+        {"name": "tone", "response": "lowpass", "cutoff_hz": 1800, "q": 0.7}
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body, [trigger(pitch=223.17), change(12001, 0.75)], seed=0
+    ).actions
+    definition = fm.prepare(document)
+    reference = fm.OfflineFM(definition)
+    expected = reference.advance(actions, 0, 48000)
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Native FM called Python DSP")
+
+    monkeypatch.setattr(fm, "fm_samples", forbidden)
+    monkeypatch.setattr(synth, "envelope_samples", forbidden)
+    monkeypatch.setattr(synth, "route_samples", forbidden)
+    monkeypatch.setattr(filters, "filter_samples", forbidden)
+    native = fm.OfflineFM(definition, "native")
+    actual = native.advance(actions, 0, 48000)
+    check_audio(tmp_path / "fm-native-parity.wav", actual, expected)
+    left = reference.snapshot().voices[0].renderer
+    right = native.snapshot().voices[0].renderer
+    np.testing.assert_allclose(right.phases, left.phases, atol=1e-10, rtol=1e-9)
+    assert right.previous_modulator == pytest.approx(left.previous_modulator, abs=1e-10)
+    np.testing.assert_allclose(
+        right.filter_states[0].integrators,
+        left.filter_states[0].integrators,
+        atol=1e-10,
+        rtol=1e-9,
+    )
+    with pytest.raises(synth.EngineError, match="different FM backend"):
+        native.restore(reference.snapshot().model_copy(update={"backend": "native"}))
+
+
+def test_native_fm_owns_strided_inputs(tmp_path: Path) -> None:
+    from enge import _native
+
+    parameters = np.tile([440, 220, 2, 0.4, 0.2], (96000, 1))[::2]
+    phases = np.zeros((2, 4))[:, ::2]
+    gains = np.ones(96000)[::2]
+    routes = np.array([1, 0, 0.5, 0])[::2]
+    spans = np.array([[0, 48000, 1, 0, 0, 1, 0]], dtype=float)
+    memory = np.zeros((0, 0, 2))
+    values = np.zeros((48000, 0, 2))
+    copies = [x.copy() for x in (parameters, phases, gains, routes, spans)]
+    audio, state, history, _ = _native.render_fm(
+        48000,
+        parameters,
+        phases,
+        0,
+        gains,
+        spans,
+        spans,
+        48000,
+        routes,
+        ([], memory, values),
+    )
+    expected, expected_state, expected_history = fm.fm_samples(
+        parameters[:, :2],
+        np.ones((48000, 2)),
+        parameters[:, 2],
+        parameters[:, 3],
+        parameters[:, 4],
+        phases,
+        np.array([0.0]),
+        48000,
+    )
+    check_audio(tmp_path / "fm-owned.wav", audio, expected * routes)
+    np.testing.assert_allclose(state, expected_state, atol=1e-10)
+    assert history == pytest.approx(expected_history[0], abs=1e-10)
+    for original, copy in zip(
+        (parameters, phases, gains, routes, spans), copies, strict=True
+    ):
+        np.testing.assert_array_equal(original, copy)
+        assert not np.shares_memory(audio, original)
+        assert not np.shares_memory(state, original)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["rate", "shape", "frequency", "history", "phases", "gains", "routes", "release"],
+)
+def test_native_fm_rejects_invalid_inputs(case: str) -> None:
+    from enge import _native
+
+    parameters = np.array([[440, 220, 2, 0.4, 0.2]])
+    phases = np.zeros((2, 2))
+    gains = np.ones(1)
+    routes = np.ones(1)
+    spans = np.array([[0, 1, 1, 0, 0, 1, 0]], dtype=float)
+    if case == "shape":
+        parameters = parameters[:, :4]
+    elif case == "frequency":
+        parameters[0, 0] = 0
+    elif case == "phases":
+        phases[0, 0] = np.nan
+    elif case == "gains":
+        gains[0] = -1
+    elif case == "routes":
+        routes[0] = np.inf
+    with pytest.raises(ValueError, match="Invalid FM"):
+        _native.render_fm(
+            0 if case == "rate" else 48000,
+            parameters,
+            phases,
+            np.nan if case == "history" else 0,
+            gains,
+            spans,
+            spans,
+            2 if case == "release" else 1,
+            routes,
+            ([], np.zeros((0, 0, 2)), np.zeros((1, 0, 2))),
+        )

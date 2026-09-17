@@ -1,7 +1,7 @@
-"""Two-operator phase modulation with an explicit NumPy numerical boundary."""
+"""Two-operator phase modulation with independent NumPy and Rust numerical kernels."""
 
 from math import ceil, isfinite
-from typing import Self
+from typing import Literal, Self
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -13,7 +13,7 @@ from ufor.streams import AudioType
 from ufor.synth import FMVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
 
-from . import filters, synth
+from . import filters, native, synth
 
 
 class PreparedVoice(synth.PreparedEnvelope, frozen=True):
@@ -39,16 +39,20 @@ class PreparedVoice(synth.PreparedEnvelope, frozen=True):
 
 class VoiceRenderer(synth.EnvelopeRenderer):
     definition: PreparedVoice
+    backend: Literal["numpy", "native"] = "numpy"
     phases: list[list[float]]
     previous_modulator: float = 0
     filter_states: list[filters.FilterState] = Field(default_factory=list)
 
     @classmethod
-    def start(cls, definition: PreparedVoice) -> "VoiceRenderer":
+    def start(
+        cls, definition: PreparedVoice, backend: Literal["numpy", "native"] = "numpy"
+    ) -> "VoiceRenderer":
         operators = {o.name: o for o in definition.fm.operators}
         connection = definition.fm.connection
         return cls(
             definition=definition.model_copy(deep=True),
+            backend=backend,
             phases=[
                 [operators[n].phase_cycles * definition.sample_rate, 0]
                 for n in (connection.source, connection.destination)
@@ -66,7 +70,7 @@ class VoiceRenderer(synth.EnvelopeRenderer):
         """Render active-frame arrays, returning silence after carrier completion.
 
         Parameter columns are modulator Hz, carrier Hz, index radians, feedback
-        radians, and carrier level. Validation and envelopes stay outside DSP.
+        radians, and carrier level. Python resolves validation and envelope boundaries.
         """
         if frames < 0:
             raise synth.EngineError("FM frame count must be nonnegative")
@@ -89,6 +93,53 @@ class VoiceRenderer(synth.EnvelopeRenderer):
         rate = self.definition.sample_rate
         operators = {o.name: o for o in self.definition.fm.operators}
         connection = self.definition.fm.connection
+        values = filters.parameters(
+            self.definition.filters, rate, count, filter_values, self.frame_count
+        )
+        if self.backend == "native":
+            from . import _native
+
+            spans = [
+                native.envelope_spans(
+                    operators[n].envelope,
+                    self.frame_count,
+                    count,
+                    rate,
+                    self.release_frame,
+                )
+                for n in (connection.source, connection.destination)
+            ]
+            modulator_frames = count
+            if self.release_frame is not None:
+                end = (
+                    self.release_frame
+                    + sum(
+                        s.duration
+                        for s in operators[connection.source].envelope.release
+                    )
+                    * rate
+                )
+                modulator_frames = max(0, min(count, ceil(end) - self.frame_count))
+            audio, phases, history, memory = _native.render_fm(
+                rate,
+                parameters,
+                np.array(self.phases),
+                self.previous_modulator,
+                gains,
+                spans[0],
+                spans[1],
+                modulator_frames,
+                np.array(self.definition.routes[0]),
+                filters.native_inputs(
+                    self.definition.filters, self.filter_states, values
+                ),
+            )
+            output[:count] = audio
+            self.phases = phases.tolist()
+            self.previous_modulator = history
+            self.filter_states = filters.restored_states(memory)
+            self.frame_count += count
+            return output
         envelopes = np.column_stack(
             [
                 synth.envelope_samples(
@@ -120,13 +171,6 @@ class VoiceRenderer(synth.EnvelopeRenderer):
         )
         if not np.all(np.isfinite(audio)):
             raise synth.EngineError("FM produced non-finite output")
-        values = filters.parameters(
-            self.definition.filters,
-            rate,
-            count,
-            filter_values,
-            self.frame_count,
-        )
         audio, filter_states = filters.filter_samples(
             self.definition.filters,
             self.filter_states,
@@ -158,6 +202,7 @@ class VoiceSnapshot(Model, frozen=True):
 
 
 class FMSnapshot(Model, frozen=True):
+    backend: Literal["numpy", "native"]
     definition: PreparedFM
     frame: int
     voices: list[VoiceSnapshot]
@@ -168,7 +213,12 @@ class FMSnapshot(Model, frozen=True):
 class OfflineFM:
     """Consume uFor prepared synth actions for an FM-only instrument instance."""
 
-    def __init__(self, definition: PreparedFM) -> None:
+    def __init__(
+        self, definition: PreparedFM, backend: Literal["numpy", "native"] = "numpy"
+    ) -> None:
+        if backend not in ("numpy", "native"):
+            raise synth.EngineError(f"Unknown FM backend: {backend}")
+        self.backend: Literal["numpy", "native"] = backend
         self.definition = definition.model_copy(deep=True)
         self.frame = 0
         self.voices: dict[str, VoiceSnapshot] = {}
@@ -181,6 +231,7 @@ class OfflineFM:
             definition.sample_rate,
             definition.score.body.controls,
             list(self.templates.values()),
+            backend,
         )
 
     def advance(
@@ -203,6 +254,7 @@ class OfflineFM:
 
     def snapshot(self) -> FMSnapshot:
         return FMSnapshot(
+            backend=self.backend,
             definition=self.definition,
             frame=self.frame,
             voices=list(self.voices.values()),
@@ -213,6 +265,10 @@ class OfflineFM:
     def restore(self, snapshot: FMSnapshot) -> None:
         if snapshot.definition != self.definition:
             raise synth.EngineError("Snapshot belongs to a different prepared FM synth")
+        if snapshot.backend != self.backend or any(
+            v.renderer.backend != self.backend for v in snapshot.voices
+        ):
+            raise synth.EngineError("Snapshot belongs to a different FM backend")
         snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
@@ -271,7 +327,8 @@ class OfflineFM:
                             for c in self.definition.channels
                         ]
                     ],
-                )
+                ),
+                backend=self.backend,
             ),
         )
 

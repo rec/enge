@@ -46,3 +46,15 @@ def render_sample(
     frames: int,
     filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, SampleState, np.ndarray]: ...
+def render_fm(
+    rate: float,
+    parameters: np.ndarray,
+    phases: np.ndarray,
+    history: float,
+    gains: np.ndarray,
+    modulator: np.ndarray,
+    carrier: np.ndarray,
+    modulator_frames: int,
+    routes: np.ndarray,
+    filter_inputs: tuple[list[int], np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]: ...
