@@ -95,9 +95,11 @@ Build with `uv sync`; Rust/Cargo 1.85 or newer is required. Python packaging use
 [PyO3](https://pyo3.rs/v0.29.0/), and
 [rust-numpy](https://docs.rs/numpy/0.29.0/numpy/).
 After changing Rust, run `uv sync --reinstall-package enge` to rebuild the extension.
-Run `uv run pytest` for the shared NumPy/native conformance suite. Native cases
-are required, not skipped when compilation is unavailable. `cargo fmt --check`
-and `cargo clippy --locked --all-targets -- -D warnings` check the Rust source.
+Run `uv run pytest` for the shared NumPy/native conformance suite. It uses all
+available pytest workers and work-stealing to balance long audio cases. Use
+`uv run pytest -n 0` to reproduce a failure serially. Native cases are required,
+not skipped when compilation is unavailable. `cargo fmt --check` and
+`cargo clippy --locked --all-targets -- -D warnings` check the Rust source.
 
 The [proposed execution contract](plan/engine-execution.md) defines the common
 timing, dynamic-control, state, and conformance requirements for Python/NumPy

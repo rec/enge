@@ -21,6 +21,10 @@ build-backend = "maturin"
 python-source = "src"
 module-name = "enge._native"
 
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = "-n auto --dist=worksteal"
+
 [tool.uv.sources]
 ufor = { git = "https://github.com/rec/ufor.git", branch = "main" }
 reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }
