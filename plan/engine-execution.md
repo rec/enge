@@ -344,8 +344,10 @@ Filters run in list order before amplitude, gain, and routing. Sample effective
 slot/group filters precede instrument filters, whose local parameter namespaces
 remain distinct even when names match. All states are voice-owned and captured
 in snapshots. Release keeps the existing lifetime; source exhaustion, envelope
-completion, or stop discards filter state. Modulated samplers still resolve only
-one active frame at a time, so parameters after exhaustion cannot cause errors.
+completion, or stop discards filter state. Modulated samplers batch a prefix
+whose declared maximum tuning cannot exhaust the source, then resolve the
+remaining uncertain frame alone so parameters after exhaustion cannot cause
+errors.
 
 Acceptance tests compare all four responses and one/two stages against uFor's
 independent RBJ transfer functions. Dynamic cases use a coupled matrix solve,
@@ -545,8 +547,9 @@ Implementation status and remaining order:
    Direct native checks cover no Python DSP fallback, owned strided inputs,
    invalid binding inputs, and frame coordinates beyond float integer precision.
    Sampler snapshots reject backend mismatches even when silent. Modulated
-   voices retain scalar Python control resolution to stop at natural exhaustion;
-   this milestone does not claim real-time callback performance.
+   voices batch a prefix whose declared maximum tuning cannot reach natural
+   exhaustion, then resolve the remaining uncertain frame alone; this milestone
+   does not claim real-time callback performance.
 5. Named seconds-clock LFOs now render through NumPy and Rust with shared
    conformance. They retain uFor's exact phase anchors, rate/reset semantics,
    separate activation weight, and scope ownership. Both synth and sampler

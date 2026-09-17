@@ -51,9 +51,11 @@ Rust computes sample traversal, loop overlap, interpolation, envelopes, gain, an
 routing while the GIL is released. Python resolves controls and exact rational
 release splits; frame/index coordinates cross the binding as signed 64-bit
 integers. The shared conformance suite covers both backends, and direct tests
-disable Python DSP to prevent a fallback. Modulated sample voices still resolve
-controls one frame at a time so evaluation stops at source exhaustion. This API
-allocates per call and does not establish live callback deadline guarantees.
+disable Python DSP to prevent a fallback. Modulated sample voices batch a prefix
+whose declared maximum tuning cannot exhaust the source, then resolve the
+remaining uncertain frame alone so parameters after exhaustion are not
+evaluated. This API allocates per call and does not establish live callback
+deadline guarantees.
 
 Named seconds-clock LFOs drive amplitude, tuning, and filters in both instruments.
 They support sine, square, and triangle shapes, delay/fade-in, and voice, part,

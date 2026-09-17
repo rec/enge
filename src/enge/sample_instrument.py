@@ -8,6 +8,7 @@ import numpy as np
 from ufor import instrument_trace
 from ufor.base import Model
 from ufor.samples import instrument, playback, processing, trace
+from ufor.samples.enums import LoopMode
 from ufor.streams import AudioType
 
 from . import filters, sampler, synth
@@ -292,18 +293,21 @@ class OfflineSampler:
             count = voice.renderer.active_frames(frames)
             common = self.definition.document.body.settings
             settings = self.definition.settings[voice.template]
-            # Pitch determines natural exhaustion. Resolve live values only
-            # while this voice exists, so caller block size cannot cause a
-            # domain error from a ramp after the source has already ended.
-            span = (
-                1
-                if common.modulation.parameters or settings.modulation.parameters
-                else max(1, count)
-            )
-            for offset in range(0, count, span):
+            offset = 0
+            while offset < count:
                 if voice.renderer.complete:
                     break
-                size = min(span, count - offset)
+                # Parameters may become invalid after natural exhaustion. Use
+                # their declared maximum tuning to find a prefix guaranteed to
+                # remain within the source, then resolve/render that prefix in
+                # one call. The last uncertain frame remains a one-frame call.
+                size = _safe_render_frames(
+                    voice.renderer,
+                    self.definition.samples[voice.template],
+                    common,
+                    settings,
+                    count - offset,
+                )
                 tuning, gains, common_filters = self.controls.parameters(
                     common, voice.instrument_sources, start + offset, size
                 )
@@ -320,6 +324,7 @@ class OfflineSampler:
                     gains * slot_gains,
                     np.concatenate((slot_filters, common_filters), axis=1),
                 )
+                offset += size
             if voice.renderer.complete:
                 del self.voices[voice.voice_id]
         return output
@@ -338,3 +343,53 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
         )
     synth.validate_generators(settings)
     synth.validate_modulation(settings)
+
+
+def _safe_render_frames(
+    renderer: sampler.SampleVoiceRenderer,
+    source: sampler.PreparedSample,
+    common: processing.SoundSettings,
+    settings: processing.SoundSettings,
+    frames: int,
+) -> int:
+    """Return a prefix known not to cross natural sample exhaustion.
+
+    Filter/control values may be invalid after a finite source ends, so a batch
+    must stop before that boundary. A currently looping source cannot exhaust.
+    For a finite traversal, the maximum declared tuning bounds its furthest
+    possible advance. The remaining uncertain frame is rendered alone.
+    """
+    state = renderer.source
+    loop = source.slice.loop
+    ending_loop = (
+        loop is not None
+        and loop.mode == LoopMode.until_release
+        and renderer.release_frame is not None
+        and renderer.release_frame <= renderer.frame_count
+    )
+    if state.looping and not ending_loop:
+        return frames
+    maximum = renderer.definition.pitch_ratio * np.exp2(
+        (_maximum_tuning(common) + _maximum_tuning(settings)) / 1200
+    )
+    step = maximum * source.native_rate
+    distance = (
+        source.slice.end_frame - state.index
+        if state.direction == 1
+        else state.index - source.slice.start_frame + 1
+    )
+    remaining = distance * source.sample_rate - state.position
+    known = int(np.floor(np.nextafter(remaining / step, -np.inf)))
+    return max(1, min(frames, known))
+
+
+def _maximum_tuning(settings: processing.SoundSettings) -> float:
+    return next(
+        (
+            parameter.maximum
+            for parameter in settings.modulation.parameters
+            if parameter.target.name == "processing"
+            and parameter.target.parameter == "tuning_cents"
+        ),
+        settings.processing.tuning_cents,
+    )

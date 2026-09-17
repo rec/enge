@@ -14,17 +14,21 @@ def matrix_filter(
     samples: np.ndarray,
     values: np.ndarray,
 ) -> np.ndarray:
-    """Independent oracle: solve the two coupled trapezoidal integrator equations."""
+    """Independent oracle: explicitly solve the coupled trapezoidal equations."""
     audio = samples.copy()
     for j, definition in enumerate(definitions):
         for _ in range(definition.stages):
             state = np.zeros((2, audio.shape[1]))
             for i, (cutoff, q) in enumerate(values[:, j]):
                 g = np.tan(np.pi * cutoff / 48000)
-                system = np.array([[1 + g / q, g], [-g, 1]])
                 rhs = state.copy()
                 rhs[0] += g * audio[i]
-                band, low = np.linalg.solve(system, rhs)
+                # Invert [[1 + g/q, g], [-g, 1]] directly. This remains
+                # independent from the engine's state-variable recurrence and
+                # avoids 48,000 tiny general-purpose LAPACK calls per vector.
+                determinant = 1 + g / q + g * g
+                band = (rhs[0] - g * rhs[1]) / determinant
+                low = (g * rhs[0] + (1 + g / q) * rhs[1]) / determinant
                 state = 2 * np.vstack([band, low]) - state
                 if definition.response == "lowpass":
                     audio[i] = low
