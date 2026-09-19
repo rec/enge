@@ -196,9 +196,10 @@ preparation and binding overhead; medians use 90 blocks after ten warmups.
 | Four voices, two seconds, 1024-frame blocks, including controls | 4.850 s | 2.251 s |
 
 The last row is a single offline run with constant authored controls and no file
-encoding. The shared Python control/orchestration path remains much more
-expensive than voice DSP. Native source speed is not a real-time claim for the
-whole engine. Optimizing shared controls is outside this change.
+encoding. At that point, the shared Python control/orchestration path was much more
+expensive than voice DSP. The subsequent [control optimization](engine-execution.md#vectorized-control-evaluation)
+removes per-sample Python evaluation and records updated full-engine timings.
+Neither measurement establishes live callback safety.
 
 ## Additional work beyond the prompt
 

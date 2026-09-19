@@ -500,11 +500,11 @@ Implementation status and remaining order:
    implemented. Tests cover 64/128/256/1024-frame and irregular partitions,
    restores inside active ramps and release, trigger-ID reuse with an old tail,
    multiple smoothing durations, and exact fractional release boundaries. The
-   reference uses uFor scalar control/route evaluation before a numerical
-   oscillator function with explicit phase input/output. Ten-second integer-oracle
+   reference uses vectorized control/route evaluation, checked against uFor
+   scalar equations, before a numerical oscillator function with explicit phase input/output. Ten-second integer-oracle
    regressions cover changing and held pitch, all three waveforms, starts beyond
    2^53 frames, irregular partitions, and serialized oscillator-state restoration.
-   Longer stress runs and performance optimization remain future work.
+   Further stress runs and live callback integration remain future work.
 2. The reusable Tuney voice renderer is consolidated in enge. `PreparedVoice`
    carries oscillator frequencies, envelope, minimum hold, gain, and explicit
    source-to-output route rows. `VoiceRenderer` owns oscillator state, the relative
@@ -646,6 +646,81 @@ API, not the earlier Tuney mixer harness or live deadline reliability. The nativ
 backend still copies inputs and allocates per call, and the full dynamic-action
 renderer still evaluates controls in Python. These are separate costs to measure
 before choosing a live host integration or optimization.
+
+## Vectorized control evaluation
+
+`enge.control` evaluates held linear control ramps and modulation routes using
+NumPy arrays. Rational event anchors/endpoints are resolved before array
+arithmetic. Route mapping preserves clamped endpoints, exact step-knot selection,
+canonical source/name ordering, weighted add/multiply neutral values, compensated
+additive sums, ordered products, and source/parameter domain errors. uFor's
+scalar evaluator remains the independent test oracle. No per-sample Pydantic
+construction or Fraction loop remains in this path.
+
+`ControlRenderer` caches shared ramp/LFO signals and resolved parameter arrays
+for one `(start, frames)` span. Events and snapshot restoration clear the cache;
+returned parameter arrays are copies, so callers cannot corrupt shared results.
+The NumPy LFO kernel now evaluates arrays within exact wrap/duty spans; Rust
+retains its own waveform implementation. Held linear amplitude envelopes were
+already vectorized and are unchanged.
+
+Every offline engine accepts positive integer `control_interval=1`, independent
+of the output buffer length. `render_midi` forwards the option, and Bach exposes
+`--control-interval`. Snapshots record the value and reject mismatches, including
+silent snapshots. The default preserves full-resolution numerical semantics
+within the existing float tolerances.
+
+Larger intervals approximate sine LFO values by linear interpolation on a grid
+anchored at the first integer frame on or after the LFO state anchor. Integer
+relative offsets avoid dependence on render partitions or large absolute clocks.
+A future knot predicts from current state only; a rate/reset event changes the
+trajectory at its addressed frame. No queued event is anticipated or delayed.
+Constants, linear ramps, envelope boundaries, square edges, triangle corners,
+and activation delay/fade remain exact. Routes and domain validation still run
+on the full-resolution arrays, so step routes are never interpolated across.
+Sine LFOs at or above the chosen control-rate Nyquist frequency retain full-rate
+evaluation. FM operator modulation and feedback always run at audio rate.
+
+This is an optional source approximation, not general decimation of the final
+parameter arrays and not extra smoothing. Large intervals can audibly alter
+modulation. For a sine at frequency `f`, linear interpolation's absolute value
+error is bounded by `(2*pi*f*control_interval/sample_rate)**2 / 8`; downstream
+nonlinear processing can make a small source error more audible.
+
+### Timing check, 2026-09-19
+
+The same four-voice noise workload used in the [noise implementation](noise.md)
+rendered two seconds at 48 kHz with 1,024-frame blocks, one 1,200 Hz lowpass stage
+per voice at Q=0.7, constant authored controls, and stereo routing. Times include
+control evaluation and voice orchestration, but exclude encoding and device I/O.
+Both measurements use interval 1.
+
+| Backend | Before vectorization | After vectorization |
+| --- | ---: | ---: |
+| NumPy | 4.850 s | 2.648 s |
+| Rust | 2.251 s | 0.057 s |
+
+The native full-engine result is approximately 39 times faster than before and
+35 times faster than the rendered duration. This is a local offline measurement,
+not a live callback deadline guarantee. NumPy filter recurrence remains scalar.
+
+An isolated 1,024-frame NumPy control benchmark at 48 kHz used one 5 Hz sine LFO
+and one amplitude multiply route, including signal generation and mapping.
+Medians cover ten calls after two warmups, without cache hits:
+
+| Evaluation | Median |
+| --- | ---: |
+| uFor scalar LFO and route oracle | 11.125 ms |
+| Vectorized, interval 1 | 0.098 ms |
+| Vectorized, interval 64 | 0.108 ms |
+| Vectorized, interval 1,024 | 0.108 ms |
+
+Interpolation overhead outweighs the saved sine evaluations in this case. Keep
+interval 1 as the default; the speed improvement comes from vectorization rather
+than a reduction in temporal resolution. Existing and new regressions cover
+fractional ramps, cancellation, step mappings, default sound, interval error
+bounds, discontinuities, rate/reset events, all four instrument snapshots, and
+irregular partitions on both backends.
 
 ## Additional work beyond the prompt
 

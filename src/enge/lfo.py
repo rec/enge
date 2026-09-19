@@ -1,4 +1,4 @@
-"""Sample uFor LFO observations without changing their exact event anchors."""
+"""Block LFO evaluation with exact event anchors and optional sine interpolation."""
 
 from fractions import Fraction
 from math import ceil
@@ -16,37 +16,86 @@ def lfo_samples(
     frames: int,
     sample_rate: int,
     backend: Literal["numpy", "native"] = "numpy",
+    control_interval: int = 1,
 ) -> np.ndarray:
-    """Return bipolar value and activation weight columns on the seconds clock.
+    """Return value/activation columns without re-anchoring persistent state.
 
-    Use uFor's lfo_event to apply rate/reset events before their addressed sample.
-    Rate changes retain phase and activation age. Rendering does not re-anchor
-    state, so silent intervals, partitions, and restores share the same timeline.
+    Sine knots use an event-anchored grid independent of render partitions.
+    Linear waveforms, discontinuities, and activation weights remain exact.
     """
     if definition.clock != "seconds" or sample_rate <= 0 or frames < 0:
         raise ValueError(
             "LFO rendering requires a seconds clock and valid frame layout"
         )
+    if type(control_interval) is not int or control_interval <= 0:
+        raise ValueError("Control interval must be a positive integer")
+    if backend not in ("numpy", "native"):
+        raise ValueError(f"Unknown LFO backend: {backend}")
     at = Fraction(start, sample_rate)
     if at < state.at or at < state.started_at:
         raise ValueError("LFO query precedes its current state")
-    if backend == "numpy":
-        observations = [
-            lfo.lfo_at(definition, state, Fraction(start + i, sample_rate))
-            for i in range(frames)
-        ]
-        return np.array(
-            [[v.value, v.weight] for v in observations], dtype=np.float64
-        ).reshape(frames, 2)
-    if backend != "native":
-        raise ValueError(f"Unknown LFO backend: {backend}")
-    from . import _native
+    if not frames:
+        return np.empty((0, 2))
+    interval = control_interval
+    if definition.waveform != Waveform.sine or state.rate * interval * 2 >= sample_rate:
+        interval = 1
+    weights = _activation_spans(definition, state, at, frames, sample_rate)
+    anchor = ceil(max(state.at, state.started_at) * sample_rate)
+    offset = (start - anchor) % interval
+    count = frames if interval == 1 else (offset + max(0, frames - 1)) // interval + 2
+    first = start if interval == 1 else start - offset
+    spans = _phase_spans(definition, state, first, count, sample_rate, interval)
+    sample_weights = (
+        weights if interval == 1 else np.array([[0, count, 1, 0, 0, 1, 0]], dtype=float)
+    )
+    if backend == "native":
+        from . import _native
 
-    # Resolve discontinuities exactly before converting phase arithmetic to float.
-    # Spans never straddle a wrap or duty edge. This also handles rates above the
-    # output rate without iterating through unobserved cycles.
-    phase = lfo.phase_at(state, at)
-    step = (state.rate / sample_rate) % 1
+        output = _native.render_lfo(
+            [Waveform.sine, Waveform.square, Waveform.triangle].index(
+                definition.waveform
+            ),
+            spans,
+            sample_weights,
+            count,
+        )
+    else:
+        output = np.empty((count, 2))
+        for span in spans:
+            begin, end = int(span[0]), int(span[1])
+            phase = span[2] + np.arange(end - begin) * span[3]
+            if definition.waveform == Waveform.sine:
+                values = np.sin(2 * np.pi * phase)
+            elif definition.waveform == Waveform.square:
+                values = np.full(end - begin, 1 if span[4] else -1)
+            else:
+                values = 2 * phase - 1 if span[4] else 1 - 2 * phase
+            output[begin:end, 0] = np.clip(values, -1, 1)
+        output[:, 1] = _weights(sample_weights, count)
+    if interval != 1:
+        output = np.column_stack(
+            (
+                np.interp(
+                    np.arange(frames) + offset,
+                    np.arange(count) * interval,
+                    output[:, 0],
+                ),
+                _weights(weights, frames),
+            )
+        )
+    return output
+
+
+def _phase_spans(
+    definition: lfo.LFO,
+    state: lfo.LFOState,
+    start: int,
+    frames: int,
+    sample_rate: int,
+    interval: int,
+) -> np.ndarray:
+    phase = lfo.phase_at(state, Fraction(start, sample_rate))
+    step = (state.rate * interval / sample_rate) % 1
     spans: list[list[float]] = []
     first = 0
     while first < frames:
@@ -69,14 +118,24 @@ def lfo_samples(
         )
         phase = (phase + count * step) % 1
         first += count
+    return np.array(spans, dtype=np.float64).reshape(-1, 5)
+
+
+def _activation_spans(
+    definition: lfo.LFO,
+    state: lfo.LFOState,
+    at: Fraction,
+    frames: int,
+    sample_rate: int,
+) -> np.ndarray:
     age = at - state.started_at - definition.delay
-    weights: list[list[float]] = [[0, frames, 1, 0, 0, 1, 0]]
+    spans: list[list[float]] = [[0, frames, 1, 0, 0, 1, 0]]
     delayed = min(frames, max(0, ceil(-age * sample_rate)))
-    weights.append([0, delayed, 0, 0, 0, 1, 0])
+    spans.append([0, delayed, 0, 0, 0, 1, 0])
     if definition.fade_in:
         last = min(frames, ceil((definition.fade_in - age) * sample_rate))
         if delayed < last:
-            weights.append(
+            spans.append(
                 [
                     delayed,
                     last,
@@ -87,9 +146,14 @@ def lfo_samples(
                     delayed,
                 ]
             )
-    return _native.render_lfo(
-        [Waveform.sine, Waveform.square, Waveform.triangle].index(definition.waveform),
-        np.array(spans, dtype=np.float64).reshape(-1, 5),
-        np.array(weights, dtype=np.float64),
-        frames,
-    )
+    return np.array(spans, dtype=np.float64)
+
+
+def _weights(spans: np.ndarray, frames: int) -> np.ndarray:
+    output = np.zeros(frames)
+    for span in spans:
+        first, last = int(span[0]), int(span[1])
+        output[first:last] = span[2] + span[3] * (
+            span[4] + (np.arange(first, last) - span[6]) / span[5]
+        )
+    return np.clip(output, 0, 1)

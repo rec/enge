@@ -8,7 +8,7 @@ from typing import Literal, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import instrument_trace, lfo, modulation
+from ufor import instrument_trace, lfo
 from ufor.base import Model
 from ufor.envelope import Envelope, Segment
 from ufor.oscillator import Oscillator, Waveform
@@ -19,7 +19,7 @@ from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, freque
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
-from . import filters, native
+from . import control, filters, native
 from .lfo import lfo_samples
 
 
@@ -271,6 +271,7 @@ class VoiceSnapshot(Model, frozen=True):
 
 
 class SynthSnapshot(Model, frozen=True):
+    control_interval: int = Field(strict=True, gt=0)
     definition: PreparedSynth
     frame: int
     voices: list[VoiceSnapshot]
@@ -306,7 +307,17 @@ class ControlRenderer:
         declarations: dict[str, controls.ControlDeclaration],
         settings: list[SoundSettings],
         backend: Literal["numpy", "native"] = "numpy",
+        control_interval: int = 1,
     ) -> None:
+        if type(control_interval) is not int or control_interval <= 0:
+            raise EngineError("Control interval must be a positive integer")
+        self.control_interval = control_interval
+        self.cached_span: tuple[int, int] | None = None
+        self.cached_values: dict[
+            tuple[int, tuple[tuple[str, int], ...]], dict[tuple[str, str], np.ndarray]
+        ] = {}
+        self.cached_lfos: dict[int, np.ndarray] = {}
+        self.cached_controls: dict[tuple[int, str, Fraction], np.ndarray] = {}
         self.sample_rate = sample_rate
         self.declarations = declarations
         self.settings = settings
@@ -369,6 +380,7 @@ class ControlRenderer:
         )
 
     def apply(self, action: instrument_trace.TraceAction) -> bool:
+        self.clear_cache()
         if isinstance(action, instrument_trace.TriggerContext):
             if action.controls.keys() != self.declarations.keys():
                 raise EngineError("Trigger context must contain all declared controls")
@@ -470,52 +482,56 @@ class ControlRenderer:
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
     ) -> dict[tuple[str, str], np.ndarray]:
         """Resolve every declared target once, independently of its DSP consumer."""
-        output = {
-            (p.target.name, p.target.parameter): np.empty(frames)
-            for p in settings.modulation.parameters
-        }
-        ramps: dict[str, controls.ControlState] = {}
+        span = (start, frames)
+        if self.cached_span != span:
+            self.clear_cache()
+            self.cached_span = span
+        key = (id(settings), tuple(sorted(sources.items())))
+        if key in self.cached_values:
+            return {n: v.copy() for n, v in self.cached_values[key].items()}
         signals: dict[str, np.ndarray] = {}
-        rendered: dict[int, np.ndarray] = {}
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
                 index = sources[binding.name]
-                if index not in rendered:
-                    rendered[index] = lfo_samples(
+                if index not in self.cached_lfos:
+                    self.cached_lfos[index] = lfo_samples(
                         settings.lfos[binding.reference],
                         self.lfos[index].state,
                         start,
                         frames,
                         self.sample_rate,
                         self.backend,
+                        self.control_interval,
                     )
-                signals[binding.name] = rendered[index]
+                signals[binding.name] = self.cached_lfos[index]
                 continue
             assert isinstance(binding, ControlBinding)
-            context = self.contexts[sources[binding.name]]
-            ramps[binding.name] = next(
-                r.state
-                for r in context.ramps
-                if r.control == binding.control
-                and r.state.smoothing == binding.smoothing
-            )
-        if settings.modulation.parameters:
-            for i in range(frames):
-                at = Fraction(start + i, self.sample_rate)
-                values = modulation.evaluate(
-                    settings.modulation,
-                    {
-                        n: modulation.SourceValue(value=controls.control_at(s, at))
-                        for n, s in ramps.items()
-                    }
-                    | {
-                        n: modulation.SourceValue(value=s[i, 0], weight=s[i, 1])
-                        for n, s in signals.items()
-                    },
+            context_id = sources[binding.name]
+            source_key = (context_id, binding.control, binding.smoothing)
+            if source_key not in self.cached_controls:
+                state = next(
+                    r.state
+                    for r in self.contexts[context_id].ramps
+                    if r.control == binding.control
+                    and r.state.smoothing == binding.smoothing
                 )
-                for value in values:
-                    output[value.target.name, value.target.parameter][i] = value.value
-        return output
+                self.cached_controls[source_key] = np.column_stack(
+                    (
+                        control.control_samples(state, start, frames, self.sample_rate),
+                        np.ones(frames),
+                    )
+                )
+            signals[binding.name] = self.cached_controls[source_key]
+        output = control.modulation_samples(settings.modulation, signals, frames)
+        self.cached_values[key] = output
+        return {n: v.copy() for n, v in output.items()}
+
+    def clear_cache(self) -> None:
+        """Discard ephemeral arrays after an event, restore, or new render span."""
+        self.cached_span = None
+        self.cached_values.clear()
+        self.cached_lfos.clear()
+        self.cached_controls.clear()
 
     def parameters(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
@@ -533,7 +549,10 @@ class OfflineSynth:
     """Render one prepared synth instance with exact frame-boundary actions."""
 
     def __init__(
-        self, definition: PreparedSynth, backend: Literal["numpy", "native"] = "numpy"
+        self,
+        definition: PreparedSynth,
+        backend: Literal["numpy", "native"] = "numpy",
+        control_interval: int = 1,
     ) -> None:
         if backend not in ("numpy", "native"):
             raise EngineError(f"Unknown synth backend: {backend}")
@@ -551,6 +570,7 @@ class OfflineSynth:
             self.definition.instrument.controls,
             list(self.templates.values()),
             backend,
+            control_interval,
         )
 
     def advance(
@@ -571,6 +591,7 @@ class OfflineSynth:
 
     def snapshot(self) -> SynthSnapshot:
         return SynthSnapshot(
+            control_interval=self.controls.control_interval,
             definition=self.definition,
             frame=self.frame,
             voices=list(self.voices.values()),
@@ -579,6 +600,8 @@ class OfflineSynth:
         ).model_copy(deep=True)
 
     def restore(self, snapshot: SynthSnapshot) -> None:
+        if snapshot.control_interval != self.controls.control_interval:
+            raise EngineError("Snapshot belongs to a different control interval")
         if snapshot.definition != self.definition:
             raise EngineError("Snapshot belongs to a different prepared synth")
         if any(v.renderer.backend != self.backend for v in snapshot.voices):
@@ -586,6 +609,7 @@ class OfflineSynth:
         snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
+        self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
 

@@ -37,6 +37,7 @@ def render_midi(
     block_size: int = 4096,
     backend: Literal["numpy", "native"] = "numpy",
     progress: bool = False,
+    control_interval: int = 1,
 ) -> RenderReport:
     """Render fixed channel patches, including their 80ms tails and 170ms silence.
 
@@ -59,14 +60,14 @@ def render_midi(
         renderer: fm.OfflineFM | synth.OfflineSynth | sample_instrument.OfflineSampler
         if isinstance(score, instrument.SampleInstrumentScore):
             renderer = sample_instrument.OfflineSampler(
-                sample_instrument.prepare(score, assets), backend
+                sample_instrument.prepare(score, assets), backend, control_interval
             )
             actions = trace.prepare(score.body, events, seed=0).actions
         else:
             renderer = (
-                fm.OfflineFM(fm.prepare(score), backend)
+                fm.OfflineFM(fm.prepare(score), backend, control_interval)
                 if patch.engine == "fm"
-                else synth.OfflineSynth(synth.prepare(score), backend)
+                else synth.OfflineSynth(synth.prepare(score), backend, control_interval)
             )
             actions = synth_trace.prepare(score.body, events, seed=0).actions
         streams.append((renderer, list(actions)))

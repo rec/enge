@@ -134,6 +134,7 @@ class VoiceSnapshot(Model, frozen=True):
 
 
 class NoiseSnapshot(Model, frozen=True):
+    control_interval: int = Field(strict=True, gt=0)
     backend: Literal["numpy", "native"]
     definition: PreparedNoise
     frame: int
@@ -146,7 +147,10 @@ class OfflineNoise:
     """Consume uFor prepared synth actions for a noise-only instrument instance."""
 
     def __init__(
-        self, definition: PreparedNoise, backend: Literal["numpy", "native"] = "numpy"
+        self,
+        definition: PreparedNoise,
+        backend: Literal["numpy", "native"] = "numpy",
+        control_interval: int = 1,
     ) -> None:
         if backend not in ("numpy", "native"):
             raise synth.EngineError(f"Unknown noise backend: {backend}")
@@ -164,6 +168,7 @@ class OfflineNoise:
             definition.score.body.controls,
             list(self.templates.values()),
             backend,
+            control_interval,
         )
 
     def advance(
@@ -186,6 +191,7 @@ class OfflineNoise:
 
     def snapshot(self) -> NoiseSnapshot:
         return NoiseSnapshot(
+            control_interval=self.controls.control_interval,
             backend=self.backend,
             definition=self.definition,
             frame=self.frame,
@@ -195,6 +201,8 @@ class OfflineNoise:
         ).model_copy(deep=True)
 
     def restore(self, snapshot: NoiseSnapshot) -> None:
+        if snapshot.control_interval != self.controls.control_interval:
+            raise synth.EngineError("Snapshot belongs to a different control interval")
         if snapshot.definition != self.definition:
             raise synth.EngineError(
                 "Snapshot belongs to a different prepared noise synth"
@@ -206,6 +214,7 @@ class OfflineNoise:
         snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
+        self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
 

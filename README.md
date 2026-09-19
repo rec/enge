@@ -65,6 +65,15 @@ silence, and snapshots retain their exact phase anchors. Standalone
 Prepared instrument traces do not yet carry addressed LFO events; their LFO
 rates remain authored settings. See the [LFO contract](plan/lfo-numerics.md).
 
+All four offline engines accept `control_interval=1` (a positive integer), as does
+`render_midi`. The default uses full-resolution vectorized controls and route
+mappings. Larger intervals interpolate sine LFO values on an event-anchored grid;
+constants, linear ramps, envelopes, square/triangle edges, and activation weights
+remain exact. Route mappings still operate per sample. Audio-rate LFOs stay at
+full rate when they reach the selected control-rate Nyquist frequency. This is
+independent of audio buffer size, and snapshots reject a different interval.
+See [control evaluation and measurements](plan/engine-execution.md#vectorized-control-evaluation).
+
 Both backends render ordered lowpass, highpass, bandpass, and notch filters with
 one or two stages. Cutoff and Q follow per-sample control/LFO routes. Each source
 channel owns trapezoidal integrator state, preserved through parameter changes

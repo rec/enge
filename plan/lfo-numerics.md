@@ -34,7 +34,8 @@ responds to trigger, and `transport` responds to explicit transport events. An
 explicit reset always resets phase and activation age, retaining current rate.
 A render boundary is never a reset or transport event.
 
-The NumPy reference samples uFor's independent scalar equations. Rust evaluates
+The NumPy reference evaluates waveform and activation arrays over exact spans;
+uFor's independent scalar equations remain the conformance oracle. Rust evaluates
 waveforms and activation arithmetic in a detached numerical loop with owned
 input and output arrays. Python resolves rational phase, wrap/duty boundaries,
 and activation boundaries before crossing the binding. Square polarity is
@@ -48,6 +49,15 @@ when a fade exists, otherwise one. During fade it increases linearly to one.
 Route evaluation applies weight after mapping: addition fades from zero;
 multiplication fades from one. Rust bounds final observations to their declared
 bipolar/unit domains to contain floating-point roundoff at endpoints.
+
+The optional `control_interval` defaults to 1. Larger intervals interpolate sine
+values between knots anchored at the first integer frame on or after the current
+LFO state anchor. This introduces an explicit approximation without re-anchoring
+at buffer boundaries. Linear waveforms and activation weights remain exact;
+sine rates at or above `sample_rate / (2 * control_interval)` remain full-rate.
+Rate/reset events replace the old trajectory on their addressed sample. A future
+knot is evaluated from current state only, never from a future event. See the
+[control profile](engine-execution.md#vectorized-control-evaluation).
 
 ## Instrument ownership and event boundary
 

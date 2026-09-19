@@ -202,6 +202,7 @@ class VoiceSnapshot(Model, frozen=True):
 
 
 class FMSnapshot(Model, frozen=True):
+    control_interval: int = Field(strict=True, gt=0)
     backend: Literal["numpy", "native"]
     definition: PreparedFM
     frame: int
@@ -214,7 +215,10 @@ class OfflineFM:
     """Consume uFor prepared synth actions for an FM-only instrument instance."""
 
     def __init__(
-        self, definition: PreparedFM, backend: Literal["numpy", "native"] = "numpy"
+        self,
+        definition: PreparedFM,
+        backend: Literal["numpy", "native"] = "numpy",
+        control_interval: int = 1,
     ) -> None:
         if backend not in ("numpy", "native"):
             raise synth.EngineError(f"Unknown FM backend: {backend}")
@@ -232,6 +236,7 @@ class OfflineFM:
             definition.score.body.controls,
             list(self.templates.values()),
             backend,
+            control_interval,
         )
 
     def advance(
@@ -254,6 +259,7 @@ class OfflineFM:
 
     def snapshot(self) -> FMSnapshot:
         return FMSnapshot(
+            control_interval=self.controls.control_interval,
             backend=self.backend,
             definition=self.definition,
             frame=self.frame,
@@ -263,6 +269,8 @@ class OfflineFM:
         ).model_copy(deep=True)
 
     def restore(self, snapshot: FMSnapshot) -> None:
+        if snapshot.control_interval != self.controls.control_interval:
+            raise synth.EngineError("Snapshot belongs to a different control interval")
         if snapshot.definition != self.definition:
             raise synth.EngineError("Snapshot belongs to a different prepared FM synth")
         if snapshot.backend != self.backend or any(
@@ -272,6 +280,7 @@ class OfflineFM:
         snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
+        self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
 

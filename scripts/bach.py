@@ -15,6 +15,7 @@ class Options(BaseModel, frozen=True):
     output: Path = Path("bwv-578.flac")
     block_size: int = Field(default=4096, gt=0)
     backend: Literal["numpy", "native"] = "numpy"
+    control_interval: int = Field(default=1, strict=True, gt=0)
 
 
 def main() -> None:
@@ -33,6 +34,7 @@ def main() -> None:
         options.block_size,
         options.backend,
         progress=True,
+        control_interval=options.control_interval,
     )
     print(
         f"{options.output}: {report.frames / report.sample_rate:.2f}s, "

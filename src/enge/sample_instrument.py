@@ -5,6 +5,7 @@ from math import isfinite
 from typing import Literal
 
 import numpy as np
+from pydantic import Field
 from ufor import instrument_trace
 from ufor.base import Model
 from ufor.samples import instrument, playback, processing, trace
@@ -32,6 +33,7 @@ class SampleVoiceSnapshot(Model, frozen=True):
 
 
 class SamplerSnapshot(Model, frozen=True):
+    control_interval: int = Field(strict=True, gt=0)
     definition: instrument.SampleInstrumentScore
     audio_digests: dict[str, str]
     frame: int
@@ -124,7 +126,10 @@ class OfflineSampler:
     """Render one sample instrument with the synth's scheduling and controls."""
 
     def __init__(
-        self, definition: PreparedSampler, backend: Literal["numpy", "native"] = "numpy"
+        self,
+        definition: PreparedSampler,
+        backend: Literal["numpy", "native"] = "numpy",
+        control_interval: int = 1,
     ) -> None:
         if backend not in ("numpy", "native"):
             raise synth.EngineError(f"Unknown sampler backend: {backend}")
@@ -138,6 +143,7 @@ class OfflineSampler:
             definition.document.body.settings.controls,
             [definition.document.body.settings, *definition.settings.values()],
             backend,
+            control_interval,
         )
 
     def advance(
@@ -157,6 +163,7 @@ class OfflineSampler:
 
     def snapshot(self) -> SamplerSnapshot:
         return SamplerSnapshot(
+            control_interval=self.controls.control_interval,
             definition=self.definition.document,
             audio_digests=self.definition.audio_digests,
             frame=self.frame,
@@ -167,6 +174,8 @@ class OfflineSampler:
         ).model_copy(deep=True)
 
     def restore(self, snapshot: SamplerSnapshot) -> None:
+        if snapshot.control_interval != self.controls.control_interval:
+            raise synth.EngineError("Snapshot belongs to a different control interval")
         if snapshot.backend != self.backend or any(
             v.renderer.backend != self.backend for v in snapshot.voices
         ):
@@ -181,6 +190,7 @@ class OfflineSampler:
         snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
+        self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
 
