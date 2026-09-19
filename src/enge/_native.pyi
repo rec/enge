@@ -58,3 +58,12 @@ def render_fm(
     routes: np.ndarray,
     filter_inputs: tuple[list[int], np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]: ...
+def render_noise(
+    key: int,
+    start: int,
+    rate: float,
+    gains: np.ndarray,
+    envelope: np.ndarray,
+    routes: np.ndarray,
+    filter_inputs: tuple[list[int], np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]: ...

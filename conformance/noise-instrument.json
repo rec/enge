@@ -1,0 +1,157 @@
+{
+  "name": "noise-wind",
+  "title": "Filtered white noise",
+  "kind": "synth_instrument",
+  "timebases": [
+    {
+      "name": "output",
+      "kind": "physical",
+      "rate": {
+        "numerator": 48000
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "name": "performance",
+      "stream": {
+        "family": "event",
+        "timebase": "output",
+        "kinds": [
+          "trigger",
+          "release",
+          "control_change"
+        ]
+      },
+      "binding": {
+        "performance": true
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "name": "audio",
+      "stream": {
+        "family": "sampled",
+        "quantity": "audio_amplitude",
+        "unit": "full_scale",
+        "timebase": "output",
+        "channels": [
+          "left",
+          "right"
+        ]
+      },
+      "binding": {
+        "audio": true
+      }
+    }
+  ],
+  "body": {
+    "controls": {
+      "color": {
+        "default": 0
+      }
+    },
+    "voices": [
+      {
+        "name": "wind",
+        "mapping": {
+          "lowest_key": 0,
+          "highest_key": 127,
+          "pitch_tracking": false
+        },
+        "channels": [
+          {
+            "input": "mono",
+            "output": "left",
+            "gain": 1
+          },
+          {
+            "input": "mono",
+            "output": "right",
+            "gain": 0.5
+          }
+        ],
+        "modulation": {
+          "sources": [
+            {
+              "name": "color",
+              "scope": "trigger",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ],
+          "parameters": [
+            {
+              "target": {
+                "name": "filter-tone",
+                "parameter": "cutoff_hz"
+              },
+              "unit": "hz",
+              "scope": "voice",
+              "minimum": 1200,
+              "maximum": 8000,
+              "default": 1200
+            }
+          ],
+          "routes": [
+            {
+              "name": "color",
+              "source": "color",
+              "target": {
+                "name": "filter-tone",
+                "parameter": "cutoff_hz"
+              },
+              "operation": "add",
+              "unit": "hz",
+              "points": [
+                {
+                  "input": 0,
+                  "amount": 0
+                },
+                {
+                  "input": 1,
+                  "amount": 6800
+                }
+              ]
+            }
+          ]
+        },
+        "bindings": [
+          {
+            "name": "color",
+            "kind": "control",
+            "control": "color",
+            "smoothing": "1/20"
+          }
+        ],
+        "noise": "white",
+        "envelope": {
+          "segments": [
+            {
+              "duration": "1/100",
+              "target": 1
+            }
+          ],
+          "release": [
+            {
+              "duration": "1/10",
+              "target": 0
+            }
+          ]
+        },
+        "processing": {
+          "volume_db": -12,
+          "filters": [
+            {
+              "name": "tone",
+              "response": "lowpass",
+              "cutoff_hz": 1200,
+              "q": 0.7
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -16,7 +16,10 @@ stereo-independent generators, and oversampling are outside the initial scope.
 Filtered white noise is not advertised as an exact pink or brown noise model.
 PyTorch and C++ implementations are also deferred.
 
-This document is a plan; it does not introduce an implemented source profile.
+The first profile is implemented in `src/enge/noise.py` and `src/noise.rs`.
+uFor defines `NoiseVoice` and prepared `noise_key` semantics in
+[the noise contract](../../ufor/doc/noise-synthesis.md). The shared regression
+suite is `test/test_noise.py`; both backends publish a two-second FLAC demo.
 
 ## Ownership and portable definitions
 
@@ -36,8 +39,8 @@ enge owns numerical random generation, envelope/filter realization, audio state,
 and the NumPy/Rust implementations. Hosts retain transport, device I/O, raw
 performance adaptation, encoding, and output files.
 
-Pitch is not a noise-generator frequency. Keys still select voices and can drive
-existing key-bound modulation, such as filter cutoff. Resolved note pitch does
+Pitch is not a noise-generator frequency. Keys still select voices; the initial
+enge profile keeps the existing control/LFO binding restrictions. Resolved note pitch does
 not change the random stream. Reject nondefault source tuning/frequency offsets
 and unsupported tuning modulation explicitly; do not silently accept controls
 that have no audible meaning. Specify this restriction in uFor and enge together.
@@ -45,17 +48,16 @@ that have no audible meaning. Specify this restriction in uFor and enge together
 ## Deterministic random streams
 
 Use a specified counter-based integer generator whose output depends only on a
-resolved per-voice stream key and that voice's sample index. Select and document
-one established algorithm before implementation, including word widths,
-constants, overflow rules, counter limits, and integer-to-float conversion.
-Publish fixed integer test vectors. Do not rely on NumPy's default RNG, Rust's
-random library defaults, Python hashing, global state, wall time, or entropy.
+resolved per-voice stream key and that voice's sample index. The chosen algorithm
+is fixed-increment SplitMix64, with exact unsigned 64-bit arithmetic and the upper-53-bit float mapping below. Constants, stream-key
+SHA-256 derivation, and counter exhaustion are specified in the uFor contract.
+`conformance/noise-v1.json` carries the portable vectors. Do not rely on NumPy's
+default RNG, Rust's random library defaults, Python hashing, global state, wall time, or entropy.
 
 The existing `synth_trace.prepare(..., seed=...)` seed should be the single
-performance seed. Currently callers can pass only `trace.actions` to engines,
-so retaining a seed only on the trace object is insufficient. Extend prepared
-noise-start semantics to carry a resolved stream key. Define its deterministic
-derivation from the performance seed and canonical voice identity in uFor,
+performance seed. Callers can pass only `trace.actions` to engines, so retaining
+a seed only on the trace object is insufficient. Prepared noise starts now carry a resolved
+stream key. Define its deterministic derivation from the performance seed and canonical voice identity in uFor,
 with language-neutral examples. Do not add a second engine seed argument.
 Repeated voices receive distinct streams; rerunning the same prepared actions
 reproduces the same streams. Rendering order and block partitioning cannot
@@ -175,7 +177,29 @@ snapshots. Snapshot continuation must neither skip nor repeat a random sample.
   sample rate, voice count, filters, block size, and whether control evaluation
   is included. Offline speed does not establish real-time callback safety.
 
+## Implementation evidence
+
+The shared suite covers NumPy and Rust, independent scalar/matrix oracles,
+block partitions and JSON continuation, live filter controls, LFO amplitude,
+muted/interleaved streams, owned strided native buffers, and no Python fallback.
+Noise-v1 vectors are copied from uFor so installed-package tests do not depend
+on a sibling checkout. Both backends publish verified two-second FLAC demos.
+
+A local timing check on 2026-09-19 used 48 kHz float64 stereo routing and one
+1200 Hz lowpass stage at Q=0.7. Voice timings include envelope/filter parameter
+preparation and binding overhead; medians use 90 blocks after ten warmups.
+
+| Render | NumPy | Rust |
+| --- | ---: | ---: |
+| One voice, 128-frame block | 0.888 ms | 0.032 ms |
+| One voice, 1024-frame block | 6.909 ms | 0.062 ms |
+| Four voices, two seconds, 1024-frame blocks, including controls | 4.850 s | 2.251 s |
+
+The last row is a single offline run with constant authored controls and no file
+encoding. The shared Python control/orchestration path remains much more
+expensive than voice DSP. Native source speed is not a real-time claim for the
+whole engine. Optimizing shared controls is outside this change.
+
 ## Additional work beyond the prompt
 
-None. This task adds the planning document only; the implementation steps above
-are proposed future work.
+None. The implementation follows the profile described above.

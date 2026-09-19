@@ -37,6 +37,14 @@ explicit for a future tensor port. The Rust FM kernel computes both operators,
 envelopes, feedback, filters, gain, and routing with owned buffers and the GIL
 released. PyTorch remains deferred.
 
+The fourth source profile is white noise in `src/enge/noise.py` and `src/noise.rs`,
+under the [noise plan](noise.md). Both backends use the portable noise-v1
+SplitMix64 stream contract, with per-voice keys carried by prepared actions and
+an exact sample counter. Noise shares filters, amplitude envelopes, controls,
+LFOs, routing, and lifecycle semantics; source pitch/tuning is unsupported.
+The filter precedes the amplitude envelope, as in the oscillator synth. Snapshots
+preserve the stream and reject backend mismatches, even for silent engines.
+
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and

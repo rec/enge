@@ -104,6 +104,28 @@ outside it. This is a NumPy reference for a future tensor port, not an existing
 See the [FM plan and implementation status](plan/fm-synthesis.md) and
 [uFor FM semantics](../ufor/doc/fm-synthesis.md).
 
+The white-noise engine in [noise.py](src/enge/noise.py) accepts uFor `NoiseVoice`
+definitions (`noise: "white"`, mapping `pitch_tracking: false`). Prepare the score
+with `noise.prepare(score)`, construct `noise.OfflineNoise(prepared,
+backend="native")` for Rust or omit the backend for NumPy, then use the same
+`advance`, `snapshot`, and `restore` operations. See the
+[noise fixture](conformance/noise-instrument.json) and
+[portable noise contract](../ufor/doc/noise-synthesis.md).
+
+Each prepared note carries its own deterministic stream key derived from the
+performance seed. Block sizes, muting, and snapshot continuation preserve that
+stream. The source is mono uniform white noise, with existing resonant filters
+before the amplitude envelope/gain and channel routes. Cutoff, Q, and amplitude
+support controls and LFOs. Pitch does not affect noise; source tuning is rejected.
+NumPy generates random samples using vectorized integer arithmetic; Rust owns
+its buffers and performs the full voice DSP with the GIL released. Neither
+backend normalizes or clips, and pink/brown noise are not implemented.
+
+Run `uv run pytest test/test_noise.py` for shared regressions and the two-second
+filtered-noise demo. Verified 48 kHz WAVs produce listenable
+`.pytest_cache/d/audio/noise-demo-numpy.flac` and
+`.pytest_cache/d/audio/noise-demo-native.flac`.
+
 Select the Rust backend with `OfflineSynth(prepare(score), backend="native")`
 or `VoiceRenderer.start(definition, backend="native")`. The default is `"numpy"`;
 there is no fallback if the native extension is unavailable. Active-voice snapshots
