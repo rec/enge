@@ -107,10 +107,17 @@ class Patch(BaseModel, frozen=True):
                 assets=[
                     {
                         "name": "tone",
-                        "path": "generated-harmonics.f64",
+                        "location": {
+                            "kind": "relative_file",
+                            "path": "generated-harmonics.f64",
+                        },
                         "encoding": "float64-le",
-                        "byte_length": audio.nbytes,
-                        "sha256": sha256(audio.astype("<f8").tobytes()).hexdigest(),
+                        "content": {
+                            "byte_length": audio.nbytes,
+                            "sha256": sha256(
+                                audio.astype("<f8").tobytes()
+                            ).hexdigest(),
+                        },
                         "audio": {
                             "timebase": "output",
                             "channels": ["mono"],

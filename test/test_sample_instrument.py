@@ -29,10 +29,9 @@ def sample_score(
     raw["assets"] = [
         {
             "name": "asset",
-            "path": "sample.wav",
+            "location": {"kind": "relative_file", "path": "sample.wav"},
             "encoding": "WAV/PCM_16",
-            "byte_length": 0,
-            "sha256": "0" * 64,
+            "content": {"byte_length": 0, "sha256": "0" * 64},
             "audio": {"timebase": "native", "channels": ["a", "b"], "frames": frames},
         }
     ]
