@@ -12,6 +12,30 @@ def render_effects(
     filter_inputs: list[tuple[list[int], np.ndarray, np.ndarray] | None],
     state_floors: list[float],
 ) -> tuple[np.ndarray, list[np.ndarray]]: ...
+def render_granulator(
+    samples: np.ndarray,
+    parameters: np.ndarray,
+    start_frame: int,
+    rate: int,
+    history_frames: int,
+    maximum_grains: int,
+    history: np.ndarray,
+    history_start: int,
+    phase: float,
+    counter: int,
+    grain_samples: list[np.ndarray],
+    grain_indices: list[int],
+    grain_gains: list[float],
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    int,
+    float,
+    int,
+    list[np.ndarray],
+    list[int],
+    list[float],
+]: ...
 def render_filters(
     samples: np.ndarray,
     rate: float,

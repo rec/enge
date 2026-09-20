@@ -250,3 +250,111 @@ def test_native_graph_matches_numpy(tmp_path: Path) -> None:
     )
 
     check_audio(tmp_path / "native-effects.wav", actual, expected)
+
+
+def test_granulator_is_partition_independent_and_snapshots(tmp_path: Path) -> None:
+    graph = effects.serial_graph(
+        audio_effects.AttachmentScope.master,
+        graph_input(),
+        [
+            audio_effects.Granulator(
+                name="cloud",
+                duration_seconds=0.02,
+                density_hz=120,
+                lookback_seconds=0.03,
+                playback_ratio=1.5,
+                position_jitter_seconds=0.005,
+                history_seconds=0.08,
+                maximum_grains=2,
+            )
+        ],
+        48000,
+    )
+    prepared = effects.prepare(graph, 48000)
+    frames = np.arange(48000)
+    source = np.column_stack(
+        [np.sin(2 * np.pi * frames / 97), np.cos(2 * np.pi * frames / 127)]
+    )
+    actions: list[audio_effects.EffectAction] = [
+        audio_effects.FreezeAction(
+            tick=18000, ordinal=0, processor="cloud", frozen=True
+        ),
+        audio_effects.ParameterAction(
+            tick=24000,
+            ordinal=0,
+            processor="cloud",
+            parameter="playback_ratio",
+            value=0.5,
+        ),
+        audio_effects.FreezeAction(
+            tick=30000, ordinal=0, processor="cloud", frozen=False
+        ),
+    ]
+    whole = effects.OfflineEffects(prepared).advance(
+        {"main": source}, actions, 0, 48000
+    )
+    split = effects.OfflineEffects(prepared)
+    first = split.advance({"main": source[:24000]}, actions[:1], 0, 24000)
+    snapshot = split.snapshot()
+    second = split.advance({"main": source[24000:]}, actions[1:], 24000, 48000)
+    restored = effects.OfflineEffects(prepared)
+    restored.restore(snapshot)
+
+    np.testing.assert_array_equal(
+        restored.advance({"main": source[24000:]}, actions[1:], 24000, 48000),
+        second,
+    )
+    check_audio(tmp_path / "granulator.wav", np.concatenate([first, second]), whole)
+    assert len(split.processors["cloud"].granulator.grains) <= 2
+
+
+def test_native_granulator_matches_reference_across_blocks(tmp_path: Path) -> None:
+    graph = effects.serial_graph(
+        audio_effects.AttachmentScope.master,
+        graph_input(),
+        [
+            audio_effects.Granulator(
+                name="cloud",
+                duration_seconds=0.015,
+                density_hz=90,
+                lookback_seconds=0.025,
+                playback_ratio=1.25,
+                position_jitter_seconds=0.003,
+                history_seconds=0.06,
+                maximum_grains=3,
+            )
+        ],
+        48000,
+    )
+    prepared = effects.prepare(graph, 48000)
+    frames = np.arange(48000)
+    source = np.column_stack(
+        [np.sin(2 * np.pi * frames / 83), np.cos(2 * np.pi * frames / 139)]
+    )
+    action = audio_effects.ParameterAction(
+        tick=19000,
+        ordinal=0,
+        processor="cloud",
+        parameter="density_hz",
+        value=140,
+        duration_frames=7000,
+    )
+    expected = effects.OfflineEffects(prepared).advance(
+        {"main": source}, [action], 0, 48000
+    )
+    native = effects.OfflineEffects(prepared, "native")
+    parts = [
+        native.advance({"main": source[:12345]}, [], 0, 12345),
+        native.advance({"main": source[12345:27111]}, [action], 12345, 27111),
+    ]
+    snapshot = native.snapshot()
+    parts.append(native.advance({"main": source[27111:]}, [], 27111, 48000))
+    restored = effects.OfflineEffects(prepared, "native")
+    restored.restore(snapshot)
+
+    np.testing.assert_allclose(
+        restored.advance({"main": source[27111:]}, [], 27111, 48000),
+        parts[-1],
+        atol=1e-12,
+    )
+    check_audio(tmp_path / "native-granulator.wav", np.concatenate(parts), expected)
