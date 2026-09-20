@@ -208,3 +208,45 @@ def test_serial_shorthand_rejects_multi_input_processor() -> None:
             [audio_effects.Multiply(name="ring")],
             256,
         )
+
+
+def test_native_graph_matches_numpy(tmp_path: Path) -> None:
+    definition = processing.ResonantFilter(
+        name="low", response="lowpass", cutoff_hz=3000, q=0.8
+    )
+    graph = effects.serial_graph(
+        audio_effects.AttachmentScope.instrument,
+        graph_input(),
+        [
+            audio_effects.Filter(name="tone", filters=[definition], mix=0.75),
+            audio_effects.Gain(name="trim", gain_db=-3),
+        ],
+        48000,
+        "organ",
+    )
+    frames = np.arange(48000)
+    source = np.column_stack(
+        [np.sin(2 * np.pi * frames / 71), np.cos(2 * np.pi * frames / 113)]
+    )
+    actions: list[audio_effects.EffectAction] = [
+        audio_effects.ParameterAction(
+            tick=12000,
+            ordinal=0,
+            processor="tone",
+            parameter="low-cutoff_hz",
+            value=800,
+            duration_frames=16000,
+        ),
+        audio_effects.BypassAction(
+            tick=32000, ordinal=0, processor="trim", bypassed=True
+        ),
+    ]
+    prepared = effects.prepare(graph, 48000)
+    expected = effects.OfflineEffects(prepared).advance(
+        {"main": source}, actions, 0, 48000
+    )
+    actual = effects.OfflineEffects(prepared, "native").advance(
+        {"main": source}, actions, 0, 48000
+    )
+
+    check_audio(tmp_path / "native-effects.wav", actual, expected)

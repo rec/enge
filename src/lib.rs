@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod effects;
 mod filters;
 mod fm;
 mod lfo;
@@ -154,6 +155,7 @@ fn render<'py>(
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(effects::render_effects, module)?)?;
     module.add_function(wrap_pyfunction!(filters::render_filters, module)?)?;
     module.add_function(wrap_pyfunction!(render, module)?)?;
     module.add_function(wrap_pyfunction!(fm::render_fm, module)?)?;
