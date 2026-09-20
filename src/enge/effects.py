@@ -28,10 +28,32 @@ class ParameterRamp(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class GrainState(BaseModel):
+    samples: list[list[float]]
+    index: int = 0
+    gain: float
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class GranulatorState(BaseModel):
+    history: list[list[float]] = Field(default_factory=list)
+    history_start: int = 0
+    phase: float = 0
+    launch_counter: int = 0
+    grains: list[GrainState] = Field(default_factory=list)
+    frozen: bool = False
+    frozen_history: list[list[float]] = Field(default_factory=list)
+    frozen_start: int = 0
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class ProcessorState(BaseModel):
     parameters: dict[str, ParameterRamp]
     bypass: ParameterRamp
     filter_states: list[filters.FilterState] = Field(default_factory=list)
+    granulator: GranulatorState | None = None
     ended_at: int | None = None
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -114,6 +136,7 @@ class OfflineEffects:
                     for a in actions
                 )
                 and not self.ended_inputs
+                and _native_supported(self.processors, graph, actions)
             ):
                 output = self._advance_native(source_audio, actions, start, end)
                 self.frame = end
@@ -157,6 +180,12 @@ class OfflineEffects:
         graph = self.definition.definition
         processors = {p.name: p for p in graph.processors}
         ordered = [processors[n] for n in self.definition.order]
+        if len(ordered) == 1 and isinstance(
+            processor := ordered[0], audio_effects.Granulator
+        ):
+            return self._advance_native_granulator(
+                processor, input_audio, actions, start, end
+            )
         input_indices = {v.name: i for i, v in enumerate(graph.inputs)}
         processor_indices = {
             p.name: len(graph.inputs) + i for i, p in enumerate(ordered)
@@ -258,6 +287,72 @@ class OfflineEffects:
                 )
         return output
 
+    def _advance_native_granulator(
+        self,
+        processor: audio_effects.Granulator,
+        input_audio: dict[str, np.ndarray],
+        actions: list[audio_effects.EffectAction],
+        start: int,
+        end: int,
+    ) -> np.ndarray:
+        from . import _native
+
+        state = self.processors[processor.name]
+        granular = state.granulator
+        assert granular is not None
+        frames = end - start
+        values = np.zeros((frames, 6))
+        action_index = 0
+        names = [
+            "duration_seconds",
+            "density_hz",
+            "lookback_seconds",
+            "playback_ratio",
+            "position_jitter_seconds",
+        ]
+        for i in range(frames):
+            frame = start + i
+            while action_index < len(actions) and actions[action_index].tick == frame:
+                self._apply(actions[action_index])
+                action_index += 1
+            values[i, :5] = [state.parameters[n].value(frame) for n in names]
+            values[i, 5] = state.parameters["mix"].value(frame) * state.bypass.value(
+                frame
+            )
+        source = next(iter(input_audio.values()))
+        channels = source.shape[1]
+        rendered = _native.render_granulator(
+            source,
+            values,
+            start,
+            self.definition.sample_rate,
+            max(2, round(processor.history_seconds * self.definition.sample_rate)),
+            processor.maximum_grains,
+            np.asarray(granular.history, dtype=np.float64).reshape(-1, channels),
+            granular.history_start,
+            granular.phase,
+            granular.launch_counter,
+            [np.asarray(g.samples, dtype=np.float64) for g in granular.grains],
+            [g.index for g in granular.grains],
+            [g.gain for g in granular.grains],
+        )
+        (
+            output,
+            history,
+            granular.history_start,
+            granular.phase,
+            granular.launch_counter,
+            grain_samples,
+            grain_indices,
+            grain_gains,
+        ) = rendered
+        granular.history = history.tolist()
+        granular.grains = [
+            GrainState(samples=v.tolist(), index=i, gain=g)
+            for v, i, g in zip(grain_samples, grain_indices, grain_gains, strict=True)
+        ]
+        return output
+
     def snapshot(self) -> EffectSnapshot:
         return EffectSnapshot(
             definition=self.definition.definition,
@@ -311,8 +406,19 @@ class OfflineEffects:
                 target=0.0 if action.bypassed else 1.0,
                 duration=processor.bypass_fade_frames,
             )
+        elif isinstance(action, audio_effects.FreezeAction):
+            state = self.processors[action.processor]
+            granular = state.granulator
+            if granular is None:
+                raise ValueError("Freeze requires the granular processor profile")
+            if action.frozen and not granular.frozen:
+                granular.frozen_history = [list(v) for v in granular.history]
+                granular.frozen_start = granular.history_start
+            elif not action.frozen:
+                granular.frozen_history = []
+            granular.frozen = action.frozen
         else:
-            raise ValueError("Freeze requires the granular processor profile")
+            raise ValueError("Unknown effect action")
 
     def _process_frame(
         self, input_audio: dict[str, np.ndarray], index: int, frame: int
@@ -416,7 +522,86 @@ class OfflineEffects:
                 np.zeros_like(dry) if drained else _mix(dry, wet[0], mix),
                 drained,
             )
-        raise ValueError("Granulator is not implemented in this processing step")
+        if isinstance(processor, audio_effects.Granulator):
+            dry = ports["input"]
+            wet = self._granulator_frame(processor, state, dry, frame, ended["input"])
+            granular = state.granulator
+            assert granular is not None
+            drained = ended["input"] and not granular.frozen and not granular.grains
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
+        raise ValueError("Unknown effect processor")
+
+    def _granulator_frame(
+        self,
+        processor: audio_effects.Granulator,
+        state: ProcessorState,
+        dry: np.ndarray,
+        frame: int,
+        ended: bool,
+    ) -> np.ndarray:
+        granular = state.granulator
+        assert granular is not None
+        rate = self.definition.sample_rate
+        if not granular.frozen and not ended:
+            granular.history.append(dry.tolist())
+            maximum = max(2, round(processor.history_seconds * rate))
+            if len(granular.history) > maximum:
+                granular.history.pop(0)
+                granular.history_start += 1
+        density = state.parameters["density_hz"].value(frame)
+        launch, granular.phase = audio_effects.grain_launches(
+            granular.phase, density, rate
+        )
+        if launch:
+            counter = granular.launch_counter
+            granular.launch_counter += 1
+            if (not ended or granular.frozen) and len(
+                granular.grains
+            ) < processor.maximum_grains:
+                history = (
+                    granular.frozen_history if granular.frozen else granular.history
+                )
+                history_start = (
+                    granular.frozen_start if granular.frozen else granular.history_start
+                )
+                duration = max(
+                    2, round(state.parameters["duration_seconds"].value(frame) * rate)
+                )
+                ratio = state.parameters["playback_ratio"].value(frame)
+                lookback = state.parameters["lookback_seconds"].value(frame) * rate
+                jitter = (
+                    state.parameters["position_jitter_seconds"].value(frame)
+                    * rate
+                    * audio_effects.grain_jitter(counter)
+                )
+                end_position = frame - lookback + jitter
+                start_position = end_position - (duration - 1) * ratio
+                captured = _capture_grain(
+                    history, history_start, start_position, ratio, duration
+                )
+                if captured is not None:
+                    granular.grains.append(
+                        GrainState(
+                            samples=captured,
+                            gain=audio_effects.grain_gain(
+                                density,
+                                state.parameters["duration_seconds"].value(frame),
+                            ),
+                        )
+                    )
+        wet = np.zeros_like(dry)
+        active: list[GrainState] = []
+        for grain in granular.grains:
+            wet += (
+                np.asarray(grain.samples[grain.index])
+                * audio_effects.grain_window(grain.index, len(grain.samples))
+                * grain.gain
+            )
+            grain.index += 1
+            if grain.index < len(grain.samples):
+                active.append(grain)
+        granular.grains = active
+        return wet
 
 
 class OfflineEffectAttachment:
@@ -454,8 +639,6 @@ class OfflineEffectAttachment:
 def prepare(definition: audio_effects.EffectGraph, sample_rate: int) -> PreparedEffects:
     if sample_rate <= 0:
         raise EngineError("Effect sample rate must be positive")
-    if any(isinstance(p, audio_effects.Granulator) for p in definition.processors):
-        raise EngineError("Granulator is not implemented in this processing step")
     for processor in definition.processors:
         if isinstance(processor, audio_effects.Filter):
             filters.parameters(processor.filters, sample_rate, 1)
@@ -507,6 +690,14 @@ def _initial_state(processor: audio_effects.Processor, channels: int) -> Process
         for definition in processor.filters:
             values[f"{definition.name}-cutoff_hz"] = definition.cutoff_hz
             values[f"{definition.name}-q"] = definition.q
+    elif isinstance(processor, audio_effects.Granulator):
+        values.update(
+            duration_seconds=processor.duration_seconds,
+            density_hz=processor.density_hz,
+            lookback_seconds=processor.lookback_seconds,
+            playback_ratio=processor.playback_ratio,
+            position_jitter_seconds=processor.position_jitter_seconds,
+        )
     return ProcessorState(
         parameters={
             name: ParameterRamp(at=0, start=value, target=value, duration=0)
@@ -514,6 +705,11 @@ def _initial_state(processor: audio_effects.Processor, channels: int) -> Process
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        granulator=(
+            GranulatorState()
+            if isinstance(processor, audio_effects.Granulator)
+            else None
+        ),
     )
 
 
@@ -523,6 +719,43 @@ def _processor(graph: audio_effects.EffectGraph, name: str) -> audio_effects.Pro
 
 def _mix(dry: np.ndarray, wet: np.ndarray, mix: float) -> np.ndarray:
     return (1 - mix) * dry + mix * wet
+
+
+def _capture_grain(
+    history: list[list[float]],
+    history_start: int,
+    start: float,
+    ratio: float,
+    frames: int,
+) -> list[list[float]] | None:
+    if not history:
+        return None
+    positions = start + np.arange(frames) * ratio
+    lower = np.floor(positions).astype(np.int64)
+    upper = lower + 1
+    if lower[0] < history_start or upper[-1] >= history_start + len(history):
+        return None
+    values = np.asarray(history)
+    fraction = positions - lower
+    first = values[lower - history_start]
+    second = values[upper - history_start]
+    return (first + (second - first) * fraction[:, None]).tolist()
+
+
+def _native_supported(
+    states: dict[str, ProcessorState],
+    graph: audio_effects.EffectGraph,
+    actions: list[audio_effects.EffectAction],
+) -> bool:
+    granular = [p for p in graph.processors if isinstance(p, audio_effects.Granulator)]
+    if not granular:
+        return True
+    if len(graph.processors) != 1 or any(
+        isinstance(a, audio_effects.FreezeAction) for a in actions
+    ):
+        return False
+    state = states[granular[0].name].granulator
+    return state is not None and not state.frozen
 
 
 def _processor_layouts(
