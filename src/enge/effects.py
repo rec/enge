@@ -636,6 +636,39 @@ class OfflineEffectAttachment:
         )
 
 
+def process_audio(
+    definition: PreparedEffects,
+    inputs: dict[str, np.ndarray],
+    actions: list[audio_effects.EffectAction] | None = None,
+    backend: Literal["numpy", "native"] = "numpy",
+    block_frames: int | None = None,
+) -> np.ndarray:
+    """Process complete named streams through one prepared graph in blocks."""
+    frames = {v.shape[0] for v in inputs.values()}
+    if len(frames) != 1:
+        raise EngineError("Effect input streams must have equal lengths")
+    total = frames.pop()
+    block_frames = block_frames or definition.definition.maximum_block_frames
+    if block_frames <= 0 or block_frames > definition.definition.maximum_block_frames:
+        raise EngineError("Effect block size exceeds its prepared maximum")
+    renderer = OfflineEffects(definition, backend)
+    actions = actions or []
+    output = np.zeros((total, len(definition.channels)))
+    cursor = 0
+    for start in range(0, total, block_frames):
+        end = min(total, start + block_frames)
+        first = cursor
+        while cursor < len(actions) and actions[cursor].tick < end:
+            cursor += 1
+        output[start:end] = renderer.advance(
+            {n: v[start:end] for n, v in inputs.items()},
+            actions[first:cursor],
+            start,
+            end,
+        )
+    return output
+
+
 def prepare(definition: audio_effects.EffectGraph, sample_rate: int) -> PreparedEffects:
     if sample_rate <= 0:
         raise EngineError("Effect sample rate must be positive")
