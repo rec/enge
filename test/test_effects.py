@@ -200,6 +200,19 @@ def test_offline_attachment_processes_a_source_engine() -> None:
     np.testing.assert_allclose(actual, 0.25 * 10 ** (6 / 20))
 
 
+def test_process_audio_uses_prepared_block_limit() -> None:
+    prepared = effects.prepare(gain_graph(6), 48000)
+    source = np.full((8192, 2), 0.25)
+
+    actual = effects.process_audio(
+        prepared, {"main": source}, backend="native", block_frames=997
+    )
+
+    np.testing.assert_allclose(actual, 0.25 * 10 ** (6 / 20))
+    with pytest.raises(effects.EngineError, match="prepared maximum"):
+        effects.process_audio(prepared, {"main": source}, block_frames=4097)
+
+
 def test_serial_shorthand_rejects_multi_input_processor() -> None:
     with pytest.raises(effects.EngineError, match="one-input"):
         effects.serial_graph(
