@@ -4,8 +4,8 @@
 
 Add reusable, stateful audio effects that can process every enge sound engine,
 with the same behavior in offline rendering and live block processing. The first
-musical effect is a granulator, usable on individual voices, instrument mixes,
-or the final output mix.
+stateful musical effect is a granulator, usable on individual voices, instrument
+mixes, or the final output mix.
 
 Today, oscillator, sampler, FM, and noise voices share ordered dynamic filters.
 Those filters run before amplitude and mixing, retain voice-owned state, and
@@ -14,14 +14,18 @@ already reserves shared post-mix processing for a separate processor graph.
 The existing native render paths also do not establish an allocation-free,
 Python-free audio callback path.
 
-This plan proposes that architectural addition. Start with fixed serial chains
-at explicit attachment points, not an arbitrary routing graph editor. Existing
-voice filters keep their specified position and lifetime.
+This plan proposes that architectural addition. Use fixed prepared acyclic
+processor graphs at explicit attachment points. A serial chain remains the
+concise common form, while named audio input ports permit processors such as
+ring modulators and sidechain compressors. This is a portable data and execution
+model, not an arbitrary routing graph editor. Existing voice filters keep their
+specified position and lifetime.
 
 ## Ownership and scope
 
-- uFor owns portable effect definitions, ordered chains, attachment points,
-  parameter units/domains, modulation bindings, and prepared actions.
+- uFor owns portable effect definitions, named audio ports and connections,
+  attachment points, parameter units/domains, modulation bindings, and prepared
+  actions.
 - enge owns preparation, numerical processing, buffers, scheduling, effect state,
   independent NumPy/Rust implementations, and snapshots.
 - Hosts own devices, transport, input capture, UI, MIDI/OSC adaptation, files,
@@ -31,8 +35,10 @@ voice filters keep their specified position and lifetime.
 Reuse the [engine execution contract](engine-execution.md), uFor control
 evolution, existing LFO/control semantics, and explicit channel routing. Do not
 introduce another raw musical-event API or reinterpret instrument selection.
-PyTorch, C++, JUCE, plugin hosting, device backends, general sends/returns,
-sidechains, convolution, and hot editing of chain topology are outside this plan.
+PyTorch, C++, JUCE, plugin hosting, device backends, user-addressable reusable
+send/return buses, convolution, feedback connections, and hot editing of graph
+topology are outside this plan. Fixed connections directly to named processor
+inputs, including sidechains, are included.
 
 ## Signal path and attachment points
 
@@ -44,16 +50,43 @@ Define three ordered insertion points:
    instrument's output layout.
 3. Master: after the instrument outputs have been summed.
 
-Each attachment owns an ordered list of processors. A processor receives the
-previous processor's output. The initial processors preserve channel count;
-existing explicit channel maps handle layout changes. No implicit stereo
-conversion or feedback edges between processors are allowed.
+Each attachment exposes one or more named input streams and owns a prepared
+processor graph with one public output. Its default `main` input is the signal at
+the insertion point described above. Additional inputs are explicitly routed
+from upstream voice, instrument, master, or host outputs visible at that scope;
+they are not inferred from similarly named channels. Existing explicit channel
+routing supplies those streams without introducing a separate effect-bus model.
 
-Every processor definition has a stable string ID unique within its chain. A
+Every processor type declares fixed named input ports and one output. Gain,
+filter, and granulator have `input`; a ring modulator can have `carrier` and
+`modulator`; a sidechain compressor can have `input` and `detector`. Each port
+declares its channel layout, whether it is required, and its exact behavior after
+that input ends. A processor with wet/dry behavior identifies the input used for
+the dry path; the detector input of a sidechain processor is never mixed into its
+audio output. There is no universal fallback for an unconnected port. A type may
+declare a specific fallback, such as using `input` as its detector, but otherwise
+preparation rejects a missing required connection.
+
+Audio ports carry sample-rate signals and remain distinct from scalar control,
+automation, envelope, and LFO inputs. An audio-rate carrier, modulator, or
+detector is never silently converted into a control trajectory, and a control
+route cannot satisfy an audio port.
+
+A connection joins an attachment input or one processor output to exactly one
+processor input port. Outputs may fan out. A port has only one connection; an
+explicit mixer is required when several signals must feed it. Validate channel
+layouts, required connections, references, and graph acyclicity during
+preparation, then establish one stable topological execution order. Feedback
+edges remain unsupported until a later contract supplies explicit delay and
+cycle semantics. Serial-chain notation is shorthand that connects each
+processor's primary input to the preceding output. The initial processors
+preserve the primary input's channel count; no implicit stereo conversion occurs.
+
+Every processor definition has a stable string ID unique within its graph. A
 parameter address consists of attachment scope, attachment owner, processor ID,
 and parameter. A per-voice processor instance is identified internally by voice
 ID plus processor ID. Snapshots and diagnostics use these identities rather than
-list positions, while chain order still determines processing order.
+list positions.
 
 Per-voice effects receive independent instances. Instrument and master effects
 retain state across note boundaries. The same processor implementation serves
@@ -63,23 +96,27 @@ an audio input device.
 
 ## Preparation and processing contract
 
-Preparation fixes sample rate, channel layout, maximum block length, chain
-topology, and resource limits. Allocate delay/history buffers, scratch space,
-grain pools, voice/tail slots, and action capacity before processing begins.
-Reject invalid definitions during preparation wherever possible.
+Preparation fixes sample rate, every port's channel layout, maximum block length,
+graph topology and execution order, and resource limits. Allocate every input
+buffer, delay/history buffer, scratch region, grain pool, voice/tail slot, and
+action capacity before processing begins. Reject invalid definitions during
+preparation wherever possible.
 
-Use an explicit numerical boundary: input audio, parameter values/trajectories,
-and previous state produce output audio and next state. The NumPy reference
-keeps this boundary readable and suitable for a later tensor implementation;
-Rust may mutate exclusively owned prepared state and caller-owned output buffers.
-Do not require allocating and returning a new state object for each native block.
+Use an explicit numerical boundary: named input audio arrays, parameter
+values/trajectories, and previous state produce output audio and next state. Port
+names resolve to fixed prepared indices before processing; the callback does not
+perform string or dictionary lookup. The NumPy reference keeps this boundary
+readable and suitable for a later tensor implementation; Rust may mutate
+exclusively owned prepared state and caller-owned output buffers. Do not require
+allocating and returning a new state object for each native block.
 
 Audio keeps enge's `(frames, channels)` layout and float64 reference convention.
 Calls advance a contiguous absolute frame cursor. Support variable block sizes
 up to the prepared maximum and define a zero-frame call as a no-op. Rendering
 the same input and actions with different block partitions must agree within
-the numerical tolerance. Define buffer ownership and aliasing explicitly;
-the initial public processing API uses separate input and output buffers.
+the numerical tolerance. Define buffer ownership and aliasing explicitly; the
+initial public processing API uses separate buffers for every connected input
+and output.
 
 No Python calls, allocation/deallocation, blocking locks, file access, decoding,
 logging, or unbounded work belong in the native live processing path. Prepare
@@ -140,22 +177,31 @@ processing the effect and advancing its state. Suspending an effect is not a
 second bypass mode in this profile. Reset is an explicit operation performed
 while stopped; transport position jumps require reset or snapshot restoration.
 
-Source completion ends input to the first processor. That processor continues to
-feed its tail to the next processor and reports the exact frame at which it is
-drained; only then does the next processor's input end. This propagates serially
-through the chain, including when boundaries fall within a block. A chain is
-drained only when its final processor drains. A voice with an effect tail retains
-its identity and routing during this process. Instrument and master chains follow
-the same rule after their inputs finish. Existing source filters still end with
-their source; they do not acquire new tails implicitly.
+Each attachment input ends independently at an exact frame. A processor receives
+an end marker separately for each port; ended ports supply zeros if the processor
+continues. The processor type declares which inputs govern its lifetime and its
+behavior for every relevant combination of ended inputs. A ring modulator can
+finish when its carrier ends, while a sidechain compressor can continue its main
+input and release gain reduction after its detector ends.
+
+A processor continues producing its tail and reports the exact frame at which
+its output is drained. Only then does output-end propagate along its outgoing
+edges, including when the boundary falls within a block. The graph is drained
+when its public output drains. Reject processors disconnected from the public
+output and require every used input to be reachable from an attachment input.
+A voice with an effect tail retains its identity and routing during this process.
+Instrument and master graphs follow the same rule after their inputs finish.
+Existing source filters still end with their source; they do not acquire new
+tails implicitly.
 
 Define separate operations for ending input and explicitly stopping processing.
-Ending input starts the serial drain process. Stopping cuts output and retires
-state at its specified frame. Each processor declares whether its current state
-can drain and reports an exact `drained_at` frame rather than only a block-level
-boolean. An active freeze can sustain indefinitely. Offline callers must give a
-finite render boundary for such a state or schedule its release. Never infer
-completion solely from one silent block.
+Ending an input starts propagation and draining under the processor's port rules.
+Stopping cuts the graph output and retires state at its specified frame. Each
+processor declares whether its current state can drain and reports an exact
+`drained_at` frame rather than only a block-level boolean. An active freeze can
+sustain indefinitely. Offline callers must give a finite render boundary for
+such a state or schedule its release. Never infer completion solely from one
+silent block.
 
 Prepare separate capacities for active source voices, retained effect tails,
 queued action batches/actions, and grains. Source-voice capacity must cover the
@@ -171,14 +217,15 @@ callback.
 ## Latency and snapshots
 
 Each processor declares fixed algorithmic latency for its prepared settings.
-Sum latencies through a chain and align every path entering a fan-in to the
-greatest upstream algorithmic latency, both where voices enter an instrument and
-where instruments enter the master mix. Delay the dry path by the processor's
-declared latency when mixing wet and dry. Allocate compensation buffers during
-preparation. The prepared engine reports one fixed total latency in integer
-frames. An action at frame `n` affects input frame `n`, and its result is audible
-at output frame `n + total latency`; a host can translate user-facing timestamps
-when it wants perceptual rather than input-time scheduling.
+Propagate cumulative latency through the graph's topological order and delay
+every path entering a multi-input processor to the greatest input-path latency.
+Apply the same rule where voices enter an instrument and instruments enter the
+master mix. Delay a processor's designated dry input by its algorithmic latency
+when mixing wet and dry. Allocate compensation buffers during preparation. The
+prepared engine reports one fixed total latency in integer frames. An action at
+frame `n` affects input frame `n`, and its result is audible at output frame
+`n + total latency`; a host can translate user-facing timestamps when it wants
+perceptual rather than input-time scheduling.
 
 Distinguish algorithmic latency from intentional musical delay: a delayed grain
 or echo is part of the effect and must not be automatically canceled. Specify
@@ -186,12 +233,13 @@ the granulator's timeline accordingly. Device latency remains the host's concern
 Reject configurations requiring a changing compensation topology during playback.
 
 Snapshots include effect definitions/identity checks, frame cursor, modulation
-state, all audio history and compensation buffers, active grains, random counters,
-and drain status. Snapshot extraction/restoration happens while processing is
-stopped, outside the callback. Pending future actions remain caller-owned, as in
-the engine execution contract: stop submissions and empty the live transport
-queue before taking a snapshot, then resubmit future batches after restoration.
-Follow existing backend compatibility rules.
+state, every port's ended state, all audio history and per-edge compensation
+buffers, active grains, random counters, and graph drain status. Snapshot
+extraction/restoration happens while processing is stopped, outside the callback.
+Pending future actions remain caller-owned, as in the engine execution contract:
+stop submissions and empty the live transport queue before taking a snapshot,
+then resubmit future batches after restoration. Follow existing backend
+compatibility rules.
 
 ## Initial processors
 
@@ -203,6 +251,14 @@ kernel through the processor contract, reusing its implementation and dynamic
 cutoff/Q rules. This adds post-mix filtering without replacing or moving the
 existing per-voice filter stage. Define a finite tail cutoff for processor-mode
 filters; document and test the truncation policy.
+
+Use a stateless two-input multiplication processor as the first conformance case
+for named ports, fan-out, per-input end behavior, and latency alignment. Its
+`carrier` and `modulator` ports have explicitly routed matching channel layouts,
+and its output is their sample-by-sample product. This is also a basic ring
+modulator; it should remain small rather than expanding this plan into an effect
+catalog. A sidechain compressor is not part of the initial implementation, but
+must fit the same port and detector-input contract without changing the graph API.
 
 ### Granulator
 
@@ -234,14 +290,16 @@ for standalone processing and every attachment point.
 
 ## Implementation sequence and acceptance
 
-1. Specify the portable chain and action contracts in uFor, including timing,
-   stable processor identities, scope, capacities, tails, latency, live admission
-   errors, fatal processing errors, and granular equations. Add conformance
-   examples before updating enge's dependency in its own dependency commit.
-2. Implement preparation and the independent NumPy chain reference with gain
-   and filter processors. Integrate offline instrument/master placement, then
-   per-voice placement with retained tails. Preserve no-effects rendering.
-3. Implement Rust chain processing, native control evaluation, and prepared
+1. Specify the portable graph and action contracts in uFor, including named ports
+   and connections, stable processor identities, timing, scope, capacities,
+   per-input lifetime, tails, latency, live admission errors, fatal processing
+   errors, and granular equations. Add conformance examples before updating
+   enge's dependency in its own dependency commit.
+2. Implement preparation and the independent NumPy graph reference with gain,
+   filter, and two-input multiplication processors. Integrate offline
+   instrument/master placement, then per-voice placement with retained tails.
+   Preserve no-effects rendering and serial-chain shorthand.
+3. Implement Rust graph processing, native control evaluation, and prepared
    source integration. Audit all reachable processing paths for allocations,
    locks, Python entry, and unbounded work. Keep one native DSP implementation
    per processor, used by both live and offline execution.
@@ -260,12 +318,14 @@ for standalone processing and every attachment point.
    remains a separate integration step before claiming end-to-end live readiness.
 
 Run the same behavior-focused cases against NumPy and Rust: frame-exact action
-ordering, chain order, channel independence, all attachment scopes, dry/wet and
-bypass transitions, processor addressing, latency alignment at every fan-in,
-serial tail completion, every capacity boundary, late action handling, fatal
-failure latching, subnormal state truncation, random determinism, and snapshots.
-Compare contiguous rendering with irregular block partitions. Discrete results
-agree exactly; audio uses declared tolerances.
+ordering, stable topological order, channel independence, all attachment scopes,
+required and missing ports, fan-out, rejected cycles and implicit fan-in,
+two-input multiplication, independent input endings, dry/wet and bypass
+transitions, processor addressing, latency alignment at every processor and mix
+fan-in, graph tail completion, every capacity boundary, late action handling,
+fatal failure latching, subnormal state truncation, random determinism, and
+snapshots. Compare contiguous rendering with irregular block partitions.
+Discrete results agree exactly; audio uses declared tolerances.
 
 Audio regression fixtures write at least one second of 48 kHz WAV, with listenable
 FLAC demos. Include input ending mid-block and controls changing at block edges.
