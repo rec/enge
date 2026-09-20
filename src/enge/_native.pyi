@@ -2,6 +2,16 @@ from typing import Literal
 
 import numpy as np
 
+def render_effects(
+    inputs: np.ndarray,
+    kinds: list[int],
+    sources: np.ndarray,
+    parameters: np.ndarray,
+    output_source: int,
+    rate: float,
+    filter_inputs: list[tuple[list[int], np.ndarray, np.ndarray] | None],
+    state_floors: list[float],
+) -> tuple[np.ndarray, list[np.ndarray]]: ...
 def render_filters(
     samples: np.ndarray,
     rate: float,

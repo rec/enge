@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from math import pow
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,8 +56,15 @@ class PreparedEffects(BaseModel, frozen=True):
 class OfflineEffects:
     """Process one graph with exact frame actions and explicit input endings."""
 
-    def __init__(self, definition: PreparedEffects) -> None:
+    def __init__(
+        self,
+        definition: PreparedEffects,
+        backend: Literal["numpy", "native"] = "numpy",
+    ) -> None:
+        if backend not in ("numpy", "native"):
+            raise EngineError(f"Unknown effect backend: {backend}")
         self.definition = definition.model_copy(deep=True)
+        self.backend = backend
         self.frame = 0
         self.ended_inputs: dict[str, int] = {}
         self.stopped_at: int | None = None
@@ -97,6 +105,19 @@ class OfflineEffects:
         action_index = 0
         output = np.zeros((frames, len(self.definition.channels)))
         try:
+            if (
+                self.backend == "native"
+                and not any(
+                    isinstance(
+                        a, (audio_effects.InputEndAction, audio_effects.StopAction)
+                    )
+                    for a in actions
+                )
+                and not self.ended_inputs
+            ):
+                output = self._advance_native(source_audio, actions, start, end)
+                self.frame = end
+                return output
             for i in range(frames):
                 frame = start + i
                 while (
@@ -122,6 +143,119 @@ class OfflineEffects:
             output.fill(0)
             raise EngineError(f"Non-finite effect output in block at frame {start}")
         self.frame = end
+        return output
+
+    def _advance_native(
+        self,
+        input_audio: dict[str, np.ndarray],
+        actions: list[audio_effects.EffectAction],
+        start: int,
+        end: int,
+    ) -> np.ndarray:
+        from . import _native
+
+        graph = self.definition.definition
+        processors = {p.name: p for p in graph.processors}
+        ordered = [processors[n] for n in self.definition.order]
+        input_indices = {v.name: i for i, v in enumerate(graph.inputs)}
+        processor_indices = {
+            p.name: len(graph.inputs) + i for i, p in enumerate(ordered)
+        }
+        connections = {(c.processor, c.port): c.source for c in graph.connections}
+        sources = np.full((len(ordered), 2), -1, dtype=np.int64)
+        kinds: list[int] = []
+        state_floors: list[float] = []
+        for i, processor in enumerate(ordered):
+            ports = sorted(audio_effects.processor_ports(processor))
+            if isinstance(processor, audio_effects.Multiply):
+                ports = ["carrier", "modulator"]
+            for j, port in enumerate(ports):
+                source = connections[(processor.name, port)]
+                sources[i, j] = (
+                    input_indices[source.input]
+                    if isinstance(source, audio_effects.InputSource)
+                    else processor_indices[source.processor]
+                )
+            kinds.append(
+                0
+                if isinstance(processor, audio_effects.Gain)
+                else 1
+                if isinstance(processor, audio_effects.Multiply)
+                else 2
+            )
+            state_floors.append(
+                processor.state_floor
+                if isinstance(processor, audio_effects.Filter)
+                else 0
+            )
+        frames = end - start
+        values = np.zeros((frames, len(ordered), 2))
+        filter_values: list[np.ndarray | None] = [None] * len(ordered)
+        action_index = 0
+        for i in range(frames):
+            frame = start + i
+            while action_index < len(actions) and actions[action_index].tick == frame:
+                self._apply(actions[action_index])
+                action_index += 1
+            for j, processor in enumerate(ordered):
+                state = self.processors[processor.name]
+                values[i, j, 1] = state.parameters["mix"].value(
+                    frame
+                ) * state.bypass.value(frame)
+                if isinstance(processor, audio_effects.Gain):
+                    values[i, j, 0] = state.parameters["gain_db"].value(frame)
+                elif isinstance(processor, audio_effects.Filter):
+                    if (node_filter_values := filter_values[j]) is None:
+                        node_filter_values = np.zeros(
+                            (frames, len(processor.filters), 2)
+                        )
+                        filter_values[j] = node_filter_values
+                    node_filter_values[i] = [
+                        [
+                            state.parameters[f"{f.name}-cutoff_hz"].value(frame),
+                            state.parameters[f"{f.name}-q"].value(frame),
+                        ]
+                        for f in processor.filters
+                    ]
+        native_filters = []
+        for i, processor in enumerate(ordered):
+            if isinstance(processor, audio_effects.Filter):
+                assert filter_values[i] is not None
+                native_filters.append(
+                    filters.native_inputs(
+                        processor.filters,
+                        self.processors[processor.name].filter_states,
+                        filters.parameters(
+                            processor.filters,
+                            self.definition.sample_rate,
+                            frames,
+                            filter_values[i],
+                            start,
+                        ),
+                    )
+                )
+            else:
+                native_filters.append(None)
+        output_source = (
+            input_indices[graph.output.input]
+            if isinstance(graph.output, audio_effects.InputSource)
+            else processor_indices[graph.output.processor]
+        )
+        output, memories = _native.render_effects(
+            np.stack([input_audio[v.name] for v in graph.inputs]),
+            kinds,
+            sources,
+            values,
+            output_source,
+            self.definition.sample_rate,
+            native_filters,
+            state_floors,
+        )
+        for i, processor in enumerate(ordered):
+            if isinstance(processor, audio_effects.Filter):
+                self.processors[processor.name].filter_states = filters.restored_states(
+                    memories[i]
+                )
         return output
 
     def snapshot(self) -> EffectSnapshot:
