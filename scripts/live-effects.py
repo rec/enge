@@ -1,4 +1,4 @@
-"""Render four enge sources through per-source and shared live-effect chains."""
+"""Render a dry phrase followed by obvious per-source and shared granulation."""
 
 from pathlib import Path
 from typing import Literal
@@ -12,7 +12,7 @@ from ufor.instrument_trace import TraceAction
 from ufor.samples import instrument, trace
 from ufor.samples.processing import FilterResponse, ResonantFilter
 
-from enge import effects, fm, noise, sample_instrument, synth
+from enge import effects, fm, sample_instrument, synth
 from enge.presets import Patch
 from enge.render import write_flac
 
@@ -25,16 +25,23 @@ class Options(BaseModel, frozen=True):
 
 def main() -> None:
     options = tyro.cli(Options)
-    rate, frames = 48000, 6 * 48000
+    rate, frames = 48000, 2 * 48000
     sources = [
-        render_patch(Patch(engine="synth", gain=0.09, pan=-0.5), 48, options.backend),
-        render_patch(Patch(engine="sample", gain=0.08, pan=0.5), 55, options.backend),
         render_patch(
-            Patch(engine="fm", gain=0.07, ratio=2, index=1.1), 60, options.backend
+            Patch(engine="synth", gain=0.13, pan=-0.5), 48, frames, options.backend
         ),
-        np.repeat(noise.noise_samples(19, 0, frames), 2, axis=1) * 0.025,
+        render_patch(
+            Patch(engine="sample", gain=0.11, pan=0.5), 55, frames, options.backend
+        ),
+        render_patch(
+            Patch(engine="fm", gain=0.10, ratio=2, index=1.1),
+            60,
+            frames,
+            options.backend,
+        ),
     ]
     prepared = effects.prepare(effect_chain(options.block_frames), rate)
+    dry = sum(sources, np.zeros((frames, 2)))
     individual = sum(
         (
             effects.process_audio(prepared, {"main": v}, backend=options.backend)
@@ -43,21 +50,34 @@ def main() -> None:
         np.zeros((frames, 2)),
     )
     shared = effects.process_audio(
-        prepared, {"main": sum(sources, np.zeros((frames, 2)))}, backend=options.backend
+        prepared,
+        {"main": dry},
+        [
+            audio_effects.FreezeAction(
+                tick=36000, ordinal=0, processor="shimmer", frozen=True
+            ),
+            audio_effects.FreezeAction(
+                tick=72000, ordinal=0, processor="shimmer", frozen=False
+            ),
+        ],
+        options.backend,
     )
-    output = np.column_stack([individual[:, 0], shared[:, 1]])
+    output = np.concatenate([dry, individual, shared])
     peak = float(np.max(np.abs(output)))
     write_flac([output / max(1, peak / 0.95)], options.output, rate)
-    print(f"{options.output}: left per-source, right shared; pre-limit peak {peak:.3f}")
+    print(
+        f"{options.output}: dry, per-source grains, shared frozen grains; "
+        f"pre-limit peak {peak:.3f}"
+    )
 
 
 def render_patch(
-    patch: Patch, key: int, backend: Literal["numpy", "native"]
+    patch: Patch, key: int, frames: int, backend: Literal["numpy", "native"]
 ) -> np.ndarray:
-    rate, frames = 48000, 6 * 48000
+    rate = 48000
     score, assets = patch.prepare_score(rate)
     events: list[Trigger | Release | ControlChange] = []
-    for i, offset in enumerate((0, 4, 7, 12, 7)):
+    for i, offset in enumerate((0, 7)):
         start, name = i * rate, f"note-{i}"
         events.extend(
             [
@@ -70,7 +90,7 @@ def render_patch(
                     pitch_hz=440 * 2 ** ((key + offset - 69) / 12),
                 ),
                 Release(
-                    tick=start + 36000,
+                    tick=start + 33600,
                     ordinal=0,
                     part="main",
                     trigger_id=name,
@@ -112,21 +132,21 @@ def effect_chain(block_frames: int) -> audio_effects.EffectGraph:
                     ResonantFilter(
                         name="low",
                         response=FilterResponse.lowpass,
-                        cutoff_hz=5200,
-                        q=0.75,
+                        cutoff_hz=4200,
+                        q=0.9,
                     )
                 ],
             ),
             audio_effects.Granulator(
                 name="shimmer",
-                duration_seconds=0.045,
-                density_hz=38,
-                lookback_seconds=0.07,
-                playback_ratio=0.75,
-                position_jitter_seconds=0.012,
-                history_seconds=0.14,
-                maximum_grains=4,
-                mix=0.32,
+                duration_seconds=0.14,
+                density_hz=11,
+                lookback_seconds=0.30,
+                playback_ratio=0.45,
+                position_jitter_seconds=0.12,
+                history_seconds=0.55,
+                maximum_grains=2,
+                mix=0.95,
             ),
         ],
         block_frames,
