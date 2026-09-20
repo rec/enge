@@ -19,12 +19,14 @@ def graph_input(
     )
 
 
-def gain_graph(gain_db: float = -6) -> audio_effects.EffectGraph:
+def gain_graph(
+    gain_db: float = -6, maximum_block_frames: int = 48000
+) -> audio_effects.EffectGraph:
     return effects.serial_graph(
         audio_effects.AttachmentScope.voice,
         graph_input(),
         [audio_effects.Gain(name="trim", gain_db=gain_db)],
-        4096,
+        maximum_block_frames,
     )
 
 
@@ -78,7 +80,7 @@ def test_multiply_uses_two_named_inputs(tmp_path: Path) -> None:
             ),
         ],
         output=audio_effects.ProcessorSource(processor="ring"),
-        maximum_block_frames=4096,
+        maximum_block_frames=48000,
     )
     renderer = effects.OfflineEffects(effects.prepare(graph, 48000))
     frames = np.arange(48000)
@@ -106,7 +108,7 @@ def test_filter_tail_drains_after_input_end(tmp_path: Path) -> None:
                 filters=[definition],
             )
         ],
-        4096,
+        48000,
     )
     renderer = effects.OfflineEffects(effects.prepare(graph, 48000))
     source = np.zeros((48000, 2))
@@ -201,7 +203,7 @@ def test_offline_attachment_processes_a_source_engine() -> None:
 
 
 def test_process_audio_uses_prepared_block_limit() -> None:
-    prepared = effects.prepare(gain_graph(6), 48000)
+    prepared = effects.prepare(gain_graph(6, 4096), 48000)
     source = np.full((8192, 2), 0.25)
 
     actual = effects.process_audio(
@@ -211,6 +213,16 @@ def test_process_audio_uses_prepared_block_limit() -> None:
     np.testing.assert_allclose(actual, 0.25 * 10 ** (6 / 20))
     with pytest.raises(effects.EngineError, match="prepared maximum"):
         effects.process_audio(prepared, {"main": source}, block_frames=4097)
+
+
+def test_effect_advance_enforces_prepared_blocks_and_allows_noop() -> None:
+    renderer = effects.OfflineEffects(
+        effects.prepare(gain_graph(maximum_block_frames=4096), 48000)
+    )
+
+    assert renderer.advance({"main": np.empty((0, 2))}, [], 0, 0).shape == (0, 2)
+    with pytest.raises(effects.EngineError, match="prepared maximum"):
+        renderer.advance({"main": np.zeros((4097, 2))}, [], 0, 4097)
 
 
 def test_serial_shorthand_rejects_multi_input_processor() -> None:

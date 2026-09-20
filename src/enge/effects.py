@@ -104,10 +104,12 @@ class OfflineEffects:
         end: int,
     ) -> np.ndarray:
         """Process `[start, end)`; every input covers that exact frame interval."""
-        if start != self.frame or end <= start:
-            raise EngineError("Effect advance must be contiguous and nonempty")
+        if start != self.frame or end < start:
+            raise EngineError("Effect advance must be contiguous")
         frames = end - start
         graph = self.definition.definition
+        if frames > graph.maximum_block_frames:
+            raise EngineError("Effect block exceeds its prepared maximum")
         expected = {i.name: len(i.channels) for i in graph.inputs}
         if inputs.keys() != expected.keys():
             raise EngineError("Effect inputs do not match the prepared graph")
@@ -117,6 +119,10 @@ class OfflineEffects:
             if value.shape != (frames, channels) or not np.all(np.isfinite(value)):
                 raise EngineError(f"Invalid effect input {name}")
             source_audio[name] = value
+        if frames == 0:
+            if actions:
+                raise EngineError("Zero-frame effect calls cannot contain actions")
+            return np.zeros((0, len(self.definition.channels)))
         if any(a.tick < start or a.tick >= end for a in actions):
             raise EngineError("Effect action is outside the render interval")
         if any(
