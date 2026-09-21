@@ -741,10 +741,11 @@ class PersistentSynth:
         if template.envelopes:
             raise EngineError("Persistent synth named envelopes are not implemented")
         if template.processing != Processing(
-            tuning_cents=template.processing.tuning_cents
+            tuning_cents=template.processing.tuning_cents,
+            filters=template.processing.filters,
         ):
             raise EngineError(
-                "Persistent synth filters and gain processing are not implemented"
+                "Persistent synth gain and spatial processing are not implemented"
             )
         route = [
             sum(r.gain for r in template.channels if r.output == c)
@@ -768,6 +769,7 @@ class PersistentSynth:
             lfos,
             lfo_rationals,
             self.source_scopes,
+            runtime_filters,
         ) = _persistent_modulation(definition, template)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
@@ -786,6 +788,7 @@ class PersistentSynth:
             smoothing,
             lfos,
             lfo_rationals,
+            runtime_filters,
             parameters,
             context_capacity,
         )
@@ -1312,6 +1315,7 @@ def _persistent_modulation(
     np.ndarray,
     list[tuple[int, int]],
     set[str],
+    np.ndarray,
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
@@ -1323,13 +1327,71 @@ def _persistent_modulation(
     sources = {s.name: s for s in template.modulation.sources}
     if bindings.keys() != sources.keys():
         raise EngineError("Persistent synth modulation sources require bindings")
+    parameters = {
+        (p.target.name, p.target.parameter): p for p in template.modulation.parameters
+    }
     supported = {
         ("processing", "amplitude"): (0, modulation.Operation.multiply),
         ("processing", "tuning_cents"): (1, modulation.Operation.add),
     }
-    parameters = {
-        (p.target.name, p.target.parameter): p for p in template.modulation.parameters
-    }
+    parameter_values = [
+        1,
+        -1e300,
+        1e300,
+        template.processing.tuning_cents,
+        -120000,
+        120000,
+    ]
+    runtime_filters: list[list[float]] = []
+    for filter_definition in template.processing.filters:
+        cutoff_maximum = definition.sample_rate / 2 * filter_definition.nyquist_ratio
+        cutoff_default = min(
+            max(filter_definition.cutoff_hz, filter_definition.minimum_hz),
+            cutoff_maximum,
+        )
+        cutoff_index = len(parameter_values) // 3
+        q_index = cutoff_index + 1
+        supported[f"filter-{filter_definition.name}", "cutoff_hz"] = (
+            cutoff_index,
+            modulation.Operation.add,
+        )
+        supported[f"filter-{filter_definition.name}", "q"] = (
+            q_index,
+            modulation.Operation.add,
+        )
+        for target, default, minimum, maximum in (
+            (
+                (f"filter-{filter_definition.name}", "cutoff_hz"),
+                cutoff_default,
+                filter_definition.minimum_hz,
+                cutoff_maximum,
+            ),
+            (
+                (f"filter-{filter_definition.name}", "q"),
+                filter_definition.q,
+                np.finfo(np.float64).tiny,
+                1e300,
+            ),
+        ):
+            parameter = parameters.get(target)
+            parameter_values.extend(
+                [
+                    default if parameter is None else parameter.default,
+                    minimum if parameter is None else parameter.minimum,
+                    maximum if parameter is None else parameter.maximum,
+                ]
+            )
+        runtime_filters.append(
+            [
+                list(processing.FilterResponse).index(filter_definition.response),
+                filter_definition.stages,
+                list(processing.FilterBoundary).index(filter_definition.boundary),
+                filter_definition.minimum_hz,
+                cutoff_maximum,
+                cutoff_index,
+                q_index,
+            ]
+        )
     if parameters.keys() - supported.keys():
         raise EngineError(
             "Persistent synth modulation supports amplitude and tuning only"
@@ -1442,26 +1504,27 @@ def _persistent_modulation(
                 generator.fade_in * definition.sample_rate,
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
-    amplitude = parameters.get(("processing", "amplitude"))
-    tuning = parameters.get(("processing", "tuning_cents"))
-    values = [
-        1 if amplitude is None else amplitude.default,
-        1 if amplitude is None else amplitude.minimum,
-        1 if amplitude is None else amplitude.maximum,
-        template.processing.tuning_cents if tuning is None else tuning.default,
-        template.processing.tuning_cents if tuning is None else tuning.minimum,
-        template.processing.tuning_cents if tuning is None else tuning.maximum,
-    ]
+    for target, index in (
+        (("processing", "amplitude"), 0),
+        (("processing", "tuning_cents"), 1),
+    ):
+        if (parameter := parameters.get(target)) is not None:
+            parameter_values[index * 3 : index * 3 + 3] = [
+                parameter.default,
+                parameter.minimum,
+                parameter.maximum,
+            ]
     return (
         np.asarray(rows, dtype=np.float64).reshape(-1, 8),
         smoothing,
-        values,
+        parameter_values,
         control_sources,
         control_scopes,
         source_controls,
         np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 6),
         lfo_rationals,
         source_scopes,
+        np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
     )
 
 

@@ -19,6 +19,7 @@ class SynthRuntime:
         control_smoothing: list[tuple[int, int]],
         lfos: np.ndarray,
         lfo_rationals: list[tuple[int, int]],
+        filters: np.ndarray,
         parameters: list[float],
         context_capacity: int,
     ) -> None: ...

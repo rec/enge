@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_dynamic_synth import change, dynamic_score, onset
+from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
 from ufor.envelope import Envelope, Segment
@@ -33,6 +34,7 @@ def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> No
         [],
         np.empty((0, 6), dtype=np.float64),
         [],
+        np.empty((0, 7), dtype=np.float64),
         [1, -1e300, 1e300, 0, -120000, 120000],
         1,
     )
@@ -84,6 +86,7 @@ def test_persistent_runtime_applies_voice_actions_at_exact_frames() -> None:
         [],
         np.empty((0, 6), dtype=np.float64),
         [],
+        np.empty((0, 7), dtype=np.float64),
         [1, -1e300, 1e300, 0, -120000, 120000],
         1,
     )
@@ -332,3 +335,36 @@ def test_persistent_synth_evolves_scoped_lfos_in_rust(
 
     check_audio(tmp_path / f"persistent-{scope}-lfo.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[24001:], atol=0)
+
+
+def test_persistent_synth_evolves_native_voice_filters(tmp_path: Path) -> None:
+    document = filter_score("synth")
+    events = [
+        onset(pitch=220).model_copy(update={"controls": {"tone": 0}}),
+        change(1001, 1, control="tone"),
+        onset(6001, "second", pitch=330).model_copy(update={"controls": {"tone": 0.3}}),
+        Release(tick=12001, ordinal=0, part="main", trigger_id="note"),
+        change(13001, 0, control="tone"),
+        Release(tick=18001, ordinal=0, part="main", trigger_id="second"),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "native").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=4)
+    chunks = []
+    boundaries = [0, 997, 1002, 6123, 13002, 24001, 48000]
+    for start, end in zip(boundaries, boundaries[1:], strict=False):
+        chunks.append(
+            renderer.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        if end == 13002:
+            snapshot = renderer.snapshot()
+    actual = np.concatenate(chunks)
+    restored = PersistentSynth(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 13002 <= a.tick < 48000], 13002, 48000
+    )
+
+    check_audio(tmp_path / "persistent-filter.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[13002:], atol=0)

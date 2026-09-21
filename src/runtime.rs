@@ -1,6 +1,6 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
-use numpy::ndarray::{Array2, ArrayViewMut2};
+use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -48,6 +48,17 @@ struct LfoDefinition {
     fade_frames: (u64, u64),
 }
 
+#[derive(Clone, PartialEq)]
+struct FilterDefinition {
+    response: usize,
+    stages: usize,
+    boundary: usize,
+    minimum_hz: f64,
+    maximum_hz: f64,
+    cutoff_parameter: usize,
+    q_parameter: usize,
+}
+
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
@@ -62,6 +73,7 @@ pub struct SynthRuntimeSnapshot {
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
+    filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
     parameter_definitions: Vec<f64>,
@@ -80,6 +92,7 @@ pub struct SynthRuntimeSnapshot {
     voice_part_contexts: Vec<usize>,
     voice_trigger_contexts: Vec<usize>,
     filter_states: Array2<f64>,
+    voice_filter_states: Array3<f64>,
     frame: usize,
 }
 
@@ -96,6 +109,7 @@ pub struct SynthRuntime {
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
+    filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
     parameter_definitions: Vec<f64>,
@@ -114,6 +128,7 @@ pub struct SynthRuntime {
     voice_part_contexts: Vec<usize>,
     voice_trigger_contexts: Vec<usize>,
     filter_states: Array2<f64>,
+    voice_filter_states: Array3<f64>,
     frame: usize,
 }
 
@@ -134,6 +149,7 @@ impl SynthRuntime {
         control_smoothing: Vec<(u64, u64)>,
         lfos: PyReadonlyArray2<'_, f64>,
         lfo_rationals: Vec<(u64, u64)>,
+        filters: PyReadonlyArray2<'_, f64>,
         parameters: Vec<f64>,
         context_capacity: usize,
     ) -> PyResult<Self> {
@@ -142,6 +158,7 @@ impl SynthRuntime {
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
         let lfo_definitions = lfo_definitions(lfos, &lfo_rationals)?;
+        let filter_definitions = filter_definitions(filters)?;
         if !rate.is_finite()
             || rate <= 0.0
             || waveform > 2
@@ -153,12 +170,22 @@ impl SynthRuntime {
             || !initial.is_finite()
             || !minimum_hold_frames.is_finite()
             || minimum_hold_frames < 0.0
-            || parameters.len() != 6
+            || parameters.len() < 6
+            || parameters.len() % 3 != 0
             || parameters.iter().any(|v| !v.is_finite())
-            || parameters[1] > parameters[0]
-            || parameters[0] > parameters[2]
-            || parameters[4] > parameters[3]
-            || parameters[3] > parameters[5]
+            || parameters
+                .chunks_exact(3)
+                .any(|values| values[1] > values[0] || values[0] > values[2])
+            || filter_definitions.iter().any(|definition| {
+                definition.cutoff_parameter >= parameters.len() / 3
+                    || definition.q_parameter >= parameters.len() / 3
+            })
+            || control_definitions
+                .iter()
+                .any(|definition| definition.parameter >= parameters.len() / 3)
+            || lfo_definitions
+                .iter()
+                .any(|definition| definition.parameter >= parameters.len() / 3)
             || context_capacity == 0
             || (!lfo_definitions.is_empty() && rate != rate as u64 as f64)
             || lfo_definitions
@@ -169,6 +196,7 @@ impl SynthRuntime {
         }
         let slots = routes.shape()[0];
         let channels = routes.shape()[1];
+        let filter_stages = filter_definitions.iter().map(|v| v.stages).sum();
         let context_states = (0..context_capacity)
             .flat_map(|_| control_states.clone())
             .collect();
@@ -184,6 +212,7 @@ impl SynthRuntime {
             control_definitions,
             control_states,
             lfo_definitions,
+            filter_definitions,
             context_kinds: vec![0; context_capacity],
             context_states,
             parameter_definitions: parameters,
@@ -202,6 +231,7 @@ impl SynthRuntime {
             voice_part_contexts: vec![usize::MAX; slots],
             voice_trigger_contexts: vec![usize::MAX; slots],
             filter_states: Array2::zeros((channels, 2)),
+            voice_filter_states: Array3::zeros((slots, filter_stages, 2)),
             frame: 0,
         })
     }
@@ -290,6 +320,7 @@ impl SynthRuntime {
             control_definitions: self.control_definitions.clone(),
             control_states: self.control_states.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
+            filter_definitions: self.filter_definitions.clone(),
             context_kinds: self.context_kinds.clone(),
             context_states: self.context_states.clone(),
             parameter_definitions: self.parameter_definitions.clone(),
@@ -308,6 +339,7 @@ impl SynthRuntime {
             voice_part_contexts: self.voice_part_contexts.clone(),
             voice_trigger_contexts: self.voice_trigger_contexts.clone(),
             filter_states: self.filter_states.clone(),
+            voice_filter_states: self.voice_filter_states.clone(),
             frame: self.frame,
         }
     }
@@ -323,6 +355,7 @@ impl SynthRuntime {
             || self.routes != snapshot.routes
             || self.control_definitions != snapshot.control_definitions
             || self.lfo_definitions != snapshot.lfo_definitions
+            || self.filter_definitions != snapshot.filter_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
             || self.context_kinds.len() != snapshot.context_kinds.len()
         {
@@ -344,6 +377,8 @@ impl SynthRuntime {
         self.gain_steps.clone_from(&snapshot.gain_steps);
         self.gain_remaining.clone_from(&snapshot.gain_remaining);
         self.filter_states.clone_from(&snapshot.filter_states);
+        self.voice_filter_states
+            .clone_from(&snapshot.voice_filter_states);
         self.frame = snapshot.frame;
         self.control_states.clone_from(&snapshot.control_states);
         self.context_kinds.clone_from(&snapshot.context_kinds);
@@ -417,7 +452,8 @@ impl SynthRuntime {
                 if !self.active[voice] {
                     continue;
                 }
-                let (amplitude, tuning_cents) = self.parameters(voice)?;
+                let amplitude = self.parameter(voice, 0)?;
+                let tuning_cents = self.parameter(voice, 1)?;
                 let tuning = 2_f64.powf(tuning_cents / 1200.0);
                 let age = self.ages[voice] as f64;
                 let level = if let Some(release_frame) = self.release_frames[voice] {
@@ -454,6 +490,7 @@ impl SynthRuntime {
                     _ if phase < self.duty => 2.0 * phase / self.duty - 1.0,
                     _ => (1.0 + self.duty - 2.0 * phase) / (1.0 - self.duty),
                 };
+                let wave = self.filter_voice(voice, wave)?;
                 let sample = wave * self.gains[voice] * level * amplitude;
                 let increment = self.frequencies[voice] * tuning - self.errors[voice];
                 let total = self.phases[voice] + increment;
@@ -546,6 +583,10 @@ impl SynthRuntime {
                 self.voice_trigger_contexts[voice] = usize::MAX;
                 self.frequency_remaining[voice] = 0;
                 self.gain_remaining[voice] = 0;
+                for stage in 0..self.voice_filter_states.shape()[1] {
+                    self.voice_filter_states[[voice, stage, 0]] = 0.0;
+                    self.voice_filter_states[[voice, stage, 1]] = 0.0;
+                }
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
@@ -635,10 +676,13 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn parameters(&self, voice: usize) -> PyResult<(f64, f64)> {
-        let mut additions = [0.0, 0.0];
-        let mut products = [1.0, 1.0];
+    fn parameter(&self, voice: usize, parameter: usize) -> PyResult<f64> {
+        let mut addition = 0.0;
+        let mut product = 1.0;
         for (source, definition) in self.control_definitions.iter().enumerate() {
+            if definition.parameter != parameter {
+                continue;
+            }
             let state = match definition.scope {
                 0 => &self.control_states[source],
                 1 => self.context_state(self.voice_part_contexts[voice], source, 1)?,
@@ -646,12 +690,15 @@ impl SynthRuntime {
             };
             let amount = definition.intercept + definition.slope * control_value(definition, state);
             if definition.operation == 0 {
-                additions[definition.parameter] += amount;
+                addition += amount;
             } else {
-                products[definition.parameter] *= amount;
+                product *= amount;
             }
         }
         for definition in &self.lfo_definitions {
+            if definition.parameter != parameter {
+                continue;
+            }
             let elapsed = match definition.scope {
                 0 => self.frame,
                 1 => {
@@ -663,23 +710,78 @@ impl SynthRuntime {
             let (value, weight) = lfo_value(definition, elapsed, self.rate as u64)?;
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
-                additions[definition.parameter] += weight * amount;
+                addition += weight * amount;
             } else {
-                products[definition.parameter] *= 1.0 + weight * (amount - 1.0);
+                product *= 1.0 + weight * (amount - 1.0);
             }
         }
-        let amplitude = (self.parameter_definitions[0] + additions[0]) * products[0];
-        let tuning = (self.parameter_definitions[3] + additions[1]) * products[1];
-        if amplitude < self.parameter_definitions[1]
-            || amplitude > self.parameter_definitions[2]
-            || tuning < self.parameter_definitions[4]
-            || tuning > self.parameter_definitions[5]
-        {
+        let definition = &self.parameter_definitions[parameter * 3..parameter * 3 + 3];
+        let value = (definition[0] + addition) * product;
+        if !value.is_finite() || value < definition[1] || value > definition[2] {
             return Err(PyValueError::new_err(
                 "Modulated persistent synth parameter is outside its domain",
             ));
         }
-        Ok((amplitude, tuning))
+        Ok(value)
+    }
+
+    fn filter_voice(&mut self, voice: usize, mut sample: f64) -> PyResult<f64> {
+        let mut stage = 0;
+        for filter_index in 0..self.filter_definitions.len() {
+            let filter = self.filter_definitions[filter_index].clone();
+            let mut cutoff = self.parameter(voice, filter.cutoff_parameter)?;
+            let q = self.parameter(voice, filter.q_parameter)?;
+            if q <= 0.0 {
+                return Err(PyValueError::new_err("Invalid persistent synth filter Q"));
+            }
+            if cutoff < filter.minimum_hz || cutoff > filter.maximum_hz {
+                if filter.boundary == 0 {
+                    return Err(PyValueError::new_err(
+                        "Invalid persistent synth filter cutoff",
+                    ));
+                }
+                cutoff = cutoff.clamp(filter.minimum_hz, filter.maximum_hz);
+            }
+            let g = (PI * cutoff / self.rate).tan();
+            let d = q * (1.0 + g * g) + g;
+            let a1 = if q < 1.0 {
+                q / d
+            } else {
+                1.0 / (1.0 + g * (g + 1.0 / q))
+            };
+            let a2 = g * a1;
+            let a3 = g * a2;
+            for _ in 0..filter.stages {
+                let s1 = self.voice_filter_states[[voice, stage, 0]];
+                let s2 = self.voice_filter_states[[voice, stage, 1]];
+                let v3 = sample - s2;
+                let v1 = a1 * s1 + a2 * v3;
+                let v2 = s2 + a2 * s1 + a3 * v3;
+                let band = if q < 1.0 {
+                    s1 / d + (g / d) * v3
+                } else {
+                    v1 / q
+                };
+                sample = match filter.response {
+                    0 => v2,
+                    1 => sample - band - v2,
+                    2 => band,
+                    _ => sample - band,
+                };
+                self.voice_filter_states[[voice, stage, 0]] = 2.0 * v1 - s1;
+                self.voice_filter_states[[voice, stage, 1]] = 2.0 * v2 - s2;
+                if !sample.is_finite()
+                    || !self.voice_filter_states[[voice, stage, 0]].is_finite()
+                    || !self.voice_filter_states[[voice, stage, 1]].is_finite()
+                {
+                    return Err(PyValueError::new_err(
+                        "Non-finite persistent synth filter output or state",
+                    ));
+                }
+                stage += 1;
+            }
+        }
+        Ok(sample)
     }
 
     fn context_state(&self, context: usize, source: usize, kind: usize) -> PyResult<&ControlState> {
@@ -766,7 +868,6 @@ fn control_definitions(
         if row[1] != scope as f64
             || scope > 2
             || row[2] != parameter as f64
-            || parameter > 1
             || row[3] != operation as f64
             || operation > 1
             || row[4] > row[5]
@@ -833,7 +934,6 @@ fn lfo_definitions(
             || row[1] != waveform as f64
             || waveform > 2
             || row[2] != parameter as f64
-            || parameter > 1
             || row[3] != operation as f64
             || operation > 1
             || exact[0].0 > exact[0].1
@@ -856,6 +956,46 @@ fn lfo_definitions(
         });
     }
     Ok(definitions)
+}
+
+fn filter_definitions(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<FilterDefinition>> {
+    if values.shape()[1] != 7 || values.as_array().iter().any(|v| !v.is_finite()) {
+        return Err(PyValueError::new_err("Invalid synth runtime filters"));
+    }
+    values
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let response = row[0] as usize;
+            let stages = row[1] as usize;
+            let boundary = row[2] as usize;
+            let cutoff_parameter = row[5] as usize;
+            let q_parameter = row[6] as usize;
+            if row[0] != response as f64
+                || response > 3
+                || row[1] != stages as f64
+                || !(1..=2).contains(&stages)
+                || row[2] != boundary as f64
+                || boundary > 1
+                || row[3] <= 0.0
+                || row[3] >= row[4]
+                || row[5] != cutoff_parameter as f64
+                || row[6] != q_parameter as f64
+            {
+                return Err(PyValueError::new_err("Invalid synth runtime filter"));
+            }
+            Ok(FilterDefinition {
+                response,
+                stages,
+                boundary,
+                minimum_hz: row[3],
+                maximum_hz: row[4],
+                cutoff_parameter,
+                q_parameter,
+            })
+        })
+        .collect()
 }
 
 fn lfo_value(definition: &LfoDefinition, elapsed: usize, sample_rate: u64) -> PyResult<(f64, f64)> {
