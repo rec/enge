@@ -27,6 +27,94 @@ def test_action_queue_preserves_complete_batches_and_entry_boundary() -> None:
     assert queue.queued_batches() == 0
 
 
+def native_oscillator_runtime() -> _native.SynthRuntime:
+    return _native.SynthRuntime(
+        48000,
+        0,
+        0.5,
+        np.array([[1.0, 0.5]]),
+        1,
+        np.array([[0, 1]], dtype=np.float64),
+        np.array([[0, 0]], dtype=np.float64),
+        0,
+        np.empty((0, 8), dtype=np.float64),
+        [],
+        np.empty((0, 6), dtype=np.float64),
+        [],
+        np.empty((0, 7), dtype=np.float64),
+        [1, 0, 1e300, 0, -120000, 120000],
+        1,
+    )
+
+
+def native_noise_runtime() -> _native.SynthRuntime:
+    return _native.SynthRuntime.noise(
+        48000,
+        np.array([[0.25, 1.0]]),
+        1,
+        np.array([[0, 1]], dtype=np.float64),
+        np.array([[0, 0]], dtype=np.float64),
+        0,
+        np.empty((0, 8), dtype=np.float64),
+        [],
+        np.empty((0, 6), dtype=np.float64),
+        [],
+        np.empty((0, 7), dtype=np.float64),
+        [1, 0, 1e300, 0, -120000, 120000],
+        1,
+    )
+
+
+def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
+    tmp_path: Path,
+) -> None:
+    oscillator = native_oscillator_runtime()
+    white = native_noise_runtime()
+    oscillator_start = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
+    key = 0xFEDCBA9876543210
+    noise_start = np.array(
+        [[0, 0, 0, key & 0xFFFF_FFFF, key >> 32, 0.1]], dtype=np.float64
+    )
+    expected = (
+        oscillator.process_actions(48000, 0, 1, 0, oscillator_start)
+        + white.process_actions(48000, 0, 1, 0, noise_start)
+    ) * 10 ** (-3 / 20)
+    runtime = _native.LiveRuntime(
+        [native_oscillator_runtime(), native_noise_runtime()], 997, 64, 4, -3
+    )
+    runtime.submit(0, oscillator_start)
+    runtime.submit(1, noise_start)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(start + 997, 48000)
+        runtime.process_into(actual[start:end])
+        if end == 23928:
+            snapshot = runtime.snapshot()
+    restored = _native.LiveRuntime(
+        [native_oscillator_runtime(), native_noise_runtime()], 997, 64, 4, -3
+    )
+    restored.restore(snapshot)
+    replay = np.empty((48000 - 23928, 2))
+    for start in range(0, len(replay), 997):
+        restored.process_into(replay[start : start + 997])
+
+    check_audio(tmp_path / "native-live-runtime.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[23928:], atol=0)
+
+
+def test_native_live_runtime_latches_failure_and_zeros_later_blocks() -> None:
+    runtime = _native.LiveRuntime([native_oscillator_runtime()], 64, 64, 1, 0)
+    runtime.submit(0, np.array([[64, 0, 0, 220, 0.2, 0]], dtype=np.float64))
+    output = np.ones((64, 2))
+    with np.testing.assert_raises_regex(ValueError, "runtime block"):
+        runtime.process_into(output)
+    assert runtime.failed()
+    np.testing.assert_array_equal(output, np.zeros_like(output))
+    output.fill(1)
+    runtime.process_into(output)
+    np.testing.assert_array_equal(output, np.zeros_like(output))
+
+
 def test_live_engine_mixes_heterogeneous_sources_and_restores(tmp_path: Path) -> None:
     synth_document = synth_score()
     noise_document = noise_score()

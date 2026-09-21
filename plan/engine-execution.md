@@ -92,6 +92,13 @@ Python, GIL, and allocation boundaries and a repeatable callback-shaped stress
 benchmark. Current timing has comfortable measured headroom, but the audited
 path does not yet satisfy the stronger native callback contract.
 
+`LiveRuntime` is the first native callback owner. It clones prepared oscillator,
+FM, and noise runtimes into one Rust instance, consumes whole batches from a
+bounded queue per source, mixes through preallocated scratch, applies constant
+master gain, releases the GIL around processing, and latches fatal failure to
+zero output. Snapshots require empty queues. Sampler assets and the complete
+effect graph remain outside this owner and are the next consolidation step.
+
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and

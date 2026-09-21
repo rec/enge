@@ -5,6 +5,7 @@ mod filters;
 mod fm;
 mod granulator;
 mod lfo;
+mod live;
 mod noise;
 mod queue;
 mod runtime;
@@ -164,6 +165,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fm::render_fm, module)?)?;
     module.add_function(wrap_pyfunction!(granulator::render_granulator, module)?)?;
     module.add_function(wrap_pyfunction!(noise::render_noise, module)?)?;
+    module.add_class::<live::LiveRuntime>()?;
+    module.add_class::<live::LiveRuntimeSnapshot>()?;
     module.add_class::<queue::ActionQueue>()?;
     module.add_class::<runtime::SynthRuntime>()?;
     module.add_class::<runtime::SynthRuntimeSnapshot>()?;
