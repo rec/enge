@@ -23,6 +23,26 @@ class SynthRuntime:
         parameters: list[float],
         context_capacity: int,
     ) -> None: ...
+    @staticmethod
+    def fm(
+        rate: float,
+        routes: np.ndarray,
+        carrier_initial: float,
+        carrier_attack: np.ndarray,
+        carrier_release: np.ndarray,
+        mod_initial: float,
+        mod_attack: np.ndarray,
+        mod_release: np.ndarray,
+        phase_offsets: list[float],
+        minimum_hold_frames: float,
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        lfos: np.ndarray,
+        lfo_rationals: list[tuple[int, int]],
+        filters: np.ndarray,
+        parameters: list[float],
+        context_capacity: int,
+    ) -> SynthRuntime: ...
     def process(
         self, frames: int, cutoff_hz: float, q: float, gain_db: float
     ) -> np.ndarray: ...

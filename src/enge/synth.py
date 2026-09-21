@@ -753,6 +753,7 @@ class PersistentSynth:
         ]
         rate = definition.sample_rate
         self.definition = definition.model_copy(deep=True)
+        self.instrument = self.definition.instrument
         self.template = template
         self.frame = 0
         self.voices: dict[str, int] = {}
@@ -840,12 +841,12 @@ class PersistentSynth:
         for action in ordered:
             offset = action.tick - start
             if isinstance(action, instrument_trace.TriggerContext):
-                if action.controls.keys() != self.definition.instrument.controls.keys():
+                if action.controls.keys() != self.instrument.controls.keys():
                     raise EngineError(
                         "Trigger context must contain all declared controls"
                     )
                 for name, value in action.controls.items():
-                    self.definition.instrument.controls[name].validate_value(value)
+                    self.instrument.controls[name].validate_value(value)
                 if "trigger" in self.source_scopes:
                     context, count = self._new_context(2, contexts, offset, count)
                     self.trigger_contexts[action.part, action.trigger_id] = context
@@ -857,7 +858,7 @@ class PersistentSynth:
                             )
                             count += 1
             elif isinstance(action, instrument_trace.ControlObservation):
-                declaration = self.definition.instrument.controls.get(action.control)
+                declaration = self.instrument.controls.get(action.control)
                 if declaration is None:
                     raise EngineError(f"Unknown control: {action.control}")
                 declaration.validate_value(action.value)
@@ -1304,7 +1305,12 @@ def _runtime_segments(segments: list[Segment], sample_rate: int) -> np.ndarray:
 
 
 def _persistent_modulation(
-    definition: PreparedSynth, template: SynthVoice
+    definition: PreparedSynth,
+    template: SoundSettings,
+    source_parameters: list[
+        tuple[tuple[str, str], int, modulation.Operation, float, float, float]
+    ]
+    | None = None,
 ) -> tuple[
     np.ndarray,
     list[tuple[int, int]],
@@ -1330,18 +1336,31 @@ def _persistent_modulation(
     parameters = {
         (p.target.name, p.target.parameter): p for p in template.modulation.parameters
     }
-    supported = {
-        ("processing", "amplitude"): (0, modulation.Operation.multiply),
-        ("processing", "tuning_cents"): (1, modulation.Operation.add),
-    }
-    parameter_values = [
-        1,
-        -1e300,
-        1e300,
-        template.processing.tuning_cents,
-        -120000,
-        120000,
+    source_parameters = source_parameters or [
+        (
+            ("processing", "amplitude"),
+            0,
+            modulation.Operation.multiply,
+            1,
+            -1e300,
+            1e300,
+        ),
+        (
+            ("processing", "tuning_cents"),
+            1,
+            modulation.Operation.add,
+            template.processing.tuning_cents,
+            -120000,
+            120000,
+        ),
     ]
+    supported = {
+        target: (index, operation)
+        for target, index, operation, _, _, _ in source_parameters
+    }
+    parameter_values = [0.0] * (3 * len(source_parameters))
+    for _, index, _, default, minimum, maximum in source_parameters:
+        parameter_values[index * 3 : index * 3 + 3] = [default, minimum, maximum]
     runtime_filters: list[list[float]] = []
     for filter_definition in template.processing.filters:
         cutoff_maximum = definition.sample_rate / 2 * filter_definition.nyquist_ratio
@@ -1393,9 +1412,7 @@ def _persistent_modulation(
             ]
         )
     if parameters.keys() - supported.keys():
-        raise EngineError(
-            "Persistent synth modulation supports amplitude and tuning only"
-        )
+        raise EngineError("Persistent runtime has an unsupported modulation target")
     routes = sorted(template.modulation.routes, key=lambda r: (r.source, r.name))
     if len(routes) != len(sources) or len({r.target for r in routes}) != len(routes):
         raise EngineError("Persistent synth requires one modulation route per target")
@@ -1504,10 +1521,7 @@ def _persistent_modulation(
                 generator.fade_in * definition.sample_rate,
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
-    for target, index in (
-        (("processing", "amplitude"), 0),
-        (("processing", "tuning_cents"), 1),
-    ):
+    for target, index, _, _, _, _ in source_parameters:
         if (parameter := parameters.get(target)) is not None:
             parameter_values[index * 3 : index * 3 + 3] = [
                 parameter.default,

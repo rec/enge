@@ -178,6 +178,39 @@ def test_fm_minimum_hold_and_duplicate_release_preserve_carrier_lifetime(
     assert engine.snapshot().voices == []
 
 
+def test_persistent_fm_matches_native_across_blocks_and_restore(tmp_path: Path) -> None:
+    raw = score().model_dump()
+    raw["body"]["voices"][0]["fm"]["feedback"] = 0.7
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        trigger(),
+        change(12001, 0.75),
+        trigger(17003, "second", 330),
+        Release(tick=35003, ordinal=0, part="main", trigger_id="note"),
+    ]
+    actions = synth_trace.prepare(document.body, events, seed=0).actions
+    definition = fm.prepare(document)
+    expected = fm.OfflineFM(definition, "native").advance(actions, 0, 48000)
+    engine = fm.PersistentFM(definition, voices=4)
+    chunks = []
+    boundaries = [0, 997, 12002, 17004, 24001, 35004, 48000]
+    for start, end in zip(boundaries, boundaries[1:], strict=False):
+        chunks.append(
+            engine.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        if end == 24001:
+            snapshot = engine.snapshot()
+    actual = np.concatenate(chunks)
+    restored = fm.PersistentFM(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 24001 <= a.tick < 48000], 24001, 48000
+    )
+
+    check_audio(tmp_path / "persistent-fm.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[24001:], atol=0)
+
+
 def test_fm_rejects_wrong_source_profile_and_snapshot() -> None:
     document = score()
     with pytest.raises(synth.EngineError, match="oscillator voice"):
