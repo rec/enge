@@ -77,6 +77,10 @@ LFOs, routing, and lifecycle semantics; source pitch/tuning is unsupported.
 The filter precedes the amplitude envelope, as in the oscillator synth. Snapshots
 preserve the stream and reject backend mismatches, even for silent engines.
 
+`PersistentNoise` carries the same behavior into the bounded native runtime.
+Each slot retains its exact 64-bit noise-v1 key and counter along with envelope,
+filter, control, LFO, routing, context, and snapshot state.
+
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and

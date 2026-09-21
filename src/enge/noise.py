@@ -1,17 +1,17 @@
 """Deterministic white noise with shared envelope, filter, and control processing."""
 
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 import numpy as np
-from pydantic import Field, model_validator
-from ufor import instrument_trace
+from pydantic import ConfigDict, Field, model_validator
+from ufor import instrument_trace, modulation
 from ufor.base import Model
 from ufor.samples.processing import Processing, ResonantFilter
 from ufor.streams import AudioType
 from ufor.synth import NoiseVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
 
-from . import filters, native, synth
+from . import _native, filters, native, synth
 
 
 class PreparedVoice(synth.PreparedEnvelope, frozen=True):
@@ -141,6 +141,19 @@ class NoiseSnapshot(Model, frozen=True):
     voices: list[VoiceSnapshot]
     contexts: list[synth.ControlContext]
     lfos: list[synth.LFOSource]
+
+
+class PersistentNoiseSnapshot(Model, frozen=True):
+    definition: PreparedNoise
+    action_capacity: int
+    context_capacity: int
+    frame: int
+    voices: dict[str, int]
+    part_contexts: dict[str, int]
+    trigger_contexts: dict[tuple[str, str], int]
+    state: _native.SynthRuntimeSnapshot
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class OfflineNoise:
@@ -289,6 +302,157 @@ class OfflineNoise:
             if renderer.complete:
                 del self.voices[voice.voice_id]
         return output
+
+
+class PersistentNoise(synth.PersistentSynth):
+    """Bounded native noise-v1 runtime for one static voice template."""
+
+    def __init__(
+        self,
+        definition: PreparedNoise,
+        voices: int = 16,
+        action_capacity: int = 64,
+        context_capacity: int = 64,
+    ) -> None:
+        if type(voices) is not int or voices <= 0:
+            raise synth.EngineError("Persistent noise voice capacity must be positive")
+        if type(action_capacity) is not int or action_capacity <= 0:
+            raise synth.EngineError("Persistent noise action capacity must be positive")
+        if type(context_capacity) is not int or context_capacity <= 0:
+            raise synth.EngineError(
+                "Persistent noise context capacity must be positive"
+            )
+        templates = definition.score.body.voices
+        if len(templates) != 1 or not isinstance(templates[0], NoiseVoice):
+            raise synth.EngineError(
+                "Persistent noise requires one noise voice template"
+            )
+        template = templates[0]
+        if template.envelopes:
+            raise synth.EngineError(
+                "Persistent noise named envelopes are not implemented"
+            )
+        if template.processing != Processing(
+            volume_db=template.processing.volume_db,
+            filters=template.processing.filters,
+        ):
+            raise synth.EngineError(
+                "Persistent noise spatial processing is not implemented"
+            )
+        route = [
+            sum(r.gain for r in template.channels if r.output == c)
+            for c in definition.channels
+        ]
+        rate = definition.sample_rate
+        shared = synth.PreparedSynth(
+            sample_rate=rate,
+            channels=definition.channels,
+            instrument=definition.score.body,
+        )
+        source_parameters = [
+            (
+                ("processing", "amplitude"),
+                0,
+                modulation.Operation.multiply,
+                1.0,
+                0.0,
+                1e300,
+            )
+        ]
+        self.definition = definition.model_copy(deep=True)
+        self.instrument = self.definition.score.body
+        self.template = template
+        self.frame = 0
+        self.voices: dict[str, int] = {}
+        self.action_capacity = action_capacity
+        self.context_capacity = context_capacity
+        self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
+        (
+            controls,
+            smoothing,
+            parameters,
+            self.control_sources,
+            self.control_scopes,
+            self.source_controls,
+            lfos,
+            lfo_rationals,
+            self.source_scopes,
+            runtime_filters,
+        ) = synth._persistent_modulation(shared, template, source_parameters)
+        self.part_contexts: dict[str, int] = {}
+        self.trigger_contexts: dict[tuple[str, str], int] = {}
+        self.runtime = _native.SynthRuntime.noise(
+            rate,
+            np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
+            template.envelope.initial,
+            synth._runtime_segments(template.envelope.segments, rate),
+            synth._runtime_segments(template.envelope.release, rate),
+            float(template.minimum_hold_seconds * rate),
+            controls,
+            smoothing,
+            lfos,
+            lfo_rationals,
+            runtime_filters,
+            parameters,
+            context_capacity,
+        )
+
+    def snapshot(self) -> PersistentNoiseSnapshot:  # ty: ignore[invalid-method-override]
+        return PersistentNoiseSnapshot(
+            definition=cast(PreparedNoise, self.definition).model_copy(deep=True),
+            action_capacity=self.action_capacity,
+            context_capacity=self.context_capacity,
+            frame=self.frame,
+            voices=self.voices.copy(),
+            part_contexts=self.part_contexts.copy(),
+            trigger_contexts=self.trigger_contexts.copy(),
+            state=self.runtime.snapshot(),
+        )
+
+    def restore(  # ty: ignore[invalid-method-override]
+        self, snapshot: PersistentNoiseSnapshot
+    ) -> None:
+        if snapshot.definition != self.definition:
+            raise synth.EngineError(
+                "Snapshot belongs to a different prepared noise synth"
+            )
+        if snapshot.action_capacity != self.action_capacity:
+            raise synth.EngineError("Snapshot belongs to a different action capacity")
+        if snapshot.context_capacity != self.context_capacity:
+            raise synth.EngineError("Snapshot belongs to a different context capacity")
+        self.runtime.restore(snapshot.state)
+        self.frame = snapshot.frame
+        self.voices = snapshot.voices.copy()
+        self.part_contexts = snapshot.part_contexts.copy()
+        self.trigger_contexts = snapshot.trigger_contexts.copy()
+
+    def _start(
+        self, action: VoiceStart, active: list[bool]
+    ) -> tuple[int, float, float, float]:
+        if action.voice_id in self.voices:
+            raise synth.EngineError(f"Duplicate active voice: {action.voice_id}")
+        if (
+            action.template != self.template.name
+            or action.settings != self.template
+            or action.oscillator is not None
+            or action.channels != self.template.channels
+        ):
+            raise synth.EngineError(
+                "Voice start must match its prepared noise template"
+            )
+        if action.noise_key is None:
+            raise synth.EngineError("Noise voice requires a resolved stream key")
+        slot = next((i for i, value in enumerate(active) if not value), None)
+        if slot is None:
+            raise synth.EngineError("Persistent noise voice capacity exceeded")
+        active[slot] = True
+        self.voices[action.voice_id] = slot
+        return (
+            slot,
+            action.noise_key & 0xFFFF_FFFF,
+            action.noise_key >> 32,
+            10 ** (self.template.processing.volume_db / 20),
+        )
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedNoise:

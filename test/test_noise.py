@@ -169,6 +169,39 @@ def test_noise_dynamic_filter_and_minimum_hold_match_oracle(
     assert renderer.frame_count == count
 
 
+def test_persistent_noise_matches_native_across_blocks_and_restore(
+    tmp_path: Path,
+) -> None:
+    document = score()
+    events = [
+        trigger(),
+        change(12001, 1),
+        trigger(17003, "second"),
+        Release(tick=35003, ordinal=0, part="main", trigger_id="note"),
+    ]
+    actions = synth_trace.prepare(document.body, events, seed=19).actions
+    prepared = noise.prepare(document)
+    expected = noise.OfflineNoise(prepared, "native").advance(actions, 0, 48000)
+    engine = noise.PersistentNoise(prepared, voices=4)
+    chunks = []
+    boundaries = [0, 997, 12002, 17004, 24001, 35004, 48000]
+    for start, end in zip(boundaries, boundaries[1:], strict=False):
+        chunks.append(
+            engine.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        if end == 24001:
+            snapshot = engine.snapshot()
+    actual = np.concatenate(chunks)
+    restored = noise.PersistentNoise(prepared, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 24001 <= a.tick < 48000], 24001, 48000
+    )
+
+    check_audio(tmp_path / "persistent-noise.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[24001:], atol=0)
+
+
 def test_noise_streams_ignore_pitch_and_other_renderers(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
