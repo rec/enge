@@ -282,8 +282,11 @@ class SynthSnapshot(Model, frozen=True):
 class PersistentSynthSnapshot(Model, frozen=True):
     definition: PreparedSynth
     action_capacity: int
+    context_capacity: int
     frame: int
     voices: dict[str, int]
+    part_contexts: dict[str, int]
+    trigger_contexts: dict[tuple[str, str], int]
     state: _native.SynthRuntimeSnapshot
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -719,12 +722,18 @@ class PersistentSynth:
     """Native oscillator synth for one static uFor voice template."""
 
     def __init__(
-        self, definition: PreparedSynth, voices: int = 16, action_capacity: int = 64
+        self,
+        definition: PreparedSynth,
+        voices: int = 16,
+        action_capacity: int = 64,
+        context_capacity: int = 64,
     ) -> None:
         if type(voices) is not int or voices <= 0:
             raise EngineError("Persistent synth voice capacity must be positive")
         if type(action_capacity) is not int or action_capacity <= 0:
             raise EngineError("Persistent synth action capacity must be positive")
+        if type(context_capacity) is not int or context_capacity <= 0:
+            raise EngineError("Persistent synth context capacity must be positive")
         templates = definition.instrument.voices
         if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
             raise EngineError("Persistent synth requires one oscillator voice template")
@@ -747,10 +756,18 @@ class PersistentSynth:
         self.frame = 0
         self.voices: dict[str, int] = {}
         self.action_capacity = action_capacity
+        self.context_capacity = context_capacity
         self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
-        controls, smoothing, parameters, self.control_sources = _persistent_controls(
-            definition, template
-        )
+        (
+            controls,
+            smoothing,
+            parameters,
+            self.control_sources,
+            self.control_scopes,
+            self.source_controls,
+        ) = _persistent_controls(definition, template)
+        self.part_contexts: dict[str, int] = {}
+        self.trigger_contexts: dict[tuple[str, str], int] = {}
         self.runtime = _native.SynthRuntime(
             rate,
             [Waveform.sine, Waveform.square, Waveform.triangle].index(
@@ -765,6 +782,7 @@ class PersistentSynth:
             controls,
             smoothing,
             parameters,
+            context_capacity,
         )
 
     def advance(
@@ -806,6 +824,10 @@ class PersistentSynth:
             raise EngineError("actions must belong to the rendered interval")
         active = self.runtime.active_slots()
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
+        contexts = self.runtime.active_contexts()
+        self.trigger_contexts = {
+            n: s for n, s in self.trigger_contexts.items() if contexts[s]
+        }
         count = 0
         for action in ordered:
             offset = action.tick - start
@@ -816,22 +838,75 @@ class PersistentSynth:
                     )
                 for name, value in action.controls.items():
                     self.definition.instrument.controls[name].validate_value(value)
+                if "trigger" in self.control_scopes:
+                    context, count = self._new_context(2, contexts, offset, count)
+                    self.trigger_contexts[action.part, action.trigger_id] = context
+                    for source, scope in enumerate(self.control_scopes):
+                        if scope == "trigger":
+                            value = action.controls[self.source_controls[source]]
+                            self._encode_action(
+                                count, offset, 7, context, source, value, 0
+                            )
+                            count += 1
             elif isinstance(action, instrument_trace.ControlObservation):
                 declaration = self.definition.instrument.controls.get(action.control)
                 if declaration is None:
                     raise EngineError(f"Unknown control: {action.control}")
                 declaration.validate_value(action.value)
-                if action.scope != "instrument":
-                    raise EngineError(
-                        "Persistent synth supports instrument-scoped controls only"
+                context = -1
+                if action.scope == "part":
+                    if action.part is None:
+                        raise EngineError("Part control is missing its part")
+                    context, count = self._part_context(
+                        action.part, contexts, offset, count
                     )
+                elif action.scope == "trigger":
+                    if action.part is None or action.trigger_id is None:
+                        raise EngineError("Trigger control is missing its context")
+                    if (
+                        context := self.trigger_contexts.get(
+                            (action.part, action.trigger_id)
+                        )
+                    ) is None:
+                        continue
                 for source in self.control_sources.get(action.control, []):
-                    self._encode_action(count, offset, 4, source, action.value, 0, 0)
-                    count += 1
+                    if self.control_scopes[source] == action.scope:
+                        self._encode_action(
+                            count, offset, 4, source, action.value, context, 0
+                        )
+                        count += 1
             elif isinstance(action, VoiceStart):
+                part_context = -1
+                trigger_context = -1
+                if "part" in self.control_scopes:
+                    part_context, count = self._part_context(
+                        action.part, contexts, offset, count
+                    )
+                if "trigger" in self.control_scopes:
+                    if (
+                        action.trigger_id is None
+                        or (
+                            trigger_context := self.trigger_contexts.get(
+                                (action.part, action.trigger_id)
+                            )
+                        )
+                        is None
+                    ):
+                        raise EngineError("Voice start is missing its trigger context")
                 slot, frequency_hz, gain, phase = self._start(action, active)
                 self._encode_action(count, offset, 0, slot, frequency_hz, gain, phase)
                 count += 1
+                if part_context >= 0 or trigger_context >= 0:
+                    self._encode_action(
+                        count,
+                        offset,
+                        5,
+                        slot,
+                        part_context,
+                        trigger_context,
+                        0,
+                    )
+                    count += 1
             elif isinstance(action, instrument_trace.VoiceRetirement):
                 if action.action == "fade":
                     raise EngineError("Fade retirement is not implemented")
@@ -850,14 +925,21 @@ class PersistentSynth:
         self.runtime.process_actions_into(output, 0, 1, 0, self._action_buffer, count)
         active = self.runtime.active_slots()
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
+        contexts = self.runtime.active_contexts()
+        self.trigger_contexts = {
+            n: s for n, s in self.trigger_contexts.items() if contexts[s]
+        }
         self.frame = end
 
     def snapshot(self) -> PersistentSynthSnapshot:
         return PersistentSynthSnapshot(
             definition=self.definition.model_copy(deep=True),
             action_capacity=self.action_capacity,
+            context_capacity=self.context_capacity,
             frame=self.frame,
             voices=self.voices.copy(),
+            part_contexts=self.part_contexts.copy(),
+            trigger_contexts=self.trigger_contexts.copy(),
             state=self.runtime.snapshot(),
         )
 
@@ -866,9 +948,32 @@ class PersistentSynth:
             raise EngineError("Snapshot belongs to a different prepared synth")
         if snapshot.action_capacity != self.action_capacity:
             raise EngineError("Snapshot belongs to a different action capacity")
+        if snapshot.context_capacity != self.context_capacity:
+            raise EngineError("Snapshot belongs to a different context capacity")
         self.runtime.restore(snapshot.state)
         self.frame = snapshot.frame
         self.voices = snapshot.voices.copy()
+        self.part_contexts = snapshot.part_contexts.copy()
+        self.trigger_contexts = snapshot.trigger_contexts.copy()
+
+    def _new_context(
+        self, kind: int, active: list[bool], offset: int, count: int
+    ) -> tuple[int, int]:
+        context = next((i for i, value in enumerate(active) if not value), None)
+        if context is None:
+            raise EngineError("Persistent synth context capacity exceeded")
+        self._encode_action(count, offset, 6, context, kind, 0, 0)
+        active[context] = True
+        return context, count + 1
+
+    def _part_context(
+        self, part: str, active: list[bool], offset: int, count: int
+    ) -> tuple[int, int]:
+        if (context := self.part_contexts.get(part)) is not None:
+            return context, count
+        context, count = self._new_context(1, active, offset, count)
+        self.part_contexts[part] = context
+        return context, count
 
     def _start(
         self,
@@ -1192,15 +1297,20 @@ def _runtime_segments(segments: list[Segment], sample_rate: int) -> np.ndarray:
 
 def _persistent_controls(
     definition: PreparedSynth, template: SynthVoice
-) -> tuple[np.ndarray, list[tuple[int, int]], list[float], dict[str, list[int]]]:
+) -> tuple[
+    np.ndarray,
+    list[tuple[int, int]],
+    list[float],
+    dict[str, list[int]],
+    list[str],
+    list[str],
+]:
     bindings = {b.name: b for b in template.bindings if isinstance(b, ControlBinding)}
     if len(bindings) != len(template.bindings):
         raise EngineError("Persistent synth supports control bindings only")
     sources = {s.name: s for s in template.modulation.sources}
-    if bindings.keys() != sources.keys() or any(
-        s.scope != "instrument" for s in sources.values()
-    ):
-        raise EngineError("Persistent synth requires instrument-scoped control sources")
+    if bindings.keys() != sources.keys():
+        raise EngineError("Persistent synth control sources require bindings")
     supported = {
         ("processing", "amplitude"): (0, modulation.Operation.multiply),
         ("processing", "tuning_cents"): (1, modulation.Operation.add),
@@ -1216,6 +1326,8 @@ def _persistent_controls(
     rows: list[list[float]] = []
     smoothing: list[tuple[int, int]] = []
     control_sources: dict[str, list[int]] = {}
+    control_scopes: list[str] = []
+    source_controls: list[str] = []
     for route in routes:
         source = sources.get(route.source)
         binding = bindings.get(route.source)
@@ -1264,6 +1376,7 @@ def _persistent_controls(
         rows.append(
             [
                 declaration.default,
+                ["instrument", "part", "trigger"].index(source.scope),
                 parameter,
                 0 if operation == modulation.Operation.add else 1,
                 source.minimum,
@@ -1275,6 +1388,8 @@ def _persistent_controls(
         duration = binding.smoothing * definition.sample_rate
         smoothing.append((duration.numerator, duration.denominator))
         control_sources.setdefault(binding.control, []).append(index)
+        control_scopes.append(source.scope)
+        source_controls.append(binding.control)
     amplitude = parameters.get(("processing", "amplitude"))
     tuning = parameters.get(("processing", "tuning_cents"))
     values = [
@@ -1286,10 +1401,12 @@ def _persistent_controls(
         template.processing.tuning_cents if tuning is None else tuning.maximum,
     ]
     return (
-        np.asarray(rows, dtype=np.float64).reshape(-1, 7),
+        np.asarray(rows, dtype=np.float64).reshape(-1, 8),
         smoothing,
         values,
         control_sources,
+        control_scopes,
+        source_controls,
     )
 
 
