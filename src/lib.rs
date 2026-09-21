@@ -6,6 +6,7 @@ mod fm;
 mod granulator;
 mod lfo;
 mod noise;
+mod queue;
 mod runtime;
 mod sampler;
 
@@ -163,6 +164,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fm::render_fm, module)?)?;
     module.add_function(wrap_pyfunction!(granulator::render_granulator, module)?)?;
     module.add_function(wrap_pyfunction!(noise::render_noise, module)?)?;
+    module.add_class::<queue::ActionQueue>()?;
     module.add_class::<runtime::SynthRuntime>()?;
     module.add_class::<runtime::SynthRuntimeSnapshot>()?;
     module.add_class::<sampler::SampleBuffer>()?;

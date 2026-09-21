@@ -11,8 +11,12 @@ Today, oscillator, sampler, FM, and noise voices share ordered dynamic filters.
 Those filters run before amplitude and mixing, retain voice-owned state, and
 stop when the voice completes. They are not a general effects system. uFor
 already reserves shared post-mix processing for a separate processor graph.
-The existing native render paths also do not establish an allocation-free,
-Python-free audio callback path.
+The native render paths still do not establish an allocation-free, Python-free
+audio callback path. `LiveEngine` now owns heterogeneous persistent sources and
+an optional native effect graph behind one block API. A fixed-size Rust `rtrb`
+queue preserves whole action batches and captures the available prefix at drain
+entry. Its Python binding is a single-threaded conformance harness; a native host
+must own the producer and consumer endpoints on their respective threads.
 
 This plan proposes that architectural addition. Use fixed prepared acyclic
 processor graphs at explicit attachment points. A serial chain remains the
