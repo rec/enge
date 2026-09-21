@@ -1,11 +1,11 @@
 """Two-operator phase modulation with independent NumPy and Rust numerical kernels."""
 
 from math import ceil, isfinite
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 import numpy as np
-from pydantic import Field, model_validator
-from ufor import instrument_trace
+from pydantic import ConfigDict, Field, model_validator
+from ufor import instrument_trace, modulation
 from ufor.base import Model
 from ufor.fm import FM
 from ufor.samples.processing import Processing, ResonantFilter
@@ -13,7 +13,7 @@ from ufor.streams import AudioType
 from ufor.synth import FMVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
 
-from . import filters, native, synth
+from . import _native, filters, native, synth
 
 
 class PreparedVoice(synth.PreparedEnvelope, frozen=True):
@@ -211,6 +211,19 @@ class FMSnapshot(Model, frozen=True):
     lfos: list[synth.LFOSource]
 
 
+class PersistentFMSnapshot(Model, frozen=True):
+    definition: PreparedFM
+    action_capacity: int
+    context_capacity: int
+    frame: int
+    voices: dict[str, int]
+    part_contexts: dict[str, int]
+    trigger_contexts: dict[tuple[str, str], int]
+    state: _native.SynthRuntimeSnapshot
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 class OfflineFM:
     """Consume uFor prepared synth actions for an FM-only instrument instance."""
 
@@ -387,6 +400,212 @@ class OfflineFM:
             if renderer.complete:
                 del self.voices[voice.voice_id]
         return output
+
+
+class PersistentFM(synth.PersistentSynth):
+    """Bounded native two-operator FM runtime for one static voice template."""
+
+    def __init__(
+        self,
+        definition: PreparedFM,
+        voices: int = 16,
+        action_capacity: int = 64,
+        context_capacity: int = 64,
+    ) -> None:
+        if type(voices) is not int or voices <= 0:
+            raise synth.EngineError("Persistent FM voice capacity must be positive")
+        if type(action_capacity) is not int or action_capacity <= 0:
+            raise synth.EngineError("Persistent FM action capacity must be positive")
+        if type(context_capacity) is not int or context_capacity <= 0:
+            raise synth.EngineError("Persistent FM context capacity must be positive")
+        templates = definition.score.body.voices
+        if len(templates) != 1 or not isinstance(templates[0], FMVoice):
+            raise synth.EngineError("Persistent FM requires one FM voice template")
+        template = templates[0]
+        if template.envelopes:
+            raise synth.EngineError("Persistent FM named envelopes are not implemented")
+        if template.processing != Processing(
+            tuning_cents=template.processing.tuning_cents,
+            volume_db=template.processing.volume_db,
+            filters=template.processing.filters,
+        ):
+            raise synth.EngineError(
+                "Persistent FM spatial processing is not implemented"
+            )
+        operators = {o.name: o for o in template.fm.operators}
+        connection = template.fm.connection
+        modulator = operators[connection.source]
+        carrier = operators[connection.destination]
+        route = [
+            sum(r.gain for r in template.channels if r.output == c)
+            for c in definition.channels
+        ]
+        rate = definition.sample_rate
+        shared = synth.PreparedSynth(
+            sample_rate=rate,
+            channels=definition.channels,
+            instrument=definition.score.body,
+        )
+        source_parameters = [
+            (
+                ("processing", "amplitude"),
+                0,
+                modulation.Operation.multiply,
+                1,
+                0,
+                1e300,
+            ),
+            (
+                ("processing", "tuning_cents"),
+                1,
+                modulation.Operation.add,
+                template.processing.tuning_cents,
+                -120000,
+                120000,
+            ),
+            (
+                (f"operator-{modulator.name}", "ratio"),
+                2,
+                modulation.Operation.add,
+                modulator.ratio,
+                np.finfo(np.float64).tiny,
+                1e300,
+            ),
+            (
+                (f"operator-{modulator.name}", "tuning_cents"),
+                3,
+                modulation.Operation.add,
+                modulator.tuning_cents,
+                -120000,
+                120000,
+            ),
+            (
+                (f"operator-{carrier.name}", "ratio"),
+                4,
+                modulation.Operation.add,
+                carrier.ratio,
+                np.finfo(np.float64).tiny,
+                1e300,
+            ),
+            (
+                (f"operator-{carrier.name}", "tuning_cents"),
+                5,
+                modulation.Operation.add,
+                carrier.tuning_cents,
+                -120000,
+                120000,
+            ),
+            (("fm", "index"), 6, modulation.Operation.add, connection.index, 0, 1e300),
+            (
+                ("fm", "feedback"),
+                7,
+                modulation.Operation.add,
+                template.fm.feedback,
+                0,
+                1e300,
+            ),
+            (
+                ("fm", "carrier_level"),
+                8,
+                modulation.Operation.add,
+                template.fm.carrier_level,
+                0,
+                1e300,
+            ),
+        ]
+        self.definition = definition.model_copy(deep=True)
+        self.instrument = self.definition.score.body
+        self.template = template
+        self.frame = 0
+        self.voices: dict[str, int] = {}
+        self.action_capacity = action_capacity
+        self.context_capacity = context_capacity
+        self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
+        (
+            controls,
+            smoothing,
+            parameters,
+            self.control_sources,
+            self.control_scopes,
+            self.source_controls,
+            lfos,
+            lfo_rationals,
+            self.source_scopes,
+            runtime_filters,
+        ) = synth._persistent_modulation(shared, template, source_parameters)
+        self.part_contexts: dict[str, int] = {}
+        self.trigger_contexts: dict[tuple[str, str], int] = {}
+        self.runtime = _native.SynthRuntime.fm(
+            rate,
+            np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
+            carrier.envelope.initial,
+            synth._runtime_segments(carrier.envelope.segments, rate),
+            synth._runtime_segments(carrier.envelope.release, rate),
+            modulator.envelope.initial,
+            synth._runtime_segments(modulator.envelope.segments, rate),
+            synth._runtime_segments(modulator.envelope.release, rate),
+            [float(modulator.phase_cycles), float(carrier.phase_cycles)],
+            float(template.minimum_hold_seconds * rate),
+            controls,
+            smoothing,
+            lfos,
+            lfo_rationals,
+            runtime_filters,
+            parameters,
+            context_capacity,
+        )
+
+    def snapshot(self) -> PersistentFMSnapshot:  # ty: ignore[invalid-method-override]
+        return PersistentFMSnapshot(
+            definition=cast(PreparedFM, self.definition).model_copy(deep=True),
+            action_capacity=self.action_capacity,
+            context_capacity=self.context_capacity,
+            frame=self.frame,
+            voices=self.voices.copy(),
+            part_contexts=self.part_contexts.copy(),
+            trigger_contexts=self.trigger_contexts.copy(),
+            state=self.runtime.snapshot(),
+        )
+
+    def restore(  # ty: ignore[invalid-method-override]
+        self, snapshot: PersistentFMSnapshot
+    ) -> None:
+        if snapshot.definition != self.definition:
+            raise synth.EngineError("Snapshot belongs to a different prepared FM synth")
+        if snapshot.action_capacity != self.action_capacity:
+            raise synth.EngineError("Snapshot belongs to a different action capacity")
+        if snapshot.context_capacity != self.context_capacity:
+            raise synth.EngineError("Snapshot belongs to a different context capacity")
+        self.runtime.restore(snapshot.state)
+        self.frame = snapshot.frame
+        self.voices = snapshot.voices.copy()
+        self.part_contexts = snapshot.part_contexts.copy()
+        self.trigger_contexts = snapshot.trigger_contexts.copy()
+
+    def _start(
+        self, action: VoiceStart, active: list[bool]
+    ) -> tuple[int, float, float, float]:
+        if (
+            action.pitch_hz is None
+            or not isfinite(action.pitch_hz)
+            or action.pitch_hz <= 0
+        ):
+            raise synth.EngineError("FM voice requires positive resolved pitch_hz")
+        if action.voice_id in self.voices:
+            raise synth.EngineError(f"Duplicate active voice: {action.voice_id}")
+        if (
+            action.template != self.template.name
+            or action.settings != self.template
+            or action.oscillator is not None
+            or action.channels != self.template.channels
+        ):
+            raise synth.EngineError("Voice start must match its prepared FM template")
+        slot = next((i for i, value in enumerate(active) if not value), None)
+        if slot is None:
+            raise synth.EngineError("Persistent FM voice capacity exceeded")
+        active[slot] = True
+        self.voices[action.voice_id] = slot
+        return slot, action.pitch_hz, 10 ** (self.template.processing.volume_db / 20), 0
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedFM:

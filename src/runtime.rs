@@ -64,7 +64,12 @@ struct FilterDefinition {
 pub struct SynthRuntimeSnapshot {
     rate: f64,
     waveform: u8,
+    source_kind: u8,
     duty: f64,
+    mod_initial: f64,
+    mod_attack: Vec<Segment>,
+    mod_release: Vec<Segment>,
+    fm_phase_offsets: [f64; 2],
     initial: f64,
     attack: Vec<Segment>,
     release: Vec<Segment>,
@@ -80,6 +85,10 @@ pub struct SynthRuntimeSnapshot {
     frequencies: Vec<f64>,
     phases: Vec<f64>,
     errors: Vec<f64>,
+    mod_phases: Vec<f64>,
+    mod_errors: Vec<f64>,
+    previous_modulators: Vec<f64>,
+    mod_release_levels: Vec<f64>,
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
@@ -100,7 +109,12 @@ pub struct SynthRuntimeSnapshot {
 pub struct SynthRuntime {
     rate: f64,
     waveform: u8,
+    source_kind: u8,
     duty: f64,
+    mod_initial: f64,
+    mod_attack: Vec<Segment>,
+    mod_release: Vec<Segment>,
+    fm_phase_offsets: [f64; 2],
     initial: f64,
     attack: Vec<Segment>,
     release: Vec<Segment>,
@@ -116,6 +130,10 @@ pub struct SynthRuntime {
     frequencies: Vec<f64>,
     phases: Vec<f64>,
     errors: Vec<f64>,
+    mod_phases: Vec<f64>,
+    mod_errors: Vec<f64>,
+    previous_modulators: Vec<f64>,
+    mod_release_levels: Vec<f64>,
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
@@ -203,7 +221,12 @@ impl SynthRuntime {
         Ok(Self {
             rate,
             waveform,
+            source_kind: 0,
             duty,
+            mod_initial: 0.0,
+            mod_attack: Vec::new(),
+            mod_release: Vec::new(),
+            fm_phase_offsets: [0.0; 2],
             initial,
             attack,
             release,
@@ -219,6 +242,10 @@ impl SynthRuntime {
             frequencies: vec![1.0; slots],
             phases: vec![0.0; slots],
             errors: vec![0.0; slots],
+            mod_phases: vec![0.0; slots],
+            mod_errors: vec![0.0; slots],
+            previous_modulators: vec![0.0; slots],
+            mod_release_levels: vec![0.0; slots],
             gains: vec![0.0; slots],
             active: vec![false; slots],
             ages: vec![0; slots],
@@ -234,6 +261,60 @@ impl SynthRuntime {
             voice_filter_states: Array3::zeros((slots, filter_stages, 2)),
             frame: 0,
         })
+    }
+
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn fm(
+        rate: f64,
+        routes: PyReadonlyArray2<'_, f64>,
+        carrier_initial: f64,
+        carrier_attack: PyReadonlyArray2<'_, f64>,
+        carrier_release: PyReadonlyArray2<'_, f64>,
+        mod_initial: f64,
+        mod_attack: PyReadonlyArray2<'_, f64>,
+        mod_release: PyReadonlyArray2<'_, f64>,
+        phase_offsets: Vec<f64>,
+        minimum_hold_frames: f64,
+        controls: PyReadonlyArray2<'_, f64>,
+        control_smoothing: Vec<(u64, u64)>,
+        lfos: PyReadonlyArray2<'_, f64>,
+        lfo_rationals: Vec<(u64, u64)>,
+        filters: PyReadonlyArray2<'_, f64>,
+        parameters: Vec<f64>,
+        context_capacity: usize,
+    ) -> PyResult<Self> {
+        if phase_offsets.len() != 2
+            || phase_offsets.iter().any(|v| !v.is_finite())
+            || !mod_initial.is_finite()
+        {
+            return Err(PyValueError::new_err("Invalid FM runtime definition"));
+        }
+        let mod_attack = segments(mod_attack)?;
+        let mod_release = segments(mod_release)?;
+        let mut runtime = Self::new(
+            rate,
+            0,
+            0.5,
+            routes,
+            carrier_initial,
+            carrier_attack,
+            carrier_release,
+            minimum_hold_frames,
+            controls,
+            control_smoothing,
+            lfos,
+            lfo_rationals,
+            filters,
+            parameters,
+            context_capacity,
+        )?;
+        runtime.source_kind = 1;
+        runtime.mod_initial = mod_initial;
+        runtime.mod_attack = mod_attack;
+        runtime.mod_release = mod_release;
+        runtime.fm_phase_offsets = [phase_offsets[0], phase_offsets[1]];
+        Ok(runtime)
     }
 
     fn process<'py>(
@@ -311,7 +392,12 @@ impl SynthRuntime {
         SynthRuntimeSnapshot {
             rate: self.rate,
             waveform: self.waveform,
+            source_kind: self.source_kind,
             duty: self.duty,
+            mod_initial: self.mod_initial,
+            mod_attack: self.mod_attack.clone(),
+            mod_release: self.mod_release.clone(),
+            fm_phase_offsets: self.fm_phase_offsets,
             initial: self.initial,
             attack: self.attack.clone(),
             release: self.release.clone(),
@@ -327,6 +413,10 @@ impl SynthRuntime {
             frequencies: self.frequencies.clone(),
             phases: self.phases.clone(),
             errors: self.errors.clone(),
+            mod_phases: self.mod_phases.clone(),
+            mod_errors: self.mod_errors.clone(),
+            previous_modulators: self.previous_modulators.clone(),
+            mod_release_levels: self.mod_release_levels.clone(),
             gains: self.gains.clone(),
             active: self.active.clone(),
             ages: self.ages.clone(),
@@ -347,7 +437,12 @@ impl SynthRuntime {
     fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         if self.rate != snapshot.rate
             || self.waveform != snapshot.waveform
+            || self.source_kind != snapshot.source_kind
             || self.duty != snapshot.duty
+            || self.mod_initial != snapshot.mod_initial
+            || self.mod_attack != snapshot.mod_attack
+            || self.mod_release != snapshot.mod_release
+            || self.fm_phase_offsets != snapshot.fm_phase_offsets
             || self.initial != snapshot.initial
             || self.attack != snapshot.attack
             || self.release != snapshot.release
@@ -366,6 +461,12 @@ impl SynthRuntime {
         self.frequencies.clone_from(&snapshot.frequencies);
         self.phases.clone_from(&snapshot.phases);
         self.errors.clone_from(&snapshot.errors);
+        self.mod_phases.clone_from(&snapshot.mod_phases);
+        self.mod_errors.clone_from(&snapshot.mod_errors);
+        self.previous_modulators
+            .clone_from(&snapshot.previous_modulators);
+        self.mod_release_levels
+            .clone_from(&snapshot.mod_release_levels);
         self.gains.clone_from(&snapshot.gains);
         self.active.clone_from(&snapshot.active);
         self.ages.clone_from(&snapshot.ages);
@@ -474,28 +575,74 @@ impl SynthRuntime {
                 } else {
                     envelope_value(self.initial, &self.attack, age)
                 };
-                let angle = TAU * self.phases[voice] / self.rate;
-                let phase = (angle / TAU).rem_euclid(1.0);
-                let wave = match self.waveform {
-                    0 => angle.sin(),
-                    1 => {
-                        if phase < self.duty {
-                            1.0
-                        } else {
-                            -1.0
+                let wave = if self.source_kind == 0 {
+                    let angle = TAU * self.phases[voice] / self.rate;
+                    let phase = (angle / TAU).rem_euclid(1.0);
+                    match self.waveform {
+                        0 => angle.sin(),
+                        1 => {
+                            if phase < self.duty {
+                                1.0
+                            } else {
+                                -1.0
+                            }
                         }
+                        _ if self.duty == 0.0 => 1.0 - 2.0 * phase,
+                        _ if self.duty == 1.0 => 2.0 * phase - 1.0,
+                        _ if phase < self.duty => 2.0 * phase / self.duty - 1.0,
+                        _ => (1.0 + self.duty - 2.0 * phase) / (1.0 - self.duty),
                     }
-                    _ if self.duty == 0.0 => 1.0 - 2.0 * phase,
-                    _ if self.duty == 1.0 => 2.0 * phase - 1.0,
-                    _ if phase < self.duty => 2.0 * phase / self.duty - 1.0,
-                    _ => (1.0 + self.duty - 2.0 * phase) / (1.0 - self.duty),
+                } else {
+                    let mod_level = if let Some(release_frame) = self.release_frames[voice] {
+                        let end = release_frame + total_frames(&self.mod_release);
+                        if age >= end.ceil() {
+                            0.0
+                        } else if age >= release_frame.ceil() {
+                            envelope_value(
+                                self.mod_release_levels[voice],
+                                &self.mod_release,
+                                age - release_frame,
+                            )
+                        } else {
+                            envelope_value(self.mod_initial, &self.mod_attack, age)
+                        }
+                    } else {
+                        envelope_value(self.mod_initial, &self.mod_attack, age)
+                    };
+                    let process_tuning = self.parameter(voice, 1)?;
+                    let mod_frequency = self.frequencies[voice]
+                        * self.parameter(voice, 2)?
+                        * 2_f64.powf((process_tuning + self.parameter(voice, 3)?) / 1200.0);
+                    let carrier_frequency = self.frequencies[voice]
+                        * self.parameter(voice, 4)?
+                        * 2_f64.powf((process_tuning + self.parameter(voice, 5)?) / 1200.0);
+                    let modulator = mod_level
+                        * (TAU * self.mod_phases[voice] / self.rate
+                            + self.parameter(voice, 7)? * self.previous_modulators[voice])
+                            .sin();
+                    let carrier = self.parameter(voice, 8)?
+                        * (TAU * self.phases[voice] / self.rate
+                            + self.parameter(voice, 6)? * modulator)
+                            .sin();
+                    self.previous_modulators[voice] = modulator;
+                    let increment = mod_frequency - self.mod_errors[voice];
+                    let total = self.mod_phases[voice] + increment;
+                    self.mod_errors[voice] = (total - self.mod_phases[voice]) - increment;
+                    self.mod_phases[voice] = total.rem_euclid(self.rate);
+                    let increment = carrier_frequency - self.errors[voice];
+                    let total = self.phases[voice] + increment;
+                    self.errors[voice] = (total - self.phases[voice]) - increment;
+                    self.phases[voice] = total.rem_euclid(self.rate);
+                    carrier
                 };
                 let wave = self.filter_voice(voice, wave)?;
                 let sample = wave * self.gains[voice] * level * amplitude;
-                let increment = self.frequencies[voice] * tuning - self.errors[voice];
-                let total = self.phases[voice] + increment;
-                self.errors[voice] = (total - self.phases[voice]) - increment;
-                self.phases[voice] = total.rem_euclid(self.rate);
+                if self.source_kind == 0 {
+                    let increment = self.frequencies[voice] * tuning - self.errors[voice];
+                    let total = self.phases[voice] + increment;
+                    self.errors[voice] = (total - self.phases[voice]) - increment;
+                    self.phases[voice] = total.rem_euclid(self.rate);
+                }
                 for channel in 0..channels {
                     output[[frame, channel]] += sample * self.routes[[voice, channel]];
                 }
@@ -575,6 +722,14 @@ impl SynthRuntime {
                 self.active[voice] = true;
                 self.phases[voice] = action[5].rem_euclid(self.rate);
                 self.errors[voice] = 0.0;
+                self.mod_phases[voice] =
+                    (self.fm_phase_offsets[0] * self.rate).rem_euclid(self.rate);
+                if self.source_kind == 1 {
+                    self.phases[voice] =
+                        (self.fm_phase_offsets[1] * self.rate).rem_euclid(self.rate);
+                }
+                self.mod_errors[voice] = 0.0;
+                self.previous_modulators[voice] = 0.0;
                 self.frequencies[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;
@@ -593,6 +748,8 @@ impl SynthRuntime {
                     let release_frame = (self.ages[voice] as f64).max(self.minimum_hold_frames);
                     self.release_levels[voice] =
                         envelope_value(self.initial, &self.attack, release_frame);
+                    self.mod_release_levels[voice] =
+                        envelope_value(self.mod_initial, &self.mod_attack, release_frame);
                     self.release_frames[voice] = Some(release_frame);
                 }
             }

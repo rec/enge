@@ -63,6 +63,12 @@ explicit for a future tensor port. The Rust FM kernel computes both operators,
 envelopes, feedback, filters, gain, and routing with owned buffers and the GIL
 released. PyTorch remains deferred.
 
+`PersistentFM` uses the bounded native action and context machinery introduced
+for `PersistentSynth`. Rust retains both operator phases, their independent
+envelopes, one-sample feedback, filters, controls, LFO clocks, and routing state
+across blocks and snapshots. The carrier envelope owns voice lifetime; the
+modulator becomes silent when its own release ends.
+
 The fourth source profile is white noise in `src/enge/noise.py` and `src/noise.rs`,
 under the [noise plan](noise.md). Both backends use the portable noise-v1
 SplitMix64 stream contract, with per-voice keys carried by prepared actions and
