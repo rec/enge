@@ -20,9 +20,10 @@ and drains only the batch prefix visible when draining starts.
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal
 cursors, one bounded action queue per source, and preallocated source/mix/output
 scratch. Its processing body releases the GIL, captures each queue's published
-prefix at entry, advances a prepared gain/multiply/filter graph with exact
-sample-offset parameter ramps, and latches failures before copying output to
-NumPy. The graph's parameter, filter, and ramp state participates in snapshots.
+prefix at entry, advances a prepared gain/multiply/filter/granulator graph with
+exact sample-offset parameter ramps, and latches failures before copying output
+to NumPy. The graph's parameters, recursive filters, circular grain history,
+active grain pool, and ramps participate in snapshots.
 The Python method is a callback conformance harness; a native host can call the
 same Rust processing body directly.
 
@@ -38,7 +39,7 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - `OfflineEffects` still builds parameter and output arrays for every block.
   The live adapter now prepares the supported graph once and encodes parameter
   and bypass actions into bounded batches, but `LiveEngine` does not yet own and
-  submit those batches. Granulation is not part of the native owner yet.
+  submit those batches. Live granulator freeze actions remain unsupported.
 - The Python `ActionQueue` binding is a deterministic single-thread harness.
   A native host must own the `rtrb` producer and consumer on separate threads.
 
@@ -50,11 +51,17 @@ body. Python still performs admission and submission synchronously before that
 call. The native sampler profile currently excludes dynamic controls, generators,
 and filters.
 
+Granulators allocate circular history and a fixed captured-grain pool during
+setup. Duration, density, lookback, playback ratio, jitter, wet/dry, bypass, and
+snapshot continuation stay inside the owner without growing callback storage.
+Freeze actions are rejected during live encoding.
+
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundary is native granulation, followed by expanding
-the native sampler profile if live sample modulation requires it.
-Those paths must use its existing borrowed input/output and preallocated scratch
-model rather than wrapping their allocating Python entry points.
+The next implementation boundaries are freeze transitions, expanding the native
+sampler profile if live sample modulation requires it, and a native host that
+owns producer and callback threads without Python entry. Those paths must use
+the existing borrowed input/output and preallocated scratch model rather than
+wrapping their allocating Python entry points.
 
 ## Stress harness
 

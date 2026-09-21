@@ -62,6 +62,7 @@ struct EffectRuntime {
     remaining: Array2<usize>,
     filter_rows: Vec<EffectFilter>,
     filter_states: Array3<f64>,
+    granulators: Vec<Option<LiveGranulator>>,
     values: Array2<f64>,
     wet: Vec<f64>,
     producer: Producer<ActionBatch>,
@@ -89,6 +90,28 @@ struct EffectSnapshot {
     remaining: Array2<usize>,
     filter_rows: Vec<EffectFilter>,
     filter_states: Array3<f64>,
+    granulators: Vec<Option<LiveGranulator>>,
+}
+
+#[derive(Clone)]
+struct LiveGranulator {
+    history: Array2<f64>,
+    history_start: i64,
+    history_len: usize,
+    history_write: usize,
+    grains: Vec<LiveGrain>,
+    phase: f64,
+    counter: u64,
+    frame: usize,
+}
+
+#[derive(Clone)]
+struct LiveGrain {
+    samples: Array2<f64>,
+    len: usize,
+    index: usize,
+    gain: f64,
+    active: bool,
 }
 
 #[pyclass(frozen, skip_from_py_object)]
@@ -211,6 +234,7 @@ impl LiveRuntime {
         parameters: PyReadonlyArray2<'_, f64>,
         output_source: usize,
         filters: PyReadonlyArray2<'_, f64>,
+        granulators: PyReadonlyArray2<'_, i64>,
         batch_capacity: usize,
     ) -> PyResult<()> {
         if self.frame != 0 || self.effects.is_some() || batch_capacity == 0 {
@@ -222,6 +246,7 @@ impl LiveRuntime {
             parameters,
             output_source,
             filters,
+            granulators,
             self.channels,
             self.action_capacity,
             batch_capacity,
@@ -477,12 +502,13 @@ impl EffectRuntime {
         parameters: PyReadonlyArray2<'_, f64>,
         output_source: usize,
         filters: PyReadonlyArray2<'_, f64>,
+        granulators: PyReadonlyArray2<'_, i64>,
         channels: usize,
         action_capacity: usize,
         batch_capacity: usize,
     ) -> PyResult<Self> {
         let nodes = kinds.len();
-        if kinds.iter().any(|v| *v > 2)
+        if kinds.iter().any(|v| *v > 3)
             || sources.shape() != [nodes, 2]
             || parameters.shape()[0] != nodes
             || parameters.shape()[1] < 3
@@ -500,6 +526,7 @@ impl EffectRuntime {
             || output_source > nodes
             || filters.shape()[1] != 4
             || filters.as_array().iter().any(|v| !v.is_finite())
+            || granulators.shape()[1] != 3
         {
             return Err(PyValueError::new_err("Invalid live effect graph"));
         }
@@ -539,6 +566,36 @@ impl EffectRuntime {
             });
         }
         let parameters = parameters.as_array().to_owned();
+        let mut prepared_granulators = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for row in granulators.as_array().rows() {
+            let node = usize::try_from(row[0])
+                .map_err(|_| PyValueError::new_err("Invalid live granulator node"))?;
+            let history_frames = usize::try_from(row[1])
+                .map_err(|_| PyValueError::new_err("Invalid live granulator history"))?;
+            let maximum_grains = usize::try_from(row[2])
+                .map_err(|_| PyValueError::new_err("Invalid live granulator capacity"))?;
+            if node >= nodes
+                || kinds[node] != 3
+                || history_frames < 2
+                || maximum_grains == 0
+                || prepared_granulators[node].is_some()
+                || parameters.ncols() < 8
+            {
+                return Err(PyValueError::new_err("Invalid live granulator"));
+            }
+            prepared_granulators[node] = Some(LiveGranulator::new(
+                history_frames,
+                maximum_grains,
+                channels,
+            ));
+        }
+        if kinds
+            .iter()
+            .enumerate()
+            .any(|(i, kind)| *kind == 3 && prepared_granulators[i].is_none())
+        {
+            return Err(PyValueError::new_err("Missing live granulator setup"));
+        }
         let (producer, consumer) = RingBuffer::new(batch_capacity);
         Ok(Self {
             kinds,
@@ -550,6 +607,7 @@ impl EffectRuntime {
             parameters,
             filter_states: Array3::zeros((filter_rows.len(), channels, 2)),
             filter_rows,
+            granulators: prepared_granulators,
             values: Array2::zeros((nodes + 1, channels)),
             wet: vec![0.0; channels],
             producer,
@@ -616,7 +674,20 @@ impl EffectRuntime {
                             *value *= self.values[[second, channel]];
                         }
                     }
-                    _ => self.process_filters(node, rate)?,
+                    2 => self.process_filters(node, rate)?,
+                    _ => {
+                        let parameters = [
+                            self.parameters[[node, 3]],
+                            self.parameters[[node, 4]],
+                            self.parameters[[node, 5]],
+                            self.parameters[[node, 6]],
+                            self.parameters[[node, 7]],
+                        ];
+                        self.granulators[node]
+                            .as_mut()
+                            .expect("validated live granulator")
+                            .process(&mut self.wet, parameters, rate)?;
+                    }
                 }
                 for channel in 0..channels {
                     self.values[[node + 1, channel]] =
@@ -745,6 +816,7 @@ impl EffectRuntime {
             remaining: self.remaining.clone(),
             filter_rows: self.filter_rows.clone(),
             filter_states: self.filter_states.clone(),
+            granulators: self.granulators.clone(),
         }
     }
 
@@ -753,6 +825,16 @@ impl EffectRuntime {
             || self.sources != snapshot.sources
             || self.output_source != snapshot.output_source
             || self.filter_rows != snapshot.filter_rows
+            || self.granulators.len() != snapshot.granulators.len()
+            || self
+                .granulators
+                .iter()
+                .zip(&snapshot.granulators)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
             || self.parameters.raw_dim() != snapshot.parameters.raw_dim()
             || self.filter_states.raw_dim() != snapshot.filter_states.raw_dim()
         {
@@ -765,8 +847,136 @@ impl EffectRuntime {
         self.steps.assign(&snapshot.steps);
         self.remaining.assign(&snapshot.remaining);
         self.filter_states.assign(&snapshot.filter_states);
+        self.granulators.clone_from(&snapshot.granulators);
         Ok(())
     }
+}
+
+impl LiveGranulator {
+    fn new(history_frames: usize, maximum_grains: usize, channels: usize) -> Self {
+        Self {
+            history: Array2::zeros((history_frames, channels)),
+            history_start: 0,
+            history_len: 0,
+            history_write: 0,
+            grains: (0..maximum_grains)
+                .map(|_| LiveGrain {
+                    samples: Array2::zeros((history_frames, channels)),
+                    len: 0,
+                    index: 0,
+                    gain: 0.0,
+                    active: false,
+                })
+                .collect(),
+            phase: 0.0,
+            counter: 0,
+            frame: 0,
+        }
+    }
+
+    fn same_capacity(&self, other: &Self) -> bool {
+        self.history.raw_dim() == other.history.raw_dim()
+            && self.grains.len() == other.grains.len()
+            && self
+                .grains
+                .iter()
+                .zip(&other.grains)
+                .all(|(a, b)| a.samples.raw_dim() == b.samples.raw_dim())
+    }
+
+    fn process(&mut self, input: &mut [f64], parameters: [f64; 5], rate: f64) -> PyResult<()> {
+        let [duration_seconds, density, lookback, ratio, jitter_seconds] = parameters;
+        if duration_seconds <= 0.0
+            || density <= 0.0
+            || density > rate
+            || lookback < 0.0
+            || ratio <= 0.0
+            || jitter_seconds < 0.0
+        {
+            return Err(PyValueError::new_err("Invalid live granulator parameter"));
+        }
+        for (channel, value) in input.iter().enumerate() {
+            self.history[[self.history_write, channel]] = *value;
+        }
+        self.history_write = (self.history_write + 1) % self.history.nrows();
+        if self.history_len < self.history.nrows() {
+            self.history_len += 1;
+        } else {
+            self.history_start += 1;
+        }
+        self.phase += density / rate;
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+            let launch_counter = self.counter;
+            self.counter = self.counter.wrapping_add(1);
+            if let Some(slot) = self.grains.iter().position(|v| !v.active) {
+                let duration = (duration_seconds * rate).round().max(2.0) as usize;
+                let end = self.frame as f64 - lookback * rate
+                    + jitter_seconds * rate * granular_jitter(launch_counter);
+                let start = end - (duration - 1) as f64 * ratio;
+                if duration <= self.history.nrows() && self.capture(slot, start, ratio, duration) {
+                    let grain = &mut self.grains[slot];
+                    grain.len = duration;
+                    grain.index = 0;
+                    grain.gain = 1.0 / (density * duration_seconds).max(1.0).sqrt();
+                    grain.active = true;
+                }
+            }
+        }
+        input.fill(0.0);
+        for grain in &mut self.grains {
+            if !grain.active {
+                continue;
+            }
+            let window = 0.5 - 0.5 * (2.0 * PI * grain.index as f64 / grain.len as f64).cos();
+            for (channel, value) in input.iter_mut().enumerate() {
+                *value += grain.samples[[grain.index, channel]] * window * grain.gain;
+            }
+            grain.index += 1;
+            if grain.index == grain.len {
+                grain.active = false;
+            }
+        }
+        self.frame = self
+            .frame
+            .checked_add(1)
+            .ok_or_else(|| PyValueError::new_err("Live granulator frame overflow"))?;
+        Ok(())
+    }
+
+    fn capture(&mut self, slot: usize, start: f64, ratio: f64, frames: usize) -> bool {
+        for i in 0..frames {
+            let position = start + i as f64 * ratio;
+            let lower = position.floor() as i64;
+            let upper = lower + 1;
+            if lower < self.history_start || upper >= self.history_start + self.history_len as i64 {
+                return false;
+            }
+            let fraction = position - lower as f64;
+            let first = self.history_index(lower);
+            let second = self.history_index(upper);
+            for channel in 0..self.history.ncols() {
+                let a = self.history[[first, channel]];
+                let b = self.history[[second, channel]];
+                self.grains[slot].samples[[i, channel]] = a + (b - a) * fraction;
+            }
+        }
+        true
+    }
+
+    fn history_index(&self, frame: i64) -> usize {
+        let oldest =
+            (self.history_write + self.history.nrows() - self.history_len) % self.history.nrows();
+        (oldest + (frame - self.history_start) as usize) % self.history.nrows()
+    }
+}
+
+fn granular_jitter(counter: u64) -> f64 {
+    let mut value = counter.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^= value >> 31;
+    2.0 * ((value >> 11) as f64 / 2_f64.powi(53)) - 1.0
 }
 
 fn push_batch(

@@ -34,6 +34,7 @@ class LiveRuntime:
         parameters: np.ndarray,
         output_source: int,
         filters: np.ndarray,
+        granulators: np.ndarray,
         batch_capacity: int,
     ) -> None: ...
     def submit_effects(self, actions: np.ndarray) -> None: ...

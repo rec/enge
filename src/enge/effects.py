@@ -692,28 +692,29 @@ def prepare(definition: audio_effects.EffectGraph, sample_rate: int) -> Prepared
 
 def native_live_graph(
     definition: PreparedEffects,
-) -> tuple[list[int], np.ndarray, np.ndarray, int, np.ndarray]:
+) -> tuple[list[int], np.ndarray, np.ndarray, int, np.ndarray, np.ndarray]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
-    if len(graph.inputs) != 1 or any(
-        isinstance(p, audio_effects.Granulator) for p in graph.processors
-    ):
-        raise EngineError(
-            "Native live effects require one input and gain, multiply, or filter nodes"
-        )
+    if len(graph.inputs) != 1:
+        raise EngineError("Native live effects require exactly one graph input")
     processors = {p.name: p for p in graph.processors}
     ordered = [processors[n] for n in definition.order]
     input_name = graph.inputs[0].name
     processor_indices = {p.name: i + 1 for i, p in enumerate(ordered)}
     connections = {(c.processor, c.port): c.source for c in graph.connections}
     widths = [
-        3 + 2 * len(p.filters) if isinstance(p, audio_effects.Filter) else 3
+        3 + 2 * len(p.filters)
+        if isinstance(p, audio_effects.Filter)
+        else 8
+        if isinstance(p, audio_effects.Granulator)
+        else 3
         for p in ordered
     ]
     parameters = np.zeros((len(ordered), max(widths, default=3)), dtype=np.float64)
     sources = np.full((len(ordered), 2), -1, dtype=np.int64)
     kinds: list[int] = []
     filter_rows: list[list[float]] = []
+    granulator_rows: list[list[int]] = []
     for node, processor in enumerate(ordered):
         ports = (
             ["carrier", "modulator"]
@@ -747,6 +748,22 @@ def native_live_graph(
                     [node, response, parameter, processor.state_floor]
                     for _ in range(filter_definition.stages)
                 )
+        elif isinstance(processor, audio_effects.Granulator):
+            kinds.append(3)
+            parameters[node, 3:8] = [
+                processor.duration_seconds,
+                processor.density_hz,
+                processor.lookback_seconds,
+                processor.playback_ratio,
+                processor.position_jitter_seconds,
+            ]
+            granulator_rows.append(
+                [
+                    node,
+                    max(2, round(processor.history_seconds * definition.sample_rate)),
+                    processor.maximum_grains,
+                ]
+            )
         else:
             raise EngineError("Unsupported native live effect processor")
     output_source = (
@@ -760,6 +777,7 @@ def native_live_graph(
         parameters,
         output_source,
         np.asarray(filter_rows, dtype=np.float64).reshape(-1, 4),
+        np.asarray(granulator_rows, dtype=np.int64).reshape(-1, 3),
     )
 
 
@@ -795,6 +813,15 @@ def native_live_actions(
                     name
                     for f in processor.filters
                     for name in (f"{f.name}-cutoff_hz", f"{f.name}-q")
+                ]
+                parameter = 3 + names.index(action.parameter)
+            elif isinstance(processor, audio_effects.Granulator):
+                names = [
+                    "duration_seconds",
+                    "density_hz",
+                    "lookback_seconds",
+                    "playback_ratio",
+                    "position_jitter_seconds",
                 ]
                 parameter = 3 + names.index(action.parameter)
             else:

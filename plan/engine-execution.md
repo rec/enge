@@ -96,17 +96,17 @@ path does not yet satisfy the stronger native callback contract.
 FM, and noise runtimes into one Rust instance and also owns immutable sample
 assets with per-slot cursor, envelope, release, gain, and traversal state. It
 consumes whole batches from a bounded queue per source, mixes through preallocated
-scratch, and advances a topologically ordered gain/multiply/filter graph with
-preallocated parameter, recursive-state, and output storage. Effect parameter
-ramps apply at exact sample offsets, and source plus effect state is restored in
-one snapshot. Processing releases the GIL and latches fatal failure to zero
-output; snapshots require empty queues. High-level source action submission,
-`LiveEngine` ownership, and native granulation remain separate consolidation
-steps. The effect side now has a one-time graph encoder and block action encoder
+scratch, and advances a topologically ordered gain/multiply/filter/granulator
+graph with preallocated parameter, recursive-state, history, grain-pool, and
+output storage. Effect parameter ramps apply at exact sample offsets, and source
+plus effect state is restored in one snapshot. Processing releases the GIL and
+latches fatal failure to zero output; snapshots require empty queues. The effect
+side has a one-time graph encoder and block action encoder
 for parameters and smooth bypass. `NativeLiveEngine` combines that encoder with
 oscillator, FM, noise, and static-profile sampler action admission before invoking
 the single native owner. The native sampler rejects controls, generators, and
-filters rather than silently dropping them.
+filters rather than silently dropping them. Live granulator freeze actions are
+still rejected.
 
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
