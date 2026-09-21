@@ -4,10 +4,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_dynamic_synth import change, dynamic_score, onset
+from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
 from ufor.envelope import Envelope, Segment
 from ufor.events import Release, Trigger
 from ufor.samples.processing import FilterResponse, ResonantFilter
+from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
 from enge import _native, filters
@@ -28,6 +30,8 @@ def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> No
         np.array([[0, 0]], dtype=np.float64),
         0,
         np.empty((0, 8), dtype=np.float64),
+        [],
+        np.empty((0, 6), dtype=np.float64),
         [],
         [1, -1e300, 1e300, 0, -120000, 120000],
         1,
@@ -77,6 +81,8 @@ def test_persistent_runtime_applies_voice_actions_at_exact_frames() -> None:
         np.array([[4, 0]], dtype=np.float64),
         0,
         np.empty((0, 8), dtype=np.float64),
+        [],
+        np.empty((0, 6), dtype=np.float64),
         [],
         [1, -1e300, 1e300, 0, -120000, 120000],
         1,
@@ -278,3 +284,51 @@ def test_persistent_synth_keeps_reused_trigger_tails_separate(tmp_path: Path) ->
     np.testing.assert_allclose(replay, actual[256:], atol=0)
     assert len(snapshot.trigger_contexts) == 1
     assert len(snapshot.voices) == 2
+
+
+@pytest.mark.parametrize(
+    "scope,waveform,duty",
+    [
+        ("instrument", "sine", "1/2"),
+        ("part", "triangle", "1/3"),
+        ("voice", "square", "1/3"),
+    ],
+)
+def test_persistent_synth_evolves_scoped_lfos_in_rust(
+    tmp_path: Path, scope: str, waveform: str, duty: str
+) -> None:
+    raw = lfo_score("synth", scope).model_dump(mode="json")
+    raw["body"]["voices"][0]["lfos"]["motion"].update(
+        waveform=waveform, duty_cycle=duty
+    )
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        onset(6000, pitch=0.1).model_copy(update={"controls": {}}),
+        onset(12000, "second", pitch=0.1).model_copy(update={"controls": {}}),
+        onset(12000, "third", part="other", pitch=0.1).model_copy(
+            update={"controls": {}, "ordinal": 1}
+        ),
+        Release(tick=18000, ordinal=0, part="main", trigger_id="note"),
+        onset(24000, pitch=0.1).model_copy(update={"controls": {}}),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "native").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=8)
+    chunks = []
+    boundaries = [0, 997, 6001, 12001, 18001, 24001, 30000, 48000]
+    for start, end in zip(boundaries, boundaries[1:], strict=False):
+        chunks.append(
+            renderer.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        if end == 24001:
+            snapshot = renderer.snapshot()
+    actual = np.concatenate(chunks)
+    restored = PersistentSynth(definition, voices=8)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 24001 <= a.tick < 48000], 24001, 48000
+    )
+
+    check_audio(tmp_path / f"persistent-{scope}-lfo.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[24001:], atol=0)

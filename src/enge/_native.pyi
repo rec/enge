@@ -17,6 +17,8 @@ class SynthRuntime:
         minimum_hold_frames: float,
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
+        lfos: np.ndarray,
+        lfo_rationals: list[tuple[int, int]],
         parameters: list[float],
         context_capacity: int,
     ) -> None: ...
