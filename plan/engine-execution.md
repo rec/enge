@@ -96,10 +96,12 @@ path does not yet satisfy the stronger native callback contract.
 FM, and noise runtimes into one Rust instance and also owns immutable sample
 assets with per-slot cursor, envelope, release, gain, and traversal state. It
 consumes whole batches from a bounded queue per source, mixes through preallocated
-scratch, applies constant master gain, releases the GIL around processing, and
-latches fatal failure to zero output. Snapshots require empty queues. High-level
-sample action encoding and the complete effect graph remain the next
-consolidation step.
+scratch, and advances a topologically ordered gain/multiply/filter graph with
+preallocated parameter, recursive-state, and output storage. Effect parameter
+ramps apply at exact sample offsets, and source plus effect state is restored in
+one snapshot. Processing releases the GIL and latches fatal failure to zero
+output; snapshots require empty queues. High-level source/effect action encoding
+and native granulation remain separate consolidation steps.
 
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
