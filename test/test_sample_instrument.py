@@ -402,6 +402,42 @@ def test_instrument_ramps_continue_in_silence_and_multiply_independent_trigger_g
     )
 
 
+def test_persistent_sampler_matches_native_across_blocks_and_restore(
+    tmp_path: Path,
+) -> None:
+    document = sample_score()
+    frames = np.arange(96000)
+    audio = np.column_stack([np.sin(2 * np.pi * frames * 220 / 48000), np.zeros(96000)])
+    prepared = sample_instrument.prepare(document, {"asset": audio})
+    actions = trace.prepare(
+        document.body,
+        [
+            onset(pitch=440).model_copy(update={"controls": {}}),
+            onset(17003, "second", pitch=330).model_copy(update={"controls": {}}),
+        ],
+        seed=0,
+    ).actions
+    expected = sample_instrument.OfflineSampler(prepared, "native").advance(
+        actions, 0, 48000
+    )
+    engine = sample_instrument.PersistentSampler(prepared, voices=4)
+    chunks = []
+    boundaries = [0, 997, 17004, 24001, 48000]
+    for start, end in pairwise(boundaries):
+        chunks.append(
+            engine.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        if end == 24001:
+            snapshot = engine.snapshot()
+    actual = np.concatenate(chunks)
+    restored = sample_instrument.PersistentSampler(prepared, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance([], 24001, 48000)
+
+    check_audio(tmp_path / "persistent-sampler.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[24001:], atol=0)
+
+
 @pytest.mark.parametrize(
     "direction,prefix", [("backward", [3, 2, 1, 0]), ("mirror", [0, 1, 2, 3, 2, 1, 0])]
 )

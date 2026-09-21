@@ -43,6 +43,12 @@ class SamplerSnapshot(Model, frozen=True):
     backend: Literal["numpy", "native"]
 
 
+class PersistentSamplerSnapshot(Model, frozen=True):
+    state: SamplerSnapshot
+    voice_capacity: int
+    action_capacity: int
+
+
 def prepare(
     score: instrument.SampleInstrumentScore, audio: dict[str, np.ndarray]
 ) -> PreparedSampler:
@@ -338,6 +344,78 @@ class OfflineSampler:
             if voice.renderer.complete:
                 del self.voices[voice.voice_id]
         return output
+
+
+class PersistentSampler(OfflineSampler):
+    """Bounded block adapter for the native persistent sample renderer."""
+
+    def __init__(
+        self,
+        definition: PreparedSampler,
+        voices: int = 16,
+        action_capacity: int = 64,
+    ) -> None:
+        if type(voices) is not int or voices <= 0:
+            raise synth.EngineError(
+                "Persistent sampler voice capacity must be positive"
+            )
+        if type(action_capacity) is not int or action_capacity <= 0:
+            raise synth.EngineError(
+                "Persistent sampler action capacity must be positive"
+            )
+        super().__init__(definition, backend="native")
+        self.voice_capacity = voices
+        self.action_capacity = action_capacity
+
+    def advance(
+        self, actions: list[instrument_trace.TraceAction], start: int, end: int
+    ) -> np.ndarray:
+        if len(actions) > self.action_capacity:
+            raise synth.EngineError("Persistent sampler action capacity exceeded")
+        return super().advance(actions, start, end)
+
+    def advance_into(
+        self,
+        actions: list[instrument_trace.TraceAction],
+        start: int,
+        end: int,
+        output: np.ndarray,
+    ) -> None:
+        if (
+            output.shape != (end - start, len(self.definition.channels))
+            or output.dtype != np.float64
+            or not output.flags.c_contiguous
+            or not output.flags.writeable
+        ):
+            raise synth.EngineError(
+                "Persistent sampler output must be writable C-contiguous float64 "
+                "with shape (frames, channels)"
+            )
+        output[:] = self.advance(actions, start, end)
+
+    def snapshot(self) -> PersistentSamplerSnapshot:  # ty: ignore[invalid-method-override]
+        return PersistentSamplerSnapshot(
+            state=super().snapshot(),
+            voice_capacity=self.voice_capacity,
+            action_capacity=self.action_capacity,
+        )
+
+    def restore(  # ty: ignore[invalid-method-override]
+        self, snapshot: PersistentSamplerSnapshot
+    ) -> None:
+        if snapshot.voice_capacity != self.voice_capacity:
+            raise synth.EngineError("Snapshot belongs to a different voice capacity")
+        if snapshot.action_capacity != self.action_capacity:
+            raise synth.EngineError("Snapshot belongs to a different action capacity")
+        super().restore(snapshot.state)
+
+    def _apply(self, action: instrument_trace.TraceAction) -> None:
+        if (
+            isinstance(action, trace.VoiceStart)
+            and len(self.voices) >= self.voice_capacity
+        ):
+            raise synth.EngineError("Persistent sampler voice capacity exceeded")
+        super()._apply(action)
 
 
 def _validate_settings(settings: processing.SoundSettings) -> None:
