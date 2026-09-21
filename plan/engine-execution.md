@@ -103,8 +103,9 @@ one snapshot. Processing releases the GIL and latches fatal failure to zero
 output; snapshots require empty queues. High-level source action submission,
 `LiveEngine` ownership, and native granulation remain separate consolidation
 steps. The effect side now has a one-time graph encoder and block action encoder
-for parameters and smooth bypass; `LiveEngine` does not yet submit them to this
-owner.
+for parameters and smooth bypass. `NativeLiveEngine` combines that encoder with
+the existing oscillator, FM, and noise action admission before invoking the
+single native owner; sample-instrument admission is still separate.
 
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional

@@ -425,11 +425,11 @@ impl SynthRuntime {
         self.render_into(output.as_array_mut(), cutoff_hz, q, gain_db, actions)
     }
 
-    fn active_slots(&self) -> Vec<bool> {
+    pub(crate) fn active_slots(&self) -> Vec<bool> {
         self.active.clone()
     }
 
-    fn active_contexts(&self) -> Vec<bool> {
+    pub(crate) fn active_contexts(&self) -> Vec<bool> {
         self.context_kinds.iter().map(|kind| *kind != 0).collect()
     }
 

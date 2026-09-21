@@ -278,6 +278,20 @@ impl LiveRuntime {
         push_batch(&mut source.producer, actions, "source")
     }
 
+    fn active_slots(&self, source: usize) -> PyResult<Vec<bool>> {
+        self.sources
+            .get(source)
+            .map(|v| v.runtime.active_slots())
+            .ok_or_else(|| PyValueError::new_err("Unknown live runtime source"))
+    }
+
+    fn active_contexts(&self, source: usize) -> PyResult<Vec<bool>> {
+        let Some(source) = self.sources.get(source) else {
+            return Err(PyValueError::new_err("Unknown live runtime source"));
+        };
+        source.runtime.active_contexts()
+    }
+
     fn process_into(
         &mut self,
         py: Python<'_>,
@@ -780,6 +794,22 @@ fn drain_batches(
 }
 
 impl SourceRuntime {
+    fn active_slots(&self) -> Vec<bool> {
+        match self {
+            Self::Generated(runtime) => runtime.active_slots(),
+            Self::Sample(runtime) => runtime.active.clone(),
+        }
+    }
+
+    fn active_contexts(&self) -> PyResult<Vec<bool>> {
+        match self {
+            Self::Generated(runtime) => Ok(runtime.active_contexts()),
+            Self::Sample(_) => Err(PyValueError::new_err(
+                "Live sample sources do not own control contexts",
+            )),
+        }
+    }
+
     fn render_into(&mut self, output: ArrayViewMut2<'_, f64>, actions: &[f64]) -> PyResult<()> {
         match self {
             Self::Generated(runtime) => runtime.render_into(output, 0.0, 1.0, 0.0, actions),

@@ -40,10 +40,16 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - The Python `ActionQueue` binding is a deterministic single-thread harness.
   A native host must own the `rtrb` producer and consumer on separate threads.
 
+`NativeLiveEngine` is the control-side harness for generated sources. It validates
+and encodes oscillator, FM, and noise trace actions plus supported effect actions,
+submits bounded batches, then invokes the single Rust owner. This removes Python
+DSP, mixing, and effect-array construction from its callback body. Python still
+performs admission and submission synchronously before that call, and the sampler
+does not yet use this adapter.
+
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundary is connecting high-level source action
-encoding and `LiveEngine` ownership to `LiveRuntime`, followed separately by
-native granulation.
+The next implementation boundary is connecting high-level sampler action
+encoding to `LiveRuntime`, followed separately by native granulation.
 Those paths must use its existing borrowed input/output and preallocated scratch
 model rather than wrapping their allocating Python entry points.
 
