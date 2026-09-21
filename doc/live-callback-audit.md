@@ -20,9 +20,11 @@ and drains only the batch prefix visible when draining starts.
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal
 cursors, one bounded action queue per source, and preallocated source/mix/output
 scratch. Its processing body releases the GIL, captures each queue's published
-prefix at entry, applies a prepared constant master gain, and latches failures
-before copying output to NumPy. The Python method is a callback conformance
-harness; a native host can call the same Rust processing body directly.
+prefix at entry, advances a prepared gain/multiply/filter graph with exact
+sample-offset parameter ramps, and latches failures before copying output to
+NumPy. The graph's parameter, filter, and ramp state participates in snapshots.
+The Python method is a callback conformance harness; a native host can call the
+same Rust processing body directly.
 
 The complete `LiveEngine` path is not yet ready for a system audio callback:
 
@@ -31,15 +33,17 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - `LiveEngine.advance_into()` currently calls the allocating `advance()` path.
 - The higher-level `PersistentSampler` still orchestrates voices in Python. Its
   prepared actions are not yet encoded directly for `LiveRuntime`.
-- Native effect preparation builds parameter and output arrays for every block.
+- The higher-level effect adapter still builds parameter and output arrays for
+  every block instead of encoding actions for `LiveRuntime`. Granulation is not
+  part of the native owner yet.
 - The Python `ActionQueue` binding is a deterministic single-thread harness.
   A native host must own the `rtrb` producer and consumer on separate threads.
 
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundary is extending `LiveRuntime` with the full effect
-graph and connecting high-level sample action encoding to it. Those paths must
-use its existing borrowed input/output and preallocated scratch model rather than
-wrapping their allocating Python entry points.
+The next implementation boundary is connecting high-level source and effect
+action encoding to `LiveRuntime`, followed separately by native granulation.
+Those paths must use its existing borrowed input/output and preallocated scratch
+model rather than wrapping their allocating Python entry points.
 
 ## Stress harness
 

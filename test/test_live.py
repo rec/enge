@@ -80,7 +80,15 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         + white.process_actions(48000, 0, 1, 0, noise_start)
     ) * 10 ** (-3 / 20)
     runtime = _native.LiveRuntime(
-        [native_oscillator_runtime(), native_noise_runtime()], 997, 64, 4, -3
+        [native_oscillator_runtime(), native_noise_runtime()], 997, 64, 4
+    )
+    runtime.set_effect_graph(
+        [0],
+        np.array([[0, -1]], dtype=np.int64),
+        np.array([[-3, 1]], dtype=np.float64),
+        1,
+        np.empty((0, 4), dtype=np.float64),
+        4,
     )
     runtime.submit(0, oscillator_start)
     runtime.submit(1, noise_start)
@@ -91,7 +99,15 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         if end == 23928:
             snapshot = runtime.snapshot()
     restored = _native.LiveRuntime(
-        [native_oscillator_runtime(), native_noise_runtime()], 997, 64, 4, -3
+        [native_oscillator_runtime(), native_noise_runtime()], 997, 64, 4
+    )
+    restored.set_effect_graph(
+        [0],
+        np.array([[0, -1]], dtype=np.int64),
+        np.array([[-3, 1]], dtype=np.float64),
+        1,
+        np.empty((0, 4), dtype=np.float64),
+        4,
     )
     restored.restore(snapshot)
     replay = np.empty((48000 - 23928, 2))
@@ -102,8 +118,56 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
     np.testing.assert_allclose(replay, actual[23928:], atol=0)
 
 
+def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
+    tmp_path: Path,
+) -> None:
+    start_action = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
+    source = native_oscillator_runtime().process_actions(48000, 0, 1, 0, start_action)
+    kinds = [0, 1, 2]
+    sources = np.array([[0, -1], [0, 1], [2, -1]], dtype=np.int64)
+    initial = np.array(
+        [[-12, 0.6, 0, 0], [0, 0.4, 0, 0], [0, 0.75, 1500, 0.7]],
+        dtype=np.float64,
+    )
+    parameter_values = np.broadcast_to(initial[:, :2], (48000, 3, 2)).copy()
+    duration = 257
+    ramp = np.minimum(np.maximum(np.arange(48000) - 32, 0), duration) / duration
+    parameter_values[:, 0, 0] = -12 + 12 * ramp
+    filter_values = np.broadcast_to(initial[2, 2:], (48000, 1, 2)).copy()
+    expected, _ = _native.render_effects(
+        source[None, :, :],
+        kinds,
+        sources,
+        parameter_values,
+        3,
+        48000,
+        [
+            None,
+            None,
+            ([0], np.zeros((1, 2, 2)), filter_values),
+        ],
+        [0, 0, 1e-300],
+    )
+    runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
+    runtime.set_effect_graph(
+        kinds,
+        sources,
+        initial,
+        3,
+        np.array([[2, 0, 2, 1e-300]], dtype=np.float64),
+        4,
+    )
+    runtime.submit(0, start_action)
+    runtime.submit_effects(np.array([[32, 0, 0, 0, 0, duration]], dtype=np.float64))
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        runtime.process_into(actual[start : start + 997])
+
+    check_audio(tmp_path / "native-live-effects.wav", actual, expected)
+
+
 def test_native_live_runtime_latches_failure_and_zeros_later_blocks() -> None:
-    runtime = _native.LiveRuntime([native_oscillator_runtime()], 64, 64, 1, 0)
+    runtime = _native.LiveRuntime([native_oscillator_runtime()], 64, 64, 1)
     runtime.submit(0, np.array([[64, 0, 0, 220, 0.2, 0]], dtype=np.float64))
     output = np.ones((64, 2))
     with np.testing.assert_raises_regex(ValueError, "runtime block"):
@@ -121,7 +185,7 @@ def test_native_live_runtime_owns_sample_asset_and_traversal(tmp_path: Path) -> 
     buffer = _native.SampleBuffer(audio)
 
     def make_runtime() -> tuple[_native.LiveRuntime, int]:
-        runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4, 0)
+        runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
         source = runtime.add_sample(
             buffer,
             (0, 96000, False, None),

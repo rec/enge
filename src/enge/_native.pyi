@@ -19,8 +19,17 @@ class LiveRuntime:
         maximum_block_frames: int,
         action_capacity: int,
         batch_capacity: int,
-        gain_db: float,
     ) -> None: ...
+    def set_effect_graph(
+        self,
+        kinds: list[int],
+        sources: np.ndarray,
+        parameters: np.ndarray,
+        output_source: int,
+        filters: np.ndarray,
+        batch_capacity: int,
+    ) -> None: ...
+    def submit_effects(self, actions: np.ndarray) -> None: ...
     def add_sample(
         self,
         buffer: SampleBuffer,
