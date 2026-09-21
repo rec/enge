@@ -13,7 +13,7 @@ from ufor.instrument_trace import TraceAction
 from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.synth import SynthInstrumentScore
 
-from enge import effects, synth
+from enge import _native, effects, synth
 from enge.presets import Patch
 
 
@@ -37,6 +37,8 @@ class Result(BaseModel, frozen=True):
 def main() -> None:
     options = tyro.cli(Options)
     results = [
+        benchmark_persistent(block, options) for block in options.block_sizes
+    ] + [
         benchmark(case, block, options)
         for case in (
             "filter",
@@ -53,6 +55,38 @@ def main() -> None:
     options.output.parent.mkdir(parents=True, exist_ok=True)
     options.output.write_text(report(options, results))
     print(options.output)
+
+
+def benchmark_persistent(block: int, options: Options) -> Result:
+    frames = round(options.seconds * 48000)
+    frequencies = [55 * 2 ** (i / 12) for i in range(16)]
+    runtime = _native.OscillatorFilterRuntime(
+        48000,
+        frequencies,
+        [0.02] * 16,
+        np.tile([[0.8, 0.6]], (16, 1)),
+    )
+    elapsed = []
+    for start in range(0, frames, block):
+        began = perf_counter_ns()
+        runtime.process(
+            min(block, frames - start),
+            700 + start % 4000,
+            0.9,
+            -6 + start % 3,
+        )
+        elapsed.append(perf_counter_ns() - began)
+    values = np.asarray(elapsed) / 1000
+    deadline = block / 48000 * 1_000_000
+    return Result(
+        case="persistent-16-voice",
+        block=block,
+        blocks=len(values),
+        worst_us=float(np.max(values)),
+        p99_us=float(np.percentile(values, 99)),
+        deadline_us=deadline,
+        misses=int(np.count_nonzero(values > deadline)),
+    )
 
 
 def benchmark(case: str, block: int, options: Options) -> Result:
@@ -247,7 +281,9 @@ build produced by `maturin develop --release`.
 |---|---:|---:|---:|---:|---:|
 {rows}
 
-`filter`, `filter-actions`, `subnormal`, and `fanout` execute one whole graph per
+`persistent-16-voice` owns all oscillator phases, routing, filter integrators, and
+gain state in one Rust object and crosses Python once per block. `filter`,
+`filter-actions`, `subnormal`, and `fanout` execute one whole graph per
 Rust call. The action case submits the maximum 64 actions at every block boundary.
 The subnormal case scales source output by `1e-310`. `filter-tail` ends every graph
 halfway through the run and measures the reference tail path. `granulator` executes

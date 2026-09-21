@@ -8,32 +8,37 @@ build produced by `maturin develop --release`.
 
 | Case | Frames | Worst us | p99 us | Deadline us | Misses |
 |---|---:|---:|---:|---:|---:|
-| filter | 64 | 14333.0 | 4185.4 | 1333.3 | 750/750 |
-| filter | 256 | 14760.4 | 5786.8 | 5333.3 | 73/188 |
-| filter | 1024 | 21520.6 | 17511.7 | 21333.3 | 1/47 |
-| filter-actions | 64 | 13644.9 | 5244.7 | 1333.3 | 750/750 |
-| filter-actions | 256 | 15217.2 | 6978.7 | 5333.3 | 187/188 |
-| filter-actions | 1024 | 22753.4 | 18792.7 | 21333.3 | 1/47 |
-| fanout | 64 | 12622.9 | 4045.8 | 1333.3 | 750/750 |
-| fanout | 256 | 14578.7 | 6156.7 | 5333.3 | 187/188 |
-| fanout | 1024 | 23763.9 | 19610.3 | 21333.3 | 1/47 |
-| granulator | 64 | 28875.9 | 27124.2 | 1333.3 | 750/750 |
-| granulator | 256 | 30778.8 | 29534.4 | 5333.3 | 188/188 |
-| granulator | 1024 | 55551.8 | 52186.2 | 21333.3 | 44/47 |
-| filter+granulator | 64 | 35435.3 | 19467.0 | 1333.3 | 750/750 |
-| filter+granulator | 256 | 79725.4 | 59075.3 | 5333.3 | 188/188 |
-| filter+granulator | 1024 | 206622.4 | 201124.7 | 21333.3 | 47/47 |
-| freeze | 64 | 26385.2 | 23853.2 | 1333.3 | 750/750 |
-| freeze | 256 | 27285.7 | 26665.9 | 5333.3 | 188/188 |
-| freeze | 1024 | 44644.4 | 43694.9 | 21333.3 | 42/47 |
-| subnormal | 64 | 12042.5 | 3884.7 | 1333.3 | 750/750 |
-| subnormal | 256 | 13785.0 | 5673.4 | 5333.3 | 21/188 |
-| subnormal | 1024 | 20438.1 | 17250.0 | 21333.3 | 0/47 |
-| filter-tail | 64 | 13125.3 | 3934.1 | 1333.3 | 750/750 |
-| filter-tail | 256 | 14148.0 | 6978.6 | 5333.3 | 31/188 |
-| filter-tail | 1024 | 20396.5 | 19904.7 | 21333.3 | 0/47 |
+| persistent-16-voice | 64 | 31.6 | 11.6 | 1333.3 | 0/750 |
+| persistent-16-voice | 256 | 60.8 | 44.5 | 5333.3 | 0/188 |
+| persistent-16-voice | 1024 | 180.1 | 179.8 | 21333.3 | 0/47 |
+| filter | 64 | 13938.5 | 4143.8 | 1333.3 | 750/750 |
+| filter | 256 | 14579.3 | 5869.6 | 5333.3 | 129/188 |
+| filter | 1024 | 21789.5 | 17924.0 | 21333.3 | 1/47 |
+| filter-actions | 64 | 14010.0 | 5411.5 | 1333.3 | 750/750 |
+| filter-actions | 256 | 15182.9 | 7517.4 | 5333.3 | 187/188 |
+| filter-actions | 1024 | 22230.8 | 18603.4 | 21333.3 | 1/47 |
+| fanout | 64 | 12631.0 | 4367.3 | 1333.3 | 750/750 |
+| fanout | 256 | 14847.6 | 6350.1 | 5333.3 | 187/188 |
+| fanout | 1024 | 23956.8 | 19836.2 | 21333.3 | 1/47 |
+| granulator | 64 | 83882.9 | 27677.6 | 1333.3 | 750/750 |
+| granulator | 256 | 30283.6 | 29320.0 | 5333.3 | 188/188 |
+| granulator | 1024 | 44713.3 | 44206.5 | 21333.3 | 44/47 |
+| filter+granulator | 64 | 52267.8 | 22867.6 | 1333.3 | 750/750 |
+| filter+granulator | 256 | 64573.8 | 61819.9 | 5333.3 | 188/188 |
+| filter+granulator | 1024 | 194688.7 | 194304.4 | 21333.3 | 47/47 |
+| freeze | 64 | 25325.6 | 23225.4 | 1333.3 | 750/750 |
+| freeze | 256 | 34030.9 | 28980.2 | 5333.3 | 188/188 |
+| freeze | 1024 | 48132.2 | 46648.6 | 21333.3 | 43/47 |
+| subnormal | 64 | 12230.5 | 3825.1 | 1333.3 | 750/750 |
+| subnormal | 256 | 14127.4 | 6034.9 | 5333.3 | 21/188 |
+| subnormal | 1024 | 23028.8 | 18559.2 | 21333.3 | 1/47 |
+| filter-tail | 64 | 12818.7 | 4258.9 | 1333.3 | 750/750 |
+| filter-tail | 256 | 13790.1 | 7341.8 | 5333.3 | 13/188 |
+| filter-tail | 1024 | 21483.7 | 20734.3 | 21333.3 | 1/47 |
 
-`filter`, `filter-actions`, `subnormal`, and `fanout` execute one whole graph per
+`persistent-16-voice` owns all oscillator phases, routing, filter integrators, and
+gain state in one Rust object and crosses Python once per block. `filter`,
+`filter-actions`, `subnormal`, and `fanout` execute one whole graph per
 Rust call. The action case submits the maximum 64 actions at every block boundary.
 The subnormal case scales source output by `1e-310`. `filter-tail` ends every graph
 halfway through the run and measures the reference tail path. `granulator` executes

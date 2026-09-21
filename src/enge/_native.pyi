@@ -2,6 +2,18 @@ from typing import Literal
 
 import numpy as np
 
+class OscillatorFilterRuntime:
+    def __init__(
+        self,
+        rate: float,
+        frequencies: list[float],
+        gains: list[float],
+        routes: np.ndarray,
+    ) -> None: ...
+    def process(
+        self, frames: int, cutoff_hz: float, q: float, gain_db: float
+    ) -> np.ndarray: ...
+
 def render_effects(
     inputs: np.ndarray,
     kinds: list[int],
