@@ -278,18 +278,26 @@ def test_native_live_runtime_owns_bounded_granulator_state(tmp_path: Path) -> No
         997,
     )
     prepared = effects.prepare(graph, 48000)
-    action = audio_effects.ParameterAction(
-        tick=19000,
-        ordinal=0,
-        processor="cloud",
-        parameter="density_hz",
-        value=140,
-        duration_frames=7000,
-    )
+    actions: list[audio_effects.EffectAction] = [
+        audio_effects.FreezeAction(
+            tick=18000, ordinal=0, processor="cloud", frozen=True
+        ),
+        audio_effects.ParameterAction(
+            tick=19000,
+            ordinal=0,
+            processor="cloud",
+            parameter="density_hz",
+            value=140,
+            duration_frames=7000,
+        ),
+        audio_effects.FreezeAction(
+            tick=30000, ordinal=0, processor="cloud", frozen=False
+        ),
+    ]
     expected = effects.process_audio(
         prepared,
         {"main": source},
-        [action],
+        actions,
         backend="native",
         block_frames=997,
     )
@@ -304,7 +312,7 @@ def test_native_live_runtime_owns_bounded_granulator_state(tmp_path: Path) -> No
     actual = np.empty_like(expected)
     for start in range(0, 48000, 997):
         end = min(start + 997, 48000)
-        block_actions = [action] if start <= action.tick < end else []
+        block_actions = [a for a in actions if start <= a.tick < end]
         if block_actions:
             runtime.submit_effects(
                 effects.native_live_actions(prepared, block_actions, start, end)
@@ -317,6 +325,11 @@ def test_native_live_runtime_owns_bounded_granulator_state(tmp_path: Path) -> No
     replay = np.empty((48000 - 23928, 2))
     for start in range(23928, 48000, 997):
         end = min(start + 997, 48000)
+        block_actions = [a for a in actions if start <= a.tick < end]
+        if block_actions:
+            restored.submit_effects(
+                effects.native_live_actions(prepared, block_actions, start, end)
+            )
         restored.process_into(replay[start - 23928 : end - 23928])
 
     check_audio(tmp_path / "native-live-granulator.wav", actual, expected)

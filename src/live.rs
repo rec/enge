@@ -103,6 +103,7 @@ struct LiveGranulator {
     phase: f64,
     counter: u64,
     frame: usize,
+    frozen: bool,
 }
 
 #[derive(Clone)]
@@ -709,14 +710,30 @@ impl EffectRuntime {
         let parameter = action[3] as usize;
         let duration = action[5] as usize;
         if action[1] != kind as f64
-            || kind != 0
             || action[2] != node as f64
             || node >= self.parameters.nrows()
-            || action[3] != parameter as f64
-            || parameter >= self.parameters.ncols()
             || action[5] != duration as f64
         {
             return Err(PyValueError::new_err("Invalid live effect action"));
+        }
+        if kind == 1 {
+            if self.kinds[node] != 3
+                || action[3] != 0.0
+                || !matches!(action[4], 0.0 | 1.0)
+                || duration != 0
+            {
+                return Err(PyValueError::new_err("Invalid live granulator freeze"));
+            }
+            self.granulators[node]
+                .as_mut()
+                .expect("validated live granulator")
+                .frozen = action[4] == 1.0;
+            return Ok(());
+        }
+        if kind != 0 || action[3] != parameter as f64 || parameter >= self.parameters.ncols() {
+            return Err(PyValueError::new_err(
+                "Invalid live effect parameter action",
+            ));
         }
         self.targets[[node, parameter]] = action[4];
         self.remaining[[node, parameter]] = duration;
@@ -871,6 +888,7 @@ impl LiveGranulator {
             phase: 0.0,
             counter: 0,
             frame: 0,
+            frozen: false,
         }
     }
 
@@ -895,14 +913,16 @@ impl LiveGranulator {
         {
             return Err(PyValueError::new_err("Invalid live granulator parameter"));
         }
-        for (channel, value) in input.iter().enumerate() {
-            self.history[[self.history_write, channel]] = *value;
-        }
-        self.history_write = (self.history_write + 1) % self.history.nrows();
-        if self.history_len < self.history.nrows() {
-            self.history_len += 1;
-        } else {
-            self.history_start += 1;
+        if !self.frozen {
+            for (channel, value) in input.iter().enumerate() {
+                self.history[[self.history_write, channel]] = *value;
+            }
+            self.history_write = (self.history_write + 1) % self.history.nrows();
+            if self.history_len < self.history.nrows() {
+                self.history_len += 1;
+            } else {
+                self.history_start += 1;
+            }
         }
         self.phase += density / rate;
         if self.phase >= 1.0 {

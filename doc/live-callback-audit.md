@@ -39,7 +39,7 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - `OfflineEffects` still builds parameter and output arrays for every block.
   The live adapter now prepares the supported graph once and encodes parameter
   and bypass actions into bounded batches, but `LiveEngine` does not yet own and
-  submit those batches. Live granulator freeze actions remain unsupported.
+  submit those batches.
 - The Python `ActionQueue` binding is a deterministic single-thread harness.
   A native host must own the `rtrb` producer and consumer on separate threads.
 
@@ -54,14 +54,17 @@ and filters.
 Granulators allocate circular history and a fixed captured-grain pool during
 setup. Duration, density, lookback, playback ratio, jitter, wet/dry, bypass, and
 snapshot continuation stay inside the owner without growing callback storage.
-Freeze actions are rejected during live encoding.
+Freeze and unfreeze actions preserve their state across snapshots and match the
+current reference's finite latched-history behavior. The portable circular replay
+and boundary crossfade are still missing from both paths.
 
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundaries are freeze transitions, expanding the native
-sampler profile if live sample modulation requires it, and a native host that
-owns producer and callback threads without Python entry. Those paths must use
-the existing borrowed input/output and preallocated scratch model rather than
-wrapping their allocating Python entry points.
+The next implementation boundaries are the specified frozen-history circular
+replay and crossfade, expanding the native sampler profile if live sample
+modulation requires it, and a native host that owns producer and callback threads
+without Python entry. Those paths must use the existing borrowed input/output
+and preallocated scratch model rather than wrapping their allocating Python entry
+points.
 
 ## Stress harness
 

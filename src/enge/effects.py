@@ -833,6 +833,20 @@ def native_live_actions(
             parameter = 2
             target = 0.0 if action.bypassed else 1.0
             duration = processor.bypass_fade_frames
+        elif isinstance(action, audio_effects.FreezeAction) and isinstance(
+            processors[action.processor], audio_effects.Granulator
+        ):
+            rows.append(
+                [
+                    action.tick - start,
+                    1,
+                    nodes[action.processor],
+                    0,
+                    int(action.frozen),
+                    0,
+                ]
+            )
+            continue
         else:
             raise EngineError("Unsupported native live effect action")
         rows.append(
