@@ -59,11 +59,11 @@ model rather than wrapping their allocating Python entry points.
 ## Stress harness
 
 `scripts/benchmark_live.py` renders a prepared 16-voice triangle synth through a
-native gain effect into a caller-owned stereo buffer. It excludes device I/O and
-event preparation, discards the first callback, and reports median, p99, maximum,
-and maximum fraction of the hard block budget. This benchmark exercises the
-current Python-owned path, so a good timing result does not waive the blockers
-above.
+gain effect using `NativeLiveEngine` and a caller-owned stereo buffer. It includes
+control-side block admission, queue submission, and the single native processing
+call; it excludes device I/O and initial event preparation. It discards the first
+callback and reports median, p99, maximum, and maximum fraction of the hard block
+budget. A good timing result does not waive the host and device blockers above.
 
 Run it with:
 
@@ -71,12 +71,13 @@ Run it with:
 uv run python scripts/benchmark_live.py --block-frames 64 --seconds 10 --voices 16
 ```
 
-On 2026-09-21, the local arm64 macOS development build completed 7,500
-callbacks with a 64-frame block and 16 voices. Excluding the first callback, the
-median was 91.1 microseconds, p99 was 155.8 microseconds, and the maximum was
-277.0 microseconds against a 1,333.3-microsecond block budget. The maximum used
-20.8 percent of that budget. This run had no concurrent load and does not include
-device, scheduling, or producer work.
+On 2026-09-21, the local arm64 macOS development build completed 7,500 callbacks
+with a 64-frame block and 16 voices. Excluding the first callback, the median was
+46.3 microseconds, p99 was 72.0 microseconds, and the maximum was 180.8
+microseconds against a 1,333.3-microsecond block budget. The maximum used 13.6
+percent of that budget. This run had no concurrent load and does not include a
+device, host scheduling, a concurrent producer, granulation, or maximum action
+density.
 
 ## Additional work beyond the prompt
 
