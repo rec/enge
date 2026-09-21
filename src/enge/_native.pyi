@@ -2,13 +2,19 @@ from typing import Literal
 
 import numpy as np
 
-class OscillatorFilterRuntime:
+class SynthRuntimeSnapshot: ...
+
+class SynthRuntime:
     def __init__(
         self,
         rate: float,
-        frequencies: list[float],
-        gains: list[float],
+        waveform: int,
+        duty: float,
         routes: np.ndarray,
+        initial: float,
+        attack: np.ndarray,
+        release: np.ndarray,
+        minimum_hold_frames: float,
     ) -> None: ...
     def process(
         self, frames: int, cutoff_hz: float, q: float, gain_db: float
@@ -21,6 +27,9 @@ class OscillatorFilterRuntime:
         gain_db: float,
         actions: np.ndarray,
     ) -> np.ndarray: ...
+    def active_slots(self) -> list[bool]: ...
+    def snapshot(self) -> SynthRuntimeSnapshot: ...
+    def restore(self, snapshot: SynthRuntimeSnapshot) -> None: ...
 
 def render_effects(
     inputs: np.ndarray,
