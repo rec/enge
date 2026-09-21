@@ -87,6 +87,10 @@ snapshots cover source and effect state together. The accompanying fixed-size
 Rust SPSC queue admits whole action batches and drains only the prefix visible at
 entry. The Python queue binding is a deterministic harness; native callback
 integration owns its producer and consumer endpoints on separate threads.
+The [live callback audit](../doc/live-callback-audit.md) records the remaining
+Python, GIL, and allocation boundaries and a repeatable callback-shaped stress
+benchmark. Current timing has comfortable measured headroom, but the audited
+path does not yet satisfy the stronger native callback contract.
 
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
