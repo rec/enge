@@ -79,6 +79,7 @@ Run it with:
 
 ```console
 uv run python scripts/benchmark_live.py --block-frames 64 --seconds 10 --voices 16
+uv run python scripts/benchmark_live.py --block-frames 64 --seconds 10 --voices 16 --granular
 ```
 
 On 2026-09-21, the local arm64 macOS development build completed 7,500 callbacks
@@ -88,6 +89,13 @@ microseconds against a 1,333.3-microsecond block budget. The maximum used 13.6
 percent of that budget. This run had no concurrent load and does not include a
 device, host scheduling, a concurrent producer, granulation, or maximum action
 density.
+
+With the same settings and the bounded granulator enabled after gain, a second
+7,500-callback run measured 49.4 microseconds median, 78.3 microseconds p99, and
+151.3 microseconds maximum, or 11.3 percent of the block budget. Maximum values
+from short unscheduled runs are not directly comparable; the useful result is
+that this admitted three-grain profile remained well inside the deadline in the
+same callback-shaped harness.
 
 ## Additional work beyond the prompt
 
