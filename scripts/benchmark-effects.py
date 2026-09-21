@@ -60,21 +60,33 @@ def main() -> None:
 def benchmark_persistent(block: int, options: Options) -> Result:
     frames = round(options.seconds * 48000)
     frequencies = [55 * 2 ** (i / 12) for i in range(16)]
-    runtime = _native.OscillatorFilterRuntime(
+    runtime = _native.SynthRuntime(
         48000,
-        frequencies,
-        [0.02] * 16,
+        0,
+        0.5,
         np.tile([[0.8, 0.6]], (16, 1)),
+        1,
+        np.array([[0, 1]], dtype=np.float64),
+        np.array([[0, 0]], dtype=np.float64),
+        0,
+    )
+    starts = np.array(
+        [[0, 0, i, f, 0.02, 0] for i, f in enumerate(frequencies)],
+        dtype=np.float64,
     )
     elapsed = []
     for start in range(0, frames, block):
         began = perf_counter_ns()
-        runtime.process(
+        arguments = (
             min(block, frames - start),
             700 + start % 4000,
             0.9,
             -6 + start % 3,
         )
+        if start:
+            runtime.process(*arguments)
+        else:
+            runtime.process_actions(*arguments, starts)
         elapsed.append(perf_counter_ns() - began)
     values = np.asarray(elapsed) / 1000
     deadline = block / 48000 * 1_000_000

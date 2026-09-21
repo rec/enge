@@ -29,6 +29,14 @@ the same numerical synth profile through explicit `backend="native"` selection;
 Existing waveform start/length/period behavior remains a regression requirement
 during synth consolidation.
 
+`PersistentSynth` is the first block-oriented native runtime profile. It consumes
+prepared uFor `TriggerContext`, `VoiceStart`, and `VoiceRetirement` actions once
+per block, while Rust retains oscillator, multi-segment envelope, routing, slot,
+and snapshot state across calls. It currently accepts one static oscillator voice
+template with no filters, controls, or generators; unsupported definitions fail
+at construction. Irregular-block and snapshot continuation tests compare it to
+the existing native `OfflineSynth` implementation.
+
 The third source profile is now the NumPy and Rust two-operator FM engine in
 `src/enge/fm.py`, under the [FM plan and status](fm-synthesis.md). It shares uFor
 synth lifecycle preparation, scoped controls/LFOs, envelope arithmetic, filters,

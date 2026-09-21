@@ -19,7 +19,7 @@ from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, freque
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
-from . import control, filters, native
+from . import _native, control, filters, native
 from .lfo import lfo_samples
 
 
@@ -277,6 +277,15 @@ class SynthSnapshot(Model, frozen=True):
     voices: list[VoiceSnapshot]
     contexts: list[ControlContext]
     lfos: list[LFOSource]
+
+
+class PersistentSynthSnapshot(Model, frozen=True):
+    definition: PreparedSynth
+    frame: int
+    voices: dict[str, int]
+    state: _native.SynthRuntimeSnapshot
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedSynth:
@@ -705,6 +714,160 @@ class OfflineSynth:
         return output
 
 
+class PersistentSynth:
+    """Native oscillator synth for one static uFor voice template."""
+
+    def __init__(self, definition: PreparedSynth, voices: int = 16) -> None:
+        if type(voices) is not int or voices <= 0:
+            raise EngineError("Persistent synth voice capacity must be positive")
+        templates = definition.instrument.voices
+        if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
+            raise EngineError("Persistent synth requires one oscillator voice template")
+        template = templates[0]
+        if (
+            definition.instrument.controls
+            or template.bindings
+            or template.envelopes
+            or template.lfos
+            or template.modulation.parameters
+            or template.modulation.sources
+            or template.modulation.routes
+        ):
+            raise EngineError(
+                "Persistent synth controls and generators are not implemented"
+            )
+        if template.processing != Processing(
+            tuning_cents=template.processing.tuning_cents
+        ):
+            raise EngineError(
+                "Persistent synth filters and gain processing are not implemented"
+            )
+        route = [
+            sum(r.gain for r in template.channels if r.output == c)
+            for c in definition.channels
+        ]
+        rate = definition.sample_rate
+        self.definition = definition.model_copy(deep=True)
+        self.template = template
+        self.frame = 0
+        self.voices: dict[str, int] = {}
+        self.runtime = _native.SynthRuntime(
+            rate,
+            [Waveform.sine, Waveform.square, Waveform.triangle].index(
+                template.oscillator.waveform
+            ),
+            float(template.oscillator.duty_cycle),
+            np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
+            template.envelope.initial,
+            _runtime_segments(template.envelope.segments, rate),
+            _runtime_segments(template.envelope.release, rate),
+            float(template.minimum_hold_seconds * rate),
+        )
+
+    def advance(
+        self, actions: list[instrument_trace.TraceAction], start: int, end: int
+    ) -> np.ndarray:
+        """Render one block while applying its prepared actions inside Rust."""
+        if start != self.frame or end <= start:
+            raise EngineError(
+                "advance must continue from the current nonempty interval"
+            )
+        ordered = sorted(actions, key=lambda a: (a.tick, a.ordinal))
+        if any(a.tick < start or a.tick >= end for a in ordered):
+            raise EngineError("actions must belong to the rendered interval")
+        active = self.runtime.active_slots()
+        self.voices = {n: s for n, s in self.voices.items() if active[s]}
+        rows: list[list[float]] = []
+        for action in ordered:
+            offset = action.tick - start
+            if isinstance(action, instrument_trace.TriggerContext):
+                if action.controls:
+                    raise EngineError("Persistent synth controls are not implemented")
+            elif isinstance(action, VoiceStart):
+                self._start(action, offset, active, rows)
+            elif isinstance(action, instrument_trace.VoiceRetirement):
+                if action.action == "fade":
+                    raise EngineError("Fade retirement is not implemented")
+                if (slot := self.voices.get(action.voice_id)) is not None:
+                    kind = 2 if action.action == "stop" else 1
+                    rows.append([offset, kind, slot, 0, 0, 0])
+                    if kind == 2:
+                        active[slot] = False
+                        del self.voices[action.voice_id]
+            else:
+                raise EngineError(
+                    f"Unsupported persistent synth action at frame {action.tick}: "
+                    f"{type(action).__name__}"
+                )
+        encoded = np.asarray(rows, dtype=np.float64).reshape(-1, 6)
+        output = self.runtime.process_actions(end - start, 0, 1, 0, encoded)
+        active = self.runtime.active_slots()
+        self.voices = {n: s for n, s in self.voices.items() if active[s]}
+        self.frame = end
+        return output
+
+    def snapshot(self) -> PersistentSynthSnapshot:
+        return PersistentSynthSnapshot(
+            definition=self.definition.model_copy(deep=True),
+            frame=self.frame,
+            voices=self.voices.copy(),
+            state=self.runtime.snapshot(),
+        )
+
+    def restore(self, snapshot: PersistentSynthSnapshot) -> None:
+        if snapshot.definition != self.definition:
+            raise EngineError("Snapshot belongs to a different prepared synth")
+        self.runtime.restore(snapshot.state)
+        self.frame = snapshot.frame
+        self.voices = snapshot.voices.copy()
+
+    def _start(
+        self,
+        action: VoiceStart,
+        offset: int,
+        active: list[bool],
+        rows: list[list[float]],
+    ) -> None:
+        if (
+            action.pitch_hz is None
+            or not isfinite(action.pitch_hz)
+            or action.pitch_hz <= 0
+        ):
+            raise EngineError("Synth voice requires positive resolved pitch_hz")
+        if action.voice_id in self.voices:
+            raise EngineError(f"Duplicate active voice: {action.voice_id}")
+        if (
+            action.template != self.template.name
+            or action.settings != self.template
+            or action.oscillator != self.template.oscillator
+            or action.channels != self.template.channels
+        ):
+            raise EngineError("Voice start must match its prepared synth template")
+        slot = next((i for i, value in enumerate(active) if not value), None)
+        if slot is None:
+            raise EngineError("Persistent synth voice capacity exceeded")
+        active[slot] = True
+        self.voices[action.voice_id] = slot
+        phase = (
+            float(
+                (Fraction(action.tick) * Fraction(action.pitch_hz))
+                % self.definition.sample_rate
+            )
+            if self.template.synchronize_oscillator
+            else 0.0
+        )
+        rows.append(
+            [
+                offset,
+                0,
+                slot,
+                frequency(action.pitch_hz, self.template.processing.tuning_cents),
+                self.template.oscillator.gain(action.key),
+                phase,
+            ]
+        )
+
+
 def render_actions(
     actions: list[instrument_trace.TraceAction],
     start: int,
@@ -956,6 +1119,13 @@ def _envelope_values(
 
 def _duration(segments: list[Segment]) -> Fraction:
     return sum((s.duration for s in segments), Fraction(0))
+
+
+def _runtime_segments(segments: list[Segment], sample_rate: int) -> np.ndarray:
+    return np.asarray(
+        [[float(s.duration * sample_rate), s.target] for s in segments],
+        dtype=np.float64,
+    )
 
 
 def _waveform_angles(oscillator: Oscillator, angles: np.ndarray) -> np.ndarray:
