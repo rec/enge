@@ -33,3 +33,28 @@ def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> No
     expected *= 10 ** (-3 / 20)
 
     check_audio(tmp_path / "persistent-runtime.wav", actual, expected)
+
+
+def test_persistent_runtime_applies_voice_actions_at_exact_frames() -> None:
+    runtime = _native.OscillatorFilterRuntime(
+        48000, [100.0, 200.0], [0.0, 0.0], np.eye(2)
+    )
+    actions = np.array(
+        [
+            [10, 0, 0, 100, 0.5, 4],
+            [20, 0, 1, 200, 0.25, 0],
+            [30, 3, 0, 200, 0.25, 5],
+            [40, 1, 1, 0, 0, 4],
+            [50, 2, 0, 0, 0, 0],
+        ],
+        dtype=np.float64,
+    )
+
+    actual = runtime.process_actions(64, 10000, 0.7, 0, actions)
+
+    assert np.all(actual[:11] == 0)
+    assert np.any(actual[11:20, 0])
+    assert np.all(actual[:21, 1] == 0)
+    assert np.any(actual[21:44, 1])
+    assert abs(actual[-1, 1]) < abs(actual[43, 1])
+    assert abs(actual[-1, 0]) < abs(actual[49, 0])

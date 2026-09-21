@@ -13,6 +13,14 @@ class OscillatorFilterRuntime:
     def process(
         self, frames: int, cutoff_hz: float, q: float, gain_db: float
     ) -> np.ndarray: ...
+    def process_actions(
+        self,
+        frames: int,
+        cutoff_hz: float,
+        q: float,
+        gain_db: float,
+        actions: np.ndarray,
+    ) -> np.ndarray: ...
 
 def render_effects(
     inputs: np.ndarray,
