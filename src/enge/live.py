@@ -6,7 +6,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 from ufor import audio_effects, instrument_trace
 
-from . import effects, fm, noise, sample_instrument, synth
+from . import _native, effects, fm, noise, sample_instrument, synth
 
 
 class LiveEngineSnapshot(BaseModel, frozen=True):
@@ -16,6 +16,143 @@ class LiveEngineSnapshot(BaseModel, frozen=True):
     effect_state: effects.EffectSnapshot | None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class NativeLiveEngineSnapshot(BaseModel, frozen=True):
+    frame: int
+    source_names: list[str]
+    source_states: dict[str, object]
+    runtime: object
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class NativeLiveEngine:
+    """Prepare actions in Python for one native generated-source callback owner."""
+
+    def __init__(
+        self,
+        sources: dict[
+            str,
+            synth.PersistentSynth | fm.PersistentFM | noise.PersistentNoise,
+        ],
+        maximum_block_frames: int,
+        effect_chain: effects.PreparedEffects | None = None,
+        action_capacity: int = 64,
+        batch_capacity: int = 4,
+    ) -> None:
+        if not sources:
+            raise synth.EngineError("Native live engine requires at least one source")
+        definitions = [s.definition for s in sources.values()]
+        rates = {d.sample_rate for d in definitions}
+        channels = {tuple(d.channels) for d in definitions}
+        if len(rates) != 1 or len(channels) != 1:
+            raise synth.EngineError(
+                "Native live engine sources must share rate and channels"
+            )
+        self.sources = sources.copy()
+        self.source_indices = {name: i for i, name in enumerate(sources)}
+        self.sample_rate = rates.pop()
+        self.channels = list(channels.pop())
+        self.maximum_block_frames = maximum_block_frames
+        self.effect_chain = effect_chain
+        self.runtime = _native.LiveRuntime(
+            [s.runtime for s in sources.values()],
+            maximum_block_frames,
+            action_capacity,
+            batch_capacity,
+        )
+        if effect_chain is not None:
+            if (
+                effect_chain.sample_rate != self.sample_rate
+                or effect_chain.channels != self.channels
+            ):
+                raise synth.EngineError(
+                    "Native live effects must match source rate and channels"
+                )
+            self.runtime.set_effect_graph(
+                *effects.native_live_graph(effect_chain), batch_capacity
+            )
+        self.frame = 0
+
+    def advance_into(
+        self,
+        actions: dict[str, list[instrument_trace.TraceAction]],
+        effect_actions: list[audio_effects.EffectAction],
+        start: int,
+        end: int,
+        output: np.ndarray,
+    ) -> None:
+        if actions.keys() != self.sources.keys():
+            raise synth.EngineError("Native live actions must address every source")
+        if start != self.frame or end <= start:
+            raise synth.EngineError(
+                "Native live advance must be contiguous and nonempty"
+            )
+        if end - start > self.maximum_block_frames:
+            raise synth.EngineError("Native live block exceeds its prepared maximum")
+        if (
+            output.shape != (end - start, len(self.channels))
+            or output.dtype != np.float64
+            or not output.flags.c_contiguous
+            or not output.flags.writeable
+        ):
+            raise synth.EngineError(
+                "Native live output must be writable C-contiguous float64 with "
+                "shape (frames, channels)"
+            )
+        for name, source in self.sources.items():
+            index = self.source_indices[name]
+            encoded = source.native_live_actions(
+                actions[name],
+                start,
+                end,
+                self.runtime.active_slots(index),
+                self.runtime.active_contexts(index),
+            )
+            self._submit(index, encoded)
+        if self.effect_chain is None:
+            if effect_actions:
+                raise synth.EngineError("Native live engine has no effect chain")
+        else:
+            self._submit_effects(
+                effects.native_live_actions(
+                    self.effect_chain, effect_actions, start, end
+                )
+            )
+        self.runtime.process_into(output)
+        for name, source in self.sources.items():
+            index = self.source_indices[name]
+            source.finish_native_live_block(
+                end,
+                self.runtime.active_slots(index),
+                self.runtime.active_contexts(index),
+            )
+        self.frame = end
+
+    def snapshot(self) -> NativeLiveEngineSnapshot:
+        return NativeLiveEngineSnapshot(
+            frame=self.frame,
+            source_names=list(self.sources),
+            source_states={n: s.snapshot() for n, s in self.sources.items()},
+            runtime=self.runtime.snapshot(),
+        )
+
+    def restore(self, snapshot: NativeLiveEngineSnapshot) -> None:
+        if snapshot.source_names != list(self.sources):
+            raise synth.EngineError("Snapshot belongs to different native live sources")
+        for name, source in self.sources.items():
+            source.restore(snapshot.source_states[name])  # ty: ignore[invalid-argument-type]
+        self.runtime.restore(snapshot.runtime)  # ty: ignore[invalid-argument-type]
+        self.frame = snapshot.frame
+
+    def _submit(self, source: int, actions: np.ndarray) -> None:
+        for start in range(0, len(actions), 64):
+            self.runtime.submit(source, actions[start : start + 64])
+
+    def _submit_effects(self, actions: np.ndarray) -> None:
+        for start in range(0, len(actions), 64):
+            self.runtime.submit_effects(actions[start : start + 64])
 
 
 class LiveEngine:

@@ -346,3 +346,49 @@ def test_live_engine_mixes_heterogeneous_sources_and_restores(tmp_path: Path) ->
 
     check_audio(tmp_path / "live-engine.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[24001:], atol=0)
+
+    native = live.NativeLiveEngine(
+        {
+            "tone": synth.PersistentSynth(synth_definition, voices=2),
+            "noise": noise.PersistentNoise(noise_definition, voices=2),
+        },
+        997,
+        prepared_effects,
+    )
+    native_audio = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(start + 997, 48000)
+        native.advance_into(
+            {
+                n: [a for a in source_actions if start <= a.tick < end]
+                for n, source_actions in all_actions.items()
+            },
+            [],
+            start,
+            end,
+            native_audio[start:end],
+        )
+        if end == 23928:
+            native_snapshot = native.snapshot()
+    restored_native = live.NativeLiveEngine(
+        {
+            "tone": synth.PersistentSynth(synth_definition, voices=2),
+            "noise": noise.PersistentNoise(noise_definition, voices=2),
+        },
+        997,
+        prepared_effects,
+    )
+    restored_native.restore(native_snapshot)
+    native_replay = np.empty((48000 - 23928, 2))
+    for start in range(23928, 48000, 997):
+        end = min(start + 997, 48000)
+        restored_native.advance_into(
+            {"tone": [], "noise": []},
+            [],
+            start,
+            end,
+            native_replay[start - 23928 : end - 23928],
+        )
+
+    check_audio(tmp_path / "native-live-engine.wav", native_audio, expected)
+    np.testing.assert_allclose(native_replay, native_audio[23928:], atol=0)

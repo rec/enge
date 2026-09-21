@@ -828,12 +828,31 @@ class PersistentSynth:
                 "Persistent synth output must be writable C-contiguous float64 "
                 "with shape (frames, channels)"
             )
+        active = self.runtime.active_slots()
+        contexts = self.runtime.active_contexts()
+        encoded = self.native_live_actions(actions, start, end, active, contexts)
+        self.runtime.process_actions_into(output, 0, 1, 0, encoded, len(encoded))
+        self.finish_native_live_block(
+            end, self.runtime.active_slots(), self.runtime.active_contexts()
+        )
+
+    def native_live_actions(
+        self,
+        actions: list[instrument_trace.TraceAction],
+        start: int,
+        end: int,
+        active: list[bool],
+        contexts: list[bool],
+    ) -> np.ndarray:
+        """Admit and encode one block without running its native DSP."""
+        if start != self.frame or end <= start:
+            raise EngineError(
+                "advance must continue from the current nonempty interval"
+            )
         ordered = sorted(actions, key=lambda a: (a.tick, a.ordinal))
         if any(a.tick < start or a.tick >= end for a in ordered):
             raise EngineError("actions must belong to the rendered interval")
-        active = self.runtime.active_slots()
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
-        contexts = self.runtime.active_contexts()
         self.trigger_contexts = {
             n: s for n, s in self.trigger_contexts.items() if contexts[s]
         }
@@ -931,10 +950,13 @@ class PersistentSynth:
                     f"Unsupported persistent synth action at frame {action.tick}: "
                     f"{type(action).__name__}"
                 )
-        self.runtime.process_actions_into(output, 0, 1, 0, self._action_buffer, count)
-        active = self.runtime.active_slots()
+        return self._action_buffer[:count]
+
+    def finish_native_live_block(
+        self, end: int, active: list[bool], contexts: list[bool]
+    ) -> None:
+        """Commit native liveness after a successfully processed block."""
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
-        contexts = self.runtime.active_contexts()
         self.trigger_contexts = {
             n: s for n, s in self.trigger_contexts.items() if contexts[s]
         }
