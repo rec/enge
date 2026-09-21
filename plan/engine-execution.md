@@ -100,8 +100,11 @@ scratch, and advances a topologically ordered gain/multiply/filter graph with
 preallocated parameter, recursive-state, and output storage. Effect parameter
 ramps apply at exact sample offsets, and source plus effect state is restored in
 one snapshot. Processing releases the GIL and latches fatal failure to zero
-output; snapshots require empty queues. High-level source/effect action encoding
-and native granulation remain separate consolidation steps.
+output; snapshots require empty queues. High-level source action submission,
+`LiveEngine` ownership, and native granulation remain separate consolidation
+steps. The effect side now has a one-time graph encoder and block action encoder
+for parameters and smooth bypass; `LiveEngine` does not yet submit them to this
+owner.
 
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
