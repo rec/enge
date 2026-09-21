@@ -602,6 +602,11 @@ Implementation status and remaining order:
    voices batch a prefix whose declared maximum tuning cannot reach natural
    exhaustion, then resolve the remaining uncertain frame alone; this milestone
    does not claim real-time callback performance.
+   `PersistentSampler` adds bounded voice/action admission, caller-owned block
+   output, and capacity-bound snapshots around the native sample renderer. Rust
+   retains immutable decoded audio and each voice's traversal, envelope, and
+   filter state. Python still performs prepared-action orchestration for this
+   adapter; the unified native engine below removes that callback-path boundary.
 5. Named seconds-clock LFOs now render through NumPy and Rust with shared
    conformance. They retain uFor's exact phase anchors, rate/reset semantics,
    separate activation weight, and scope ownership. Both synth and sampler
