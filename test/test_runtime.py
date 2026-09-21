@@ -145,7 +145,9 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
     boundaries = [0, 997, 4096, 17003, 25001, 48000]
     for start, end in zip(boundaries, boundaries[1:], strict=False):
         actions = [a for a in trace.actions if start <= a.tick < end]
-        pieces.append(renderer.advance(actions, start, end))
+        output = np.full((end - start, 2), np.nan)
+        renderer.advance_into(actions, start, end, output)
+        pieces.append(output)
         if end == 17003:
             snapshot = renderer.snapshot()
     actual = np.concatenate(pieces)
@@ -154,6 +156,11 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
     replay = restored.advance(
         [a for a in trace.actions if 17003 <= a.tick < 48000], 17003, 48000
     )
+    owned = PersistentSynth(definition, voices=4)
+    first = owned.advance([a for a in trace.actions if a.tick < 24000], 0, 24000)
+    saved = first.copy()
+    owned.advance([a for a in trace.actions if 24000 <= a.tick < 48000], 24000, 48000)
 
     check_audio(tmp_path / "persistent-synth.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[17003:], atol=0)
+    np.testing.assert_array_equal(first, saved)

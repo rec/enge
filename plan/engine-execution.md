@@ -35,7 +35,9 @@ per block, while Rust retains oscillator, multi-segment envelope, routing, slot,
 and snapshot state across calls. It currently accepts one static oscillator voice
 template with no filters, controls, or generators; unsupported definitions fail
 at construction. Irregular-block and snapshot continuation tests compare it to
-the existing native `OfflineSynth` implementation.
+the existing native `OfflineSynth` implementation. `advance_into()` writes into a
+writable C-contiguous float64 array supplied by the caller; `advance()` preserves
+the common ownership contract by allocating a new array and using the same path.
 
 The third source profile is now the NumPy and Rust two-operator FM engine in
 `src/enge/fm.py`, under the [FM plan and status](fm-synthesis.md). It shares uFor

@@ -74,19 +74,21 @@ def benchmark_persistent(block: int, options: Options) -> Result:
         [[0, 0, i, f, 0.02, 0] for i, f in enumerate(frequencies)],
         dtype=np.float64,
     )
+    output = np.empty((block, 2), dtype=np.float64)
     elapsed = []
     for start in range(0, frames, block):
         began = perf_counter_ns()
+        count = min(block, frames - start)
         arguments = (
-            min(block, frames - start),
+            output if count == block else output[:count],
             700 + start % 4000,
             0.9,
             -6 + start % 3,
         )
         if start:
-            runtime.process(*arguments)
+            runtime.process_into(*arguments)
         else:
-            runtime.process_actions(*arguments, starts)
+            runtime.process_actions_into(*arguments, starts)
         elapsed.append(perf_counter_ns() - began)
     values = np.asarray(elapsed) / 1000
     deadline = block / 48000 * 1_000_000
