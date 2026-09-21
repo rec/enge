@@ -88,7 +88,7 @@ def benchmark_persistent(block: int, options: Options) -> Result:
         if start:
             runtime.process_into(*arguments)
         else:
-            runtime.process_actions_into(*arguments, starts)
+            runtime.process_actions_into(*arguments, starts, len(starts))
         elapsed.append(perf_counter_ns() - began)
     values = np.asarray(elapsed) / 1000
     deadline = block / 48000 * 1_000_000

@@ -168,22 +168,19 @@ impl SynthRuntime {
         q: f64,
         gain_db: f64,
         actions: PyReadonlyArray2<'_, f64>,
+        action_count: usize,
     ) -> PyResult<()> {
-        if !output.is_c_contiguous()
-            || actions.shape()[1] != 6
-            || actions.as_array().iter().any(|v| !v.is_finite())
+        if !output.is_c_contiguous() || actions.shape()[1] != 6 || action_count > actions.shape()[0]
         {
             return Err(PyValueError::new_err(
                 "Invalid synth runtime output or actions",
             ));
         }
-        self.render_into(
-            output.as_array_mut(),
-            cutoff_hz,
-            q,
-            gain_db,
-            actions.as_slice()?,
-        )
+        let actions = &actions.as_slice()?[..action_count * 6];
+        if actions.iter().any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err("Invalid synth runtime actions"));
+        }
+        self.render_into(output.as_array_mut(), cutoff_hz, q, gain_db, actions)
     }
 
     fn active_slots(&self) -> Vec<bool> {
