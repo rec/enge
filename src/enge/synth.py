@@ -767,10 +767,36 @@ class PersistentSynth:
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
     ) -> np.ndarray:
-        """Render one block while applying its prepared actions inside Rust."""
+        """Render one block into a newly owned output array."""
         if start != self.frame or end <= start:
             raise EngineError(
                 "advance must continue from the current nonempty interval"
+            )
+        output = np.empty((end - start, len(self.definition.channels)))
+        self.advance_into(actions, start, end, output)
+        return output
+
+    def advance_into(
+        self,
+        actions: list[instrument_trace.TraceAction],
+        start: int,
+        end: int,
+        output: np.ndarray,
+    ) -> None:
+        """Render one block into a disjoint caller-owned output array."""
+        if start != self.frame or end <= start:
+            raise EngineError(
+                "advance must continue from the current nonempty interval"
+            )
+        if (
+            output.shape != (end - start, len(self.definition.channels))
+            or output.dtype != np.float64
+            or not output.flags.c_contiguous
+            or not output.flags.writeable
+        ):
+            raise EngineError(
+                "Persistent synth output must be writable C-contiguous float64 "
+                "with shape (frames, channels)"
             )
         ordered = sorted(actions, key=lambda a: (a.tick, a.ordinal))
         if any(a.tick < start or a.tick >= end for a in ordered):
@@ -800,11 +826,10 @@ class PersistentSynth:
                     f"{type(action).__name__}"
                 )
         encoded = np.asarray(rows, dtype=np.float64).reshape(-1, 6)
-        output = self.runtime.process_actions(end - start, 0, 1, 0, encoded)
+        self.runtime.process_actions_into(output, 0, 1, 0, encoded)
         active = self.runtime.active_slots()
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
         self.frame = end
-        return output
 
     def snapshot(self) -> PersistentSynthSnapshot:
         return PersistentSynthSnapshot(

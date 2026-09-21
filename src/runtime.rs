@@ -1,7 +1,7 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
-use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::ndarray::{Array2, ArrayViewMut2};
+use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::{PI, TAU};
@@ -128,7 +128,7 @@ impl SynthRuntime {
         q: f64,
         gain_db: f64,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        self.render(py, frames, cutoff_hz, q, gain_db, &[])
+        self.render_owned(py, frames, cutoff_hz, q, gain_db, &[])
     }
 
     fn process_actions<'py>(
@@ -143,7 +143,47 @@ impl SynthRuntime {
         if actions.shape()[1] != 6 || actions.as_array().iter().any(|v| !v.is_finite()) {
             return Err(PyValueError::new_err("Invalid synth runtime actions"));
         }
-        self.render(py, frames, cutoff_hz, q, gain_db, actions.as_slice()?)
+        self.render_owned(py, frames, cutoff_hz, q, gain_db, actions.as_slice()?)
+    }
+
+    fn process_into(
+        &mut self,
+        mut output: PyReadwriteArray2<'_, f64>,
+        cutoff_hz: f64,
+        q: f64,
+        gain_db: f64,
+    ) -> PyResult<()> {
+        if !output.is_c_contiguous() {
+            return Err(PyValueError::new_err(
+                "Synth runtime output must be C-contiguous",
+            ));
+        }
+        self.render_into(output.as_array_mut(), cutoff_hz, q, gain_db, &[])
+    }
+
+    fn process_actions_into(
+        &mut self,
+        mut output: PyReadwriteArray2<'_, f64>,
+        cutoff_hz: f64,
+        q: f64,
+        gain_db: f64,
+        actions: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<()> {
+        if !output.is_c_contiguous()
+            || actions.shape()[1] != 6
+            || actions.as_array().iter().any(|v| !v.is_finite())
+        {
+            return Err(PyValueError::new_err(
+                "Invalid synth runtime output or actions",
+            ));
+        }
+        self.render_into(
+            output.as_array_mut(),
+            cutoff_hz,
+            q,
+            gain_db,
+            actions.as_slice()?,
+        )
     }
 
     fn active_slots(&self) -> Vec<bool> {
@@ -209,7 +249,7 @@ impl SynthRuntime {
 }
 
 impl SynthRuntime {
-    fn render<'py>(
+    fn render_owned<'py>(
         &mut self,
         py: Python<'py>,
         frames: usize,
@@ -218,7 +258,22 @@ impl SynthRuntime {
         gain_db: f64,
         actions: &[f64],
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let mut output = Array2::zeros((frames, self.routes.ncols()));
+        self.render_into(output.view_mut(), cutoff_hz, q, gain_db, actions)?;
+        Ok(output.into_pyarray(py))
+    }
+
+    fn render_into(
+        &mut self,
+        mut output: ArrayViewMut2<'_, f64>,
+        cutoff_hz: f64,
+        q: f64,
+        gain_db: f64,
+        actions: &[f64],
+    ) -> PyResult<()> {
+        let frames = output.nrows();
         if frames == 0
+            || output.ncols() != self.routes.ncols()
             || !cutoff_hz.is_finite()
             || cutoff_hz < 0.0
             || cutoff_hz >= self.rate / 2.0
@@ -243,7 +298,7 @@ impl SynthRuntime {
         };
         let a2 = g * a1;
         let a3 = g * a2;
-        let mut output = Array2::zeros((frames, channels));
+        output.fill(0.0);
         let mut action = 0;
         for frame in 0..frames {
             while action < actions.len() && actions[action] as usize == frame {
@@ -325,7 +380,7 @@ impl SynthRuntime {
                 }
             }
         }
-        Ok(output.into_pyarray(py))
+        Ok(())
     }
 
     fn apply_action(&mut self, action: &[f64], frames: usize) -> PyResult<()> {
