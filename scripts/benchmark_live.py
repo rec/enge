@@ -18,6 +18,7 @@ class Settings(BaseModel):
     block_frames: int = Field(default=64, gt=0)
     seconds: int = Field(default=10, gt=0)
     voices: int = Field(default=16, gt=0)
+    granular: bool = False
 
     model_config = ConfigDict(frozen=True)
 
@@ -36,6 +37,23 @@ def main(settings: Settings) -> None:
         for i in range(settings.voices)
     ]
     actions = prepare_trace(document.body, events, seed=0).actions
+    processors: list[audio_effects.Processor] = [
+        audio_effects.Gain(name="trim", gain_db=-6)
+    ]
+    if settings.granular:
+        processors.append(
+            audio_effects.Granulator(
+                name="cloud",
+                duration_seconds=0.015,
+                density_hz=90,
+                lookback_seconds=0.025,
+                playback_ratio=1.25,
+                position_jitter_seconds=0.003,
+                history_seconds=0.06,
+                maximum_grains=3,
+                mix=0.8,
+            )
+        )
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(
@@ -43,7 +61,7 @@ def main(settings: Settings) -> None:
             channels=["left", "right"],
             source=audio_effects.MainStream(),
         ),
-        [audio_effects.Gain(name="trim", gain_db=-6)],
+        processors,
         settings.block_frames,
     )
     engine = live.NativeLiveEngine(
@@ -69,7 +87,8 @@ def main(settings: Settings) -> None:
     budget = settings.block_frames / 48000 * 1e6
     p99 = ordered[int(0.99 * (len(ordered) - 1))]
     print(
-        f"callbacks={callbacks} block={settings.block_frames} voices={settings.voices}"
+        f"callbacks={callbacks} block={settings.block_frames} voices={settings.voices} "
+        f"granular={settings.granular}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
