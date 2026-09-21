@@ -8,7 +8,7 @@ from typing import Literal, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import instrument_trace, lfo
+from ufor import instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.envelope import Envelope, Segment
 from ufor.oscillator import Oscillator, Waveform
@@ -729,18 +729,8 @@ class PersistentSynth:
         if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
             raise EngineError("Persistent synth requires one oscillator voice template")
         template = templates[0]
-        if (
-            definition.instrument.controls
-            or template.bindings
-            or template.envelopes
-            or template.lfos
-            or template.modulation.parameters
-            or template.modulation.sources
-            or template.modulation.routes
-        ):
-            raise EngineError(
-                "Persistent synth controls and generators are not implemented"
-            )
+        if template.envelopes or template.lfos:
+            raise EngineError("Persistent synth generators are not implemented")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents
         ):
@@ -758,6 +748,9 @@ class PersistentSynth:
         self.voices: dict[str, int] = {}
         self.action_capacity = action_capacity
         self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
+        controls, smoothing, parameters, self.control_sources = _persistent_controls(
+            definition, template
+        )
         self.runtime = _native.SynthRuntime(
             rate,
             [Waveform.sine, Waveform.square, Waveform.triangle].index(
@@ -769,6 +762,9 @@ class PersistentSynth:
             _runtime_segments(template.envelope.segments, rate),
             _runtime_segments(template.envelope.release, rate),
             float(template.minimum_hold_seconds * rate),
+            controls,
+            smoothing,
+            parameters,
         )
 
     def advance(
@@ -814,8 +810,24 @@ class PersistentSynth:
         for action in ordered:
             offset = action.tick - start
             if isinstance(action, instrument_trace.TriggerContext):
-                if action.controls:
-                    raise EngineError("Persistent synth controls are not implemented")
+                if action.controls.keys() != self.definition.instrument.controls.keys():
+                    raise EngineError(
+                        "Trigger context must contain all declared controls"
+                    )
+                for name, value in action.controls.items():
+                    self.definition.instrument.controls[name].validate_value(value)
+            elif isinstance(action, instrument_trace.ControlObservation):
+                declaration = self.definition.instrument.controls.get(action.control)
+                if declaration is None:
+                    raise EngineError(f"Unknown control: {action.control}")
+                declaration.validate_value(action.value)
+                if action.scope != "instrument":
+                    raise EngineError(
+                        "Persistent synth supports instrument-scoped controls only"
+                    )
+                for source in self.control_sources.get(action.control, []):
+                    self._encode_action(count, offset, 4, source, action.value, 0, 0)
+                    count += 1
             elif isinstance(action, VoiceStart):
                 slot, frequency_hz, gain, phase = self._start(action, active)
                 self._encode_action(count, offset, 0, slot, frequency_hz, gain, phase)
@@ -893,7 +905,7 @@ class PersistentSynth:
         )
         return (
             slot,
-            frequency(action.pitch_hz, self.template.processing.tuning_cents),
+            action.pitch_hz,
             self.template.oscillator.gain(action.key),
             phase,
         )
@@ -1175,6 +1187,109 @@ def _runtime_segments(segments: list[Segment], sample_rate: int) -> np.ndarray:
     return np.asarray(
         [[float(s.duration * sample_rate), s.target] for s in segments],
         dtype=np.float64,
+    )
+
+
+def _persistent_controls(
+    definition: PreparedSynth, template: SynthVoice
+) -> tuple[np.ndarray, list[tuple[int, int]], list[float], dict[str, list[int]]]:
+    bindings = {b.name: b for b in template.bindings if isinstance(b, ControlBinding)}
+    if len(bindings) != len(template.bindings):
+        raise EngineError("Persistent synth supports control bindings only")
+    sources = {s.name: s for s in template.modulation.sources}
+    if bindings.keys() != sources.keys() or any(
+        s.scope != "instrument" for s in sources.values()
+    ):
+        raise EngineError("Persistent synth requires instrument-scoped control sources")
+    supported = {
+        ("processing", "amplitude"): (0, modulation.Operation.multiply),
+        ("processing", "tuning_cents"): (1, modulation.Operation.add),
+    }
+    parameters = {
+        (p.target.name, p.target.parameter): p for p in template.modulation.parameters
+    }
+    if parameters.keys() - supported.keys():
+        raise EngineError("Persistent synth controls support amplitude and tuning only")
+    routes = sorted(template.modulation.routes, key=lambda r: (r.source, r.name))
+    if len(routes) != len(sources) or len({r.target for r in routes}) != len(routes):
+        raise EngineError("Persistent synth requires one control route per target")
+    rows: list[list[float]] = []
+    smoothing: list[tuple[int, int]] = []
+    control_sources: dict[str, list[int]] = {}
+    for route in routes:
+        source = sources.get(route.source)
+        binding = bindings.get(route.source)
+        target = (route.target.name, route.target.parameter)
+        if source is None or binding is None or target not in supported:
+            raise EngineError("Persistent synth control route is unresolved")
+        parameter, operation = supported[target]
+        if (
+            route.operation != operation
+            or route.interpolation != modulation.Interpolation.linear
+            or len(route.points) != 2
+            or route.points[0].input != source.minimum
+            or route.points[1].input != source.maximum
+        ):
+            raise EngineError(
+                "Persistent synth control routes must be direct linear maps"
+            )
+        declaration = definition.instrument.controls[binding.control]
+        control_minimum = -1 if declaration.polarity == "bipolar" else 0
+        if source.minimum > control_minimum or source.maximum < 1:
+            raise EngineError(
+                "Persistent synth source must cover its control declaration"
+            )
+        slope = (route.points[1].amount - route.points[0].amount) / (
+            source.maximum - source.minimum
+        )
+        intercept = route.points[0].amount - slope * source.minimum
+        target_parameter = parameters[target]
+        mapped = [
+            intercept + slope * control_minimum,
+            intercept + slope,
+        ]
+        outcomes = (
+            [target_parameter.default + v for v in mapped]
+            if operation == modulation.Operation.add
+            else [target_parameter.default * v for v in mapped]
+        )
+        if any(
+            v < target_parameter.minimum or v > target_parameter.maximum
+            for v in outcomes
+        ):
+            raise EngineError(
+                "Persistent synth control route exceeds its target domain"
+            )
+        index = len(rows)
+        rows.append(
+            [
+                declaration.default,
+                parameter,
+                0 if operation == modulation.Operation.add else 1,
+                source.minimum,
+                source.maximum,
+                intercept,
+                slope,
+            ]
+        )
+        duration = binding.smoothing * definition.sample_rate
+        smoothing.append((duration.numerator, duration.denominator))
+        control_sources.setdefault(binding.control, []).append(index)
+    amplitude = parameters.get(("processing", "amplitude"))
+    tuning = parameters.get(("processing", "tuning_cents"))
+    values = [
+        1 if amplitude is None else amplitude.default,
+        1 if amplitude is None else amplitude.minimum,
+        1 if amplitude is None else amplitude.maximum,
+        template.processing.tuning_cents if tuning is None else tuning.default,
+        template.processing.tuning_cents if tuning is None else tuning.minimum,
+        template.processing.tuning_cents if tuning is None else tuning.maximum,
+    ]
+    return (
+        np.asarray(rows, dtype=np.float64).reshape(-1, 7),
+        smoothing,
+        values,
+        control_sources,
     )
 
 

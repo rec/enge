@@ -12,6 +12,25 @@ struct Segment {
     target: f64,
 }
 
+#[derive(Clone, PartialEq)]
+struct ControlDefinition {
+    smoothing_numerator: u64,
+    smoothing_denominator: u64,
+    parameter: usize,
+    operation: usize,
+    minimum: f64,
+    maximum: f64,
+    intercept: f64,
+    slope: f64,
+}
+
+#[derive(Clone)]
+struct ControlState {
+    start: f64,
+    target: f64,
+    elapsed: usize,
+}
+
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
@@ -23,6 +42,9 @@ pub struct SynthRuntimeSnapshot {
     release: Vec<Segment>,
     minimum_hold_frames: f64,
     routes: Array2<f64>,
+    control_definitions: Vec<ControlDefinition>,
+    control_states: Vec<ControlState>,
+    parameter_definitions: Vec<f64>,
     frequencies: Vec<f64>,
     phases: Vec<f64>,
     errors: Vec<f64>,
@@ -48,6 +70,9 @@ pub struct SynthRuntime {
     release: Vec<Segment>,
     minimum_hold_frames: f64,
     routes: Array2<f64>,
+    control_definitions: Vec<ControlDefinition>,
+    control_states: Vec<ControlState>,
+    parameter_definitions: Vec<f64>,
     frequencies: Vec<f64>,
     phases: Vec<f64>,
     errors: Vec<f64>,
@@ -76,9 +101,14 @@ impl SynthRuntime {
         attack: PyReadonlyArray2<'_, f64>,
         release: PyReadonlyArray2<'_, f64>,
         minimum_hold_frames: f64,
+        controls: PyReadonlyArray2<'_, f64>,
+        control_smoothing: Vec<(u64, u64)>,
+        parameters: Vec<f64>,
     ) -> PyResult<Self> {
         let attack = segments(attack)?;
         let release = segments(release)?;
+        let (control_definitions, control_states) =
+            control_definitions(controls, &control_smoothing)?;
         if !rate.is_finite()
             || rate <= 0.0
             || waveform > 2
@@ -90,6 +120,12 @@ impl SynthRuntime {
             || !initial.is_finite()
             || !minimum_hold_frames.is_finite()
             || minimum_hold_frames < 0.0
+            || parameters.len() != 6
+            || parameters.iter().any(|v| !v.is_finite())
+            || parameters[1] > parameters[0]
+            || parameters[0] > parameters[2]
+            || parameters[4] > parameters[3]
+            || parameters[3] > parameters[5]
         {
             return Err(PyValueError::new_err("Invalid synth runtime definition"));
         }
@@ -104,6 +140,9 @@ impl SynthRuntime {
             release,
             minimum_hold_frames,
             routes: routes.as_array().to_owned(),
+            control_definitions,
+            control_states,
+            parameter_definitions: parameters,
             frequencies: vec![1.0; slots],
             phases: vec![0.0; slots],
             errors: vec![0.0; slots],
@@ -197,6 +236,9 @@ impl SynthRuntime {
             release: self.release.clone(),
             minimum_hold_frames: self.minimum_hold_frames,
             routes: self.routes.clone(),
+            control_definitions: self.control_definitions.clone(),
+            control_states: self.control_states.clone(),
+            parameter_definitions: self.parameter_definitions.clone(),
             frequencies: self.frequencies.clone(),
             phases: self.phases.clone(),
             errors: self.errors.clone(),
@@ -222,6 +264,8 @@ impl SynthRuntime {
             || self.release != snapshot.release
             || self.minimum_hold_frames != snapshot.minimum_hold_frames
             || self.routes != snapshot.routes
+            || self.control_definitions != snapshot.control_definitions
+            || self.parameter_definitions != snapshot.parameter_definitions
         {
             return Err(PyValueError::new_err(
                 "Snapshot belongs to a different synth runtime",
@@ -241,6 +285,7 @@ impl SynthRuntime {
         self.gain_steps.clone_from(&snapshot.gain_steps);
         self.gain_remaining.clone_from(&snapshot.gain_remaining);
         self.filter_states.clone_from(&snapshot.filter_states);
+        self.control_states.clone_from(&snapshot.control_states);
         Ok(())
     }
 }
@@ -302,6 +347,8 @@ impl SynthRuntime {
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
+            let (amplitude, tuning_cents) = self.parameters()?;
+            let tuning = 2_f64.powf(tuning_cents / 1200.0);
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
@@ -341,8 +388,8 @@ impl SynthRuntime {
                     _ if phase < self.duty => 2.0 * phase / self.duty - 1.0,
                     _ => (1.0 + self.duty - 2.0 * phase) / (1.0 - self.duty),
                 };
-                let sample = wave * self.gains[voice] * level;
-                let increment = self.frequencies[voice] - self.errors[voice];
+                let sample = wave * self.gains[voice] * level * amplitude;
+                let increment = self.frequencies[voice] * tuning - self.errors[voice];
                 let total = self.phases[voice] + increment;
                 self.errors[voice] = (total - self.phases[voice]) - increment;
                 self.phases[voice] = total.rem_euclid(self.rate);
@@ -360,6 +407,9 @@ impl SynthRuntime {
                     self.gain_steps[voice],
                     &mut self.gain_remaining[voice],
                 );
+            }
+            for state in &mut self.control_states {
+                state.elapsed = state.elapsed.saturating_add(1);
             }
             for channel in 0..channels {
                 if filter {
@@ -388,9 +438,11 @@ impl SynthRuntime {
             || offset >= frames
             || action[1] != kind as f64
             || action[2] != voice as f64
-            || voice >= self.frequencies.len()
         {
             return Err(PyValueError::new_err("Invalid synth runtime action"));
+        }
+        if kind <= 3 && voice >= self.frequencies.len() {
+            return Err(PyValueError::new_err("Invalid synth runtime voice"));
         }
         match kind {
             0 => {
@@ -431,9 +483,107 @@ impl SynthRuntime {
                     self.gains[voice] = action[4];
                 }
             }
+            4 => {
+                let Some(definition) = self.control_definitions.get(voice) else {
+                    return Err(PyValueError::new_err("Invalid synth runtime control"));
+                };
+                if action[3] < definition.minimum || action[3] > definition.maximum {
+                    return Err(PyValueError::new_err("Invalid synth control value"));
+                }
+                let state = &mut self.control_states[voice];
+                state.start = control_value(definition, state);
+                state.target = action[3];
+                state.elapsed = 0;
+            }
             _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
         }
         Ok(())
+    }
+
+    fn parameters(&self) -> PyResult<(f64, f64)> {
+        let mut additions = [0.0, 0.0];
+        let mut products = [1.0, 1.0];
+        for (definition, state) in self.control_definitions.iter().zip(&self.control_states) {
+            let amount = definition.intercept + definition.slope * control_value(definition, state);
+            if definition.operation == 0 {
+                additions[definition.parameter] += amount;
+            } else {
+                products[definition.parameter] *= amount;
+            }
+        }
+        let amplitude = (self.parameter_definitions[0] + additions[0]) * products[0];
+        let tuning = (self.parameter_definitions[3] + additions[1]) * products[1];
+        if amplitude < self.parameter_definitions[1]
+            || amplitude > self.parameter_definitions[2]
+            || tuning < self.parameter_definitions[4]
+            || tuning > self.parameter_definitions[5]
+        {
+            return Err(PyValueError::new_err(
+                "Modulated persistent synth parameter is outside its domain",
+            ));
+        }
+        Ok((amplitude, tuning))
+    }
+}
+
+fn control_definitions(
+    values: PyReadonlyArray2<'_, f64>,
+    smoothing: &[(u64, u64)],
+) -> PyResult<(Vec<ControlDefinition>, Vec<ControlState>)> {
+    if values.shape()[1] != 7
+        || values.shape()[0] != smoothing.len()
+        || smoothing.iter().any(|(_, denominator)| *denominator == 0)
+        || values.as_array().iter().any(|v| !v.is_finite())
+    {
+        return Err(PyValueError::new_err("Invalid synth runtime controls"));
+    }
+    let mut definitions = Vec::with_capacity(values.shape()[0]);
+    let mut states = Vec::with_capacity(values.shape()[0]);
+    for (row, (smoothing_numerator, smoothing_denominator)) in
+        values.as_array().rows().into_iter().zip(smoothing)
+    {
+        let parameter = row[1] as usize;
+        let operation = row[2] as usize;
+        if row[1] != parameter as f64
+            || parameter > 1
+            || row[2] != operation as f64
+            || operation > 1
+            || row[3] > row[4]
+            || row[0] < row[3]
+            || row[0] > row[4]
+        {
+            return Err(PyValueError::new_err("Invalid synth runtime control"));
+        }
+        definitions.push(ControlDefinition {
+            smoothing_numerator: *smoothing_numerator,
+            smoothing_denominator: *smoothing_denominator,
+            parameter,
+            operation,
+            minimum: row[3],
+            maximum: row[4],
+            intercept: row[5],
+            slope: row[6],
+        });
+        states.push(ControlState {
+            start: row[0],
+            target: row[0],
+            elapsed: 0,
+        });
+    }
+    Ok((definitions, states))
+}
+
+fn control_value(definition: &ControlDefinition, state: &ControlState) -> f64 {
+    if state.elapsed as u128 * definition.smoothing_denominator as u128
+        >= definition.smoothing_numerator as u128
+    {
+        state.target
+    } else {
+        state.start
+            + (state.target - state.start)
+                * state.elapsed as f64
+                * definition.smoothing_denominator as f64
+                / definition.smoothing_numerator as f64
     }
 }
 
