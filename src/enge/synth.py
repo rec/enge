@@ -281,6 +281,7 @@ class SynthSnapshot(Model, frozen=True):
 
 class PersistentSynthSnapshot(Model, frozen=True):
     definition: PreparedSynth
+    action_capacity: int
     frame: int
     voices: dict[str, int]
     state: _native.SynthRuntimeSnapshot
@@ -717,9 +718,13 @@ class OfflineSynth:
 class PersistentSynth:
     """Native oscillator synth for one static uFor voice template."""
 
-    def __init__(self, definition: PreparedSynth, voices: int = 16) -> None:
+    def __init__(
+        self, definition: PreparedSynth, voices: int = 16, action_capacity: int = 64
+    ) -> None:
         if type(voices) is not int or voices <= 0:
             raise EngineError("Persistent synth voice capacity must be positive")
+        if type(action_capacity) is not int or action_capacity <= 0:
+            raise EngineError("Persistent synth action capacity must be positive")
         templates = definition.instrument.voices
         if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
             raise EngineError("Persistent synth requires one oscillator voice template")
@@ -751,6 +756,8 @@ class PersistentSynth:
         self.template = template
         self.frame = 0
         self.voices: dict[str, int] = {}
+        self.action_capacity = action_capacity
+        self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
         self.runtime = _native.SynthRuntime(
             rate,
             [Waveform.sine, Waveform.square, Waveform.triangle].index(
@@ -803,20 +810,23 @@ class PersistentSynth:
             raise EngineError("actions must belong to the rendered interval")
         active = self.runtime.active_slots()
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
-        rows: list[list[float]] = []
+        count = 0
         for action in ordered:
             offset = action.tick - start
             if isinstance(action, instrument_trace.TriggerContext):
                 if action.controls:
                     raise EngineError("Persistent synth controls are not implemented")
             elif isinstance(action, VoiceStart):
-                self._start(action, offset, active, rows)
+                slot, frequency_hz, gain, phase = self._start(action, active)
+                self._encode_action(count, offset, 0, slot, frequency_hz, gain, phase)
+                count += 1
             elif isinstance(action, instrument_trace.VoiceRetirement):
                 if action.action == "fade":
                     raise EngineError("Fade retirement is not implemented")
                 if (slot := self.voices.get(action.voice_id)) is not None:
                     kind = 2 if action.action == "stop" else 1
-                    rows.append([offset, kind, slot, 0, 0, 0])
+                    self._encode_action(count, offset, kind, slot, 0, 0, 0)
+                    count += 1
                     if kind == 2:
                         active[slot] = False
                         del self.voices[action.voice_id]
@@ -825,8 +835,7 @@ class PersistentSynth:
                     f"Unsupported persistent synth action at frame {action.tick}: "
                     f"{type(action).__name__}"
                 )
-        encoded = np.asarray(rows, dtype=np.float64).reshape(-1, 6)
-        self.runtime.process_actions_into(output, 0, 1, 0, encoded)
+        self.runtime.process_actions_into(output, 0, 1, 0, self._action_buffer, count)
         active = self.runtime.active_slots()
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
         self.frame = end
@@ -834,6 +843,7 @@ class PersistentSynth:
     def snapshot(self) -> PersistentSynthSnapshot:
         return PersistentSynthSnapshot(
             definition=self.definition.model_copy(deep=True),
+            action_capacity=self.action_capacity,
             frame=self.frame,
             voices=self.voices.copy(),
             state=self.runtime.snapshot(),
@@ -842,6 +852,8 @@ class PersistentSynth:
     def restore(self, snapshot: PersistentSynthSnapshot) -> None:
         if snapshot.definition != self.definition:
             raise EngineError("Snapshot belongs to a different prepared synth")
+        if snapshot.action_capacity != self.action_capacity:
+            raise EngineError("Snapshot belongs to a different action capacity")
         self.runtime.restore(snapshot.state)
         self.frame = snapshot.frame
         self.voices = snapshot.voices.copy()
@@ -849,10 +861,8 @@ class PersistentSynth:
     def _start(
         self,
         action: VoiceStart,
-        offset: int,
         active: list[bool],
-        rows: list[list[float]],
-    ) -> None:
+    ) -> tuple[int, float, float, float]:
         if (
             action.pitch_hz is None
             or not isfinite(action.pitch_hz)
@@ -881,16 +891,31 @@ class PersistentSynth:
             if self.template.synchronize_oscillator
             else 0.0
         )
-        rows.append(
-            [
-                offset,
-                0,
-                slot,
-                frequency(action.pitch_hz, self.template.processing.tuning_cents),
-                self.template.oscillator.gain(action.key),
-                phase,
-            ]
+        return (
+            slot,
+            frequency(action.pitch_hz, self.template.processing.tuning_cents),
+            self.template.oscillator.gain(action.key),
+            phase,
         )
+
+    def _encode_action(
+        self,
+        row: int,
+        offset: int,
+        kind: int,
+        slot: int,
+        value_a: float,
+        value_b: float,
+        duration_or_phase: float,
+    ) -> None:
+        if row >= self.action_capacity:
+            raise EngineError("Persistent synth action capacity exceeded")
+        self._action_buffer[row, 0] = offset
+        self._action_buffer[row, 1] = kind
+        self._action_buffer[row, 2] = slot
+        self._action_buffer[row, 3] = value_a
+        self._action_buffer[row, 4] = value_b
+        self._action_buffer[row, 5] = duration_or_phase
 
 
 def render_actions(

@@ -2,6 +2,7 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
+import pytest
 from test_synth import check_audio, score
 from ufor.envelope import Envelope, Segment
 from ufor.events import Release, Trigger
@@ -9,7 +10,7 @@ from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.synth_trace import prepare as prepare_trace
 
 from enge import _native, filters
-from enge.synth import OfflineSynth, PersistentSynth, prepare
+from enge.synth import EngineError, OfflineSynth, PersistentSynth, prepare
 
 
 def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> None:
@@ -139,6 +140,10 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
         seed=42,
     )
     definition = prepare(document)
+    with pytest.raises(EngineError, match="action capacity"):
+        PersistentSynth(definition, voices=4, action_capacity=1).advance(
+            trace.actions, 0, 48000
+        )
     expected = OfflineSynth(definition, "native").advance(trace.actions, 0, 48000)
     renderer = PersistentSynth(definition, voices=4)
     pieces = []
