@@ -33,6 +33,21 @@ struct ControlState {
     elapsed: usize,
 }
 
+#[derive(Clone, PartialEq)]
+struct LfoDefinition {
+    scope: usize,
+    waveform: usize,
+    parameter: usize,
+    operation: usize,
+    intercept: f64,
+    slope: f64,
+    duty: (u64, u64),
+    rate: (u64, u64),
+    phase: (u64, u64),
+    delay_frames: (u64, u64),
+    fade_frames: (u64, u64),
+}
+
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
@@ -46,6 +61,7 @@ pub struct SynthRuntimeSnapshot {
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
+    lfo_definitions: Vec<LfoDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
     parameter_definitions: Vec<f64>,
@@ -64,6 +80,7 @@ pub struct SynthRuntimeSnapshot {
     voice_part_contexts: Vec<usize>,
     voice_trigger_contexts: Vec<usize>,
     filter_states: Array2<f64>,
+    frame: usize,
 }
 
 #[pyclass]
@@ -78,6 +95,7 @@ pub struct SynthRuntime {
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
+    lfo_definitions: Vec<LfoDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
     parameter_definitions: Vec<f64>,
@@ -96,6 +114,7 @@ pub struct SynthRuntime {
     voice_part_contexts: Vec<usize>,
     voice_trigger_contexts: Vec<usize>,
     filter_states: Array2<f64>,
+    frame: usize,
 }
 
 #[pymethods]
@@ -113,6 +132,8 @@ impl SynthRuntime {
         minimum_hold_frames: f64,
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
+        lfos: PyReadonlyArray2<'_, f64>,
+        lfo_rationals: Vec<(u64, u64)>,
         parameters: Vec<f64>,
         context_capacity: usize,
     ) -> PyResult<Self> {
@@ -120,6 +141,7 @@ impl SynthRuntime {
         let release = segments(release)?;
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
+        let lfo_definitions = lfo_definitions(lfos, &lfo_rationals)?;
         if !rate.is_finite()
             || rate <= 0.0
             || waveform > 2
@@ -138,6 +160,10 @@ impl SynthRuntime {
             || parameters[4] > parameters[3]
             || parameters[3] > parameters[5]
             || context_capacity == 0
+            || (!lfo_definitions.is_empty() && rate != rate as u64 as f64)
+            || lfo_definitions
+                .iter()
+                .any(|definition| lfo_phase_denominator(definition, rate as u64).is_none())
         {
             return Err(PyValueError::new_err("Invalid synth runtime definition"));
         }
@@ -157,6 +183,7 @@ impl SynthRuntime {
             routes: routes.as_array().to_owned(),
             control_definitions,
             control_states,
+            lfo_definitions,
             context_kinds: vec![0; context_capacity],
             context_states,
             parameter_definitions: parameters,
@@ -175,6 +202,7 @@ impl SynthRuntime {
             voice_part_contexts: vec![usize::MAX; slots],
             voice_trigger_contexts: vec![usize::MAX; slots],
             filter_states: Array2::zeros((channels, 2)),
+            frame: 0,
         })
     }
 
@@ -261,6 +289,7 @@ impl SynthRuntime {
             routes: self.routes.clone(),
             control_definitions: self.control_definitions.clone(),
             control_states: self.control_states.clone(),
+            lfo_definitions: self.lfo_definitions.clone(),
             context_kinds: self.context_kinds.clone(),
             context_states: self.context_states.clone(),
             parameter_definitions: self.parameter_definitions.clone(),
@@ -279,6 +308,7 @@ impl SynthRuntime {
             voice_part_contexts: self.voice_part_contexts.clone(),
             voice_trigger_contexts: self.voice_trigger_contexts.clone(),
             filter_states: self.filter_states.clone(),
+            frame: self.frame,
         }
     }
 
@@ -292,6 +322,7 @@ impl SynthRuntime {
             || self.minimum_hold_frames != snapshot.minimum_hold_frames
             || self.routes != snapshot.routes
             || self.control_definitions != snapshot.control_definitions
+            || self.lfo_definitions != snapshot.lfo_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
             || self.context_kinds.len() != snapshot.context_kinds.len()
         {
@@ -313,6 +344,7 @@ impl SynthRuntime {
         self.gain_steps.clone_from(&snapshot.gain_steps);
         self.gain_remaining.clone_from(&snapshot.gain_remaining);
         self.filter_states.clone_from(&snapshot.filter_states);
+        self.frame = snapshot.frame;
         self.control_states.clone_from(&snapshot.control_states);
         self.context_kinds.clone_from(&snapshot.context_kinds);
         self.context_states.clone_from(&snapshot.context_states);
@@ -475,6 +507,10 @@ impl SynthRuntime {
                     output[[frame, channel]] *= gain;
                 }
             }
+            self.frame = self
+                .frame
+                .checked_add(1)
+                .ok_or_else(|| PyValueError::new_err("Synth runtime frame overflow"))?;
         }
         self.retire_trigger_contexts();
         Ok(())
@@ -615,6 +651,23 @@ impl SynthRuntime {
                 products[definition.parameter] *= amount;
             }
         }
+        for definition in &self.lfo_definitions {
+            let elapsed = match definition.scope {
+                0 => self.frame,
+                1 => {
+                    self.context_kind(self.voice_part_contexts[voice], 1)?;
+                    self.frame
+                }
+                _ => self.ages[voice],
+            };
+            let (value, weight) = lfo_value(definition, elapsed, self.rate as u64)?;
+            let amount = definition.intercept + definition.slope * value;
+            if definition.operation == 0 {
+                additions[definition.parameter] += weight * amount;
+            } else {
+                products[definition.parameter] *= 1.0 + weight * (amount - 1.0);
+            }
+        }
         let amplitude = (self.parameter_definitions[0] + additions[0]) * products[0];
         let tuning = (self.parameter_definitions[3] + additions[1]) * products[1];
         if amplitude < self.parameter_definitions[1]
@@ -630,12 +683,17 @@ impl SynthRuntime {
     }
 
     fn context_state(&self, context: usize, source: usize, kind: usize) -> PyResult<&ControlState> {
+        self.context_kind(context, kind)?;
+        Ok(&self.context_states[context * self.control_definitions.len() + source])
+    }
+
+    fn context_kind(&self, context: usize, kind: usize) -> PyResult<()> {
         if context >= self.context_kinds.len() || self.context_kinds[context] != kind {
             return Err(PyValueError::new_err(
                 "Voice is missing its control context",
             ));
         }
-        Ok(&self.context_states[context * self.control_definitions.len() + source])
+        Ok(())
     }
 
     fn control_state_mut(
@@ -750,6 +808,140 @@ fn control_value(definition: &ControlDefinition, state: &ControlState) -> f64 {
                 * definition.smoothing_denominator as f64
                 / definition.smoothing_numerator as f64
     }
+}
+
+fn lfo_definitions(
+    values: PyReadonlyArray2<'_, f64>,
+    rationals: &[(u64, u64)],
+) -> PyResult<Vec<LfoDefinition>> {
+    if values.shape()[1] != 6
+        || rationals.len() != values.shape()[0] * 5
+        || rationals.iter().any(|(_, denominator)| *denominator == 0)
+        || values.as_array().iter().any(|v| !v.is_finite())
+    {
+        return Err(PyValueError::new_err("Invalid synth runtime LFOs"));
+    }
+    let mut definitions = Vec::with_capacity(values.shape()[0]);
+    for (index, row) in values.as_array().rows().into_iter().enumerate() {
+        let scope = row[0] as usize;
+        let waveform = row[1] as usize;
+        let parameter = row[2] as usize;
+        let operation = row[3] as usize;
+        let exact = &rationals[index * 5..index * 5 + 5];
+        if row[0] != scope as f64
+            || ![0, 1, 3].contains(&scope)
+            || row[1] != waveform as f64
+            || waveform > 2
+            || row[2] != parameter as f64
+            || parameter > 1
+            || row[3] != operation as f64
+            || operation > 1
+            || exact[0].0 > exact[0].1
+            || exact[2].0 >= exact[2].1
+        {
+            return Err(PyValueError::new_err("Invalid synth runtime LFO"));
+        }
+        definitions.push(LfoDefinition {
+            scope,
+            waveform,
+            parameter,
+            operation,
+            intercept: row[4],
+            slope: row[5],
+            duty: exact[0],
+            rate: exact[1],
+            phase: exact[2],
+            delay_frames: exact[3],
+            fade_frames: exact[4],
+        });
+    }
+    Ok(definitions)
+}
+
+fn lfo_value(definition: &LfoDefinition, elapsed: usize, sample_rate: u64) -> PyResult<(f64, f64)> {
+    let Some(phase_denominator) = lfo_phase_denominator(definition, sample_rate) else {
+        return Err(PyValueError::new_err("Invalid synth runtime LFO phase"));
+    };
+    let base = modular_multiply(
+        modular_multiply(
+            definition.phase.0 as u128,
+            definition.rate.1 as u128,
+            phase_denominator,
+        ),
+        sample_rate as u128,
+        phase_denominator,
+    );
+    let step = modular_multiply(
+        definition.rate.0 as u128,
+        definition.phase.1 as u128,
+        phase_denominator,
+    );
+    let phase_numerator = modular_add(
+        base,
+        modular_multiply(elapsed as u128, step, phase_denominator),
+        phase_denominator,
+    );
+    let rising = phase_numerator * (definition.duty.1 as u128)
+        < definition.duty.0 as u128 * phase_denominator;
+    let phase = phase_numerator as f64 / phase_denominator as f64;
+    let value = match definition.waveform {
+        0 => (TAU * phase).sin(),
+        1 => {
+            if rising {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        _ if definition.duty.0 == 0 => 1.0 - 2.0 * phase,
+        _ if definition.duty.0 == definition.duty.1 => 2.0 * phase - 1.0,
+        _ if rising => 2.0 * phase / (definition.duty.0 as f64 / definition.duty.1 as f64) - 1.0,
+        _ => {
+            let duty = definition.duty.0 as f64 / definition.duty.1 as f64;
+            (1.0 + duty - 2.0 * phase) / (1.0 - duty)
+        }
+    };
+    let delayed = (elapsed as u128)
+        < (definition.delay_frames.0 as u128).div_ceil(definition.delay_frames.1 as u128);
+    let weight = if delayed {
+        0.0
+    } else if definition.fade_frames.0 == 0 {
+        1.0
+    } else {
+        ((elapsed as f64 - definition.delay_frames.0 as f64 / definition.delay_frames.1 as f64)
+            / (definition.fade_frames.0 as f64 / definition.fade_frames.1 as f64))
+            .clamp(0.0, 1.0)
+    };
+    Ok((value.clamp(-1.0, 1.0), weight))
+}
+
+fn lfo_phase_denominator(definition: &LfoDefinition, sample_rate: u64) -> Option<u128> {
+    let denominator = (definition.phase.1 as u128)
+        .checked_mul(definition.rate.1 as u128)?
+        .checked_mul(sample_rate as u128)?;
+    denominator.checked_mul(definition.duty.0.max(definition.duty.1) as u128)?;
+    Some(denominator)
+}
+
+fn modular_add(first: u128, second: u128, modulus: u128) -> u128 {
+    if first >= modulus - second {
+        first - (modulus - second)
+    } else {
+        first + second
+    }
+}
+
+fn modular_multiply(mut first: u128, mut second: u128, modulus: u128) -> u128 {
+    first %= modulus;
+    let mut result = 0;
+    while second != 0 {
+        if second & 1 != 0 {
+            result = modular_add(result, first, modulus);
+        }
+        first = modular_add(first, first, modulus);
+        second >>= 1;
+    }
+    result
 }
 
 fn segments(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Segment>> {

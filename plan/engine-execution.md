@@ -33,10 +33,15 @@ during synth consolidation.
 prepared uFor `TriggerContext`, `VoiceStart`, and `VoiceRetirement` actions once
 per block, while Rust retains oscillator, multi-segment envelope, routing, slot,
 and snapshot state across calls. It currently accepts one oscillator voice
-template with no filters or generators. Direct linear instrument-, part-, and
-trigger-scoped control routes may target amplitude and tuning; Rust retains their
-exact rational smoothing endpoints and advances instrument and active part
-contexts while silent. Part contexts persist for the renderer lifetime. Trigger
+template with no filters or named envelopes. Direct linear instrument-, part-,
+and trigger-scoped control routes may target amplitude and tuning; Rust retains
+their exact rational smoothing endpoints and advances instrument and active part
+contexts while silent. Seconds-clock instrument-, part-, and voice-scoped LFOs
+drive the same targets in Rust. Their exact rational phase anchors, waveform duty
+boundaries, delay/fade activation, release-tail evolution, and global or
+voice-relative clocks survive arbitrary block partitions and snapshots. Addressed
+LFO rate/reset actions still require the future portable uFor action described in
+the LFO contract. Part contexts persist for the renderer lifetime. Trigger
 contexts remain attached to release tails, so reusing a trigger ID creates a new
 context without retargeting the old tail. Context storage is bounded and included
 in snapshots. Unsupported definitions fail at construction. Irregular-block and

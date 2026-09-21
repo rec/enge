@@ -71,6 +71,8 @@ def benchmark_persistent(block: int, options: Options) -> Result:
         0,
         np.empty((0, 8), dtype=np.float64),
         [],
+        np.empty((0, 6), dtype=np.float64),
+        [],
         [1, -1e300, 1e300, 0, -120000, 120000],
         1,
     )
