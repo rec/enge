@@ -32,8 +32,10 @@ during synth consolidation.
 `PersistentSynth` is the first block-oriented native runtime profile. It consumes
 prepared uFor `TriggerContext`, `VoiceStart`, and `VoiceRetirement` actions once
 per block, while Rust retains oscillator, multi-segment envelope, routing, slot,
-and snapshot state across calls. It currently accepts one static oscillator voice
-template with no filters, controls, or generators; unsupported definitions fail
+and snapshot state across calls. It currently accepts one oscillator voice
+template with no filters or generators. Direct linear instrument-scoped control
+routes may target amplitude and tuning; Rust retains their exact rational
+smoothing endpoints and advances them while silent. Unsupported definitions fail
 at construction. Irregular-block and snapshot continuation tests compare it to
 the existing native `OfflineSynth` implementation. `advance_into()` writes into a
 writable C-contiguous float64 array supplied by the caller; `advance()` preserves

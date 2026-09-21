@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from test_dynamic_synth import change, dynamic_score, onset
 from test_synth import check_audio, score
 from ufor.envelope import Envelope, Segment
 from ufor.events import Release, Trigger
@@ -26,6 +27,9 @@ def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> No
         np.array([[0, 1]], dtype=np.float64),
         np.array([[0, 0]], dtype=np.float64),
         0,
+        np.empty((0, 7), dtype=np.float64),
+        [],
+        [1, -1e300, 1e300, 0, -120000, 120000],
     )
     starts = np.array(
         [
@@ -71,6 +75,9 @@ def test_persistent_runtime_applies_voice_actions_at_exact_frames() -> None:
         np.array([[4, 1]], dtype=np.float64),
         np.array([[4, 0]], dtype=np.float64),
         0,
+        np.empty((0, 7), dtype=np.float64),
+        [],
+        [1, -1e300, 1e300, 0, -120000, 120000],
     )
     actions = np.array(
         [
@@ -169,3 +176,37 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
     check_audio(tmp_path / "persistent-synth.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[17003:], atol=0)
     np.testing.assert_array_equal(first, saved)
+
+
+def test_persistent_synth_evolves_instrument_controls_in_rust(tmp_path: Path) -> None:
+    document = dynamic_score(scope="instrument", smoothing="4801/96000")
+    events = [
+        change(0, 1, scope="instrument"),
+        onset(120, "a", gain=0, pitch=100),
+        onset(180, "b", gain=0, pitch=150),
+        change(240, 0, scope="instrument"),
+        change(120, 1, control="bend", scope="instrument"),
+        change(301, 0.25, scope="instrument"),
+        Release(tick=20000, ordinal=0, part="main", trigger_id="a"),
+        Release(tick=21000, ordinal=0, part="main", trigger_id="b"),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    with pytest.raises(EngineError, match="instrument-scoped"):
+        PersistentSynth(prepare(dynamic_score(scope="part")))
+    expected = OfflineSynth(definition, "native").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=4)
+    chunks = []
+    boundaries = [0, 64, 121, 181, 241, 301, 997, 48000]
+    for start, end in zip(boundaries, boundaries[1:], strict=False):
+        block_actions = [a for a in actions if start <= a.tick < end]
+        chunks.append(renderer.advance(block_actions, start, end))
+        if end == 181:
+            snapshot = renderer.snapshot()
+    actual = np.concatenate(chunks)
+    restored = PersistentSynth(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance([a for a in actions if 181 <= a.tick < 48000], 181, 48000)
+
+    check_audio(tmp_path / "persistent-controls.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[181:], atol=0)

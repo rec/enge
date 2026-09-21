@@ -69,6 +69,9 @@ def benchmark_persistent(block: int, options: Options) -> Result:
         np.array([[0, 1]], dtype=np.float64),
         np.array([[0, 0]], dtype=np.float64),
         0,
+        np.empty((0, 7), dtype=np.float64),
+        [],
+        [1, -1e300, 1e300, 0, -120000, 120000],
     )
     starts = np.array(
         [[0, 0, i, f, 0.02, 0] for i, f in enumerate(frequencies)],

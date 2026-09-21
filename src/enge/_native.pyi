@@ -15,6 +15,9 @@ class SynthRuntime:
         attack: np.ndarray,
         release: np.ndarray,
         minimum_hold_frames: float,
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        parameters: list[float],
     ) -> None: ...
     def process(
         self, frames: int, cutoff_hz: float, q: float, gain_db: float
