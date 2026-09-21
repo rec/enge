@@ -7,9 +7,9 @@ use pyo3::prelude::*;
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, PartialEq)]
-struct Segment {
-    frames: f64,
-    target: f64,
+pub(crate) struct Segment {
+    pub(crate) frames: f64,
+    pub(crate) target: f64,
 }
 
 #[derive(Clone, PartialEq)]
@@ -1330,7 +1330,7 @@ fn modular_multiply(mut first: u128, mut second: u128, modulus: u128) -> u128 {
     result
 }
 
-fn segments(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Segment>> {
+pub(crate) fn segments(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Segment>> {
     if values.shape()[1] != 2
         || values.as_array().iter().any(|v| !v.is_finite())
         || values.as_array().rows().into_iter().any(|r| r[0] < 0.0)
@@ -1348,11 +1348,11 @@ fn segments(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Segment>> {
         .collect())
 }
 
-fn total_frames(segments: &[Segment]) -> f64 {
+pub(crate) fn total_frames(segments: &[Segment]) -> f64 {
     segments.iter().map(|s| s.frames).sum()
 }
 
-fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -> f64 {
+pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -> f64 {
     let mut boundary = 0.0;
     let mut entry = initial;
     for segment in segments {

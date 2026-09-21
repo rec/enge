@@ -21,6 +21,20 @@ class LiveRuntime:
         batch_capacity: int,
         gain_db: float,
     ) -> None: ...
+    def add_sample(
+        self,
+        buffer: SampleBuffer,
+        selection: tuple[int, int, bool, tuple[int, int, int, bool] | None],
+        state: tuple[int, float, float, int, bool, bool, bool, int | None],
+        rate: float,
+        routes: np.ndarray,
+        initial: float,
+        attack: np.ndarray,
+        release: np.ndarray,
+        minimum_hold_frames: float,
+        voices: int,
+        batch_capacity: int,
+    ) -> int: ...
     def submit(self, source: int, actions: np.ndarray) -> None: ...
     def process_into(self, output: np.ndarray) -> None: ...
     def snapshot(self) -> LiveRuntimeSnapshot: ...
