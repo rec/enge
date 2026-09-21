@@ -14,8 +14,10 @@ struct Segment {
 
 #[derive(Clone, PartialEq)]
 struct ControlDefinition {
+    default: f64,
     smoothing_numerator: u64,
     smoothing_denominator: u64,
+    scope: usize,
     parameter: usize,
     operation: usize,
     minimum: f64,
@@ -44,6 +46,8 @@ pub struct SynthRuntimeSnapshot {
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
+    context_kinds: Vec<usize>,
+    context_states: Vec<ControlState>,
     parameter_definitions: Vec<f64>,
     frequencies: Vec<f64>,
     phases: Vec<f64>,
@@ -57,6 +61,8 @@ pub struct SynthRuntimeSnapshot {
     frequency_remaining: Vec<usize>,
     gain_steps: Vec<f64>,
     gain_remaining: Vec<usize>,
+    voice_part_contexts: Vec<usize>,
+    voice_trigger_contexts: Vec<usize>,
     filter_states: Array2<f64>,
 }
 
@@ -72,6 +78,8 @@ pub struct SynthRuntime {
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
+    context_kinds: Vec<usize>,
+    context_states: Vec<ControlState>,
     parameter_definitions: Vec<f64>,
     frequencies: Vec<f64>,
     phases: Vec<f64>,
@@ -85,6 +93,8 @@ pub struct SynthRuntime {
     frequency_remaining: Vec<usize>,
     gain_steps: Vec<f64>,
     gain_remaining: Vec<usize>,
+    voice_part_contexts: Vec<usize>,
+    voice_trigger_contexts: Vec<usize>,
     filter_states: Array2<f64>,
 }
 
@@ -104,6 +114,7 @@ impl SynthRuntime {
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
         parameters: Vec<f64>,
+        context_capacity: usize,
     ) -> PyResult<Self> {
         let attack = segments(attack)?;
         let release = segments(release)?;
@@ -126,11 +137,15 @@ impl SynthRuntime {
             || parameters[0] > parameters[2]
             || parameters[4] > parameters[3]
             || parameters[3] > parameters[5]
+            || context_capacity == 0
         {
             return Err(PyValueError::new_err("Invalid synth runtime definition"));
         }
         let slots = routes.shape()[0];
         let channels = routes.shape()[1];
+        let context_states = (0..context_capacity)
+            .flat_map(|_| control_states.clone())
+            .collect();
         Ok(Self {
             rate,
             waveform,
@@ -142,6 +157,8 @@ impl SynthRuntime {
             routes: routes.as_array().to_owned(),
             control_definitions,
             control_states,
+            context_kinds: vec![0; context_capacity],
+            context_states,
             parameter_definitions: parameters,
             frequencies: vec![1.0; slots],
             phases: vec![0.0; slots],
@@ -155,6 +172,8 @@ impl SynthRuntime {
             frequency_remaining: vec![0; slots],
             gain_steps: vec![0.0; slots],
             gain_remaining: vec![0; slots],
+            voice_part_contexts: vec![usize::MAX; slots],
+            voice_trigger_contexts: vec![usize::MAX; slots],
             filter_states: Array2::zeros((channels, 2)),
         })
     }
@@ -226,6 +245,10 @@ impl SynthRuntime {
         self.active.clone()
     }
 
+    fn active_contexts(&self) -> Vec<bool> {
+        self.context_kinds.iter().map(|kind| *kind != 0).collect()
+    }
+
     fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
             rate: self.rate,
@@ -238,6 +261,8 @@ impl SynthRuntime {
             routes: self.routes.clone(),
             control_definitions: self.control_definitions.clone(),
             control_states: self.control_states.clone(),
+            context_kinds: self.context_kinds.clone(),
+            context_states: self.context_states.clone(),
             parameter_definitions: self.parameter_definitions.clone(),
             frequencies: self.frequencies.clone(),
             phases: self.phases.clone(),
@@ -251,6 +276,8 @@ impl SynthRuntime {
             frequency_remaining: self.frequency_remaining.clone(),
             gain_steps: self.gain_steps.clone(),
             gain_remaining: self.gain_remaining.clone(),
+            voice_part_contexts: self.voice_part_contexts.clone(),
+            voice_trigger_contexts: self.voice_trigger_contexts.clone(),
             filter_states: self.filter_states.clone(),
         }
     }
@@ -266,6 +293,7 @@ impl SynthRuntime {
             || self.routes != snapshot.routes
             || self.control_definitions != snapshot.control_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
+            || self.context_kinds.len() != snapshot.context_kinds.len()
         {
             return Err(PyValueError::new_err(
                 "Snapshot belongs to a different synth runtime",
@@ -286,6 +314,12 @@ impl SynthRuntime {
         self.gain_remaining.clone_from(&snapshot.gain_remaining);
         self.filter_states.clone_from(&snapshot.filter_states);
         self.control_states.clone_from(&snapshot.control_states);
+        self.context_kinds.clone_from(&snapshot.context_kinds);
+        self.context_states.clone_from(&snapshot.context_states);
+        self.voice_part_contexts
+            .clone_from(&snapshot.voice_part_contexts);
+        self.voice_trigger_contexts
+            .clone_from(&snapshot.voice_trigger_contexts);
         Ok(())
     }
 }
@@ -347,12 +381,12 @@ impl SynthRuntime {
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
-            let (amplitude, tuning_cents) = self.parameters()?;
-            let tuning = 2_f64.powf(tuning_cents / 1200.0);
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
                 }
+                let (amplitude, tuning_cents) = self.parameters(voice)?;
+                let tuning = 2_f64.powf(tuning_cents / 1200.0);
                 let age = self.ages[voice] as f64;
                 let level = if let Some(release_frame) = self.release_frames[voice] {
                     let end = release_frame + total_frames(&self.release);
@@ -408,8 +442,23 @@ impl SynthRuntime {
                     &mut self.gain_remaining[voice],
                 );
             }
-            for state in &mut self.control_states {
-                state.elapsed = state.elapsed.saturating_add(1);
+            for (source, state) in self.control_states.iter_mut().enumerate() {
+                if self.control_definitions[source].scope == 0 {
+                    state.elapsed = state.elapsed.saturating_add(1);
+                }
+            }
+            for context in 0..self.context_kinds.len() {
+                let kind = self.context_kinds[context];
+                if kind == 0 {
+                    continue;
+                }
+                for source in 0..self.control_definitions.len() {
+                    if self.control_definitions[source].scope == kind {
+                        let state = &mut self.context_states
+                            [context * self.control_definitions.len() + source];
+                        state.elapsed = state.elapsed.saturating_add(1);
+                    }
+                }
             }
             for channel in 0..channels {
                 if filter {
@@ -427,6 +476,7 @@ impl SynthRuntime {
                 }
             }
         }
+        self.retire_trigger_contexts();
         Ok(())
     }
 
@@ -441,7 +491,7 @@ impl SynthRuntime {
         {
             return Err(PyValueError::new_err("Invalid synth runtime action"));
         }
-        if kind <= 3 && voice >= self.frequencies.len() {
+        if (kind <= 3 || kind == 5) && voice >= self.frequencies.len() {
             return Err(PyValueError::new_err("Invalid synth runtime voice"));
         }
         match kind {
@@ -456,6 +506,8 @@ impl SynthRuntime {
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;
                 self.release_frames[voice] = None;
+                self.voice_part_contexts[voice] = usize::MAX;
+                self.voice_trigger_contexts[voice] = usize::MAX;
                 self.frequency_remaining[voice] = 0;
                 self.gain_remaining[voice] = 0;
             }
@@ -484,26 +536,78 @@ impl SynthRuntime {
                 }
             }
             4 => {
-                let Some(definition) = self.control_definitions.get(voice) else {
+                let Some(definition) = self.control_definitions.get(voice).cloned() else {
                     return Err(PyValueError::new_err("Invalid synth runtime control"));
                 };
                 if action[3] < definition.minimum || action[3] > definition.maximum {
                     return Err(PyValueError::new_err("Invalid synth control value"));
                 }
-                let state = &mut self.control_states[voice];
-                state.start = control_value(definition, state);
+                let context = decode_context(action[4], self.context_kinds.len())?;
+                let state = self.control_state_mut(voice, context)?;
+                state.start = control_value(&definition, state);
                 state.target = action[3];
                 state.elapsed = 0;
+            }
+            5 => {
+                let part = decode_context(action[3], self.context_kinds.len())?;
+                let trigger = decode_context(action[4], self.context_kinds.len())?;
+                if part.is_some_and(|context| self.context_kinds[context] != 1)
+                    || trigger.is_some_and(|context| self.context_kinds[context] != 2)
+                {
+                    return Err(PyValueError::new_err("Invalid voice control contexts"));
+                }
+                self.voice_part_contexts[voice] = part.unwrap_or(usize::MAX);
+                self.voice_trigger_contexts[voice] = trigger.unwrap_or(usize::MAX);
+            }
+            6 => {
+                if voice >= self.context_kinds.len() || self.context_kinds[voice] != 0 {
+                    return Err(PyValueError::new_err("Invalid synth control context"));
+                }
+                let context_kind = action[3] as usize;
+                if action[3] != context_kind as f64 || !(1..=2).contains(&context_kind) {
+                    return Err(PyValueError::new_err("Invalid synth context kind"));
+                }
+                self.context_kinds[voice] = context_kind;
+                let sources = self.control_definitions.len();
+                for source in 0..sources {
+                    let default = self.control_definitions[source].default;
+                    self.context_states[voice * sources + source] = ControlState {
+                        start: default,
+                        target: default,
+                        elapsed: 0,
+                    };
+                }
+            }
+            7 => {
+                let source = action[3] as usize;
+                if voice >= self.context_kinds.len()
+                    || action[3] != source as f64
+                    || source >= self.control_definitions.len()
+                    || action[4] < self.control_definitions[source].minimum
+                    || action[4] > self.control_definitions[source].maximum
+                    || self.context_kinds[voice] != self.control_definitions[source].scope
+                {
+                    return Err(PyValueError::new_err("Invalid synth context value"));
+                }
+                let index = voice * self.control_definitions.len() + source;
+                self.context_states[index].start = action[4];
+                self.context_states[index].target = action[4];
+                self.context_states[index].elapsed = 0;
             }
             _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
         }
         Ok(())
     }
 
-    fn parameters(&self) -> PyResult<(f64, f64)> {
+    fn parameters(&self, voice: usize) -> PyResult<(f64, f64)> {
         let mut additions = [0.0, 0.0];
         let mut products = [1.0, 1.0];
-        for (definition, state) in self.control_definitions.iter().zip(&self.control_states) {
+        for (source, definition) in self.control_definitions.iter().enumerate() {
+            let state = match definition.scope {
+                0 => &self.control_states[source],
+                1 => self.context_state(self.voice_part_contexts[voice], source, 1)?,
+                _ => self.context_state(self.voice_trigger_contexts[voice], source, 2)?,
+            };
             let amount = definition.intercept + definition.slope * control_value(definition, state);
             if definition.operation == 0 {
                 additions[definition.parameter] += amount;
@@ -524,13 +628,69 @@ impl SynthRuntime {
         }
         Ok((amplitude, tuning))
     }
+
+    fn context_state(&self, context: usize, source: usize, kind: usize) -> PyResult<&ControlState> {
+        if context >= self.context_kinds.len() || self.context_kinds[context] != kind {
+            return Err(PyValueError::new_err(
+                "Voice is missing its control context",
+            ));
+        }
+        Ok(&self.context_states[context * self.control_definitions.len() + source])
+    }
+
+    fn control_state_mut(
+        &mut self,
+        source: usize,
+        context: Option<usize>,
+    ) -> PyResult<&mut ControlState> {
+        let scope = self.control_definitions[source].scope;
+        if scope == 0 && context.is_none() {
+            return Ok(&mut self.control_states[source]);
+        }
+        let Some(context) = context else {
+            return Err(PyValueError::new_err(
+                "Control action is missing its context",
+            ));
+        };
+        if self.context_kinds[context] != scope {
+            return Err(PyValueError::new_err(
+                "Control action has the wrong context",
+            ));
+        }
+        Ok(&mut self.context_states[context * self.control_definitions.len() + source])
+    }
+
+    fn retire_trigger_contexts(&mut self) {
+        for context in 0..self.context_kinds.len() {
+            if self.context_kinds[context] == 2
+                && !self
+                    .active
+                    .iter()
+                    .enumerate()
+                    .any(|(voice, active)| *active && self.voice_trigger_contexts[voice] == context)
+            {
+                self.context_kinds[context] = 0;
+            }
+        }
+    }
+}
+
+fn decode_context(value: f64, capacity: usize) -> PyResult<Option<usize>> {
+    if value == -1.0 {
+        return Ok(None);
+    }
+    let context = value as usize;
+    if value != context as f64 || context >= capacity {
+        return Err(PyValueError::new_err("Invalid synth control context"));
+    }
+    Ok(Some(context))
 }
 
 fn control_definitions(
     values: PyReadonlyArray2<'_, f64>,
     smoothing: &[(u64, u64)],
 ) -> PyResult<(Vec<ControlDefinition>, Vec<ControlState>)> {
-    if values.shape()[1] != 7
+    if values.shape()[1] != 8
         || values.shape()[0] != smoothing.len()
         || smoothing.iter().any(|(_, denominator)| *denominator == 0)
         || values.as_array().iter().any(|v| !v.is_finite())
@@ -542,27 +702,32 @@ fn control_definitions(
     for (row, (smoothing_numerator, smoothing_denominator)) in
         values.as_array().rows().into_iter().zip(smoothing)
     {
-        let parameter = row[1] as usize;
-        let operation = row[2] as usize;
-        if row[1] != parameter as f64
+        let scope = row[1] as usize;
+        let parameter = row[2] as usize;
+        let operation = row[3] as usize;
+        if row[1] != scope as f64
+            || scope > 2
+            || row[2] != parameter as f64
             || parameter > 1
-            || row[2] != operation as f64
+            || row[3] != operation as f64
             || operation > 1
-            || row[3] > row[4]
-            || row[0] < row[3]
-            || row[0] > row[4]
+            || row[4] > row[5]
+            || row[0] < row[4]
+            || row[0] > row[5]
         {
             return Err(PyValueError::new_err("Invalid synth runtime control"));
         }
         definitions.push(ControlDefinition {
+            default: row[0],
             smoothing_numerator: *smoothing_numerator,
             smoothing_denominator: *smoothing_denominator,
+            scope,
             parameter,
             operation,
-            minimum: row[3],
-            maximum: row[4],
-            intercept: row[5],
-            slope: row[6],
+            minimum: row[4],
+            maximum: row[5],
+            intercept: row[6],
+            slope: row[7],
         });
         states.push(ControlState {
             start: row[0],

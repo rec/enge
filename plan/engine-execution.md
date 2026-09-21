@@ -33,16 +33,19 @@ during synth consolidation.
 prepared uFor `TriggerContext`, `VoiceStart`, and `VoiceRetirement` actions once
 per block, while Rust retains oscillator, multi-segment envelope, routing, slot,
 and snapshot state across calls. It currently accepts one oscillator voice
-template with no filters or generators. Direct linear instrument-scoped control
-routes may target amplitude and tuning; Rust retains their exact rational
-smoothing endpoints and advances them while silent. Unsupported definitions fail
-at construction. Irregular-block and snapshot continuation tests compare it to
-the existing native `OfflineSynth` implementation. `advance_into()` writes into a
-writable C-contiguous float64 array supplied by the caller; `advance()` preserves
-the common ownership contract by allocating a new array and using the same path.
-Preparation also allocates a bounded native-action array; each block encodes into
-that array in place and fails before the native call if its declared capacity is
-exceeded.
+template with no filters or generators. Direct linear instrument-, part-, and
+trigger-scoped control routes may target amplitude and tuning; Rust retains their
+exact rational smoothing endpoints and advances instrument and active part
+contexts while silent. Part contexts persist for the renderer lifetime. Trigger
+contexts remain attached to release tails, so reusing a trigger ID creates a new
+context without retargeting the old tail. Context storage is bounded and included
+in snapshots. Unsupported definitions fail at construction. Irregular-block and
+snapshot continuation tests compare it to the existing native `OfflineSynth`
+implementation. `advance_into()` writes into a writable C-contiguous float64
+array supplied by the caller; `advance()` preserves the common ownership contract
+by allocating a new array and using the same path. Preparation also allocates a
+bounded native-action array; each block encodes into that array in place and fails
+before the native call if its declared capacity is exceeded.
 
 The third source profile is now the NumPy and Rust two-operator FM engine in
 `src/enge/fm.py`, under the [FM plan and status](fm-synthesis.md). It shares uFor
