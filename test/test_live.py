@@ -1,11 +1,13 @@
 from pathlib import Path
 
 import numpy as np
-from test_effects import gain_graph
+from test_effects import gain_graph, graph_input
 from test_noise import score as noise_score
 from test_noise import trigger as noise_trigger
 from test_synth import check_audio
 from test_synth import score as synth_score
+from ufor import audio_effects
+from ufor.samples import processing
 from ufor.synth_trace import prepare as prepare_trace
 
 from enge import _native, effects, live, noise, synth
@@ -123,11 +125,52 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
 ) -> None:
     start_action = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
     source = native_oscillator_runtime().process_actions(48000, 0, 1, 0, start_action)
-    kinds = [0, 1, 2]
-    sources = np.array([[0, -1], [0, 1], [2, -1]], dtype=np.int64)
-    initial = np.array(
-        [[-12, 0.6, 1, 0, 0], [0, 0.4, 1, 0, 0], [0, 0.75, 1, 1500, 0.7]],
-        dtype=np.float64,
+    graph = audio_effects.EffectGraph(
+        scope="host",
+        owner="live-test",
+        inputs=[graph_input()],
+        processors=[
+            audio_effects.Gain(name="trim", gain_db=-12, mix=0.6),
+            audio_effects.Multiply(name="ring", mix=0.4),
+            audio_effects.Filter(
+                name="low",
+                filters=[
+                    processing.ResonantFilter(
+                        name="stage", response="lowpass", cutoff_hz=1500, q=0.7
+                    )
+                ],
+                mix=0.75,
+                bypass_fade_frames=128,
+            ),
+        ],
+        connections=[
+            audio_effects.Connection(
+                processor="trim",
+                port="input",
+                source=audio_effects.InputSource(input="main"),
+            ),
+            audio_effects.Connection(
+                processor="ring",
+                port="carrier",
+                source=audio_effects.InputSource(input="main"),
+            ),
+            audio_effects.Connection(
+                processor="ring",
+                port="modulator",
+                source=audio_effects.ProcessorSource(processor="trim"),
+            ),
+            audio_effects.Connection(
+                processor="low",
+                port="input",
+                source=audio_effects.ProcessorSource(processor="ring"),
+            ),
+        ],
+        output=audio_effects.ProcessorSource(processor="low"),
+        maximum_block_frames=997,
+    )
+    prepared = effects.prepare(graph, 48000)
+    kinds, sources, initial, output_source, filter_rows = effects.native_live_graph(
+        prepared
     )
     parameter_values = np.broadcast_to(initial[:, :2], (48000, 3, 2)).copy()
     duration = 257
@@ -141,31 +184,51 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         kinds,
         sources,
         parameter_values,
-        3,
+        output_source,
         48000,
         [
             None,
             None,
             ([0], np.zeros((1, 2, 2)), filter_values),
         ],
-        [0, 0, 1e-300],
+        [0, 0, filter_rows[0, 3]],
     )
     runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
     runtime.set_effect_graph(
         kinds,
         sources,
         initial,
-        3,
-        np.array([[2, 0, 3, 1e-300]], dtype=np.float64),
+        output_source,
+        filter_rows,
         4,
     )
     runtime.submit(0, start_action)
-    runtime.submit_effects(np.array([[32, 0, 0, 0, 0, duration]], dtype=np.float64))
+    gain_action = audio_effects.ParameterAction(
+        tick=32,
+        ordinal=0,
+        processor="trim",
+        parameter="gain_db",
+        value=0,
+        duration_frames=duration,
+    )
+    runtime.submit_effects(effects.native_live_actions(prepared, [gain_action], 0, 997))
     actual = np.empty_like(expected)
     for start in range(0, 48000, 997):
         if start == 15952:
             runtime.submit_effects(
-                np.array([[48, 0, 2, 2, 0, 128]], dtype=np.float64)
+                effects.native_live_actions(
+                    prepared,
+                    [
+                        audio_effects.BypassAction(
+                            tick=16000,
+                            ordinal=0,
+                            processor="low",
+                            bypassed=True,
+                        )
+                    ],
+                    start,
+                    start + 997,
+                )
             )
         runtime.process_into(actual[start : start + 997])
 

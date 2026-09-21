@@ -33,15 +33,17 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - `LiveEngine.advance_into()` currently calls the allocating `advance()` path.
 - The higher-level `PersistentSampler` still orchestrates voices in Python. Its
   prepared actions are not yet encoded directly for `LiveRuntime`.
-- The higher-level effect adapter still builds parameter and output arrays for
-  every block instead of encoding actions for `LiveRuntime`. Granulation is not
-  part of the native owner yet.
+- `OfflineEffects` still builds parameter and output arrays for every block.
+  The live adapter now prepares the supported graph once and encodes parameter
+  and bypass actions into bounded batches, but `LiveEngine` does not yet own and
+  submit those batches. Granulation is not part of the native owner yet.
 - The Python `ActionQueue` binding is a deterministic single-thread harness.
   A native host must own the `rtrb` producer and consumer on separate threads.
 
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundary is connecting high-level source and effect
-action encoding to `LiveRuntime`, followed separately by native granulation.
+The next implementation boundary is connecting high-level source action
+encoding and `LiveEngine` ownership to `LiveRuntime`, followed separately by
+native granulation.
 Those paths must use its existing borrowed input/output and preallocated scratch
 model rather than wrapping their allocating Python entry points.
 

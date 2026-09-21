@@ -7,6 +7,7 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 from ufor import audio_effects
+from ufor.samples.processing import FilterResponse
 
 from . import filters
 from .synth import EngineError
@@ -687,6 +688,137 @@ def prepare(definition: audio_effects.EffectGraph, sample_rate: int) -> Prepared
         order=definition.order(),
         channels=definition.output_channels(),
     )
+
+
+def native_live_graph(
+    definition: PreparedEffects,
+) -> tuple[list[int], np.ndarray, np.ndarray, int, np.ndarray]:
+    """Encode a supported prepared graph for the allocation-free live owner."""
+    graph = definition.definition
+    if len(graph.inputs) != 1 or any(
+        isinstance(p, audio_effects.Granulator) for p in graph.processors
+    ):
+        raise EngineError(
+            "Native live effects require one input and gain, multiply, or filter nodes"
+        )
+    processors = {p.name: p for p in graph.processors}
+    ordered = [processors[n] for n in definition.order]
+    input_name = graph.inputs[0].name
+    processor_indices = {p.name: i + 1 for i, p in enumerate(ordered)}
+    connections = {(c.processor, c.port): c.source for c in graph.connections}
+    widths = [
+        3 + 2 * len(p.filters) if isinstance(p, audio_effects.Filter) else 3
+        for p in ordered
+    ]
+    parameters = np.zeros((len(ordered), max(widths, default=3)), dtype=np.float64)
+    sources = np.full((len(ordered), 2), -1, dtype=np.int64)
+    kinds: list[int] = []
+    filter_rows: list[list[float]] = []
+    for node, processor in enumerate(ordered):
+        ports = (
+            ["carrier", "modulator"]
+            if isinstance(processor, audio_effects.Multiply)
+            else ["input"]
+        )
+        for port, name in enumerate(ports):
+            source = connections[(processor.name, name)]
+            if isinstance(source, audio_effects.InputSource):
+                if source.input != input_name:
+                    raise EngineError("Native live graph references an unknown input")
+                sources[node, port] = 0
+            else:
+                sources[node, port] = processor_indices[source.processor]
+        parameters[node, 1:3] = [processor.mix, 1]
+        if isinstance(processor, audio_effects.Gain):
+            kinds.append(0)
+            parameters[node, 0] = processor.gain_db
+        elif isinstance(processor, audio_effects.Multiply):
+            kinds.append(1)
+        elif isinstance(processor, audio_effects.Filter):
+            kinds.append(2)
+            values = filters.parameters(processor.filters, definition.sample_rate, 1)[0]
+            for index, (filter_definition, value) in enumerate(
+                zip(processor.filters, values, strict=True)
+            ):
+                parameter = 3 + 2 * index
+                parameters[node, parameter : parameter + 2] = value
+                response = list(FilterResponse).index(filter_definition.response)
+                filter_rows.extend(
+                    [node, response, parameter, processor.state_floor]
+                    for _ in range(filter_definition.stages)
+                )
+        else:
+            raise EngineError("Unsupported native live effect processor")
+    output_source = (
+        0
+        if isinstance(graph.output, audio_effects.InputSource)
+        else processor_indices[graph.output.processor]
+    )
+    return (
+        kinds,
+        sources,
+        parameters,
+        output_source,
+        np.asarray(filter_rows, dtype=np.float64).reshape(-1, 4),
+    )
+
+
+def native_live_actions(
+    definition: PreparedEffects,
+    actions: list[audio_effects.EffectAction],
+    start: int,
+    end: int,
+) -> np.ndarray:
+    """Encode one ordered block of portable effect actions for `LiveRuntime`."""
+    if end <= start:
+        raise EngineError("Native live effect interval must be nonempty")
+    ordered_actions = sorted(actions, key=lambda a: (a.tick, a.ordinal))
+    if any(a.tick < start or a.tick >= end for a in ordered_actions):
+        raise EngineError("Effect action is outside the native live interval")
+    graph = definition.definition
+    processors = {p.name: p for p in graph.processors}
+    nodes = {name: i for i, name in enumerate(definition.order)}
+    rows: list[list[float]] = []
+    for action in ordered_actions:
+        audio_effects.validate_action(graph, action)
+        if isinstance(action, audio_effects.ParameterAction):
+            processor = processors[action.processor]
+            if action.parameter == "mix":
+                parameter = 1
+            elif (
+                isinstance(processor, audio_effects.Gain)
+                and action.parameter == "gain_db"
+            ):
+                parameter = 0
+            elif isinstance(processor, audio_effects.Filter):
+                names = [
+                    name
+                    for f in processor.filters
+                    for name in (f"{f.name}-cutoff_hz", f"{f.name}-q")
+                ]
+                parameter = 3 + names.index(action.parameter)
+            else:
+                raise EngineError("Unsupported native live effect parameter")
+            target = action.value
+            duration = action.duration_frames
+        elif isinstance(action, audio_effects.BypassAction):
+            processor = processors[action.processor]
+            parameter = 2
+            target = 0.0 if action.bypassed else 1.0
+            duration = processor.bypass_fade_frames
+        else:
+            raise EngineError("Unsupported native live effect action")
+        rows.append(
+            [
+                action.tick - start,
+                0,
+                nodes[action.processor],
+                parameter,
+                target,
+                duration,
+            ]
+        )
+    return np.asarray(rows, dtype=np.float64).reshape(-1, 6)
 
 
 def serial_graph(
