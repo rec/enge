@@ -5,12 +5,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rtrb::{Consumer, Producer, RingBuffer};
 
-const BATCH_ACTIONS: usize = 64;
+pub(crate) const BATCH_ACTIONS: usize = 64;
 
 #[derive(Clone)]
-struct ActionBatch {
-    len: usize,
-    actions: [[f64; 6]; BATCH_ACTIONS],
+pub(crate) struct ActionBatch {
+    pub(crate) len: usize,
+    pub(crate) actions: [[f64; 6]; BATCH_ACTIONS],
 }
 
 #[pyclass(unsendable)]

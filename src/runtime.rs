@@ -107,7 +107,8 @@ pub struct SynthRuntimeSnapshot {
     frame: usize,
 }
 
-#[pyclass]
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
 pub struct SynthRuntime {
     rate: f64,
     waveform: u8,
@@ -432,7 +433,7 @@ impl SynthRuntime {
         self.context_kinds.iter().map(|kind| *kind != 0).collect()
     }
 
-    fn snapshot(&self) -> SynthRuntimeSnapshot {
+    pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
             rate: self.rate,
             waveform: self.waveform,
@@ -480,7 +481,7 @@ impl SynthRuntime {
         }
     }
 
-    fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
+    pub(crate) fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         if self.rate != snapshot.rate
             || self.waveform != snapshot.waveform
             || self.source_kind != snapshot.source_kind
@@ -541,6 +542,18 @@ impl SynthRuntime {
 }
 
 impl SynthRuntime {
+    pub(crate) fn channels(&self) -> usize {
+        self.routes.ncols()
+    }
+
+    pub(crate) fn rate(&self) -> f64 {
+        self.rate
+    }
+
+    pub(crate) fn frame(&self) -> usize {
+        self.frame
+    }
+
     fn render_owned<'py>(
         &mut self,
         py: Python<'py>,
@@ -555,7 +568,7 @@ impl SynthRuntime {
         Ok(output.into_pyarray(py))
     }
 
-    fn render_into(
+    pub(crate) fn render_into(
         &mut self,
         mut output: ArrayViewMut2<'_, f64>,
         cutoff_hz: f64,
@@ -572,6 +585,11 @@ impl SynthRuntime {
             || !q.is_finite()
             || q <= 0.0
             || !gain_db.is_finite()
+            || actions.len() % 6 != 0
+            || actions.chunks_exact(6).any(|a| {
+                let offset = a[0] as usize;
+                a[0] != offset as f64 || offset >= frames
+            })
             || actions
                 .chunks_exact(6)
                 .zip(actions.chunks_exact(6).skip(1))

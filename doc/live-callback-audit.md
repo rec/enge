@@ -16,13 +16,19 @@ to caller-owned output and performs no normal-path heap allocation inside the
 sample loop. The fixed-size action queue uses `rtrb`, publishes whole batches,
 and drains only the batch prefix visible when draining starts.
 
-The complete `LiveEngine` path is not ready for a system audio callback:
+`LiveRuntime` now closes this boundary for generated sources. It owns cloned
+oscillator, FM, and noise runtimes, one bounded action queue per source, and
+preallocated source/mix/output scratch. Its processing body releases the GIL,
+captures each queue's published prefix at entry, applies a prepared constant
+master gain, and latches failures before copying output to NumPy. The Python
+method is a callback conformance harness; a native host can call the same Rust
+processing body directly.
+
+The complete `LiveEngine` path is not yet ready for a system audio callback:
 
 - Python validates and encodes uFor actions, sorts each block, refreshes active
   slot/context lists, and mixes source arrays.
 - `LiveEngine.advance_into()` currently calls the allocating `advance()` path.
-- PyO3 persistent-runtime calls retain the GIL; they do not expose a native host
-  entry point.
 - `PersistentSampler` retains traversal and DSP in Rust but orchestrates voices
   in Python, and the native sampler kernel returns newly allocated arrays.
 - Native effect preparation builds parameter and output arrays for every block.
@@ -30,10 +36,10 @@ The complete `LiveEngine` path is not ready for a system audio callback:
   A native host must own the `rtrb` producer and consumer on separate threads.
 
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundary is one Rust owner for source slots, sample
-assets, effect graph scratch, action consumer, and output scratch. Its render
-method must accept borrowed input/output buffers, release or avoid the GIL, and
-perform no allocation or destruction on the callback thread.
+The next implementation boundary is extending `LiveRuntime` with prepared sample
+assets and the full effect graph. Those paths must use its existing borrowed
+input/output and preallocated scratch model rather than wrapping their allocating
+Python entry points.
 
 ## Stress harness
 
