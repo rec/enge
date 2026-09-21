@@ -14,7 +14,7 @@ from ufor.samples import instrument, trace
 from ufor.samples.enums import LoopMode
 from ufor.samples.playback import Loop, Playback, Slice
 
-from enge import sample_instrument, sampler
+from enge import live, sample_instrument, sampler
 from enge.synth import EngineError
 
 
@@ -405,7 +405,12 @@ def test_instrument_ramps_continue_in_silence_and_multiply_independent_trigger_g
 def test_persistent_sampler_matches_native_across_blocks_and_restore(
     tmp_path: Path,
 ) -> None:
-    document = sample_score()
+    raw = sample_score().model_dump(mode="json")
+    raw["body"]["settings"]["processing"] = {
+        "tuning_cents": 120,
+        "volume_db": -3,
+    }
+    document = instrument.SampleInstrumentScore.model_validate(raw)
     frames = np.arange(96000)
     audio = np.column_stack([np.sin(2 * np.pi * frames * 220 / 48000), np.zeros(96000)])
     prepared = sample_instrument.prepare(document, {"asset": audio})
@@ -436,6 +441,41 @@ def test_persistent_sampler_matches_native_across_blocks_and_restore(
 
     check_audio(tmp_path / "persistent-sampler.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[24001:], atol=0)
+
+    native = live.NativeLiveEngine(
+        {"sample": sample_instrument.PersistentSampler(prepared, voices=4)},
+        997,
+    )
+    native_audio = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(start + 997, 48000)
+        native.advance_into(
+            {"sample": [a for a in actions if start <= a.tick < end]},
+            [],
+            start,
+            end,
+            native_audio[start:end],
+        )
+        if end == 23928:
+            native_snapshot = native.snapshot()
+    restored_native = live.NativeLiveEngine(
+        {"sample": sample_instrument.PersistentSampler(prepared, voices=4)},
+        997,
+    )
+    restored_native.restore(native_snapshot)
+    native_replay = np.empty((48000 - 23928, 2))
+    for start in range(23928, 48000, 997):
+        end = min(start + 997, 48000)
+        restored_native.advance_into(
+            {"sample": []},
+            [],
+            start,
+            end,
+            native_replay[start - 23928 : end - 23928],
+        )
+
+    check_audio(tmp_path / "native-owner-sampler.wav", native_audio, expected)
+    np.testing.assert_allclose(native_replay, native_audio[23928:], atol=0)
 
 
 @pytest.mark.parametrize(

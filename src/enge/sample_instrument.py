@@ -9,7 +9,7 @@ from pydantic import Field
 from ufor import instrument_trace
 from ufor.base import Model
 from ufor.samples import instrument, playback, processing, trace
-from ufor.samples.enums import LoopMode
+from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
 
 from . import filters, sampler, synth
@@ -47,6 +47,12 @@ class PersistentSamplerSnapshot(Model, frozen=True):
     state: SamplerSnapshot
     voice_capacity: int
     action_capacity: int
+    native_voices: dict[str, "NativeSampleVoice"]
+
+
+class NativeSampleVoice(Model, frozen=True):
+    source: int
+    slot: int
 
 
 def prepare(
@@ -221,6 +227,26 @@ class OfflineSampler:
             )
 
     def _start_voice(self, action: trace.VoiceStart) -> None:
+        slot, sample, definition = self._voice_definition(action)
+        settings = self.definition.settings[slot.name]
+        common = self.definition.document.body.settings
+        self.voices[action.voice_id] = SampleVoiceSnapshot(
+            voice_id=action.voice_id,
+            template=slot.name,
+            renderer=sampler.SampleVoiceRenderer.start(
+                definition,
+                sample,
+                backend=self.backend,
+            ),
+            instrument_sources=self.controls.sources(common, action),
+            slot_sources=self.controls.sources(settings, action),
+        )
+
+    def _voice_definition(
+        self, action: trace.VoiceStart
+    ) -> tuple[
+        instrument.SampleSlot, sampler.PreparedSample, sampler.PreparedSampleVoice
+    ]:
         if action.voice_id in self.voices:
             raise synth.EngineError(f"Duplicate active voice: {action.voice_id}")
         slot = self.slots.get(action.template)
@@ -263,44 +289,38 @@ class OfflineSampler:
             for a in self.definition.document.assets
             if a.name == sample.slice.asset
         )
-        self.voices[action.voice_id] = SampleVoiceSnapshot(
-            voice_id=action.voice_id,
-            template=slot.name,
-            renderer=sampler.SampleVoiceRenderer.start(
-                sampler.PreparedSampleVoice(
-                    sample_rate=self.definition.sample_rate,
-                    slice=sample.slice,
-                    envelope=envelope,
-                    filters=[*settings.processing.filters, *common.processing.filters],
-                    pitch_ratio=playback.pitch_ratio(
-                        slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
-                    ),
-                    gain=10
-                    ** (
-                        (
-                            common.processing.volume_db
-                            + settings.processing.volume_db
-                            + action.variation.gain_db
-                        )
-                        / 20
-                    ),
-                    routes=[
-                        [
-                            sum(
-                                r.gain
-                                for r in slot.channels
-                                if r.input == s and r.output == c
-                            )
-                            for c in self.definition.channels
-                        ]
-                        for s in source_channels
-                    ],
+        return (
+            slot,
+            sample,
+            sampler.PreparedSampleVoice(
+                sample_rate=self.definition.sample_rate,
+                slice=sample.slice,
+                envelope=envelope,
+                filters=[*settings.processing.filters, *common.processing.filters],
+                pitch_ratio=playback.pitch_ratio(
+                    slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
                 ),
-                sample,
-                backend=self.backend,
+                gain=10
+                ** (
+                    (
+                        common.processing.volume_db
+                        + settings.processing.volume_db
+                        + action.variation.gain_db
+                    )
+                    / 20
+                ),
+                routes=[
+                    [
+                        sum(
+                            r.gain
+                            for r in slot.channels
+                            if r.input == s and r.output == c
+                        )
+                        for c in self.definition.channels
+                    ]
+                    for s in source_channels
+                ],
             ),
-            instrument_sources=self.controls.sources(common, action),
-            slot_sources=self.controls.sources(settings, action),
         )
 
     def _render(self, start: int, frames: int) -> np.ndarray:
@@ -366,6 +386,8 @@ class PersistentSampler(OfflineSampler):
         super().__init__(definition, backend="native")
         self.voice_capacity = voices
         self.action_capacity = action_capacity
+        self.native_sources: dict[str, int] = {}
+        self.native_voices: dict[str, NativeSampleVoice] = {}
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -398,6 +420,7 @@ class PersistentSampler(OfflineSampler):
             state=super().snapshot(),
             voice_capacity=self.voice_capacity,
             action_capacity=self.action_capacity,
+            native_voices=self.native_voices.copy(),
         )
 
     def restore(  # ty: ignore[invalid-method-override]
@@ -408,6 +431,198 @@ class PersistentSampler(OfflineSampler):
         if snapshot.action_capacity != self.action_capacity:
             raise synth.EngineError("Snapshot belongs to a different action capacity")
         super().restore(snapshot.state)
+        self.native_voices = snapshot.native_voices.copy()
+
+    def add_to_native_live(self, runtime: object, batch_capacity: int) -> None:
+        from . import _native
+
+        if not isinstance(runtime, _native.LiveRuntime):
+            raise synth.EngineError("Invalid native live runtime")
+        common = self.definition.document.body.settings
+        all_settings = [common, *self.definition.settings.values()]
+        if any(
+            s.envelopes
+            or s.lfos
+            or s.bindings
+            or s.modulation.sources
+            or s.modulation.parameters
+            or s.modulation.routes
+            or s.processing.filters
+            for s in all_settings
+        ):
+            raise synth.EngineError(
+                "Native live sampler controls, generators, and filters are not "
+                "implemented"
+            )
+        for slot in self.definition.document.body.slots:
+            sample = self.definition.samples[slot.name]
+            settings = self.definition.settings[slot.name]
+            envelope = settings.envelope or common.envelope
+            assert envelope is not None
+            loop = sample.slice.loop
+            selection = (
+                sample.slice.start_frame,
+                sample.slice.end_frame,
+                sample.playback.direction == Direction.mirror,
+                None
+                if loop is None
+                else (
+                    loop.start_frame,
+                    loop.end_frame,
+                    loop.crossfade_frames,
+                    loop.mode == LoopMode.until_release,
+                ),
+            )
+            backward = sample.playback.direction == Direction.backward
+            state = (
+                sample.slice.end_frame - 1 if backward else sample.slice.start_frame,
+                0,
+                0,
+                -1 if backward else 1,
+                loop is not None,
+                False,
+                False,
+                None,
+            )
+            source_channels = next(
+                a.audio.channels
+                for a in self.definition.document.assets
+                if a.name == sample.slice.asset
+            )
+            routes = np.array(
+                [
+                    [
+                        sum(
+                            r.gain
+                            for r in slot.channels
+                            if r.input == source and r.output == output
+                        )
+                        for output in self.definition.channels
+                    ]
+                    for source in source_channels
+                ],
+                dtype=np.float64,
+            )
+            self.native_sources[slot.name] = runtime.add_sample(
+                sample.native_buffer,
+                selection,
+                state,
+                self.definition.sample_rate,
+                routes,
+                envelope.initial,
+                synth._runtime_segments(envelope.segments, self.definition.sample_rate),
+                synth._runtime_segments(envelope.release, self.definition.sample_rate),
+                0,
+                self.voice_capacity,
+                batch_capacity,
+            )
+
+    def native_live_actions(
+        self,
+        actions: list[instrument_trace.TraceAction],
+        start: int,
+        end: int,
+        runtime: object,
+    ) -> dict[int, np.ndarray]:
+        from . import _native
+
+        if not isinstance(runtime, _native.LiveRuntime):
+            raise synth.EngineError("Invalid native live runtime")
+        if start != self.frame or end <= start:
+            raise synth.EngineError(
+                "advance must continue from the current nonempty interval"
+            )
+        ordered = sorted(actions, key=lambda a: (a.tick, a.ordinal))
+        if len(ordered) > self.action_capacity:
+            raise synth.EngineError("Persistent sampler action capacity exceeded")
+        if any(a.tick < start or a.tick >= end for a in ordered):
+            raise synth.EngineError("actions must belong to the rendered interval")
+        active = {
+            source: runtime.active_slots(source)
+            for source in self.native_sources.values()
+        }
+        self.native_voices = {
+            name: voice
+            for name, voice in self.native_voices.items()
+            if active[voice.source][voice.slot]
+        }
+        encoded: dict[int, list[list[float]]] = {
+            source: [] for source in self.native_sources.values()
+        }
+        for action in ordered:
+            offset = action.tick - start
+            if isinstance(action, instrument_trace.TriggerContext) or isinstance(
+                action, instrument_trace.Diagnostic
+            ):
+                continue
+            if isinstance(action, trace.VoiceStart):
+                if action.voice_id in self.native_voices:
+                    raise synth.EngineError(
+                        f"Duplicate active voice: {action.voice_id}"
+                    )
+                slot, sample, definition = self._voice_definition(action)
+                source = self.native_sources[slot.name]
+                voice = next(
+                    (i for i, value in enumerate(active[source]) if not value), None
+                )
+                if voice is None:
+                    raise synth.EngineError(
+                        "Persistent sampler voice capacity exceeded"
+                    )
+                active[source][voice] = True
+                self.native_voices[action.voice_id] = NativeSampleVoice(
+                    source=source, slot=voice
+                )
+                tuning = (
+                    self.definition.document.body.settings.processing.tuning_cents
+                    + self.definition.settings[slot.name].processing.tuning_cents
+                )
+                encoded[source].append(
+                    [
+                        offset,
+                        0,
+                        voice,
+                        definition.pitch_ratio
+                        * np.exp2(tuning / 1200)
+                        * sample.native_rate,
+                        definition.gain,
+                        0,
+                    ]
+                )
+            elif isinstance(action, instrument_trace.VoiceRetirement):
+                if action.action == "fade":
+                    raise synth.EngineError("Fade retirement is not implemented")
+                if (voice := self.native_voices.get(action.voice_id)) is not None:
+                    kind = 2 if action.action == "stop" else 1
+                    encoded[voice.source].append([offset, kind, voice.slot, 0, 0, 0])
+                    if kind == 2:
+                        active[voice.source][voice.slot] = False
+                        del self.native_voices[action.voice_id]
+            else:
+                raise synth.EngineError(
+                    f"Unsupported native live sampler action at frame {action.tick}: "
+                    f"{type(action).__name__}"
+                )
+        return {
+            source: np.asarray(rows, dtype=np.float64).reshape(-1, 6)
+            for source, rows in encoded.items()
+        }
+
+    def finish_native_live_block(self, end: int, runtime: object) -> None:
+        from . import _native
+
+        if not isinstance(runtime, _native.LiveRuntime):
+            raise synth.EngineError("Invalid native live runtime")
+        active = {
+            source: runtime.active_slots(source)
+            for source in self.native_sources.values()
+        }
+        self.native_voices = {
+            name: voice
+            for name, voice in self.native_voices.items()
+            if active[voice.source][voice.slot]
+        }
+        self.frame = end
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if (
