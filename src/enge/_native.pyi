@@ -43,6 +43,22 @@ class SynthRuntime:
         parameters: list[float],
         context_capacity: int,
     ) -> SynthRuntime: ...
+    @staticmethod
+    def noise(
+        rate: float,
+        routes: np.ndarray,
+        initial: float,
+        attack: np.ndarray,
+        release: np.ndarray,
+        minimum_hold_frames: float,
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        lfos: np.ndarray,
+        lfo_rationals: list[tuple[int, int]],
+        filters: np.ndarray,
+        parameters: list[float],
+        context_capacity: int,
+    ) -> SynthRuntime: ...
     def process(
         self, frames: int, cutoff_hz: float, q: float, gain_db: float
     ) -> np.ndarray: ...

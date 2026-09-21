@@ -89,6 +89,8 @@ pub struct SynthRuntimeSnapshot {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
+    noise_keys: Vec<u64>,
+    noise_counters: Vec<u64>,
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
@@ -134,6 +136,8 @@ pub struct SynthRuntime {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
+    noise_keys: Vec<u64>,
+    noise_counters: Vec<u64>,
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
@@ -246,6 +250,8 @@ impl SynthRuntime {
             mod_errors: vec![0.0; slots],
             previous_modulators: vec![0.0; slots],
             mod_release_levels: vec![0.0; slots],
+            noise_keys: vec![0; slots],
+            noise_counters: vec![0; slots],
             gains: vec![0.0; slots],
             active: vec![false; slots],
             ages: vec![0; slots],
@@ -314,6 +320,44 @@ impl SynthRuntime {
         runtime.mod_attack = mod_attack;
         runtime.mod_release = mod_release;
         runtime.fm_phase_offsets = [phase_offsets[0], phase_offsets[1]];
+        Ok(runtime)
+    }
+
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn noise(
+        rate: f64,
+        routes: PyReadonlyArray2<'_, f64>,
+        initial: f64,
+        attack: PyReadonlyArray2<'_, f64>,
+        release: PyReadonlyArray2<'_, f64>,
+        minimum_hold_frames: f64,
+        controls: PyReadonlyArray2<'_, f64>,
+        control_smoothing: Vec<(u64, u64)>,
+        lfos: PyReadonlyArray2<'_, f64>,
+        lfo_rationals: Vec<(u64, u64)>,
+        filters: PyReadonlyArray2<'_, f64>,
+        parameters: Vec<f64>,
+        context_capacity: usize,
+    ) -> PyResult<Self> {
+        let mut runtime = Self::new(
+            rate,
+            0,
+            0.5,
+            routes,
+            initial,
+            attack,
+            release,
+            minimum_hold_frames,
+            controls,
+            control_smoothing,
+            lfos,
+            lfo_rationals,
+            filters,
+            parameters,
+            context_capacity,
+        )?;
+        runtime.source_kind = 2;
         Ok(runtime)
     }
 
@@ -417,6 +461,8 @@ impl SynthRuntime {
             mod_errors: self.mod_errors.clone(),
             previous_modulators: self.previous_modulators.clone(),
             mod_release_levels: self.mod_release_levels.clone(),
+            noise_keys: self.noise_keys.clone(),
+            noise_counters: self.noise_counters.clone(),
             gains: self.gains.clone(),
             active: self.active.clone(),
             ages: self.ages.clone(),
@@ -467,6 +513,8 @@ impl SynthRuntime {
             .clone_from(&snapshot.previous_modulators);
         self.mod_release_levels
             .clone_from(&snapshot.mod_release_levels);
+        self.noise_keys.clone_from(&snapshot.noise_keys);
+        self.noise_counters.clone_from(&snapshot.noise_counters);
         self.gains.clone_from(&snapshot.gains);
         self.active.clone_from(&snapshot.active);
         self.ages.clone_from(&snapshot.ages);
@@ -554,8 +602,6 @@ impl SynthRuntime {
                     continue;
                 }
                 let amplitude = self.parameter(voice, 0)?;
-                let tuning_cents = self.parameter(voice, 1)?;
-                let tuning = 2_f64.powf(tuning_cents / 1200.0);
                 let age = self.ages[voice] as f64;
                 let level = if let Some(release_frame) = self.release_frames[voice] {
                     let end = release_frame + total_frames(&self.release);
@@ -592,7 +638,7 @@ impl SynthRuntime {
                         _ if phase < self.duty => 2.0 * phase / self.duty - 1.0,
                         _ => (1.0 + self.duty - 2.0 * phase) / (1.0 - self.duty),
                     }
-                } else {
+                } else if self.source_kind == 1 {
                     let mod_level = if let Some(release_frame) = self.release_frames[voice] {
                         let end = release_frame + total_frames(&self.mod_release);
                         if age >= end.ceil() {
@@ -634,10 +680,22 @@ impl SynthRuntime {
                     self.errors[voice] = (total - self.phases[voice]) - increment;
                     self.phases[voice] = total.rem_euclid(self.rate);
                     carrier
+                } else {
+                    let index = self.noise_counters[voice];
+                    let mut word = self.noise_keys[voice]
+                        .wrapping_add(index.wrapping_add(1).wrapping_mul(0x9e3779b97f4a7c15));
+                    word = (word ^ (word >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+                    word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
+                    word ^= word >> 31;
+                    self.noise_counters[voice] = index.checked_add(1).ok_or_else(|| {
+                        PyValueError::new_err("Persistent noise counter exhausted")
+                    })?;
+                    2.0 * ((word >> 11) as f64 / 9007199254740992.0) - 1.0
                 };
                 let wave = self.filter_voice(voice, wave)?;
                 let sample = wave * self.gains[voice] * level * amplitude;
                 if self.source_kind == 0 {
+                    let tuning = 2_f64.powf(self.parameter(voice, 1)? / 1200.0);
                     let increment = self.frequencies[voice] * tuning - self.errors[voice];
                     let total = self.phases[voice] + increment;
                     self.errors[voice] = (total - self.phases[voice]) - increment;
@@ -716,7 +774,13 @@ impl SynthRuntime {
         }
         match kind {
             0 => {
-                if action[3] <= 0.0 || action[4] < 0.0 || self.active[voice] {
+                if self.source_kind != 2 && (action[3] <= 0.0 || action[4] < 0.0)
+                    || self.source_kind == 2
+                        && (action[3] != action[3] as u32 as f64
+                            || action[4] != action[4] as u32 as f64
+                            || action[5] < 0.0)
+                    || self.active[voice]
+                {
                     return Err(PyValueError::new_err("Invalid voice start"));
                 }
                 self.active[voice] = true;
@@ -730,8 +794,15 @@ impl SynthRuntime {
                 }
                 self.mod_errors[voice] = 0.0;
                 self.previous_modulators[voice] = 0.0;
-                self.frequencies[voice] = action[3];
-                self.gains[voice] = action[4];
+                if self.source_kind == 2 {
+                    self.noise_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
+                    self.noise_counters[voice] = 0;
+                    self.frequencies[voice] = 1.0;
+                    self.gains[voice] = action[5];
+                } else {
+                    self.frequencies[voice] = action[3];
+                    self.gains[voice] = action[4];
+                }
                 self.ages[voice] = 0;
                 self.release_frames[voice] = None;
                 self.voice_part_contexts[voice] = usize::MAX;
