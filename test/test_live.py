@@ -85,7 +85,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
     runtime.set_effect_graph(
         [0],
         np.array([[0, -1]], dtype=np.int64),
-        np.array([[-3, 1]], dtype=np.float64),
+        np.array([[-3, 1, 1]], dtype=np.float64),
         1,
         np.empty((0, 4), dtype=np.float64),
         4,
@@ -104,7 +104,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
     restored.set_effect_graph(
         [0],
         np.array([[0, -1]], dtype=np.int64),
-        np.array([[-3, 1]], dtype=np.float64),
+        np.array([[-3, 1, 1]], dtype=np.float64),
         1,
         np.empty((0, 4), dtype=np.float64),
         4,
@@ -126,14 +126,16 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
     kinds = [0, 1, 2]
     sources = np.array([[0, -1], [0, 1], [2, -1]], dtype=np.int64)
     initial = np.array(
-        [[-12, 0.6, 0, 0], [0, 0.4, 0, 0], [0, 0.75, 1500, 0.7]],
+        [[-12, 0.6, 1, 0, 0], [0, 0.4, 1, 0, 0], [0, 0.75, 1, 1500, 0.7]],
         dtype=np.float64,
     )
     parameter_values = np.broadcast_to(initial[:, :2], (48000, 3, 2)).copy()
     duration = 257
     ramp = np.minimum(np.maximum(np.arange(48000) - 32, 0), duration) / duration
     parameter_values[:, 0, 0] = -12 + 12 * ramp
-    filter_values = np.broadcast_to(initial[2, 2:], (48000, 1, 2)).copy()
+    bypass = 1 - np.minimum(np.maximum(np.arange(48000) - 16000, 0), 128) / 128
+    parameter_values[:, 2, 1] *= bypass
+    filter_values = np.broadcast_to(initial[2, 3:], (48000, 1, 2)).copy()
     expected, _ = _native.render_effects(
         source[None, :, :],
         kinds,
@@ -154,13 +156,17 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         sources,
         initial,
         3,
-        np.array([[2, 0, 2, 1e-300]], dtype=np.float64),
+        np.array([[2, 0, 3, 1e-300]], dtype=np.float64),
         4,
     )
     runtime.submit(0, start_action)
     runtime.submit_effects(np.array([[32, 0, 0, 0, 0, duration]], dtype=np.float64))
     actual = np.empty_like(expected)
     for start in range(0, 48000, 997):
+        if start == 15952:
+            runtime.submit_effects(
+                np.array([[48, 0, 2, 2, 0, 128]], dtype=np.float64)
+            )
         runtime.process_into(actual[start : start + 997])
 
     check_audio(tmp_path / "native-live-effects.wav", actual, expected)

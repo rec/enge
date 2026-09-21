@@ -442,11 +442,16 @@ impl EffectRuntime {
         if kinds.iter().any(|v| *v > 2)
             || sources.shape() != [nodes, 2]
             || parameters.shape()[0] != nodes
-            || parameters.shape()[1] < 2
+            || parameters.shape()[1] < 3
             || parameters.as_array().iter().any(|v| !v.is_finite())
             || parameters
                 .as_array()
                 .column(1)
+                .iter()
+                .any(|v| !(0.0..=1.0).contains(v))
+            || parameters
+                .as_array()
+                .column(2)
                 .iter()
                 .any(|v| !(0.0..=1.0).contains(v))
             || output_source > nodes
@@ -546,10 +551,12 @@ impl EffectRuntime {
             }
             for node in 0..self.kinds.len() {
                 let first = self.sources[[node, 0]] as usize;
-                let mix = self.parameters[[node, 1]];
-                if !(0.0..=1.0).contains(&mix) {
+                let authored_mix = self.parameters[[node, 1]];
+                let bypass = self.parameters[[node, 2]];
+                if !(0.0..=1.0).contains(&authored_mix) || !(0.0..=1.0).contains(&bypass) {
                     return Err(PyValueError::new_err("Invalid live effect mix"));
                 }
+                let mix = authored_mix * bypass;
                 for channel in 0..channels {
                     self.wet[channel] = self.values[[first, channel]];
                 }
