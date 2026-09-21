@@ -81,6 +81,13 @@ preserve the stream and reject backend mismatches, even for silent engines.
 Each slot retains its exact 64-bit noise-v1 key and counter along with envelope,
 filter, control, LFO, routing, context, and snapshot state.
 
+`LiveEngine` owns named heterogeneous persistent sources, mixes their common
+channel layout, and optionally advances a compatible native effect graph. Its
+snapshots cover source and effect state together. The accompanying fixed-size
+Rust SPSC queue admits whole action batches and drains only the prefix visible at
+entry. The Python queue binding is a deterministic harness; native callback
+integration owns its producer and consumer endpoints on separate threads.
+
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and
