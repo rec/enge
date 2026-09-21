@@ -46,9 +46,10 @@ def main(settings: Settings) -> None:
         [audio_effects.Gain(name="trim", gain_db=-6)],
         settings.block_frames,
     )
-    engine = live.LiveEngine(
+    engine = live.NativeLiveEngine(
         {"synth": synth.PersistentSynth(synth.prepare(document), settings.voices)},
-        effects.OfflineEffects(effects.prepare(graph, 48000), "native"),
+        settings.block_frames,
+        effects.prepare(graph, 48000),
     )
     output = np.empty((settings.block_frames, 2))
     durations = []
