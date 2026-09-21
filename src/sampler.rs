@@ -8,13 +8,14 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 
 // Integers stay integers across the binding, including frames beyond 2**53.
-type State = (i64, f64, f64, i64, bool, bool, bool, Option<i64>);
-type Selection = (i64, i64, bool, Option<(i64, i64, i64, bool)>);
+pub(crate) type State = (i64, f64, f64, i64, bool, bool, bool, Option<i64>);
+pub(crate) type Selection = (i64, i64, bool, Option<(i64, i64, i64, bool)>);
 type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
 
-#[pyclass(frozen)]
+#[pyclass(frozen, skip_from_py_object)]
+#[derive(Clone)]
 pub struct SampleBuffer {
-    audio: Arc<Array2<f64>>,
+    pub(crate) audio: Arc<Array2<f64>>,
 }
 
 #[pymethods]
@@ -31,28 +32,44 @@ impl SampleBuffer {
 }
 
 #[derive(Clone, Copy)]
-struct Cursor {
-    selection: Selection,
-    rate: f64,
-    index: i64,
-    position: f64,
-    error: f64,
-    direction: i64,
-    looping: bool,
-    overlap: bool,
-    released: bool,
-    exhausted: Option<i64>,
+pub(crate) struct Cursor {
+    pub(crate) selection: Selection,
+    pub(crate) rate: f64,
+    pub(crate) index: i64,
+    pub(crate) position: f64,
+    pub(crate) error: f64,
+    pub(crate) direction: i64,
+    pub(crate) looping: bool,
+    pub(crate) overlap: bool,
+    pub(crate) released: bool,
+    pub(crate) exhausted: Option<i64>,
 }
 
 impl Cursor {
-    fn release(&mut self) {
+    pub(crate) fn new(selection: Selection, rate: f64, state: State) -> Self {
+        let (index, position, error, direction, looping, overlap, released, exhausted) = state;
+        Self {
+            selection,
+            rate,
+            index,
+            position,
+            error,
+            direction,
+            looping,
+            overlap,
+            released,
+            exhausted,
+        }
+    }
+
+    pub(crate) fn release(&mut self) {
         self.released = true;
         if self.selection.3.is_some_and(|l| l.3) {
             self.looping = false;
         }
     }
 
-    fn settle(&mut self, frame: i64) {
+    pub(crate) fn settle(&mut self, frame: i64) {
         if self.exhausted.is_some() {
             return;
         }
@@ -96,7 +113,7 @@ impl Cursor {
         }
     }
 
-    fn read(&self, audio: &Array2<f64>, channel: usize) -> f64 {
+    pub(crate) fn read(&self, audio: &Array2<f64>, channel: usize) -> f64 {
         let first = audio[[self.index as usize, channel]];
         if !self.overlap {
             return first;
@@ -155,7 +172,7 @@ impl Cursor {
         (if self.direction == 1 { end } else { start - 1 }, 0)
     }
 
-    fn advance(&mut self, step: f64, frame: i64) {
+    pub(crate) fn advance(&mut self, step: f64, frame: i64) {
         if self.exhausted.is_some() {
             return;
         }

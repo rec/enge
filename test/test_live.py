@@ -115,6 +115,47 @@ def test_native_live_runtime_latches_failure_and_zeros_later_blocks() -> None:
     np.testing.assert_array_equal(output, np.zeros_like(output))
 
 
+def test_native_live_runtime_owns_sample_asset_and_traversal(tmp_path: Path) -> None:
+    frames = np.arange(96000)
+    audio = np.sin(2 * np.pi * frames * 220 / 48000)[:, None]
+    buffer = _native.SampleBuffer(audio)
+
+    def make_runtime() -> tuple[_native.LiveRuntime, int]:
+        runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4, 0)
+        source = runtime.add_sample(
+            buffer,
+            (0, 96000, False, None),
+            (0, 0, 0, 1, False, False, False, None),
+            48000,
+            np.array([[1.0, 0.5]]),
+            1,
+            np.array([[0, 1]], dtype=np.float64),
+            np.array([[0, 0]], dtype=np.float64),
+            0,
+            2,
+            4,
+        )
+        return runtime, source
+
+    runtime, source = make_runtime()
+    runtime.submit(source, np.array([[0, 0, 0, 48000, 0.2, 0]]))
+    actual = np.empty((48000, 2))
+    for start in range(0, 48000, 997):
+        end = min(start + 997, 48000)
+        runtime.process_into(actual[start:end])
+        if end == 23928:
+            snapshot = runtime.snapshot()
+    restored, _ = make_runtime()
+    restored.restore(snapshot)
+    replay = np.empty((48000 - 23928, 2))
+    for start in range(0, len(replay), 997):
+        restored.process_into(replay[start : start + 997])
+
+    expected = audio[:48000] * np.array([[0.2, 0.1]])
+    check_audio(tmp_path / "native-live-sample.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[23928:], atol=0)
+
+
 def test_live_engine_mixes_heterogeneous_sources_and_restores(tmp_path: Path) -> None:
     synth_document = synth_score()
     noise_document = noise_score()
