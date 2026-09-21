@@ -174,6 +174,35 @@ impl LiveRuntime {
         })
     }
 
+    #[staticmethod]
+    fn empty(
+        rate: f64,
+        channels: usize,
+        maximum_block_frames: usize,
+        action_capacity: usize,
+    ) -> PyResult<Self> {
+        if !rate.is_finite()
+            || rate <= 0.0
+            || channels == 0
+            || maximum_block_frames == 0
+            || action_capacity < BATCH_ACTIONS
+        {
+            return Err(PyValueError::new_err("Invalid empty live runtime"));
+        }
+        Ok(Self {
+            sources: vec![],
+            source_scratch: Array2::zeros((maximum_block_frames, channels)),
+            output_scratch: Array2::zeros((maximum_block_frames, channels)),
+            maximum_block_frames,
+            channels,
+            action_capacity,
+            rate,
+            effects: None,
+            frame: 0,
+            failed: false,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn set_effect_graph(
         &mut self,

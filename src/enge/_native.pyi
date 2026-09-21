@@ -20,6 +20,13 @@ class LiveRuntime:
         action_capacity: int,
         batch_capacity: int,
     ) -> None: ...
+    @staticmethod
+    def empty(
+        rate: float,
+        channels: int,
+        maximum_block_frames: int,
+        action_capacity: int,
+    ) -> LiveRuntime: ...
     def set_effect_graph(
         self,
         kinds: list[int],

@@ -104,8 +104,9 @@ output; snapshots require empty queues. High-level source action submission,
 `LiveEngine` ownership, and native granulation remain separate consolidation
 steps. The effect side now has a one-time graph encoder and block action encoder
 for parameters and smooth bypass. `NativeLiveEngine` combines that encoder with
-the existing oscillator, FM, and noise action admission before invoking the
-single native owner; sample-instrument admission is still separate.
+oscillator, FM, noise, and static-profile sampler action admission before invoking
+the single native owner. The native sampler rejects controls, generators, and
+filters rather than silently dropping them.
 
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional

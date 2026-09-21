@@ -34,7 +34,10 @@ class NativeLiveEngine:
         self,
         sources: dict[
             str,
-            synth.PersistentSynth | fm.PersistentFM | noise.PersistentNoise,
+            synth.PersistentSynth
+            | fm.PersistentFM
+            | noise.PersistentNoise
+            | sample_instrument.PersistentSampler,
         ],
         maximum_block_frames: int,
         effect_chain: effects.PreparedEffects | None = None,
@@ -51,17 +54,34 @@ class NativeLiveEngine:
                 "Native live engine sources must share rate and channels"
             )
         self.sources = sources.copy()
-        self.source_indices = {name: i for i, name in enumerate(sources)}
+        generated = {
+            name: source
+            for name, source in sources.items()
+            if not isinstance(source, sample_instrument.PersistentSampler)
+        }
+        self.source_indices = {name: i for i, name in enumerate(generated)}
         self.sample_rate = rates.pop()
         self.channels = list(channels.pop())
         self.maximum_block_frames = maximum_block_frames
         self.effect_chain = effect_chain
-        self.runtime = _native.LiveRuntime(
-            [s.runtime for s in sources.values()],
-            maximum_block_frames,
-            action_capacity,
-            batch_capacity,
+        self.runtime = (
+            _native.LiveRuntime(
+                [s.runtime for s in generated.values()],
+                maximum_block_frames,
+                action_capacity,
+                batch_capacity,
+            )
+            if generated
+            else _native.LiveRuntime.empty(
+                self.sample_rate,
+                len(self.channels),
+                maximum_block_frames,
+                action_capacity,
+            )
         )
+        for source in sources.values():
+            if isinstance(source, sample_instrument.PersistentSampler):
+                source.add_to_native_live(self.runtime, batch_capacity)
         if effect_chain is not None:
             if (
                 effect_chain.sample_rate != self.sample_rate
@@ -102,15 +122,21 @@ class NativeLiveEngine:
                 "shape (frames, channels)"
             )
         for name, source in self.sources.items():
-            index = self.source_indices[name]
-            encoded = source.native_live_actions(
-                actions[name],
-                start,
-                end,
-                self.runtime.active_slots(index),
-                self.runtime.active_contexts(index),
-            )
-            self._submit(index, encoded)
+            if isinstance(source, sample_instrument.PersistentSampler):
+                for index, encoded in source.native_live_actions(
+                    actions[name], start, end, self.runtime
+                ).items():
+                    self._submit(index, encoded)
+            else:
+                index = self.source_indices[name]
+                encoded = source.native_live_actions(
+                    actions[name],
+                    start,
+                    end,
+                    self.runtime.active_slots(index),
+                    self.runtime.active_contexts(index),
+                )
+                self._submit(index, encoded)
         if self.effect_chain is None:
             if effect_actions:
                 raise synth.EngineError("Native live engine has no effect chain")
@@ -122,12 +148,15 @@ class NativeLiveEngine:
             )
         self.runtime.process_into(output)
         for name, source in self.sources.items():
-            index = self.source_indices[name]
-            source.finish_native_live_block(
-                end,
-                self.runtime.active_slots(index),
-                self.runtime.active_contexts(index),
-            )
+            if isinstance(source, sample_instrument.PersistentSampler):
+                source.finish_native_live_block(end, self.runtime)
+            else:
+                index = self.source_indices[name]
+                source.finish_native_live_block(
+                    end,
+                    self.runtime.active_slots(index),
+                    self.runtime.active_contexts(index),
+                )
         self.frame = end
 
     def snapshot(self) -> NativeLiveEngineSnapshot:

@@ -31,8 +31,10 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - Python validates and encodes uFor actions, sorts each block, refreshes active
   slot/context lists, and mixes source arrays.
 - `LiveEngine.advance_into()` currently calls the allocating `advance()` path.
-- The higher-level `PersistentSampler` still orchestrates voices in Python. Its
-  prepared actions are not yet encoded directly for `LiveRuntime`.
+- The higher-level `PersistentSampler` still orchestrates its general dynamic
+  control/filter profile in Python. `NativeLiveEngine` directly encodes the
+  static tuning/gain/envelope/traversal profile and rejects unsupported dynamic
+  sample settings during setup.
 - `OfflineEffects` still builds parameter and output arrays for every block.
   The live adapter now prepares the supported graph once and encodes parameter
   and bypass actions into bounded batches, but `LiveEngine` does not yet own and
@@ -40,16 +42,17 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - The Python `ActionQueue` binding is a deterministic single-thread harness.
   A native host must own the `rtrb` producer and consumer on separate threads.
 
-`NativeLiveEngine` is the control-side harness for generated sources. It validates
-and encodes oscillator, FM, and noise trace actions plus supported effect actions,
-submits bounded batches, then invokes the single Rust owner. This removes Python
-DSP, mixing, and effect-array construction from its callback body. Python still
-performs admission and submission synchronously before that call, and the sampler
-does not yet use this adapter.
+`NativeLiveEngine` is the control-side harness for all four source families. It
+validates and encodes oscillator, FM, noise, and supported sampler trace actions
+plus effect actions, submits bounded batches, then invokes the single Rust owner.
+This removes Python DSP, mixing, and effect-array construction from its callback
+body. Python still performs admission and submission synchronously before that
+call. The native sampler profile currently excludes dynamic controls, generators,
+and filters.
 
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundary is connecting high-level sampler action
-encoding to `LiveRuntime`, followed separately by native granulation.
+The next implementation boundary is native granulation, followed by expanding
+the native sampler profile if live sample modulation requires it.
 Those paths must use its existing borrowed input/output and preallocated scratch
 model rather than wrapping their allocating Python entry points.
 
