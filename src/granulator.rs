@@ -37,6 +37,7 @@ pub fn render_granulator<'py>(
     mut history_start: i64,
     mut phase: f64,
     mut counter: u64,
+    freeze_crossfade_frames: usize,
     grain_samples: Vec<PyReadonlyArray2<'py, f64>>,
     grain_indices: Vec<usize>,
     grain_gains: Vec<f64>,
@@ -46,7 +47,8 @@ pub fn render_granulator<'py>(
     if rate == 0
         || history_frames < 2
         || maximum_grains == 0
-        || parameters.shape() != [frames, 6]
+        || parameters.shape() != [frames, 7]
+        || freeze_crossfade_frames == 0
         || history.shape()[1] != channels
         || grain_samples.len() != grain_indices.len()
         || grain_samples.len() != grain_gains.len()
@@ -96,10 +98,17 @@ pub fn render_granulator<'py>(
             let mut output = Array2::zeros((frames, channels));
             history.reserve(history_frames - history.len());
             for frame in 0..frames {
-                history.push((0..channels).map(|c| samples[[frame, c]]).collect());
-                if history.len() > history_frames {
-                    history.remove(0);
-                    history_start += 1;
+                let next_frozen = parameters[[frame, 6]];
+                if !matches!(next_frozen, 0.0 | 1.0) {
+                    return Err(PyValueError::new_err("Invalid native granulator freeze"));
+                }
+                let frozen = next_frozen == 1.0;
+                if !frozen {
+                    history.push((0..channels).map(|c| samples[[frame, c]]).collect());
+                    if history.len() > history_frames {
+                        history.remove(0);
+                        history_start += 1;
+                    }
                 }
                 let duration_seconds = parameters[[frame, 0]];
                 let density = parameters[[frame, 1]];
@@ -127,9 +136,14 @@ pub fn render_granulator<'py>(
                         let end = (start_frame + frame) as f64 - lookback * rate as f64
                             + jitter_seconds * rate as f64 * jitter(launch_counter);
                         let start = end - (duration - 1) as f64 * ratio;
-                        if let Some(captured) =
-                            capture(&history, history_start, start, ratio, duration)
-                        {
+                        if let Some(captured) = capture(
+                            &history,
+                            history_start,
+                            start,
+                            ratio,
+                            duration,
+                            frozen.then_some(freeze_crossfade_frames),
+                        ) {
                             grains.push(Grain {
                                 samples: captured,
                                 index: 0,
@@ -188,10 +202,29 @@ fn capture(
     start: f64,
     ratio: f64,
     frames: usize,
+    freeze_crossfade_frames: Option<usize>,
 ) -> Option<Vec<Vec<f64>>> {
     let mut result = Vec::with_capacity(frames);
     for i in 0..frames {
         let position = start + i as f64 * ratio;
+        if let Some(configured) = freeze_crossfade_frames {
+            let crossfade = configured.min(history.len().saturating_sub(1) / 2);
+            let period = history.len() - crossfade;
+            let offset = (position - history_start as f64).rem_euclid(period as f64);
+            let lower = offset.floor() as usize;
+            let upper = (lower + 1) % period;
+            let fraction = offset - lower as f64;
+            let first = frozen_value(history, lower, period, crossfade);
+            let second = frozen_value(history, upper, period, crossfade);
+            result.push(
+                first
+                    .iter()
+                    .zip(second)
+                    .map(|(a, b)| a + (b - a) * fraction)
+                    .collect(),
+            );
+            continue;
+        }
         let lower = position.floor() as i64;
         let upper = lower + 1;
         if lower < history_start || upper >= history_start + history.len() as i64 {
@@ -207,6 +240,18 @@ fn capture(
         );
     }
     Some(result)
+}
+
+fn frozen_value(history: &[Vec<f64>], offset: usize, period: usize, crossfade: usize) -> Vec<f64> {
+    if offset >= crossfade {
+        return history[offset].clone();
+    }
+    let weight = offset as f64 / crossfade as f64;
+    history[period + offset]
+        .iter()
+        .zip(&history[offset])
+        .map(|(a, b)| (1.0 - weight) * a + weight * b)
+        .collect()
 }
 
 fn jitter(counter: u64) -> f64 {

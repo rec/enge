@@ -90,7 +90,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.array([[-3, 1, 1]], dtype=np.float64),
         1,
         np.empty((0, 4), dtype=np.float64),
-        np.empty((0, 3), dtype=np.int64),
+        np.empty((0, 4), dtype=np.int64),
         4,
     )
     runtime.submit(0, oscillator_start)
@@ -110,7 +110,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.array([[-3, 1, 1]], dtype=np.float64),
         1,
         np.empty((0, 4), dtype=np.float64),
-        np.empty((0, 3), dtype=np.int64),
+        np.empty((0, 4), dtype=np.int64),
         4,
     )
     restored.restore(snapshot)

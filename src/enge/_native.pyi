@@ -165,6 +165,7 @@ def render_granulator(
     history_start: int,
     phase: float,
     counter: int,
+    freeze_crossfade_frames: int,
     grain_samples: list[np.ndarray],
     grain_indices: list[int],
     grain_gains: list[float],

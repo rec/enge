@@ -308,7 +308,7 @@ class OfflineEffects:
         granular = state.granulator
         assert granular is not None
         frames = end - start
-        values = np.zeros((frames, 6))
+        values = np.zeros((frames, 7))
         action_index = 0
         names = [
             "duration_seconds",
@@ -326,6 +326,7 @@ class OfflineEffects:
             values[i, 5] = state.parameters["mix"].value(frame) * state.bypass.value(
                 frame
             )
+            values[i, 6] = granular.frozen
         source = next(iter(input_audio.values()))
         channels = source.shape[1]
         rendered = _native.render_granulator(
@@ -339,6 +340,7 @@ class OfflineEffects:
             granular.history_start,
             granular.phase,
             granular.launch_counter,
+            processor.freeze_crossfade_frames,
             [np.asarray(g.samples, dtype=np.float64) for g in granular.grains],
             [g.index for g in granular.grains],
             [g.gain for g in granular.grains],
@@ -354,6 +356,9 @@ class OfflineEffects:
             grain_gains,
         ) = rendered
         granular.history = history.tolist()
+        if granular.frozen:
+            granular.frozen_history = granular.history
+            granular.frozen_start = granular.history_start
         granular.grains = [
             GrainState(samples=v.tolist(), index=i, gain=g)
             for v, i, g in zip(grain_samples, grain_indices, grain_gains, strict=True)
@@ -584,7 +589,12 @@ class OfflineEffects:
                 end_position = frame - lookback + jitter
                 start_position = end_position - (duration - 1) * ratio
                 captured = _capture_grain(
-                    history, history_start, start_position, ratio, duration
+                    history,
+                    history_start,
+                    start_position,
+                    ratio,
+                    duration,
+                    processor.freeze_crossfade_frames if granular.frozen else None,
                 )
                 if captured is not None:
                     granular.grains.append(
@@ -762,6 +772,7 @@ def native_live_graph(
                     node,
                     max(2, round(processor.history_seconds * definition.sample_rate)),
                     processor.maximum_grains,
+                    processor.freeze_crossfade_frames,
                 ]
             )
         else:
@@ -777,7 +788,7 @@ def native_live_graph(
         parameters,
         output_source,
         np.asarray(filter_rows, dtype=np.float64).reshape(-1, 4),
-        np.asarray(granulator_rows, dtype=np.int64).reshape(-1, 3),
+        np.asarray(granulator_rows, dtype=np.int64).reshape(-1, 4),
     )
 
 
@@ -939,19 +950,43 @@ def _capture_grain(
     start: float,
     ratio: float,
     frames: int,
+    freeze_crossfade_frames: int | None = None,
 ) -> list[list[float]] | None:
     if not history:
         return None
     positions = start + np.arange(frames) * ratio
+    values = np.asarray(history)
+    if freeze_crossfade_frames is not None:
+        crossfade = min(freeze_crossfade_frames, (len(history) - 1) // 2)
+        period = len(history) - crossfade
+        offsets = np.remainder(positions - history_start, period)
+        lower = np.floor(offsets).astype(np.int64)
+        upper = (lower + 1) % period
+        fraction = offsets - lower
+        first = _frozen_history_values(values, lower, period, crossfade)
+        second = _frozen_history_values(values, upper, period, crossfade)
+        return (first + (second - first) * fraction[:, None]).tolist()
     lower = np.floor(positions).astype(np.int64)
     upper = lower + 1
     if lower[0] < history_start or upper[-1] >= history_start + len(history):
         return None
-    values = np.asarray(history)
     fraction = positions - lower
     first = values[lower - history_start]
     second = values[upper - history_start]
     return (first + (second - first) * fraction[:, None]).tolist()
+
+
+def _frozen_history_values(
+    history: np.ndarray, offsets: np.ndarray, period: int, crossfade: int
+) -> np.ndarray:
+    output = history[offsets].copy()
+    mask = offsets < crossfade
+    if np.any(mask):
+        weight = offsets[mask] / crossfade
+        output[mask] = (1 - weight[:, None]) * history[period + offsets[mask]] + weight[
+            :, None
+        ] * history[offsets[mask]]
+    return output
 
 
 def _native_supported(
@@ -962,12 +997,10 @@ def _native_supported(
     granular = [p for p in graph.processors if isinstance(p, audio_effects.Granulator)]
     if not granular:
         return True
-    if len(graph.processors) != 1 or any(
-        isinstance(a, audio_effects.FreezeAction) for a in actions
-    ):
+    if len(graph.processors) != 1:
         return False
     state = states[granular[0].name].granulator
-    return state is not None and not state.frozen
+    return state is not None
 
 
 def _processor_layouts(

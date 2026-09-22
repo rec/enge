@@ -106,8 +106,8 @@ for parameters and smooth bypass. `NativeLiveEngine` combines that encoder with
 oscillator, FM, noise, and static-profile sampler action admission before invoking
 the single native owner. The native sampler rejects controls, generators, and
 filters rather than silently dropping them. Live granulator freeze actions are
-encoded and snapshotted, matching the current finite-history reference. The
-portable frozen-history wrap and boundary crossfade are not implemented yet.
+encoded and snapshotted. Frozen history replays circularly through the portable
+tail/head crossfade, and captured active grains remain valid across unfreeze.
 
 `src/enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional

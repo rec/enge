@@ -55,16 +55,16 @@ Granulators allocate circular history and a fixed captured-grain pool during
 setup. Duration, density, lookback, playback ratio, jitter, wet/dry, bypass, and
 snapshot continuation stay inside the owner without growing callback storage.
 Freeze and unfreeze actions preserve their state across snapshots and match the
-current reference's finite latched-history behavior. The portable circular replay
-and boundary crossfade are still missing from both paths.
+reference's circular replay. Frozen source positions wrap through a 64-frame
+tail/head overlap, reduced only when a startup freeze has fewer valid frames,
+and active grains retain captured samples across unfreeze.
 
 These are correctness and integration milestones, not hidden real-time claims.
-The next implementation boundaries are the specified frozen-history circular
-replay and crossfade, expanding the native sampler profile if live sample
-modulation requires it, and a native host that owns producer and callback threads
-without Python entry. Those paths must use the existing borrowed input/output
-and preallocated scratch model rather than wrapping their allocating Python entry
-points.
+The next implementation boundaries are expanding the native sampler profile if
+live sample modulation requires it and a native host that owns producer and
+callback threads without Python entry. Those paths must use the existing borrowed
+input/output and preallocated scratch model rather than wrapping their allocating
+Python entry points.
 
 ## Stress harness
 
