@@ -330,6 +330,11 @@ def test_granulator_is_partition_independent_and_snapshots(tmp_path: Path) -> No
         second,
     )
     check_audio(tmp_path / "granulator.wav", np.concatenate([first, second]), whole)
+    native = effects.OfflineEffects(prepared, "native").advance(
+        {"main": source}, actions, 0, 48000
+    )
+    np.testing.assert_allclose(native, whole, atol=1e-12)
+    assert np.max(np.abs(whole[28000:29500])) > 0.01
     assert len(split.processors["cloud"].granulator.grains) <= 2
 
 

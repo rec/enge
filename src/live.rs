@@ -104,6 +104,7 @@ struct LiveGranulator {
     counter: u64,
     frame: usize,
     frozen: bool,
+    freeze_crossfade_frames: usize,
 }
 
 #[derive(Clone)]
@@ -527,7 +528,7 @@ impl EffectRuntime {
             || output_source > nodes
             || filters.shape()[1] != 4
             || filters.as_array().iter().any(|v| !v.is_finite())
-            || granulators.shape()[1] != 3
+            || granulators.shape()[1] != 4
         {
             return Err(PyValueError::new_err("Invalid live effect graph"));
         }
@@ -575,10 +576,13 @@ impl EffectRuntime {
                 .map_err(|_| PyValueError::new_err("Invalid live granulator history"))?;
             let maximum_grains = usize::try_from(row[2])
                 .map_err(|_| PyValueError::new_err("Invalid live granulator capacity"))?;
+            let freeze_crossfade_frames = usize::try_from(row[3])
+                .map_err(|_| PyValueError::new_err("Invalid live freeze crossfade"))?;
             if node >= nodes
                 || kinds[node] != 3
                 || history_frames < 2
                 || maximum_grains == 0
+                || freeze_crossfade_frames == 0
                 || prepared_granulators[node].is_some()
                 || parameters.ncols() < 8
             {
@@ -588,6 +592,7 @@ impl EffectRuntime {
                 history_frames,
                 maximum_grains,
                 channels,
+                freeze_crossfade_frames,
             ));
         }
         if kinds
@@ -870,7 +875,12 @@ impl EffectRuntime {
 }
 
 impl LiveGranulator {
-    fn new(history_frames: usize, maximum_grains: usize, channels: usize) -> Self {
+    fn new(
+        history_frames: usize,
+        maximum_grains: usize,
+        channels: usize,
+        freeze_crossfade_frames: usize,
+    ) -> Self {
         Self {
             history: Array2::zeros((history_frames, channels)),
             history_start: 0,
@@ -889,12 +899,14 @@ impl LiveGranulator {
             counter: 0,
             frame: 0,
             frozen: false,
+            freeze_crossfade_frames,
         }
     }
 
     fn same_capacity(&self, other: &Self) -> bool {
         self.history.raw_dim() == other.history.raw_dim()
             && self.grains.len() == other.grains.len()
+            && self.freeze_crossfade_frames == other.freeze_crossfade_frames
             && self
                 .grains
                 .iter()
@@ -965,8 +977,27 @@ impl LiveGranulator {
     }
 
     fn capture(&mut self, slot: usize, start: f64, ratio: f64, frames: usize) -> bool {
+        if self.frozen && self.history_len < 2 {
+            return false;
+        }
         for i in 0..frames {
             let position = start + i as f64 * ratio;
+            if self.frozen {
+                let crossfade = self
+                    .freeze_crossfade_frames
+                    .min(self.history_len.saturating_sub(1) / 2);
+                let period = self.history_len - crossfade;
+                let offset = (position - self.history_start as f64).rem_euclid(period as f64);
+                let lower = offset.floor() as usize;
+                let upper = (lower + 1) % period;
+                let fraction = offset - lower as f64;
+                for channel in 0..self.history.ncols() {
+                    let a = self.frozen_value(lower, period, crossfade, channel);
+                    let b = self.frozen_value(upper, period, crossfade, channel);
+                    self.grains[slot].samples[[i, channel]] = a + (b - a) * fraction;
+                }
+                continue;
+            }
             let lower = position.floor() as i64;
             let upper = lower + 1;
             if lower < self.history_start || upper >= self.history_start + self.history_len as i64 {
@@ -982,6 +1013,25 @@ impl LiveGranulator {
             }
         }
         true
+    }
+
+    fn frozen_value(&self, offset: usize, period: usize, crossfade: usize, channel: usize) -> f64 {
+        if offset >= crossfade {
+            return self.history[[
+                self.history_index(self.history_start + offset as i64),
+                channel,
+            ]];
+        }
+        let weight = offset as f64 / crossfade as f64;
+        let outgoing = self.history[[
+            self.history_index(self.history_start + period as i64 + offset as i64),
+            channel,
+        ]];
+        let incoming = self.history[[
+            self.history_index(self.history_start + offset as i64),
+            channel,
+        ]];
+        (1.0 - weight) * outgoing + weight * incoming
     }
 
     fn history_index(&self, frame: i64) -> usize {
