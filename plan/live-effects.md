@@ -383,6 +383,15 @@ for standalone processing and every attachment point.
 
 ## Implementation sequence and acceptance
 
+### Completion status
+
+All six milestones below are complete within this engine scope. The reference,
+offline native path, and native callback-shaped runtime cover the specified graph,
+granular freeze/replay behavior, four-engine listening demo, and stress harness.
+The benchmark records both deadline misses and headroom rather than treating a
+short successful run as a real-time guarantee. A physical device host and any
+expanded sampler modulation profile remain separate host or feature work.
+
 1. Specify the portable graph and action contracts in uFor, including named ports
    and connections, stable processor identities, timing, scope, capacities,
    per-input lifetime, tails, latency, live admission errors, fatal processing
