@@ -12,7 +12,7 @@ from ufor.instrument_trace import TraceAction
 from ufor.samples import instrument, trace
 from ufor.samples.processing import FilterResponse, ResonantFilter
 
-from enge import effects, fm, sample_instrument, synth
+from enge import effects, fm, noise, sample_instrument, synth
 from enge.presets import Patch
 from enge.render import write_flac
 
@@ -36,6 +36,12 @@ def main() -> None:
         render_patch(
             Patch(engine="fm", gain=0.10, ratio=2, index=1.1),
             60,
+            frames,
+            options.backend,
+        ),
+        render_patch(
+            Patch(engine="noise", gain=0.035, pan=0.15),
+            67,
             frames,
             options.backend,
         ),
@@ -110,6 +116,10 @@ def render_patch(
     )
     if patch.engine == "fm":
         return fm.OfflineFM(fm.prepare(score), backend).advance(
+            synth_actions, 0, frames
+        )
+    if patch.engine == "noise":
+        return noise.OfflineNoise(noise.prepare(score), backend).advance(
             synth_actions, 0, frames
         )
     return synth.OfflineSynth(synth.prepare(score), backend).advance(

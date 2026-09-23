@@ -196,6 +196,11 @@ verifies lossless encoding before publishing
 `.pytest_cache/d/audio/fm-demo-numpy.flac` and
 `.pytest_cache/d/audio/fm-demo-native.flac`.
 
+Run `uv run python scripts/live-effects.py` to render a six-second effects demo:
+dry, individually granulated, then shared frozen-granulated oscillator, sampler,
+FM, and noise voices. It writes `live-effects.flac` at 48 kHz; `--backend numpy`
+selects the reference renderer.
+
 For a longer benchmark, run `uv run python scripts/bach.py`. It renders the
 four-minute [BWV 578 MIDI adaptation](scripts/bwv-578.md) to `bwv-578.flac` at
 48 kHz using FM bass/soprano, triangle tenor, and sampled alto, with subtle
