@@ -8,46 +8,44 @@ build produced by `maturin develop --release`.
 
 | Case | Frames | Worst us | p99 us | Deadline us | Misses |
 |---|---:|---:|---:|---:|---:|
-| persistent-16-voice | 64 | 31.6 | 11.6 | 1333.3 | 0/750 |
-| persistent-16-voice | 256 | 60.8 | 44.5 | 5333.3 | 0/188 |
-| persistent-16-voice | 1024 | 180.1 | 179.8 | 21333.3 | 0/47 |
-| filter | 64 | 13938.5 | 4143.8 | 1333.3 | 750/750 |
-| filter | 256 | 14579.3 | 5869.6 | 5333.3 | 129/188 |
-| filter | 1024 | 21789.5 | 17924.0 | 21333.3 | 1/47 |
-| filter-actions | 64 | 14010.0 | 5411.5 | 1333.3 | 750/750 |
-| filter-actions | 256 | 15182.9 | 7517.4 | 5333.3 | 187/188 |
-| filter-actions | 1024 | 22230.8 | 18603.4 | 21333.3 | 1/47 |
-| fanout | 64 | 12631.0 | 4367.3 | 1333.3 | 750/750 |
-| fanout | 256 | 14847.6 | 6350.1 | 5333.3 | 187/188 |
-| fanout | 1024 | 23956.8 | 19836.2 | 21333.3 | 1/47 |
-| granulator | 64 | 83882.9 | 27677.6 | 1333.3 | 750/750 |
-| granulator | 256 | 30283.6 | 29320.0 | 5333.3 | 188/188 |
-| granulator | 1024 | 44713.3 | 44206.5 | 21333.3 | 44/47 |
-| filter+granulator | 64 | 52267.8 | 22867.6 | 1333.3 | 750/750 |
-| filter+granulator | 256 | 64573.8 | 61819.9 | 5333.3 | 188/188 |
-| filter+granulator | 1024 | 194688.7 | 194304.4 | 21333.3 | 47/47 |
-| freeze | 64 | 25325.6 | 23225.4 | 1333.3 | 750/750 |
-| freeze | 256 | 34030.9 | 28980.2 | 5333.3 | 188/188 |
-| freeze | 1024 | 48132.2 | 46648.6 | 21333.3 | 43/47 |
-| subnormal | 64 | 12230.5 | 3825.1 | 1333.3 | 750/750 |
-| subnormal | 256 | 14127.4 | 6034.9 | 5333.3 | 21/188 |
-| subnormal | 1024 | 23028.8 | 18559.2 | 21333.3 | 1/47 |
-| filter-tail | 64 | 12818.7 | 4258.9 | 1333.3 | 750/750 |
-| filter-tail | 256 | 13790.1 | 7341.8 | 5333.3 | 13/188 |
-| filter-tail | 1024 | 21483.7 | 20734.3 | 21333.3 | 1/47 |
+| persistent-16-voice | 64 | 77.0 | 57.9 | 1333.3 | 0/750 |
+| persistent-16-voice | 256 | 252.8 | 194.7 | 5333.3 | 0/188 |
+| persistent-16-voice | 1024 | 740.0 | 712.3 | 21333.3 | 0/47 |
+| filter | 64 | 14031.6 | 4432.6 | 1333.3 | 750/750 |
+| filter | 256 | 14543.3 | 6134.7 | 5333.3 | 151/188 |
+| filter | 1024 | 22310.2 | 18376.6 | 21333.3 | 1/47 |
+| filter-actions | 64 | 15129.7 | 5664.3 | 1333.3 | 750/750 |
+| filter-actions | 256 | 17297.5 | 10110.9 | 5333.3 | 188/188 |
+| filter-actions | 1024 | 25327.5 | 20547.5 | 21333.3 | 1/47 |
+| fanout | 64 | 13355.2 | 4984.1 | 1333.3 | 750/750 |
+| fanout | 256 | 15735.4 | 6756.8 | 5333.3 | 187/188 |
+| fanout | 1024 | 25234.5 | 20860.2 | 21333.3 | 1/47 |
+| granulator | 64 | 48662.0 | 29996.8 | 1333.3 | 750/750 |
+| granulator | 256 | 34071.9 | 32825.1 | 5333.3 | 188/188 |
+| granulator | 1024 | 46127.5 | 45290.2 | 21333.3 | 44/47 |
+| filter+granulator | 64 | 73479.7 | 21801.4 | 1333.3 | 750/750 |
+| filter+granulator | 256 | 108355.0 | 66764.8 | 5333.3 | 188/188 |
+| filter+granulator | 1024 | 205645.2 | 203505.5 | 21333.3 | 47/47 |
+| freeze | 64 | 69742.8 | 28673.0 | 1333.3 | 750/750 |
+| freeze | 256 | 72186.1 | 39565.5 | 5333.3 | 188/188 |
+| freeze | 1024 | 107942.0 | 95746.7 | 21333.3 | 47/47 |
+| subnormal | 64 | 69417.0 | 23025.0 | 1333.3 | 750/750 |
+| subnormal | 256 | 30512.2 | 24169.4 | 5333.3 | 187/188 |
+| subnormal | 1024 | 89368.9 | 69103.1 | 21333.3 | 17/47 |
+| filter-tail | 64 | 31643.8 | 19288.4 | 1333.3 | 750/750 |
+| filter-tail | 256 | 15759.0 | 7551.1 | 5333.3 | 86/188 |
+| filter-tail | 1024 | 22761.4 | 21782.2 | 21333.3 | 1/47 |
 
 `persistent-16-voice` owns all oscillator phases, routing, filter integrators, and
 gain state in one Rust object and crosses Python once per block. `filter`,
 `filter-actions`, `subnormal`, and `fanout` execute one whole graph per
 Rust call. The action case submits the maximum 64 actions at every block boundary.
 The subnormal case scales source output by `1e-310`. `filter-tail` ends every graph
-halfway through the run and measures the reference tail path. `granulator` executes
-the Rust granular kernel and preserves state across calls. `filter+granulator`
-currently uses the NumPy graph because the native graph kernel does not yet compose
-granulation with other processors. `freeze` changes frozen history in the NumPy
-reference because native freeze transition state is not implemented. These two
-rows expose incomplete native paths and cannot support an allocation-free callback
-claim.
+halfway through the run and measures the reference tail path. `granulator` and
+`freeze` execute the Rust granular kernel, including bounded frozen-history circular
+replay. `filter+granulator` currently uses the NumPy graph because the offline
+native graph kernel does not compose granulation with other processors. That row
+still measures Python orchestration rather than a callback-safe native graph.
 
 This harness includes Python source/action orchestration around native DSP and
 therefore measures the current callable system rather than a GIL-free native host.
