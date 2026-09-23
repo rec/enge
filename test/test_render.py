@@ -66,7 +66,7 @@ def test_mixed_engine_render_preserves_notes_tails_and_block_boundaries(
     )
     patches = {
         c: Patch(engine=e, pan=(c - 1.5) / 3)
-        for c, e in enumerate(("fm", "synth", "sample", "fm"))
+        for c, e in enumerate(("fm", "synth", "sample", "noise"))
     }
     full = tmp_path / "full.flac"
     partitioned = tmp_path / "partitioned.flac"

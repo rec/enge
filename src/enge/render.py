@@ -17,7 +17,7 @@ from ufor.events import Trigger
 from ufor.instrument_trace import TraceAction
 from ufor.samples import instrument, trace
 
-from . import fm, sample_instrument, synth
+from . import fm, noise, sample_instrument, synth
 from .midi import MidiPerformance
 from .presets import Patch
 
@@ -50,25 +50,38 @@ def render_midi(
     started = perf_counter()
     streams: list[
         tuple[
-            fm.OfflineFM | synth.OfflineSynth | sample_instrument.OfflineSampler,
+            fm.OfflineFM
+            | noise.OfflineNoise
+            | synth.OfflineSynth
+            | sample_instrument.OfflineSampler,
             list[TraceAction],
         ]
     ] = []
     for channel, patch in patches.items():
         score, assets = patch.prepare_score(performance.sample_rate)
         events = performance.parts[channel]
-        renderer: fm.OfflineFM | synth.OfflineSynth | sample_instrument.OfflineSampler
+        renderer: (
+            fm.OfflineFM
+            | noise.OfflineNoise
+            | synth.OfflineSynth
+            | sample_instrument.OfflineSampler
+        )
         if isinstance(score, instrument.SampleInstrumentScore):
             renderer = sample_instrument.OfflineSampler(
                 sample_instrument.prepare(score, assets), backend, control_interval
             )
             actions = trace.prepare(score.body, events, seed=0).actions
         else:
-            renderer = (
-                fm.OfflineFM(fm.prepare(score), backend, control_interval)
-                if patch.engine == "fm"
-                else synth.OfflineSynth(synth.prepare(score), backend, control_interval)
-            )
+            if patch.engine == "fm":
+                renderer = fm.OfflineFM(fm.prepare(score), backend, control_interval)
+            elif patch.engine == "noise":
+                renderer = noise.OfflineNoise(
+                    noise.prepare(score), backend, control_interval
+                )
+            else:
+                renderer = synth.OfflineSynth(
+                    synth.prepare(score), backend, control_interval
+                )
             actions = synth_trace.prepare(score.body, events, seed=0).actions
         streams.append((renderer, list(actions)))
     frames = performance.frames + round(performance.sample_rate / 4)

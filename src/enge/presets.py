@@ -11,7 +11,7 @@ from ufor.synth import SynthInstrumentScore
 
 
 class Patch(BaseModel, frozen=True):
-    engine: Literal["fm", "synth", "sample"]
+    engine: Literal["fm", "synth", "sample", "noise"]
     gain: float = Field(default=0.18, ge=0)
     pan: float = Field(default=0, ge=-1, le=1)
     ratio: float = Field(default=2, gt=0)
@@ -94,6 +94,12 @@ class Patch(BaseModel, frozen=True):
             }
         elif self.engine == "synth":
             voice.update(oscillator={"waveform": "triangle"}, envelope=envelope)
+        elif self.engine == "noise":
+            voice.update(
+                noise="white",
+                envelope=envelope,
+                mapping={"lowest_key": 0, "highest_key": 127, "pitch_tracking": False},
+            )
         else:
             # One second contains exactly 220 periods; the wrap is continuous.
             # This deterministic asset exercises real sample interpolation/loops.
@@ -114,9 +120,7 @@ class Patch(BaseModel, frozen=True):
                         "encoding": "float64-le",
                         "content": {
                             "byte_length": audio.nbytes,
-                            "sha256": sha256(
-                                audio.astype("<f8").tobytes()
-                            ).hexdigest(),
+                            "sha256": sha256(audio.astype("<f8").tobytes()).hexdigest(),
                         },
                         "audio": {
                             "timebase": "output",
@@ -158,6 +162,7 @@ def _settings(engine: str, index: float) -> dict[str, object]:
             "maximum": 1,
         }
         for n in ("velocity", "expression", "bend", "modulation")
+        if engine != "noise" or n != "bend"
     ]
     amplitude = {"name": "processing", "parameter": "amplitude"}
     tuning = {"name": "processing", "parameter": "tuning_cents"}
@@ -169,7 +174,7 @@ def _settings(engine: str, index: float) -> dict[str, object]:
     unit, default, depth = (
         ("radians", index, 0.25) if engine == "fm" else ("hz", 4500, 1000)
     )
-    parameters = [
+    parameters: list[dict[str, object]] = [
         {
             "target": amplitude,
             "unit": "ratio",
@@ -177,14 +182,6 @@ def _settings(engine: str, index: float) -> dict[str, object]:
             "minimum": 0,
             "maximum": 1,
             "default": 1,
-        },
-        {
-            "target": tuning,
-            "unit": "cents",
-            "scope": "voice",
-            "minimum": -200,
-            "maximum": 200,
-            "default": 0,
         },
         {
             "target": color,
@@ -195,6 +192,18 @@ def _settings(engine: str, index: float) -> dict[str, object]:
             "default": default,
         },
     ]
+    if engine != "noise":
+        parameters.insert(
+            1,
+            {
+                "target": tuning,
+                "unit": "cents",
+                "scope": "voice",
+                "minimum": -200,
+                "maximum": 200,
+                "default": 0,
+            },
+        )
     routes: list[dict[str, object]] = [
         {
             "name": n,
@@ -206,8 +215,8 @@ def _settings(engine: str, index: float) -> dict[str, object]:
         }
         for n in ("velocity", "expression")
     ]
-    routes.extend(
-        [
+    if engine != "noise":
+        routes.append(
             {
                 "name": "bend",
                 "source": "bend",
@@ -215,19 +224,20 @@ def _settings(engine: str, index: float) -> dict[str, object]:
                 "operation": "add",
                 "unit": "cents",
                 "points": [{"input": -1, "amount": -200}, {"input": 1, "amount": 200}],
-            },
-            {
-                "name": "modulation",
-                "source": "modulation",
-                "target": color,
-                "operation": "add",
-                "unit": unit,
-                "points": [
-                    {"input": 0, "amount": -min(default, depth)},
-                    {"input": 1, "amount": depth},
-                ],
-            },
-        ]
+            }
+        )
+    routes.append(
+        {
+            "name": "modulation",
+            "source": "modulation",
+            "target": color,
+            "operation": "add",
+            "unit": unit,
+            "points": [
+                {"input": 0, "amount": -min(default, depth)},
+                {"input": 1, "amount": depth},
+            ],
+        }
     )
     return {
         "processing": {
@@ -244,5 +254,6 @@ def _settings(engine: str, index: float) -> dict[str, object]:
                 "smoothing": 0 if n == "velocity" else "1/10",
             }
             for n in ("velocity", "expression", "bend", "modulation")
+            if engine != "noise" or n != "bend"
         ],
     }
