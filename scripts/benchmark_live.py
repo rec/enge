@@ -8,6 +8,7 @@ import tyro
 from pydantic import BaseModel, ConfigDict, Field
 from ufor import audio_effects
 from ufor.events import Trigger
+from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
@@ -18,6 +19,7 @@ class Settings(BaseModel):
     block_frames: int = Field(default=64, gt=0)
     seconds: int = Field(default=10, gt=0)
     voices: int = Field(default=16, gt=0)
+    effect_actions: int = Field(default=64, ge=1, le=64)
     granular: bool = False
 
     model_config = ConfigDict(frozen=True)
@@ -38,7 +40,18 @@ def main(settings: Settings) -> None:
     ]
     actions = prepare_trace(document.body, events, seed=0).actions
     processors: list[audio_effects.Processor] = [
-        audio_effects.Gain(name="trim", gain_db=-6)
+        audio_effects.Gain(name="trim", gain_db=-6),
+        audio_effects.Filter(
+            name="tone",
+            filters=[
+                ResonantFilter(
+                    name="low",
+                    response=FilterResponse.lowpass,
+                    cutoff_hz=3600,
+                    q=0.8,
+                )
+            ],
+        ),
     ]
     if settings.granular:
         processors.append(
@@ -77,7 +90,7 @@ def main(settings: Settings) -> None:
         before = perf_counter_ns()
         engine.advance_into(
             {"synth": actions if i == 0 else []},
-            [],
+            effect_actions(settings, start),
             start,
             start + settings.block_frames,
             output,
@@ -88,10 +101,40 @@ def main(settings: Settings) -> None:
     p99 = ordered[int(0.99 * (len(ordered) - 1))]
     print(
         f"callbacks={callbacks} block={settings.block_frames} voices={settings.voices} "
-        f"granular={settings.granular}"
+        f"effect_actions={settings.effect_actions} granular={settings.granular}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
+
+
+def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectAction]:
+    actions: list[audio_effects.EffectAction] = []
+    for ordinal in range(settings.effect_actions):
+        processor, parameter, value = (
+            ("trim", "gain_db", -8 + (start + ordinal) % 9)
+            if ordinal % 3 == 0
+            else ("tone", "low-cutoff_hz", 600 + (start + ordinal * 53) % 6000)
+            if ordinal % 3 == 1 or not settings.granular
+            else ("cloud", "density_hz", 40 + (start + ordinal) % 50)
+        )
+        actions.append(
+            audio_effects.ParameterAction(
+                tick=start,
+                ordinal=ordinal,
+                processor=processor,
+                parameter=parameter,
+                value=value,
+                duration_frames=ordinal % 31,
+            )
+        )
+    if settings.granular and start > 0 and start % 48000 == 0:
+        actions[-1] = audio_effects.FreezeAction(
+            tick=start,
+            ordinal=settings.effect_actions - 1,
+            processor="cloud",
+            frozen=(start // 48000) % 2 == 1,
+        )
+    return actions
 
 
 def _score() -> SynthInstrumentScore:
