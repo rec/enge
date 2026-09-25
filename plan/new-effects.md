@@ -15,6 +15,37 @@ behavior, snapshot state, and response when an input ends. Existing filters rema
 voice-source processing until a selected post-mix filter profile explicitly reuses
 their kernel.
 
+## Rubber Band for pitch and time processing
+
+Rubber Band Library is the preferred implementation route for high-quality pitch
+shifting and time stretching. Enge can use its C API through the existing
+[`rubberband-sys`](https://docs.rs/crate/rubberband-sys/latest) crate rather than
+creating another public Rust wrapper project. Before adopting it, audit that
+crate's generated declarations, API-version support, static build behavior, and
+licence metadata against the official [Rubber Band C API](https://breakfastquay.com/rubberband/code-doc/rubberband-c_8h_source.html).
+
+The planned distribution statically links a vendored Rubber Band build and is GPL
+when that feature is included. Preserve its licence notices and corresponding
+source in source distributions. Keep FFI `unsafe` code confined to the dependency
+or a tiny isolated binding crate: enge's main native crate continues to forbid
+unsafe code.
+
+Rubber Band accepts planar float32 channel buffers, whereas enge's numerical
+boundary uses interleaved `(frames, channels)` float64 arrays. The adapter owns
+preallocated layout-conversion scratch for live use and performs explicit offline
+conversion. Rubber Band output is an external algorithmic result, so tests compare
+documented behavior and tolerances rather than using the NumPy effect path as an
+independent sample-for-sample oracle.
+
+Start with an offline, prepared time-and-pitch processor around
+`RubberBandStretcher`. High-quality offline processing studies the complete input
+before processing and retrieving output, so it belongs on prepared finite audio,
+not a live callback. Its output length, latency, final drain, transient mode,
+formant option, channel-together option, and parameter-change policy are part of
+the effect contract. A later real-time pitch-only processor can wrap
+`RubberBandLiveShifter`, whose fixed block size and start delay must participate
+in graph latency accounting. See the official [API overview](https://www.breakfastquay.com/rubberband/code-doc/).
+
 ## Current foundation
 
 - **Gain:** one input, stateless apart from parameter and bypass ramps.
@@ -130,12 +161,15 @@ transparent transformation.
 - **Frequency shifter:** analytic-signal or quadrature processing, with a fixed
   latency and channel policy. It differs from ring modulation because it moves
   spectral components rather than creating both sum and difference products.
-- **Pitch shifter:** a bounded windowed-delay or phase-vocoder profile. Declare
-  supported pitch range, latency, transient behavior, and whether formants are
-  preserved.
-- **Time stretcher:** independently changes duration while preserving approximate
-  pitch. Granular and phase-vocoder methods make different transient and latency
-  tradeoffs; neither should be advertised as universally transparent.
+- **Pitch shifter:** use Rubber Band's offline stretcher first, with an explicitly
+  prepared finite input and declared pitch range, transient mode, formant mode,
+  output timing, and drain. A real-time pitch-only profile can follow through its
+  dedicated live shifter when fixed latency and block-size requirements fit the
+  native host.
+- **Time stretcher:** use Rubber Band's two-pass offline processing to change
+  duration while preserving approximate pitch. Live variable-rate stretching is
+  deferred until its latency, callback work bound, and dynamic-ratio behavior can
+  be specified and measured. Do not promise universal transparency.
 - **Reverse, scrub, and stutter:** capture a bounded live buffer and replay it
   under deterministic trigger/control timing. They resemble frozen granulation
   but need a direct repeat/segment contract.
@@ -264,8 +298,11 @@ one-input effects have settled their tail and latency rules.
    numerical safety. Choose an explicit transfer curve before analogue styling.
 5. **Phaser or auto-wah:** builds on filters, LFOs, and followers without FFT
    infrastructure.
-6. **Pitch/time or spectral processing:** choose one narrowly specified profile
-   only when its latency and quality target are clear.
+6. **Rubber Band offline pitch/time:** add a prepared finite-audio processor with
+   a vendored static build, exact source/output timing contract, and audible
+   regressions before considering its real-time API.
+7. **Other spectral processing:** choose one narrowly specified profile only when
+   its latency and quality target are clear.
 
 Start with a single stable implementation slice, rather than an omnibus
 "multi-effect" processor. A delay primitive does not automatically authorize
@@ -298,6 +335,9 @@ For each chosen effect:
 - Benchmark complete prepared source-to-output graphs with changing controls,
   tails, and maximum declared occupancy. Report misses and outliers, not only
   average throughput.
+- For Rubber Band, test the vendored static build on every supported platform,
+  include licence/source material in distributable artifacts, and distinguish its
+  offline two-pass path from a live callback-safe processor.
 
 ## Additional work beyond the prompt
 
