@@ -163,6 +163,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(filters::render_filters, module)?)?;
     module.add_function(wrap_pyfunction!(render, module)?)?;
     module.add_function(wrap_pyfunction!(fm::render_fm, module)?)?;
+    module.add_function(wrap_pyfunction!(fm::render_four_operator_fm, module)?)?;
     module.add_function(wrap_pyfunction!(granulator::render_granulator, module)?)?;
     module.add_function(wrap_pyfunction!(noise::render_noise, module)?)?;
     module.add_class::<live::LiveRuntime>()?;
