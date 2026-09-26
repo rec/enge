@@ -14,6 +14,28 @@ from ufor.synth import SynthInstrumentScore
 from enge import fm, synth
 
 
+def test_four_operator_kernel_handles_chain_and_delayed_feedback() -> None:
+    frames = 48000
+    frequencies = np.full((frames, 4), [110.0, 220.0, 330.0, 440.0])
+    envelopes = np.ones((frames, 4))
+    edges = [(0, 1, False), (1, 2, False), (2, 3, False), (3, 0, True)]
+    audio, phases, history = fm.four_operator_fm_samples(
+        frequencies,
+        envelopes,
+        np.full((frames, len(edges)), 0.5),
+        edges,
+        3,
+        np.ones(frames),
+        np.zeros((4, 2)),
+        np.zeros(len(edges)),
+        48000,
+    )
+    assert audio.shape == (frames, 1)
+    assert phases.shape == (4, 2)
+    assert history.shape == (len(edges),)
+    assert np.all(np.isfinite(audio))
+
+
 def score() -> SynthInstrumentScore:
     return SynthInstrumentScore.model_validate_json(
         (Path(__file__).parents[1] / "conformance/fm-instrument.json").read_text()

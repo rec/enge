@@ -682,3 +682,72 @@ def fm_samples(
         position = np.remainder(total, sample_rate)
         previous = modulator
     return audio, np.column_stack((position, error)), previous.copy()
+
+
+def four_operator_fm_samples(
+    frequencies: np.ndarray,
+    envelopes: np.ndarray,
+    edge_indices: np.ndarray,
+    edges: list[tuple[int, int, bool]],
+    carrier: int,
+    carrier_level: np.ndarray,
+    phases: np.ndarray,
+    history: np.ndarray,
+    sample_rate: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate a validated four-operator PM graph with delayed feedback edges."""
+    if (
+        frequencies.ndim != 2
+        or frequencies.shape[1] != 4
+        or envelopes.shape != frequencies.shape
+        or edge_indices.shape != (len(frequencies), len(edges))
+        or phases.shape != (4, 2)
+        or history.shape != (len(edges),)
+        or carrier_level.shape != (len(frequencies),)
+        or not 0 <= carrier < 4
+    ):
+        raise synth.EngineError("Invalid four-operator FM kernel layout")
+    position = phases[:, 0].copy()
+    error = phases[:, 1].copy()
+    previous = history.copy()
+    audio = np.empty((len(frequencies), 1))
+    order = _operator_order(4, edges)
+    for i in range(len(frequencies)):
+        outputs = np.zeros(4)
+        for operator in order:
+            offset = sum(
+                edge_indices[i, edge] * (previous[edge] if delayed else outputs[source])
+                for edge, (source, destination, delayed) in enumerate(edges)
+                if destination == operator
+            )
+            outputs[operator] = envelopes[i, operator] * np.sin(
+                2 * np.pi * position[operator] / sample_rate + offset
+            )
+        audio[i] = carrier_level[i] * outputs[carrier]
+        increment = frequencies[i] - error
+        total = position + increment
+        error = (total - position) - increment
+        position = np.remainder(total, sample_rate)
+        previous = np.array([outputs[source] for source, _, _ in edges])
+    return audio, np.column_stack((position, error)), previous
+
+
+def _operator_order(count: int, edges: list[tuple[int, int, bool]]) -> list[int]:
+    pending = [0] * count
+    successors = [[] for _ in range(count)]
+    for source, destination, delayed in edges:
+        if not delayed:
+            pending[destination] += 1
+            successors[source].append(destination)
+    ready = [i for i, degree in enumerate(pending) if degree == 0]
+    result: list[int] = []
+    while ready:
+        operator = ready.pop()
+        result.append(operator)
+        for destination in successors[operator]:
+            pending[destination] -= 1
+            if pending[destination] == 0:
+                ready.append(destination)
+    if len(result) != count:
+        raise synth.EngineError("Four-operator FM current edges must be acyclic")
+    return result
