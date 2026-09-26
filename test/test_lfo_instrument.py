@@ -79,6 +79,75 @@ def lfo_score(
     return instrument.SampleInstrumentScore.model_validate(raw)
 
 
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_named_envelope_modulates_synth_and_releases(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = score().model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["envelope"]["release"] = [{"duration": "1/4", "target": 1}]
+    voice.update(
+        {
+            "envelopes": {
+                "motion": {
+                    "initial": 0,
+                    "segments": [{"duration": "1/4", "target": 1}],
+                    "release": [{"duration": "1/4", "target": 0}],
+                }
+            },
+            "bindings": [{"name": "motion", "kind": "envelope", "reference": "motion"}],
+            "modulation": {
+                "sources": [
+                    {"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}
+                ],
+                "parameters": [
+                    {
+                        "target": {"name": "processing", "parameter": "amplitude"},
+                        "unit": "ratio",
+                        "scope": "voice",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 1,
+                    }
+                ],
+                "routes": [
+                    {
+                        "name": "shape",
+                        "source": "motion",
+                        "target": {"name": "processing", "parameter": "amplitude"},
+                        "operation": "multiply",
+                        "unit": "ratio",
+                        "points": [
+                            {"input": 0, "amount": 0},
+                            {"input": 1, "amount": 1},
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=12000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    renderer = synth.OfflineSynth(prepared, backend)
+    actual = np.concatenate(
+        [
+            renderer.advance([a for a in actions if start <= a.tick < end], start, end)
+            for start, end in ((0, 12000), (12000, 24000), (24000, 48000))
+        ]
+    )
+    assert np.max(np.abs(actual[:100])) < np.max(np.abs(actual[11000:12000]))
+    assert np.max(np.abs(actual[23000:])) < np.max(np.abs(actual[12000:13000]))
+    check_audio(tmp_path / f"named-envelope-{backend}.wav", actual, actual)
+
+
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
 @pytest.mark.parametrize("scope", ["voice", "part", "instrument"])
 def test_lfo_scopes_silent_time_release_tails_and_restores(

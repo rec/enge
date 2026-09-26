@@ -8,7 +8,7 @@ from typing import Literal, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import instrument_trace, lfo, modulation
+from ufor import envelope, instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.envelope import Envelope, Segment
 from ufor.oscillator import Oscillator, Waveform
@@ -51,6 +51,13 @@ class LFOSource(Model, frozen=True):
     part: str | None
     voice_id: str | None
     state: lfo.LFOState
+
+
+class EnvelopeSource(Model, frozen=True):
+    setting: int
+    name: str
+    voice_id: str
+    state: envelope.EnvelopeState
 
 
 class OscillatorState(Model, frozen=True):
@@ -277,6 +284,7 @@ class SynthSnapshot(Model, frozen=True):
     voices: list[VoiceSnapshot]
     contexts: list[ControlContext]
     lfos: list[LFOSource]
+    envelopes: list[EnvelopeSource]
 
 
 class PersistentSynthSnapshot(Model, frozen=True):
@@ -330,6 +338,7 @@ class ControlRenderer:
             tuple[int, tuple[tuple[str, int], ...]], dict[tuple[str, str], np.ndarray]
         ] = {}
         self.cached_lfos: dict[int, np.ndarray] = {}
+        self.cached_envelopes: dict[int, np.ndarray] = {}
         self.cached_controls: dict[tuple[int, str, Fraction], np.ndarray] = {}
         self.sample_rate = sample_rate
         self.declarations = declarations
@@ -337,6 +346,7 @@ class ControlRenderer:
         self.backend = backend
         self.contexts: list[ControlContext] = []
         self.lfos: list[LFOSource] = []
+        self.envelopes: list[EnvelopeSource] = []
         self.new_context("instrument", None, None, 0, {})
 
     def new_context(
@@ -448,8 +458,34 @@ class ControlRenderer:
         for source in settings.modulation.sources:
             binding = bindings[source.name]
             if isinstance(binding, processing.GeneratorBinding):
-                definition = settings.lfos[binding.reference]
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
+                if binding.kind == "envelope":
+                    definition = settings.envelopes[binding.reference]
+                    if definition.scope != "voice":
+                        raise EngineError("Named envelopes must use the voice scope")
+                    index = len(self.envelopes)
+                    initial = envelope.initial_envelope(
+                        definition, Fraction(action.tick, self.sample_rate)
+                    )
+                    self.envelopes.append(
+                        EnvelopeSource(
+                            setting=setting,
+                            name=binding.reference,
+                            voice_id=action.voice_id,
+                            state=envelope.envelope_event(
+                                definition,
+                                initial,
+                                envelope.EnvelopeEvent(
+                                    at=Fraction(action.tick, self.sample_rate),
+                                    ordinal=action.ordinal,
+                                    action="trigger",
+                                ),
+                            ),
+                        )
+                    )
+                    result[source.name] = index
+                    continue
+                definition = settings.lfos[binding.reference]
                 part = action.part if definition.scope == "part" else None
                 voice_id = action.voice_id if definition.scope == "voice" else None
                 index = next(
@@ -491,6 +527,36 @@ class ControlRenderer:
             result[source.name] = context_id
         return result
 
+    def release(
+        self,
+        settings: SoundSettings,
+        sources: dict[str, int],
+        action: instrument_trace.VoiceRetirement,
+    ) -> None:
+        self.clear_cache()
+        for binding in settings.bindings:
+            if (
+                not isinstance(binding, processing.GeneratorBinding)
+                or binding.kind != "envelope"
+            ):
+                continue
+            index = sources[binding.name]
+            source = self.envelopes[index]
+            definition = settings.envelopes[binding.reference]
+            self.envelopes[index] = source.model_copy(
+                update={
+                    "state": envelope.envelope_event(
+                        definition,
+                        source.state,
+                        envelope.EnvelopeEvent(
+                            at=Fraction(action.tick, self.sample_rate),
+                            ordinal=action.ordinal,
+                            action="release",
+                        ),
+                    )
+                }
+            )
+
     def values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
     ) -> dict[tuple[str, str], np.ndarray]:
@@ -506,6 +572,27 @@ class ControlRenderer:
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
                 index = sources[binding.name]
+                if binding.kind == "envelope":
+                    if index not in self.cached_envelopes:
+                        definition = settings.envelopes[binding.reference]
+                        state = self.envelopes[index].state
+                        self.cached_envelopes[index] = np.column_stack(
+                            (
+                                np.array(
+                                    [
+                                        envelope.envelope_at(
+                                            definition,
+                                            state,
+                                            Fraction(start + i, self.sample_rate),
+                                        ).value
+                                        for i in range(frames)
+                                    ]
+                                ),
+                                np.ones(frames),
+                            )
+                        )
+                    signals[binding.name] = self.cached_envelopes[index]
+                    continue
                 if index not in self.cached_lfos:
                     self.cached_lfos[index] = lfo_samples(
                         settings.lfos[binding.reference],
@@ -544,6 +631,7 @@ class ControlRenderer:
         self.cached_span = None
         self.cached_values.clear()
         self.cached_lfos.clear()
+        self.cached_envelopes.clear()
         self.cached_controls.clear()
 
     def parameters(
@@ -610,6 +698,7 @@ class OfflineSynth:
             voices=list(self.voices.values()),
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
+            envelopes=self.controls.envelopes,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: SynthSnapshot) -> None:
@@ -625,6 +714,7 @@ class OfflineSynth:
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
+        self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if self.controls.apply(action):
@@ -637,6 +727,9 @@ class OfflineSynth:
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
             elif voice := self.voices.get(action.voice_id):
+                self.controls.release(
+                    self.templates[voice.template], voice.sources, action
+                )
                 voice.renderer.release()
         else:
             raise EngineError(
@@ -1242,13 +1335,17 @@ def validate_envelope(envelope: Envelope) -> None:
 
 def validate_generators(settings: SoundSettings) -> None:
     """Supported named sources share the seconds-clock LFO contract."""
-    if settings.envelopes:
-        raise EngineError("Named envelopes are not implemented")
+    if any(
+        g.clock != "seconds" or g.scope != "voice" for g in settings.envelopes.values()
+    ):
+        raise EngineError("Named envelopes must use the voice seconds clock")
     if any(g.clock != "seconds" for g in settings.lfos.values()):
         raise EngineError("LFOs must use the seconds clock")
     if any(
         not isinstance(b, ControlBinding)
-        and not (isinstance(b, processing.GeneratorBinding) and b.kind == "lfo")
+        and not (
+            isinstance(b, processing.GeneratorBinding) and b.kind in ("envelope", "lfo")
+        )
         for b in settings.bindings
     ):
         raise EngineError("Only control and LFO bindings are implemented")
