@@ -21,7 +21,7 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [tool.maturin]
-python-source = "src"
+python-source = "."
 module-name = "enge._native"
 
 [tool.pytest.ini_options]

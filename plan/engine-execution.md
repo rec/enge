@@ -17,7 +17,7 @@ routing, and snapshot rules within each implementation. Their source-generation
 state differs. The Python reference remains independent of native DSP code and
 prioritizes readable equations and transitions over speed.
 
-The current implementation in `src/enge/synth.py` provides the first dynamic
+The current implementation in `enge/synth.py` provides the first dynamic
 synth reference: held linear envelopes, explicit routes, minimum hold, phase
 synchronization, static tuning, and live amplitude/tuning control routes. It
 consumes uFor trigger contexts, retains scoped smoothing trajectories, and
@@ -56,7 +56,7 @@ bounded native-action array; each block encodes into that array in place and fai
 before the native call if its declared capacity is exceeded.
 
 The third source profile is now the NumPy and Rust two-operator FM engine in
-`src/enge/fm.py`, under the [FM plan and status](fm-synthesis.md). It shares uFor
+`enge/fm.py`, under the [FM plan and status](fm-synthesis.md). It shares uFor
 synth lifecycle preparation, scoped controls/LFOs, envelope arithmetic, filters,
 and routing. Its pure array kernel keeps phase and one-sample feedback state
 explicit for a future tensor port. The Rust FM kernel computes both operators,
@@ -69,7 +69,7 @@ envelopes, one-sample feedback, filters, controls, LFO clocks, and routing state
 across blocks and snapshots. The carrier envelope owns voice lifetime; the
 modulator becomes silent when its own release ends.
 
-The fourth source profile is white noise in `src/enge/noise.py` and `src/noise.rs`,
+The fourth source profile is white noise in `enge/noise.py` and `src/noise.rs`,
 under the [noise plan](noise.md). Both backends use the portable noise-v1
 SplitMix64 stream contract, with per-voice keys carried by prepared actions and
 an exact sample counter. Noise shares filters, amplitude envelopes, controls,
@@ -109,10 +109,10 @@ filters rather than silently dropping them. Live granulator freeze actions are
 encoded and snapshotted. Frozen history replays circularly through the portable
 tail/head crossfade, and captured active grains remain valid across unfreeze.
 
-`src/enge/sampler.py` implements NumPy and Rust source traversal with linear
+`enge/sampler.py` implements NumPy and Rust source traversal with linear
 interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and
-`src/enge/sample_instrument.py` now integrate shared envelope timing, scoped
+`enge/sample_instrument.py` now integrate shared envelope timing, scoped
 controls, routing, and prepared uFor actions. Both instrument renderers now share
 scoped LFO sources under the [LFO numerical contract](lfo-numerics.md).
 
@@ -412,7 +412,7 @@ frequency response. The former direct-form II transposed recurrence is replaced
 by the specified trapezoidal state-variable recurrence for both constant and
 changing parameters. There is one realization per backend, with no legacy path.
 
-`src/enge/filters.py` supplies the NumPy reference and shared parameter validation;
+`enge/filters.py` supplies the NumPy reference and shared parameter validation;
 `src/filters.rs` computes coefficients and advances filter state inside the native
 synth/sample kernels. Each voice has two integrators per stage per source channel.
 Values have shape `(active frames, filters, 2)`, with cutoff in Hz then Q. Resolve
@@ -599,7 +599,7 @@ Implementation status and remaining order:
    Rust buffers, and transfers owned audio and next-state arrays back to NumPy.
    Tests verify that inputs and outputs do not alias. Default Rust floating-point
    operations preserve the compensated recurrence without fast-math reassociation.
-   `src/enge/native.py` prepares exact rational envelope span boundaries. uFor
+   `enge/native.py` prepares exact rational envelope span boundaries. uFor
    actions and per-sample control resolution remain in Python. Snapshots retain
    their renderer backend; active voices cannot be restored into a different
    backend. Tuney continues to select NumPy by default.

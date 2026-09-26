@@ -5,7 +5,7 @@
 This specifies the sampler's source traversal boundary. It extends the
 [execution contract](engine-execution.md) and reuses
 [uFor's playback and sustain-loop rules](../../ufor/doc/sample-performance.md#playback-direction).
-The NumPy source renderer in [sampler.py](../src/enge/sampler.py) passes the
+The NumPy source renderer in [sampler.py](../enge/sampler.py) passes the
 accompanying [vectors](../conformance/sampler-traversal.json). Complete NumPy
 sample voices and prepared-action integration are implemented. Rust sampler
 rendering is the next step.

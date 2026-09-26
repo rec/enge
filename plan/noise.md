@@ -16,7 +16,7 @@ stereo-independent generators, and oversampling are outside the initial scope.
 Filtered white noise is not advertised as an exact pink or brown noise model.
 PyTorch and C++ implementations are also deferred.
 
-The first profile is implemented in `src/enge/noise.py` and `src/noise.rs`.
+The first profile is implemented in `enge/noise.py` and `src/noise.rs`.
 uFor defines `NoiseVoice` and prepared `noise_key` semantics in
 [the noise contract](../../ufor/doc/noise-synthesis.md). The shared regression
 suite is `test/test_noise.py`; both backends publish a two-second FLAC demo.

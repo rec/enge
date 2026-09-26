@@ -15,7 +15,7 @@ handle live controls, release, arbitrary render partitions, and snapshot/restore
 from its first implementation. It is preparation for larger FM instruments, not
 an emulation of a particular hardware synth or preset format.
 
-The NumPy profile is implemented in `src/enge/fm.py`, with the Rust kernel in
+The NumPy profile is implemented in `enge/fm.py`, with the Rust kernel in
 `src/fm.rs` selected using `backend="native"`. It exposes `prepare`,
 `OfflineFM.advance`, JSON-serializable snapshots, and restore. The independent
 audio regressions and listenable demo are in `test/test_fm.py`. uFor now defines
