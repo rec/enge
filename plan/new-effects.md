@@ -310,7 +310,7 @@ feedback graphs, convolution, looper recording, or arbitrary modulation routing.
 
 ## Shared requirements for every selected category
 
-Use the [live-effects plan](live-effects.md) and [engine execution
+Use the [live callback audit](../doc/live-callback-audit.md) and [engine execution
 contract](engine-execution.md). uFor owns portable type definitions and action
 semantics; enge owns preparation, NumPy reference processing, Rust processing,
 resource bounds, and snapshots.

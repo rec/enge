@@ -6,7 +6,7 @@ This audit covers the block path introduced by `PersistentSynth`, `PersistentFM`
 `PersistentNoise`, `PersistentSampler`, `LiveEngine`, native effects, and the
 bounded action queue. It distinguishes measured callback-shaped performance from
 the stronger allocation-free, lock-free, and Python-free contract in
-`plan/live-effects.md`.
+the completed live-effects implementation.
 
 ## Current boundary
 

@@ -17,6 +17,19 @@ routing, and snapshot rules within each implementation. Their source-generation
 state differs. The Python reference remains independent of native DSP code and
 prioritizes readable equations and transitions over speed.
 
+## Remaining work
+
+- Define named envelopes and additional portable modulation targets before adding
+  them to any source profile.
+- Add uFor's addressed instrument LFO rate/reset action before prepared traces
+  can alter an active LFO rate or phase.
+- Specify a PyTorch realization only after choosing supported recurrences and an
+  eager/compiled conformance strategy.
+- Keep native-host device ownership and any expanded live sampler modulation
+  profile as separate work with explicit host and resource contracts.
+
+## Finished behavior and evidence
+
 The current implementation in `enge/synth.py` provides the first dynamic
 synth reference: held linear envelopes, explicit routes, minimum hold, phase
 synchronization, static tuning, and live amplitude/tuning control routes. It
@@ -70,7 +83,7 @@ across blocks and snapshots. The carrier envelope owns voice lifetime; the
 modulator becomes silent when its own release ends.
 
 The fourth source profile is white noise in `enge/noise.py` and `src/noise.rs`,
-under the [noise plan](noise.md). Both backends use the portable noise-v1
+under the implemented noise-v1 profile. Both backends use the portable noise-v1
 SplitMix64 stream contract, with per-voice keys carried by prepared actions and
 an exact sample counter. Noise shares filters, amplitude envelopes, controls,
 LFOs, routing, and lifecycle semantics; source pitch/tuning is unsupported.
@@ -114,7 +127,7 @@ interpolation, shared immutable decoded audio, live pitch arrays, fractional
 effective releases, and serializable cursor state. `SampleVoiceRenderer` and
 `enge/sample_instrument.py` now integrate shared envelope timing, scoped
 controls, routing, and prepared uFor actions. Both instrument renderers now share
-scoped LFO sources under the [LFO numerical contract](lfo-numerics.md).
+scoped LFO sources.
 
 ## Ownership and existing contracts
 
@@ -381,7 +394,7 @@ Decoded immutable arrays are shared across voices and restored instances;
 traversal, envelopes, and processing state are private. Stereo channels share
 the voice's traversal position and weights without collapsing their audio.
 
-The [sampler numerical contract](sampler-numerics.md) specifies traversal and
+The implemented sampler traversal profile specifies traversal and
 release ordering, with exact small [vectors](../conformance/sampler-traversal.json).
 The NumPy source core implements its linear interpolation kernel, finite-sample
 edge treatment, fractional loop/reversal behavior, and exhaustion coordinate.
@@ -539,7 +552,7 @@ overlap, fractional pitch, stereo routing, release tails, and decoded-asset reus
 without shared mutable voice state. Backend-specific allocation tests may verify
 asset reuse separately from the common behavioral suite.
 
-## uFor prerequisites and implementation order
+## Finished uFor prerequisites
 
 The portable prerequisites below were completed in uFor commit `2e5b02e`:
 
@@ -558,7 +571,7 @@ The portable prerequisites below were completed in uFor commit `2e5b02e`:
    enge. Recheck contracts after future uFor changes rather than preserving defects
    as compatibility behavior.
 
-Implementation status and remaining order:
+## Finished implementation milestones
 
 1. The first dynamic synth reference and its timing/control conformance are
    implemented. Tests cover 64/128/256/1024-frame and irregular partitions,
@@ -603,8 +616,8 @@ Implementation status and remaining order:
    actions and per-sample control resolution remain in Python. Snapshots retain
    their renderer backend; active voices cannot be restored into a different
    backend. Tuney continues to select NumPy by default.
-4. Sampler: the NumPy and Rust cores implement the [numerical contract](sampler-numerics.md)
-   and pass all 34 [traversal vectors](../conformance/sampler-traversal.json).
+4. Sampler: the NumPy and Rust cores implement the traversal profile and pass all
+   34 [traversal vectors](../conformance/sampler-traversal.json).
    `PreparedSample` validates and isolates decoded audio; `SampleState` and
    `sample_frames()` preserve position through live pitch, fractional releases,
    loop transitions, block partitions, and JSON restores. `SampleVoiceRenderer`
@@ -644,14 +657,11 @@ Implementation status and remaining order:
    demonstrates tremolo, vibrato, and live gain on synth and sampled tones.
    The standalone source API accepts canonical LFO event states; prepared
    instrument traces still need a portable addressed rate/reset action before
-   those events can be delivered through `advance`. See [details](lfo-numerics.md).
+   those events can be delivered through `advance`.
 6. Dynamic filters are implemented in NumPy and Rust under the revised uFor
    contract. Cutoff/Q controls and LFOs preserve independent stage/channel states;
    static responses, rapid modulation, boundaries, lifetime, restores, and a
    listening demo have shared coverage. See [dynamic filters](#dynamic-filters).
-7. Further generators, processing, and structural changes one specified feature
-   at a time. Do not introduce a generic DSP graph or host to complete these steps.
-
 ### Phase consolidation timing check, 2026-09-16
 
 A local arm64 macOS test measured one second of `Mixer.render()` calls at 48 kHz
@@ -758,7 +768,7 @@ nonlinear processing can make a small source error more audible.
 
 ### Timing check, 2026-09-19
 
-The same four-voice noise workload used in the [noise implementation](noise.md)
+The same four-voice noise workload used in the implemented noise profile
 rendered two seconds at 48 kHz with 1,024-frame blocks, one 1,200 Hz lowpass stage
 per voice at Q=0.7, constant authored controls, and stereo routing. Times include
 control evaluation and voice orchestration, but exclude encoding and device I/O.
