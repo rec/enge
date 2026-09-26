@@ -2,10 +2,42 @@
 
 ## Purpose and scope
 
-Add FM as a third sound engine beside enge's oscillator synth and sampler.
-The current scope is the independent NumPy reference and Rust backend, with
-explicit array/state boundaries suitable for a future tensor implementation.
-PyTorch, C++, and JUCE integration are deferred. Both backends run the same
+The two-operator FM engine is complete. This retained document records its
+contract and identifies the defined work needed to extend it.
+
+## Remaining work
+
+### Four or more operators
+
+Keep operator identity, equations, envelopes, and state independent of their
+modulator/carrier role. The separate connection definition should allow a later
+profile to admit additional operators and audible outputs without changing what
+an existing two-operator patch means. Do not implement a generic graph scheduler
+or a full algorithm library for this first extension.
+
+A larger profile must specify summing multiple modulation inputs, operator
+evaluation order, multiple carriers, and explicit delays for permitted feedback
+edges. It also needs expanded aliasing/performance tests, output-level policy,
+and usability work. The two-operator engine proves the foundational recurrence
+and dynamic behavior; it does not by itself establish production quality for
+every larger topology or hardware compatibility.
+
+### Tensor realization and timing
+
+A future PyTorch implementation must establish a supported recurrence and
+eager/compiled parity. Keep numerical inputs as parameter arrays plus explicit
+previous state, with model validation, rational boundary resolution, and action
+dispatch outside the numerical region. Do not add PyTorch as a dependency or
+promise efficient compilation of the scalar feedback recurrence without those
+measurements.
+
+Measure end-to-end Bach rendering with native FM before making a performance
+claim for the full musical workload.
+
+## Finished: two-operator FM profile
+
+The completed profile added FM beside enge's oscillator synth and sampler using
+an independent NumPy reference and Rust backend. Both backends run the same
 conformance tests: discrete behavior agrees exactly; audio and floating-point
 state use explicit tolerances.
 
@@ -127,7 +159,7 @@ instances and release tails. Snapshots include explicit backend identity and
 reject backend mismatches, including silent snapshots and mismatched active-voice
 state.
 
-## Implementation sequence
+## Finished implementation sequence
 
 1. **Specify and test uFor's FM profile.** Settle portable definitions, parameter
    addresses/domains, envelope ownership, frequency composition, and prepared
@@ -152,23 +184,15 @@ state.
    Update the execution roadmap to record the supported FM profile and limits.
 
 Steps 1–4 and the audio regression portion of step 5 are complete for both backends.
-End-to-end Bach timing remains to be measured with native FM. The shipped demo
-is one second, with delayed feedback, an interrupted smoothed index sweep, and release.
+The shipped demo is one second, with delayed feedback, an interrupted smoothed
+index sweep, and release.
 Separate closed-form tests cover constant index, initial phases, tuning and
 operator order; other tests cover live targets, LFO/filter composition, stop,
 minimum hold, overlapping voices, and partitioned JSON continuation.
 
 The public NumPy kernel contains no Pydantic models, `.item()`/Python scalar
 extraction, or data-dependent Python branches. Its compensated phase and delayed
-feedback loop is intentionally sequential. A future PyTorch port must establish
-a supported recurrence and eager/compiled parity; compilation performance has
-not been measured or promised.
-
-Keep numerical inputs as parameter arrays plus explicit previous state. Follow
-the existing `torch.compile` guidance: Python model validation, rational boundary
-resolution, and action dispatch stay outside the numerical region. PyTorch is
-future work; do not add it as a dependency or promise that a scalar feedback loop
-will compile efficiently.
+feedback loop is intentionally sequential.
 
 ## Acceptance and verification
 
@@ -197,21 +221,6 @@ will compile efficiently.
   type checking, pyupgrade, Cargo formatting/clippy, and diff checks as required
   by repository instructions. Report existing unrelated failures separately.
   Measure short-block and longer-render costs without claiming callback safety.
-
-## Path to four or more operators
-
-Keep operator identity, equations, envelopes, and state independent of their
-modulator/carrier role. The separate connection definition should allow a later
-profile to admit additional operators and audible outputs without changing what
-an existing two-operator patch means. Do not implement a generic graph scheduler
-or a full algorithm library for this first release.
-
-A larger profile must specify summing multiple modulation inputs, operator
-evaluation order, multiple carriers, and explicit delays for permitted feedback
-edges. It also needs expanded aliasing/performance tests, output-level policy,
-and usability work. The two-operator engine proves the foundational recurrence
-and dynamic behavior; it does not by itself establish production quality for
-every larger topology or hardware compatibility.
 
 ## Additional work beyond the prompt
 

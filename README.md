@@ -26,7 +26,7 @@ loops, overlaps, live pitch ratios, and fractional effective releases.
 `PreparedSample` owns immutable audio shared by cursors; `SampleState` serializes
 progress, and `sample_frames()` returns audio plus independent next state.
 It passes the [traversal vectors](conformance/sampler-traversal.json) and longer
-48 kHz WAV regressions under the [numerical specification](plan/sampler-numerics.md).
+48 kHz WAV regressions for the implemented traversal profile.
 
 `OfflineSampler` in [sample_instrument.py](enge/sample_instrument.py) now
 consumes prepared uFor sample actions. It applies held linear envelopes,
@@ -63,7 +63,7 @@ or instrument ownership as allowed by uFor. Shared sources continue through
 silence, and snapshots retain their exact phase anchors. Standalone
 `enge.lfo.lfo_samples()` also samples canonical uFor rate/reset event states.
 Prepared instrument traces do not yet carry addressed LFO events; their LFO
-rates remain authored settings. See the [LFO contract](plan/lfo-numerics.md).
+rates remain authored settings.
 
 All four offline engines accept `control_interval=1` (a positive integer), as does
 `render_midi`. The default uses full-resolution vectorized controls and route
