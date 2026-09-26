@@ -404,7 +404,37 @@ class ControlRenderer:
 
     def apply(self, action: instrument_trace.TraceAction) -> bool:
         self.clear_cache()
-        if isinstance(action, instrument_trace.TriggerContext):
+        if isinstance(action, instrument_trace.LFOObservation):
+            matches = [
+                (index, source)
+                for index, source in enumerate(self.lfos)
+                if source.name == action.name
+                and source.part is None
+                and source.voice_id is None
+            ]
+            if not matches:
+                raise EngineError(f"Unknown instrument LFO: {action.name}")
+            for index, source in matches:
+                definition = self.settings[source.setting].lfos[source.name]
+                self.lfos[index] = source.model_copy(
+                    update={
+                        "state": lfo.lfo_event(
+                            definition,
+                            source.state,
+                            lfo.LFOEvent(
+                                at=Fraction(action.tick, self.sample_rate),
+                                ordinal=action.ordinal,
+                                action=action.action,
+                                rate=(
+                                    None
+                                    if action.rate is None
+                                    else Fraction(action.rate)
+                                ),
+                            ),
+                        )
+                    }
+                )
+        elif isinstance(action, instrument_trace.TriggerContext):
             if action.controls.keys() != self.declarations.keys():
                 raise EngineError("Trigger context must contain all declared controls")
             for name, value in action.controls.items():
