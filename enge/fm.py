@@ -209,6 +209,7 @@ class FMSnapshot(Model, frozen=True):
     voices: list[VoiceSnapshot]
     contexts: list[synth.ControlContext]
     lfos: list[synth.LFOSource]
+    envelopes: list[synth.EnvelopeSource]
 
 
 class PersistentFMSnapshot(Model, frozen=True):
@@ -279,6 +280,7 @@ class OfflineFM:
             voices=list(self.voices.values()),
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
+            envelopes=self.controls.envelopes,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: FMSnapshot) -> None:
@@ -296,6 +298,7 @@ class OfflineFM:
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
+        self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if self.controls.apply(action):
@@ -306,6 +309,9 @@ class OfflineFM:
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
             elif voice := self.voices.get(action.voice_id):
+                self.controls.release(
+                    self.templates[voice.template], voice.sources, action
+                )
                 voice.renderer.release()
             return
         if not isinstance(action, VoiceStart):
