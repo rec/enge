@@ -86,11 +86,14 @@ class Patch(BaseModel, frozen=True):
                     {"name": "modulator", "ratio": self.ratio, "envelope": envelope},
                     {"name": "carrier", "envelope": envelope},
                 ],
-                "connection": {
-                    "source": "modulator",
-                    "destination": "carrier",
-                    "index": self.index,
-                },
+                "edges": [
+                    {
+                        "source": "modulator",
+                        "destination": "carrier",
+                        "index": self.index,
+                    }
+                ],
+                "carrier": "carrier",
             }
         elif self.engine == "synth":
             voice.update(oscillator={"waveform": "triangle"}, envelope=envelope)
@@ -167,7 +170,7 @@ def _settings(engine: str, index: float) -> dict[str, object]:
     amplitude = {"name": "processing", "parameter": "amplitude"}
     tuning = {"name": "processing", "parameter": "tuning_cents"}
     color = (
-        {"name": "fm", "parameter": "index"}
+        {"name": "edge-modulator-carrier", "parameter": "index"}
         if engine == "fm"
         else {"name": "filter-tone", "parameter": "cutoff_hz"}
     )

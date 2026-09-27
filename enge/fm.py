@@ -1,5 +1,6 @@
 """Two-operator phase modulation with independent NumPy and Rust numerical kernels."""
 
+from dataclasses import dataclass
 from math import ceil, isfinite
 from typing import Literal, Self, cast
 
@@ -7,13 +8,49 @@ import numpy as np
 from pydantic import ConfigDict, Field, model_validator
 from ufor import instrument_trace, modulation
 from ufor.base import Model
-from ufor.fm import FM
+from ufor.fm import FM, edge_target_name
 from ufor.samples.processing import Processing, ResonantFilter
 from ufor.streams import AudioType
 from ufor.synth import FMVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
 
-from . import _native, filters, native, synth
+from . import _native, filters, synth
+
+
+@dataclass(frozen=True)
+class _TwoOperatorConnection:
+    source: str
+    destination: str
+    index: float
+
+
+def _two_operator_connection(profile: FM) -> _TwoOperatorConnection:
+    if len(profile.operators) != 2:
+        raise synth.EngineError("Graph FM integration is not implemented")
+    destination = str(profile.carrier)
+    source = str(next(o.name for o in profile.operators if o.name != profile.carrier))
+    edge = next(
+        (
+            e
+            for e in profile.edges
+            if not e.delayed and e.source == source and e.destination == destination
+        ),
+        None,
+    )
+    if edge is None:
+        raise synth.EngineError("Two-operator FM requires a modulator-to-carrier edge")
+    return _TwoOperatorConnection(source, destination, edge.index)
+
+
+def _feedback(profile: FM, source: str) -> float:
+    return next(
+        (
+            e.index
+            for e in profile.edges
+            if e.delayed and e.source == source and e.destination == source
+        ),
+        0,
+    )
 
 
 class PreparedVoice(synth.PreparedEnvelope, frozen=True):
@@ -24,9 +61,7 @@ class PreparedVoice(synth.PreparedEnvelope, frozen=True):
 
     @model_validator(mode="after")
     def voice_profile(self) -> Self:
-        carrier = next(
-            o for o in self.fm.operators if o.name == self.fm.connection.destination
-        )
+        carrier = next(o for o in self.fm.operators if o.name == self.fm.carrier)
         if self.envelope != carrier.envelope:
             raise synth.EngineError("FM lifetime envelope must match the carrier")
         if len(self.routes) != 1 or not self.routes[0]:
@@ -41,46 +76,56 @@ class VoiceRenderer(synth.EnvelopeRenderer):
     definition: PreparedVoice
     backend: Literal["numpy", "native"] = "numpy"
     phases: list[list[float]]
-    previous_modulator: float = 0
+    history: list[float]
     filter_states: list[filters.FilterState] = Field(default_factory=list)
 
     @classmethod
     def start(
         cls, definition: PreparedVoice, backend: Literal["numpy", "native"] = "numpy"
     ) -> "VoiceRenderer":
-        operators = {o.name: o for o in definition.fm.operators}
-        connection = definition.fm.connection
         return cls(
             definition=definition.model_copy(deep=True),
             backend=backend,
             phases=[
-                [operators[n].phase_cycles * definition.sample_rate, 0]
-                for n in (connection.source, connection.destination)
+                [operator.phase_cycles * definition.sample_rate, 0]
+                for operator in definition.fm.operators
             ],
+            history=[0] * len(definition.fm.edges),
             filter_states=filters.initial_states(definition.filters, 1),
         )
 
     def render(
         self,
         frames: int,
-        parameters: np.ndarray,
+        frequencies: np.ndarray,
+        edge_indices: np.ndarray,
+        carrier_level: np.ndarray,
         gains: np.ndarray,
         filter_values: np.ndarray,
     ) -> np.ndarray:
         """Render active-frame arrays, returning silence after carrier completion.
 
-        Parameter columns are modulator Hz, carrier Hz, index radians, feedback
-        radians, and carrier level. Python resolves validation and envelope boundaries.
+        Python resolves controls and envelope boundaries before graph rendering.
         """
         if frames < 0:
             raise synth.EngineError("FM frame count must be nonnegative")
         count = self.active_frames(frames)
-        if parameters.shape != (count, 5) or gains.shape != (count,):
+        operators = self.definition.fm.operators
+        edges = self.definition.fm.edges
+        if (
+            frequencies.shape != (count, len(operators))
+            or edge_indices.shape != (count, len(edges))
+            or carrier_level.shape != (count,)
+            or gains.shape != (count,)
+        ):
             raise synth.EngineError("FM parameters must match the active frame count")
         if (
-            not np.all(np.isfinite(parameters))
-            or np.any(parameters[:, :2] <= 0)
-            or np.any(parameters[:, 2:] < 0)
+            not np.all(np.isfinite(frequencies))
+            or np.any(frequencies <= 0)
+            or not np.all(np.isfinite(edge_indices))
+            or np.any(edge_indices < 0)
+            or not np.all(np.isfinite(carrier_level))
+            or np.any(carrier_level < 0)
             or not np.all(np.isfinite(gains))
             or np.any(gains < 0)
         ):
@@ -91,84 +136,71 @@ class VoiceRenderer(synth.EnvelopeRenderer):
         if count == 0:
             return output
         rate = self.definition.sample_rate
-        operators = {o.name: o for o in self.definition.fm.operators}
-        connection = self.definition.fm.connection
         values = filters.parameters(
             self.definition.filters, rate, count, filter_values, self.frame_count
         )
-        if self.backend == "native":
-            from . import _native
-
-            spans = [
-                native.envelope_spans(
-                    operators[n].envelope,
-                    self.frame_count,
-                    count,
-                    rate,
-                    self.release_frame,
-                )
-                for n in (connection.source, connection.destination)
-            ]
-            modulator_frames = count
-            if self.release_frame is not None:
-                end = (
-                    self.release_frame
-                    + sum(
-                        s.duration
-                        for s in operators[connection.source].envelope.release
-                    )
-                    * rate
-                )
-                modulator_frames = max(0, min(count, ceil(end) - self.frame_count))
-            audio, phases, history, memory = _native.render_fm(
-                rate,
-                parameters,
-                np.array(self.phases),
-                self.previous_modulator,
-                gains,
-                spans[0],
-                spans[1],
-                modulator_frames,
-                np.array(self.definition.routes[0]),
-                filters.native_inputs(
-                    self.definition.filters, self.filter_states, values
-                ),
-            )
-            output[:count] = audio
-            self.phases = phases.tolist()
-            self.previous_modulator = history
-            self.filter_states = filters.restored_states(memory)
-            self.frame_count += count
-            return output
         envelopes = np.column_stack(
             [
                 synth.envelope_samples(
-                    operators[n].envelope,
-                    self.frame_count,
-                    count,
-                    rate,
-                    self.release_frame,
+                    operator.envelope, self.frame_count, count, rate, self.release_frame
                 )
-                for n in (connection.source, connection.destination)
+                for operator in operators
             ]
         )
-        modulator = operators[connection.source]
         if self.release_frame is not None:
-            end = (
-                self.release_frame
-                + sum(s.duration for s in modulator.envelope.release) * rate
+            for index, operator in enumerate(operators):
+                end = (
+                    self.release_frame
+                    + sum(segment.duration for segment in operator.envelope.release)
+                    * rate
+                )
+                envelopes[max(0, ceil(end) - self.frame_count) :, index] = 0
+        graph_edges = [
+            (
+                next(
+                    i
+                    for i, operator in enumerate(operators)
+                    if operator.name == edge.source
+                ),
+                next(
+                    i
+                    for i, operator in enumerate(operators)
+                    if operator.name == edge.destination
+                ),
+                edge.delayed,
             )
-            envelopes[max(0, ceil(end) - self.frame_count) :, 0] = 0
-        audio, phases, history = fm_samples(
-            parameters[:, :2],
-            envelopes,
-            parameters[:, 2],
-            parameters[:, 3],
-            parameters[:, 4],
-            np.array(self.phases),
-            np.array([self.previous_modulator]),
-            rate,
+            for edge in edges
+        ]
+        carrier = next(
+            i
+            for i, operator in enumerate(operators)
+            if operator.name == self.definition.fm.carrier
         )
+        if self.backend == "native":
+            native_edges = np.array(graph_edges, dtype=np.float64)
+            audio, phases, history = _native.render_graph_fm(
+                rate,
+                frequencies,
+                envelopes,
+                edge_indices,
+                native_edges,
+                carrier,
+                carrier_level,
+                np.array(self.phases),
+                np.array(self.history),
+            )
+        else:
+            audio, phases, history = graph_fm_samples(
+                frequencies,
+                envelopes,
+                edge_indices,
+                graph_edges,
+                carrier,
+                carrier_level,
+                np.array(self.phases),
+                np.array(self.history),
+                rate,
+            )
         if not np.all(np.isfinite(audio)):
             raise synth.EngineError("FM produced non-finite output")
         audio, filter_states = filters.filter_samples(
@@ -182,7 +214,7 @@ class VoiceRenderer(synth.EnvelopeRenderer):
             audio * gains[:, None], self.definition.routes
         )
         self.phases = phases.tolist()
-        self.previous_modulator = float(history[0])
+        self.history = history.tolist()
         self.filter_states = filter_states
         self.frame_count += count
         return output
@@ -333,9 +365,7 @@ class OfflineFM:
         if action.voice_id in self.voices:
             raise synth.EngineError(f"Duplicate active voice: {action.voice_id}")
         carrier = next(
-            o
-            for o in template.fm.operators
-            if o.name == template.fm.connection.destination
+            o for o in template.fm.operators if o.name == template.fm.carrier
         )
         self.voices[action.voice_id] = VoiceSnapshot(
             voice_id=action.voice_id,
@@ -374,32 +404,46 @@ class OfflineFM:
                 start,
                 count,
             )
-            operators = {o.name: o for o in template.fm.operators}
-            connection = template.fm.connection
-            parameters = np.empty((count, 5))
-            for i, name in enumerate((connection.source, connection.destination)):
-                operator = operators[name]
+            operators = template.fm.operators
+            frequencies = np.empty((count, len(operators)))
+            for i, operator in enumerate(operators):
+                name = operator.name
                 ratio = values.get((f"operator-{name}", "ratio"), operator.ratio)
                 cents = values.get(
                     (f"operator-{name}", "tuning_cents"), operator.tuning_cents
                 )
-                parameters[:, i] = (
+                frequencies[:, i] = (
                     renderer.definition.pitch_hz
                     * ratio
                     * np.exp2((tuning + cents) / 1200)
                 )
-            for i, (name, default) in enumerate(
-                (
-                    ("index", connection.index),
-                    ("feedback", template.fm.feedback),
-                    ("carrier_level", template.fm.carrier_level),
-                ),
-                start=2,
-            ):
-                parameters[:, i] = values.get(("fm", name), default)
+            edge_indices = (
+                np.column_stack(
+                    [
+                        value
+                        if isinstance(
+                            value := values.get(
+                                (f"edge-{edge_target_name(edge)}", "index"), edge.index
+                            ),
+                            np.ndarray,
+                        )
+                        else np.full(count, value)
+                        for edge in template.fm.edges
+                    ]
+                )
+                if template.fm.edges
+                else np.empty((count, 0))
+            )
+            carrier_level = values.get(
+                ("fm", "carrier_level"), template.fm.carrier_level
+            )
+            if not isinstance(carrier_level, np.ndarray):
+                carrier_level = np.full(count, carrier_level)
             output += renderer.render(
                 frames,
-                parameters,
+                frequencies,
+                edge_indices,
+                carrier_level,
                 gains * 10 ** (template.processing.volume_db / 20),
                 filter_values,
             )
@@ -439,7 +483,7 @@ class PersistentFM(synth.PersistentSynth):
                 "Persistent FM spatial processing is not implemented"
             )
         operators = {o.name: o for o in template.fm.operators}
-        connection = template.fm.connection
+        connection = _two_operator_connection(template.fm)
         modulator = operators[connection.source]
         carrier = operators[connection.destination]
         route = [
@@ -501,12 +545,19 @@ class PersistentFM(synth.PersistentSynth):
                 -120000,
                 120000,
             ),
-            (("fm", "index"), 6, modulation.Operation.add, connection.index, 0, 1e300),
             (
-                ("fm", "feedback"),
+                ("edge-modulator-carrier", "index"),
+                6,
+                modulation.Operation.add,
+                connection.index,
+                0,
+                1e300,
+            ),
+            (
+                ("edge-feedback", "index"),
                 7,
                 modulation.Operation.add,
-                template.fm.feedback,
+                _feedback(template.fm, connection.source),
                 0,
                 1e300,
             ),
@@ -684,7 +735,7 @@ def fm_samples(
     return audio, np.column_stack((position, error)), previous.copy()
 
 
-def four_operator_fm_samples(
+def graph_fm_samples(
     frequencies: np.ndarray,
     envelopes: np.ndarray,
     edge_indices: np.ndarray,
@@ -695,25 +746,26 @@ def four_operator_fm_samples(
     history: np.ndarray,
     sample_rate: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Evaluate a validated four-operator PM graph with delayed feedback edges."""
+    """Evaluate a validated two-through-six operator PM graph."""
+    operators = frequencies.shape[1] if frequencies.ndim == 2 else 0
     if (
         frequencies.ndim != 2
-        or frequencies.shape[1] != 4
+        or not 2 <= operators <= 6
         or envelopes.shape != frequencies.shape
         or edge_indices.shape != (len(frequencies), len(edges))
-        or phases.shape != (4, 2)
+        or phases.shape != (operators, 2)
         or history.shape != (len(edges),)
         or carrier_level.shape != (len(frequencies),)
-        or not 0 <= carrier < 4
+        or not 0 <= carrier < operators
     ):
-        raise synth.EngineError("Invalid four-operator FM kernel layout")
+        raise synth.EngineError("Invalid graph FM kernel layout")
     position = phases[:, 0].copy()
     error = phases[:, 1].copy()
     previous = history.copy()
     audio = np.empty((len(frequencies), 1))
-    order = _operator_order(4, edges)
+    order = _operator_order(operators, edges)
     for i in range(len(frequencies)):
-        outputs = np.zeros(4)
+        outputs = np.zeros(operators)
         for operator in order:
             offset = sum(
                 edge_indices[i, edge] * (previous[edge] if delayed else outputs[source])

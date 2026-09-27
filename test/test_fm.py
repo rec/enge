@@ -14,26 +14,56 @@ from ufor.synth import SynthInstrumentScore
 from enge import fm, synth
 
 
-def test_four_operator_kernel_handles_chain_and_delayed_feedback() -> None:
+@pytest.mark.parametrize("operators", [2, 3, 4, 5, 6])
+def test_graph_kernel_handles_chain_and_delayed_feedback(operators: int) -> None:
     frames = 48000
-    frequencies = np.full((frames, 4), [110.0, 220.0, 330.0, 440.0])
-    envelopes = np.ones((frames, 4))
-    edges = [(0, 1, False), (1, 2, False), (2, 3, False), (3, 0, True)]
-    audio, phases, history = fm.four_operator_fm_samples(
+    frequencies = np.full((frames, operators), 110.0 * np.arange(1, operators + 1))
+    envelopes = np.ones((frames, operators))
+    edges = [
+        *((i, i + 1, False) for i in range(operators - 1)),
+        (operators - 1, 0, True),
+    ]
+    audio, phases, history = fm.graph_fm_samples(
         frequencies,
         envelopes,
         np.full((frames, len(edges)), 0.5),
         edges,
-        3,
+        operators - 1,
         np.ones(frames),
-        np.zeros((4, 2)),
+        np.zeros((operators, 2)),
         np.zeros(len(edges)),
         48000,
     )
     assert audio.shape == (frames, 1)
-    assert phases.shape == (4, 2)
+    assert phases.shape == (operators, 2)
     assert history.shape == (len(edges),)
     assert np.all(np.isfinite(audio))
+
+
+def test_offline_fm_renders_six_operator_graph_in_both_backends() -> None:
+    raw = score().model_dump()
+    profile = raw["body"]["voices"][0]["fm"]
+    profile["operators"] = [{"name": f"operator-{i}"} for i in range(6)]
+    profile["edges"] = [
+        {"source": f"operator-{i}", "destination": f"operator-{i + 1}", "index": 1}
+        for i in range(5)
+    ] + [
+        {
+            "source": "operator-5",
+            "destination": "operator-0",
+            "index": 0.5,
+            "delayed": True,
+        }
+    ]
+    profile["carrier"] = "operator-5"
+    voice = raw["body"]["voices"][0]
+    voice["modulation"] = {}
+    voice["bindings"] = []
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(document.body, [trigger()], seed=0).actions
+    reference = fm.OfflineFM(fm.prepare(document)).advance(actions, 0, 48000)
+    native = fm.OfflineFM(fm.prepare(document), "native").advance(actions, 0, 48000)
+    np.testing.assert_allclose(native, reference, atol=1e-10, rtol=1e-9)
 
 
 def score() -> SynthInstrumentScore:
@@ -70,7 +100,7 @@ def test_fm_matches_closed_form_and_named_operator_order(
     voice["bindings"] = []
     voice["frequency_offset_hz"] = 10
     voice["processing"]["tuning_cents"] = 1200
-    voice["fm"]["connection"]["index"] = index
+    voice["fm"]["edges"][0]["index"] = index
     voice["fm"]["operators"][0]["phase_cycles"] = 0.125
     voice["fm"]["operators"][1]["phase_cycles"] = 0.25
     voice["fm"]["operators"].reverse()
@@ -90,7 +120,7 @@ def test_fm_feedback_control_smoothing_and_release_match_independent_recurrence(
     pytestconfig: pytest.Config,
 ) -> None:
     raw = score().model_dump()
-    raw["body"]["voices"][0]["fm"]["feedback"] = 0.4
+    raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 0.4
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         trigger(),
@@ -141,7 +171,7 @@ def test_fm_partitions_and_json_restore_preserve_feedback_and_release(
     block: int,
 ) -> None:
     raw = score().model_dump()
-    raw["body"]["voices"][0]["fm"]["feedback"] = 0.7
+    raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 0.7
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         trigger(),
@@ -202,7 +232,7 @@ def test_fm_minimum_hold_and_duplicate_release_preserve_carrier_lifetime(
 
 def test_persistent_fm_matches_native_across_blocks_and_restore(tmp_path: Path) -> None:
     raw = score().model_dump()
-    raw["body"]["voices"][0]["fm"]["feedback"] = 0.7
+    raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 0.7
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         trigger(),
@@ -240,7 +270,7 @@ def test_fm_rejects_wrong_source_profile_and_snapshot() -> None:
     prepared = fm.prepare(document)
     snapshot = fm.OfflineFM(prepared).snapshot()
     raw = document.model_dump()
-    raw["body"]["voices"][0]["fm"]["feedback"] = 1
+    raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 1
     other = fm.OfflineFM(fm.prepare(SynthInstrumentScore.model_validate(raw)))
     with pytest.raises(synth.EngineError, match="different prepared"):
         other.restore(snapshot)
@@ -253,7 +283,7 @@ def test_fm_rejects_wrong_source_profile_and_snapshot() -> None:
         ("operator-carrier", "tuning_cents", "cents", 0, 1200),
         ("processing", "tuning_cents", "cents", 0, 1200),
         ("processing", "amplitude", "ratio", 1, 0.5),
-        ("fm", "feedback", "radians", 0, 0.3),
+        ("edge-feedback", "index", "radians", 0, 0.3),
         ("fm", "carrier_level", "ratio", 0.2, 0.2),
     ],
 )
@@ -296,7 +326,7 @@ def test_fm_live_targets_preserve_phase_and_use_declared_units(
         value = default + (amount if i >= 12001 else 0)
         ratio = value if parameter == "ratio" else 2
         multiplier = 2 ** (value / 1200) if parameter == "tuning_cents" else 1
-        feedback = value if parameter == "feedback" else 0
+        feedback = value if parameter == "index" else 0
         level = value if parameter == "carrier_level" else 0.2
         gain = value if parameter == "amplitude" else 1
         previous = math.sin(2 * math.pi * pm / 48000 + feedback * previous)
@@ -359,13 +389,12 @@ def test_fm_snapshot_rejects_backend_mismatch() -> None:
         fm.OfflineFM(definition, "invalid")  # type: ignore[arg-type]
 
 
-def test_native_fm_preserves_sound_and_state_without_python_dsp(
+def test_native_fm_preserves_graph_sound_and_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from enge import filters
 
     raw = score().model_dump()
-    raw["body"]["voices"][0]["fm"]["feedback"] = 0.7
+    raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 0.7
     raw["body"]["voices"][0]["processing"]["filters"] = [
         {"name": "tone", "response": "lowpass", "cutoff_hz": 1800, "q": 0.7}
     ]
@@ -380,17 +409,14 @@ def test_native_fm_preserves_sound_and_state_without_python_dsp(
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("Native FM called Python DSP")
 
-    monkeypatch.setattr(fm, "fm_samples", forbidden)
-    monkeypatch.setattr(synth, "envelope_samples", forbidden)
-    monkeypatch.setattr(synth, "route_samples", forbidden)
-    monkeypatch.setattr(filters, "filter_samples", forbidden)
+    monkeypatch.setattr(fm, "graph_fm_samples", forbidden)
     native = fm.OfflineFM(definition, "native")
     actual = native.advance(actions, 0, 48000)
     check_audio(tmp_path / "fm-native-parity.wav", actual, expected)
     left = reference.snapshot().voices[0].renderer
     right = native.snapshot().voices[0].renderer
     np.testing.assert_allclose(right.phases, left.phases, atol=1e-10, rtol=1e-9)
-    assert right.previous_modulator == pytest.approx(left.previous_modulator, abs=1e-10)
+    assert right.history == pytest.approx(left.history, abs=1e-10)
     np.testing.assert_allclose(
         right.filter_states[0].integrators,
         left.filter_states[0].integrators,

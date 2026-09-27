@@ -15,6 +15,12 @@ type RenderedFM<'py> = (
     Bound<'py, PyArray3<f64>>,
 );
 
+type RenderedGraphFM<'py> = (
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray1<f64>>,
+);
+
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn render_fm<'py>(
@@ -103,7 +109,8 @@ pub fn render_fm<'py>(
 }
 
 #[pyfunction]
-pub fn render_four_operator_fm<'py>(
+#[allow(clippy::too_many_arguments)]
+pub fn render_graph_fm<'py>(
     py: Python<'py>,
     rate: f64,
     frequencies: PyReadonlyArray2<'py, f64>,
@@ -114,24 +121,21 @@ pub fn render_four_operator_fm<'py>(
     levels: PyReadonlyArray1<'py, f64>,
     phases: PyReadonlyArray2<'py, f64>,
     history: PyReadonlyArray1<'py, f64>,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray1<f64>>,
-)> {
+) -> PyResult<RenderedGraphFM<'py>> {
     let count = frequencies.shape()[0];
+    let operators = frequencies.shape()[1];
     if !rate.is_finite()
         || rate <= 0.0
-        || carrier >= 4
-        || frequencies.shape() != [count, 4]
-        || envelopes.shape() != [count, 4]
+        || !(2..=6).contains(&operators)
+        || carrier >= operators
+        || envelopes.shape() != [count, operators]
         || indices.shape() != [count, edges.shape()[0]]
         || edges.shape()[1] != 3
         || levels.len() != count
-        || phases.shape() != [4, 2]
+        || phases.shape() != [operators, 2]
         || history.len() != edges.shape()[0]
     {
-        return Err(PyValueError::new_err("Invalid four-operator FM layout"));
+        return Err(PyValueError::new_err("Invalid graph FM layout"));
     }
     let frequencies = frequencies.as_array().to_owned();
     let envelopes = envelopes.as_array().to_owned();
@@ -142,12 +146,12 @@ pub fn render_four_operator_fm<'py>(
     let mut history: Vec<f64> = history.as_array().iter().copied().collect();
     let (audio, phases, history) = py.detach(move || -> PyResult<_> {
         let mut order = Vec::new();
-        let mut pending = [0usize; 4];
+        let mut pending = vec![0usize; operators];
         for edge in edges.rows() {
             if edge[0] < 0.0
-                || edge[0] >= 4.0
+                || edge[0] >= operators as f64
                 || edge[1] < 0.0
-                || edge[1] >= 4.0
+                || edge[1] >= operators as f64
                 || edge[2] < 0.0
                 || edge[2] > 1.0
             {
@@ -157,7 +161,7 @@ pub fn render_four_operator_fm<'py>(
                 pending[edge[1] as usize] += 1;
             }
         }
-        let mut ready: Vec<usize> = (0..4).filter(|i| pending[*i] == 0).collect();
+        let mut ready: Vec<usize> = (0..operators).filter(|i| pending[*i] == 0).collect();
         while let Some(operator) = ready.pop() {
             order.push(operator);
             for edge in edges.rows() {
@@ -170,14 +174,14 @@ pub fn render_four_operator_fm<'py>(
                 }
             }
         }
-        if order.len() != 4 {
+        if order.len() != operators {
             return Err(PyValueError::new_err(
-                "Four-operator FM current edges must be acyclic",
+                "Graph FM current edges must be acyclic",
             ));
         }
         let mut audio = Array2::zeros((count, 1));
         for i in 0..count {
-            let mut output = [0.0; 4];
+            let mut output = vec![0.0; operators];
             for operator in &order {
                 let mut offset = 0.0;
                 for (edge_index, edge) in edges.rows().into_iter().enumerate() {
@@ -194,7 +198,7 @@ pub fn render_four_operator_fm<'py>(
                     * (TAU * phases[[*operator, 0]] / rate + offset).sin();
             }
             audio[[i, 0]] = levels[i] * output[carrier];
-            for operator in 0..4 {
+            for operator in 0..operators {
                 let increment = frequencies[[i, operator]] - phases[[operator, 1]];
                 let total = phases[[operator, 0]] + increment;
                 phases[[operator, 1]] = (total - phases[[operator, 0]]) - increment;

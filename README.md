@@ -87,13 +87,13 @@ layer crossfades, delayed or offset sample starts, event bindings, other
 modulation targets, and fade
 retirements fail explicitly. The PyTorch backend is not yet implemented.
 
-The NumPy and Rust two-operator FM engine in [fm.py](enge/fm.py) uses explicit
-phase modulation: a sine modulator drives a sine carrier, with independent held
-linear envelopes and optional one-sample modulator feedback. Operator ratios and
-tuning, modulation index, feedback, carrier level, common amplitude/tuning, and
-filters support the existing control/LFO routes. Pitch changes retain phase;
-snapshots retain phase corrections and feedback history. Carrier completion ends
-the voice. Rendering is at output rate and permits aliasing.
+The NumPy and Rust graph FM engine in [fm.py](enge/fm.py) renders two through six
+named sine operators. Acyclic current-sample edges modulate destination phases;
+delayed edges read independently retained source-output histories. Operator ratios
+and tuning, edge indices, carrier level, common amplitude/tuning, and filters
+support the existing control/LFO routes. Pitch changes retain phase; snapshots
+retain phase corrections and delayed-edge histories. Carrier completion ends the
+voice. Rendering is at output rate and permits aliasing.
 
 Load a `SynthInstrumentScore` containing `fm` voice definitions, such as
 [the FM fixture](conformance/fm-instrument.json), and prepare its performance with

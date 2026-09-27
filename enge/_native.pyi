@@ -235,6 +235,17 @@ def render_fm(
     routes: np.ndarray,
     filter_inputs: tuple[list[int], np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]: ...
+def render_graph_fm(
+    rate: float,
+    frequencies: np.ndarray,
+    envelopes: np.ndarray,
+    indices: np.ndarray,
+    edges: np.ndarray,
+    carrier: int,
+    levels: np.ndarray,
+    phases: np.ndarray,
+    history: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
 def render_noise(
     key: int,
     start: int,
