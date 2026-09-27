@@ -71,7 +71,9 @@ class OscillatorState(Model, frozen=True):
         cls, frame: int | float, frequency_hz: float, sample_rate: int
     ) -> Self:
         """Initialize phase without losing precision at large frame coordinates."""
-        return cls(position=(Fraction(frame) * Fraction(frequency_hz)) % sample_rate)
+        return cls(
+            position=float((Fraction(frame) * Fraction(frequency_hz)) % sample_rate)
+        )
 
 
 class PreparedEnvelope(Model, frozen=True):
@@ -687,7 +689,7 @@ class OfflineSynth:
     ) -> None:
         if backend not in ("numpy", "native"):
             raise EngineError(f"Unknown synth backend: {backend}")
-        self.backend = backend
+        self.backend: Literal["numpy", "native"] = backend
         self.definition = definition.model_copy(deep=True)
         self.frame = 0
         self.voices: dict[str, VoiceSnapshot] = {}
