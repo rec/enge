@@ -115,6 +115,7 @@ pub fn render_graph_fm<'py>(
     rate: f64,
     frequencies: PyReadonlyArray2<'py, f64>,
     envelopes: PyReadonlyArray2<'py, f64>,
+    waveforms: PyReadonlyArray1<'py, u8>,
     indices: PyReadonlyArray2<'py, f64>,
     edges: PyReadonlyArray2<'py, f64>,
     carrier: usize,
@@ -129,6 +130,7 @@ pub fn render_graph_fm<'py>(
         || !(2..=6).contains(&operators)
         || carrier >= operators
         || envelopes.shape() != [count, operators]
+        || waveforms.len() != operators
         || indices.shape() != [count, edges.shape()[0]]
         || edges.shape()[1] != 3
         || levels.len() != count
@@ -139,6 +141,10 @@ pub fn render_graph_fm<'py>(
     }
     let frequencies = frequencies.as_array().to_owned();
     let envelopes = envelopes.as_array().to_owned();
+    let waveforms: Vec<u8> = waveforms.as_array().iter().copied().collect();
+    if waveforms.iter().any(|waveform| *waveform > 2) {
+        return Err(PyValueError::new_err("Invalid FM waveform"));
+    }
     let indices = indices.as_array().to_owned();
     let edges = edges.as_array().to_owned();
     let levels: Vec<f64> = levels.as_array().iter().copied().collect();
@@ -194,8 +200,27 @@ pub fn render_graph_fm<'py>(
                             };
                     }
                 }
-                output[*operator] = envelopes[[i, *operator]]
-                    * (TAU * phases[[*operator, 0]] / rate + offset).sin();
+                let angle = TAU * phases[[*operator, 0]] / rate + offset;
+                let phase = (angle / TAU).rem_euclid(1.0);
+                let sample = match waveforms[*operator] {
+                    0 => angle.sin(),
+                    1 => {
+                        if phase < 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    2 => {
+                        if phase < 0.5 {
+                            4.0 * phase - 1.0
+                        } else {
+                            3.0 - 4.0 * phase
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                output[*operator] = envelopes[[i, *operator]] * sample;
             }
             audio[[i, 0]] = levels[i] * output[carrier];
             for operator in 0..operators {

@@ -239,6 +239,7 @@ def render_graph_fm(
     rate: float,
     frequencies: np.ndarray,
     envelopes: np.ndarray,
+    waveforms: np.ndarray,
     indices: np.ndarray,
     edges: np.ndarray,
     carrier: int,

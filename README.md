@@ -88,7 +88,8 @@ modulation targets, and fade
 retirements fail explicitly. The PyTorch backend is not yet implemented.
 
 The NumPy and Rust graph FM engine in [fm.py](enge/fm.py) renders two through six
-named sine operators. Acyclic current-sample edges modulate destination phases;
+named sine, square, or triangle operators. Acyclic current-sample edges modulate
+destination phases;
 delayed edges read independently retained source-output histories. Operator ratios
 and tuning, edge indices, carrier level, common amplitude/tuning, and filters
 support the existing control/LFO routes. Pitch changes retain phase; snapshots

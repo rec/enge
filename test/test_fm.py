@@ -26,6 +26,7 @@ def test_graph_kernel_handles_chain_and_delayed_feedback(operators: int) -> None
     audio, phases, history = fm.graph_fm_samples(
         frequencies,
         envelopes,
+        np.zeros(operators, dtype=np.uint8),
         np.full((frames, len(edges)), 0.5),
         edges,
         operators - 1,
@@ -64,6 +65,46 @@ def test_offline_fm_renders_six_operator_graph_in_both_backends() -> None:
     reference = fm.OfflineFM(fm.prepare(document)).advance(actions, 0, 48000)
     native = fm.OfflineFM(fm.prepare(document), "native").advance(actions, 0, 48000)
     np.testing.assert_allclose(native, reference, atol=1e-10, rtol=1e-9)
+
+
+def test_fm_operator_waveforms_match_in_both_backends() -> None:
+    raw = score().model_dump()
+    profile = raw["body"]["voices"][0]["fm"]
+    profile["operators"][0]["waveform"] = "square"
+    profile["operators"][1]["waveform"] = "triangle"
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(document.body, [trigger()], seed=0).actions
+
+    reference = fm.OfflineFM(fm.prepare(document)).advance(actions, 0, 48000)
+    native = fm.OfflineFM(fm.prepare(document), "native").advance(actions, 0, 48000)
+
+    np.testing.assert_allclose(native, reference, atol=1e-10, rtol=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("waveform", "expected"),
+    [
+        (1, [1, 1, -1, -1]),
+        (2, [-1, 0, 1, 0]),
+    ],
+)
+def test_graph_kernel_uses_documented_operator_waveforms(
+    waveform: int, expected: list[int]
+) -> None:
+    audio, _, _ = fm.graph_fm_samples(
+        np.tile([1.0, 0], (4, 1)),
+        np.ones((4, 2)),
+        np.array([waveform, 0], dtype=np.uint8),
+        np.empty((4, 0)),
+        [],
+        0,
+        np.ones(4),
+        np.array([[0, 0], [0, 0]], dtype=float),
+        np.empty(0),
+        4,
+    )
+
+    np.testing.assert_allclose(audio[:, 0], expected)
 
 
 def score() -> SynthInstrumentScore:

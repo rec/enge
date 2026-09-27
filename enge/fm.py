@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, model_validator
 from ufor import instrument_trace, modulation
 from ufor.base import Model
 from ufor.fm import FM, edge_target_name
+from ufor.oscillator import Waveform
 from ufor.samples.processing import Processing, ResonantFilter
 from ufor.streams import AudioType
 from ufor.synth import FMVoice, SynthInstrumentScore
@@ -176,12 +177,24 @@ class VoiceRenderer(synth.EnvelopeRenderer):
             for i, operator in enumerate(operators)
             if operator.name == self.definition.fm.carrier
         )
+        waveforms = np.array(
+            [
+                {
+                    Waveform.sine: 0,
+                    Waveform.square: 1,
+                    Waveform.triangle: 2,
+                }[operator.waveform]
+                for operator in operators
+            ],
+            dtype=np.uint8,
+        )
         if self.backend == "native":
             native_edges = np.array(graph_edges, dtype=np.float64)
             audio, phases, history = _native.render_graph_fm(
                 rate,
                 frequencies,
                 envelopes,
+                waveforms,
                 edge_indices,
                 native_edges,
                 carrier,
@@ -193,6 +206,7 @@ class VoiceRenderer(synth.EnvelopeRenderer):
             audio, phases, history = graph_fm_samples(
                 frequencies,
                 envelopes,
+                waveforms,
                 edge_indices,
                 graph_edges,
                 carrier,
@@ -738,6 +752,7 @@ def fm_samples(
 def graph_fm_samples(
     frequencies: np.ndarray,
     envelopes: np.ndarray,
+    waveforms: np.ndarray,
     edge_indices: np.ndarray,
     edges: list[tuple[int, int, bool]],
     carrier: int,
@@ -752,6 +767,8 @@ def graph_fm_samples(
         frequencies.ndim != 2
         or not 2 <= operators <= 6
         or envelopes.shape != frequencies.shape
+        or waveforms.shape != (operators,)
+        or not np.all((0 <= waveforms) & (waveforms <= 2))
         or edge_indices.shape != (len(frequencies), len(edges))
         or phases.shape != (operators, 2)
         or history.shape != (len(edges),)
@@ -772,8 +789,21 @@ def graph_fm_samples(
                 for edge, (source, destination, delayed) in enumerate(edges)
                 if destination == operator
             )
-            outputs[operator] = envelopes[i, operator] * np.sin(
-                2 * np.pi * position[operator] / sample_rate + offset
+            angle = 2 * np.pi * position[operator] / sample_rate + offset
+            phase = (angle / (2 * np.pi)) % 1
+            waveform = waveforms[operator]
+            outputs[operator] = envelopes[i, operator] * (
+                np.sin(angle)
+                if waveform == 0
+                else (
+                    1.0
+                    if phase < 0.5
+                    else -1.0
+                    if waveform == 1
+                    else 4 * phase - 1
+                    if phase < 0.5
+                    else 3 - 4 * phase
+                )
             )
         audio[i] = carrier_level[i] * outputs[carrier]
         increment = frequencies[i] - error
