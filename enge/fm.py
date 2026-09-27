@@ -795,15 +795,9 @@ def graph_fm_samples(
             outputs[operator] = envelopes[i, operator] * (
                 np.sin(angle)
                 if waveform == 0
-                else (
-                    1.0
-                    if phase < 0.5
-                    else -1.0
-                    if waveform == 1
-                    else 4 * phase - 1
-                    if phase < 0.5
-                    else 3 - 4 * phase
-                )
+                else (1.0 if phase < 0.5 else -1.0)
+                if waveform == 1
+                else (4 * phase - 1 if phase < 0.5 else 3 - 4 * phase)
             )
         audio[i] = carrier_level[i] * outputs[carrier]
         increment = frequencies[i] - error
