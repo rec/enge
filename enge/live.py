@@ -126,7 +126,8 @@ class NativeLiveEngine:
                 for index, encoded in source.native_live_actions(
                     actions[name], start, end, self.runtime
                 ).items():
-                    self._submit(index, encoded)
+                    if len(encoded):
+                        self.runtime.submit(index, encoded)
             else:
                 index = self.source_indices[name]
                 encoded = source.native_live_actions(
@@ -136,16 +137,17 @@ class NativeLiveEngine:
                     self.runtime.active_slots(index),
                     self.runtime.active_contexts(index),
                 )
-                self._submit(index, encoded)
+                if len(encoded):
+                    self.runtime.submit(index, encoded)
         if self.effect_chain is None:
             if effect_actions:
                 raise synth.EngineError("Native live engine has no effect chain")
         else:
-            self._submit_effects(
-                effects.native_live_actions(
-                    self.effect_chain, effect_actions, start, end
-                )
+            encoded = effects.native_live_actions(
+                self.effect_chain, effect_actions, start, end
             )
+            if len(encoded):
+                self.runtime.submit_effects(encoded)
         self.runtime.process_into(output)
         for name, source in self.sources.items():
             if isinstance(source, sample_instrument.PersistentSampler):
@@ -174,14 +176,6 @@ class NativeLiveEngine:
             source.restore(snapshot.source_states[name])  # ty: ignore[invalid-argument-type]
         self.runtime.restore(snapshot.runtime)  # ty: ignore[invalid-argument-type]
         self.frame = snapshot.frame
-
-    def _submit(self, source: int, actions: np.ndarray) -> None:
-        for start in range(0, len(actions), 64):
-            self.runtime.submit(source, actions[start : start + 64])
-
-    def _submit_effects(self, actions: np.ndarray) -> None:
-        for start in range(0, len(actions), 64):
-            self.runtime.submit_effects(actions[start : start + 64])
 
 
 class LiveEngine:

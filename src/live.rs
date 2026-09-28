@@ -1146,27 +1146,32 @@ fn push_batch(
 ) -> PyResult<()> {
     if actions.shape()[1] != 6
         || actions.shape()[0] == 0
-        || actions.shape()[0] > BATCH_ACTIONS
         || actions.as_array().iter().any(|v| !v.is_finite())
     {
         return Err(PyValueError::new_err(format!(
             "Invalid live {subject} action batch"
         )));
     }
-    let mut batch = ActionBatch {
-        len: actions.shape()[0],
-        actions: [[0.0; 6]; BATCH_ACTIONS],
-    };
-    for (target, values) in batch.actions.iter_mut().zip(actions.as_array().rows()) {
-        target.copy_from_slice(
-            values
-                .as_slice()
-                .ok_or_else(|| PyValueError::new_err("Action rows must be contiguous"))?,
-        );
+    let values = actions.as_array();
+    for start in (0..actions.shape()[0]).step_by(BATCH_ACTIONS) {
+        let end = (start + BATCH_ACTIONS).min(actions.shape()[0]);
+        let mut batch = ActionBatch {
+            len: end - start,
+            actions: [[0.0; 6]; BATCH_ACTIONS],
+        };
+        for (target, index) in batch.actions.iter_mut().zip(start..end) {
+            target.copy_from_slice(
+                values
+                    .row(index)
+                    .as_slice()
+                    .ok_or_else(|| PyValueError::new_err("Action rows must be contiguous"))?,
+            );
+        }
+        producer
+            .push(batch)
+            .map_err(|_| PyValueError::new_err(format!("Live {subject} action queue is full")))?;
     }
-    producer
-        .push(batch)
-        .map_err(|_| PyValueError::new_err(format!("Live {subject} action queue is full")))
+    Ok(())
 }
 
 fn drain_batches(

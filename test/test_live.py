@@ -260,6 +260,15 @@ def test_native_live_runtime_latches_failure_and_zeros_later_blocks() -> None:
     np.testing.assert_array_equal(output, np.zeros_like(output))
 
 
+def test_native_live_runtime_batches_prepared_actions() -> None:
+    runtime = _native.LiveRuntime([native_oscillator_runtime()], 64, 128, 2)
+
+    runtime.submit(0, np.zeros((65, 6), dtype=np.float64))
+
+    with np.testing.assert_raises_regex(ValueError, "queued actions"):
+        runtime.snapshot()
+
+
 def test_native_live_runtime_owns_bounded_granulator_state(tmp_path: Path) -> None:
     start_action = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
     source = native_oscillator_runtime().process_actions(48000, 0, 1, 0, start_action)
