@@ -863,8 +863,6 @@ class PersistentSynth:
         if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
             raise EngineError("Persistent synth requires one oscillator voice template")
         template = templates[0]
-        if template.envelopes:
-            raise EngineError("Persistent synth named envelopes are not implemented")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             filters=template.processing.filters,
@@ -895,6 +893,10 @@ class PersistentSynth:
             lfos,
             lfo_rationals,
             self.lfo_sources,
+            envelope_initials,
+            envelope_attacks,
+            envelope_releases,
+            envelope_parameters,
             self.source_scopes,
             runtime_filters,
         ) = _persistent_modulation(definition, template)
@@ -918,6 +920,12 @@ class PersistentSynth:
             runtime_filters,
             parameters,
             context_capacity,
+        )
+        self.runtime.set_named_envelopes(
+            envelope_initials,
+            envelope_attacks,
+            envelope_releases,
+            envelope_parameters,
         )
 
     def advance(
@@ -1488,16 +1496,24 @@ def _persistent_modulation(
     np.ndarray,
     list[tuple[int, int]],
     dict[str, list[int]],
+    list[float],
+    list[list[tuple[float, float]]],
+    list[list[tuple[float, float]]],
+    list[tuple[int, int, float, float]],
     set[str],
     np.ndarray,
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
         not isinstance(b, ControlBinding)
-        and not (isinstance(b, processing.GeneratorBinding) and b.kind == "lfo")
+        and not (
+            isinstance(b, processing.GeneratorBinding) and b.kind in ("envelope", "lfo")
+        )
         for b in bindings.values()
     ):
-        raise EngineError("Persistent synth supports control and LFO bindings only")
+        raise EngineError(
+            "Persistent synth supports control, envelope, and LFO bindings"
+        )
     sources = {s.name: s for s in template.modulation.sources}
     if bindings.keys() != sources.keys():
         raise EngineError("Persistent synth modulation sources require bindings")
@@ -1592,6 +1608,10 @@ def _persistent_modulation(
     lfo_rows: list[list[float]] = []
     lfo_rationals: list[tuple[int, int]] = []
     lfo_sources: dict[str, list[int]] = {}
+    envelope_initials: list[float] = []
+    envelope_attacks: list[list[tuple[float, float]]] = []
+    envelope_releases: list[list[tuple[float, float]]] = []
+    envelope_parameters: list[tuple[int, int, float, float]] = []
     source_scopes: set[str] = set()
     for route in routes:
         source = sources.get(route.source)
@@ -1599,10 +1619,9 @@ def _persistent_modulation(
         target = (route.target.name, route.target.parameter)
         if source is None or binding is None or target not in supported:
             raise EngineError("Persistent synth modulation route is unresolved")
-        parameter, operation = supported[target]
+        parameter, _ = supported[target]
         if (
-            route.operation != operation
-            or route.interpolation != modulation.Interpolation.linear
+            route.interpolation != modulation.Interpolation.linear
             or len(route.points) != 2
             or route.points[0].input != source.minimum
             or route.points[1].input != source.maximum
@@ -1610,6 +1629,7 @@ def _persistent_modulation(
             raise EngineError(
                 "Persistent synth modulation routes must be direct linear maps"
             )
+        operation = route.operation
         source_scopes.add(source.scope)
         declaration = (
             definition.instrument.controls[binding.control]
@@ -1669,6 +1689,43 @@ def _persistent_modulation(
             source_controls.append(binding.control)
         else:
             assert isinstance(binding, processing.GeneratorBinding)
+            if binding.kind == "envelope":
+                generator = template.envelopes[binding.reference]
+                if source.scope != "voice" or any(
+                    segment.curve != 0
+                    for segment in [*generator.segments, *generator.release]
+                ):
+                    raise EngineError(
+                        "Persistent named envelopes require linear voice segments"
+                    )
+                envelope_initials.append(generator.initial)
+                envelope_attacks.append(
+                    [
+                        (
+                            float(segment.duration * definition.sample_rate),
+                            segment.target,
+                        )
+                        for segment in generator.segments
+                    ]
+                )
+                envelope_releases.append(
+                    [
+                        (
+                            float(segment.duration * definition.sample_rate),
+                            segment.target,
+                        )
+                        for segment in generator.release
+                    ]
+                )
+                envelope_parameters.append(
+                    (
+                        parameter,
+                        0 if operation == modulation.Operation.add else 1,
+                        intercept,
+                        slope,
+                    )
+                )
+                continue
             generator = template.lfos[binding.reference]
             index = len(lfo_rows)
             lfo_rows.append(
@@ -1710,6 +1767,10 @@ def _persistent_modulation(
         np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 6),
         lfo_rationals,
         lfo_sources,
+        envelope_initials,
+        envelope_attacks,
+        envelope_releases,
+        envelope_parameters,
         source_scopes,
         np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
     )

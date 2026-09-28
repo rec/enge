@@ -202,6 +202,67 @@ def test_persistent_noise_matches_native_across_blocks_and_restore(
     np.testing.assert_allclose(replay, actual[24001:], atol=0)
 
 
+def test_persistent_noise_applies_named_envelope(tmp_path: Path) -> None:
+    raw = score().model_dump()
+    voice = raw["body"]["voices"][0]
+    voice["envelopes"] = {
+        "motion": {
+            "initial": 0,
+            "segments": [{"duration": "1/4", "target": 1}],
+            "release": [{"duration": "1/4", "target": 0}],
+        }
+    }
+    voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]
+    voice["modulation"] = {
+        "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
+        "parameters": [
+            {
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 1,
+            }
+        ],
+        "routes": [
+            {
+                "name": "motion",
+                "source": "motion",
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "operation": "multiply",
+                "unit": "ratio",
+                "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": 1}],
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [trigger(), Release(tick=36000, ordinal=0, part="main", trigger_id="note")],
+        seed=0,
+    ).actions
+    prepared = noise.prepare(document)
+    expected = noise.OfflineNoise(prepared, "native").advance(actions, 0, 48000)
+    persistent = noise.PersistentNoise(prepared, voices=4)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = persistent.advance(
+            [action for action in actions if start <= action.tick < end], start, end
+        )
+        if end == 24925:
+            snapshot = persistent.snapshot()
+    restored = noise.PersistentNoise(prepared, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [action for action in actions if 24925 <= action.tick < 48000], 24925, 48000
+    )
+
+    check_audio(tmp_path / "persistent-noise-named-envelope.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[24925:], atol=0)
+
+
 def test_noise_streams_ignore_pitch_and_other_renderers(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:

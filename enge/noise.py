@@ -334,10 +334,6 @@ class PersistentNoise(synth.PersistentSynth):
                 "Persistent noise requires one noise voice template"
             )
         template = templates[0]
-        if template.envelopes:
-            raise synth.EngineError(
-                "Persistent noise named envelopes are not implemented"
-            )
         if template.processing != Processing(
             volume_db=template.processing.volume_db,
             filters=template.processing.filters,
@@ -383,6 +379,10 @@ class PersistentNoise(synth.PersistentSynth):
             lfos,
             lfo_rationals,
             self.lfo_sources,
+            envelope_initials,
+            envelope_attacks,
+            envelope_releases,
+            envelope_parameters,
             self.source_scopes,
             runtime_filters,
         ) = synth._persistent_modulation(shared, template, source_parameters)
@@ -402,6 +402,12 @@ class PersistentNoise(synth.PersistentSynth):
             runtime_filters,
             parameters,
             context_capacity,
+        )
+        self.runtime.set_named_envelopes(
+            envelope_initials,
+            envelope_attacks,
+            envelope_releases,
+            envelope_parameters,
         )
 
     def snapshot(self) -> PersistentNoiseSnapshot:  # ty: ignore[invalid-method-override]

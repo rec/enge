@@ -146,6 +146,28 @@ def test_named_envelope_modulates_synth_and_releases(
     assert np.max(np.abs(actual[:100])) < np.max(np.abs(actual[11000:12000]))
     assert np.max(np.abs(actual[23000:])) < np.max(np.abs(actual[12000:13000]))
     check_audio(tmp_path / f"named-envelope-{backend}.wav", actual, actual)
+    if backend == "native":
+        persistent = synth.PersistentSynth(prepared, voices=4)
+        persistent_actual = np.empty_like(actual)
+        for start, end in ((0, 997), (997, 12000), (12000, 24925), (24925, 48000)):
+            persistent_actual[start:end] = persistent.advance(
+                [action for action in actions if start <= action.tick < end],
+                start,
+                end,
+            )
+            if end == 24925:
+                snapshot = persistent.snapshot()
+        restored = synth.PersistentSynth(prepared, voices=4)
+        restored.restore(snapshot)
+        replay = restored.advance(
+            [action for action in actions if 24925 <= action.tick < 48000],
+            24925,
+            48000,
+        )
+        check_audio(
+            tmp_path / "persistent-named-envelope.wav", persistent_actual, actual
+        )
+        np.testing.assert_allclose(replay, persistent_actual[24925:], atol=0)
 
 
 @pytest.mark.parametrize("kind", ["synth", "sampler"])

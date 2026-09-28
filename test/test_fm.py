@@ -188,6 +188,28 @@ def test_named_envelope_modulates_fm_and_survives_restore(
     if backend == "native":
         reference = fm.OfflineFM(definition).advance(actions, 0, 48000)
         np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
+        persistent = fm.PersistentFM(definition, voices=4)
+        persistent_actual = np.empty_like(actual)
+        for start in range(0, 48000, 997):
+            end = min(48000, start + 997)
+            persistent_actual[start:end] = persistent.advance(
+                [action for action in actions if start <= action.tick < end],
+                start,
+                end,
+            )
+            if end == 24925:
+                snapshot = persistent.snapshot()
+        restored = fm.PersistentFM(definition, voices=4)
+        restored.restore(snapshot)
+        replay = restored.advance(
+            [action for action in actions if 24925 <= action.tick < 48000],
+            24925,
+            48000,
+        )
+        check_audio(
+            tmp_path / "persistent-fm-named-envelope.wav", persistent_actual, actual
+        )
+        np.testing.assert_allclose(replay, persistent_actual[24925:], atol=0)
 
 
 def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(

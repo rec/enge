@@ -57,6 +57,17 @@ struct LfoEventState {
 }
 
 #[derive(Clone, PartialEq)]
+struct NamedEnvelopeDefinition {
+    initial: f64,
+    attack: Vec<Segment>,
+    release: Vec<Segment>,
+    parameter: usize,
+    operation: usize,
+    intercept: f64,
+    slope: f64,
+}
+
+#[derive(Clone, PartialEq)]
 struct FilterDefinition {
     response: usize,
     stages: usize,
@@ -111,6 +122,7 @@ pub struct SynthRuntimeSnapshot {
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_event_states: Vec<Option<LfoEventState>>,
+    named_envelopes: Vec<NamedEnvelopeDefinition>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -122,6 +134,8 @@ pub struct SynthRuntimeSnapshot {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
+    named_release_frames: Vec<Option<f64>>,
+    named_release_levels: Vec<f64>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -170,6 +184,7 @@ pub struct SynthRuntime {
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_event_states: Vec<Option<LfoEventState>>,
+    named_envelopes: Vec<NamedEnvelopeDefinition>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -181,6 +196,8 @@ pub struct SynthRuntime {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
+    named_release_frames: Vec<Option<f64>>,
+    named_release_levels: Vec<f64>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -296,6 +313,7 @@ impl SynthRuntime {
             control_states,
             lfo_definitions,
             lfo_event_states: vec![None; lfo_count],
+            named_envelopes: Vec::new(),
             filter_definitions,
             context_kinds: vec![0; context_capacity],
             context_states,
@@ -307,6 +325,8 @@ impl SynthRuntime {
             mod_errors: vec![0.0; slots],
             previous_modulators: vec![0.0; slots],
             mod_release_levels: vec![0.0; slots],
+            named_release_frames: Vec::new(),
+            named_release_levels: Vec::new(),
             graph_phases: Vec::new(),
             graph_errors: Vec::new(),
             graph_outputs: Vec::new(),
@@ -514,6 +534,60 @@ impl SynthRuntime {
         Ok(runtime)
     }
 
+    fn set_named_envelopes(
+        &mut self,
+        initials: Vec<f64>,
+        attacks: Vec<Vec<(f64, f64)>>,
+        releases: Vec<Vec<(f64, f64)>>,
+        parameters: Vec<(usize, usize, f64, f64)>,
+    ) -> PyResult<()> {
+        let count = initials.len();
+        if attacks.len() != count || releases.len() != count || parameters.len() != count {
+            return Err(PyValueError::new_err("Invalid named envelope definitions"));
+        }
+        let definitions: Vec<NamedEnvelopeDefinition> = initials
+            .into_iter()
+            .zip(attacks)
+            .zip(releases)
+            .zip(parameters)
+            .map(
+                |(((initial, attack), release), (parameter, operation, intercept, slope))| {
+                    if !initial.is_finite()
+                        || attack.iter().chain(&release).any(|(frames, target)| {
+                            !frames.is_finite() || *frames < 0.0 || !target.is_finite()
+                        })
+                        || parameter >= self.parameter_definitions.len() / 3
+                        || operation > 1
+                        || !intercept.is_finite()
+                        || !slope.is_finite()
+                    {
+                        return Err(PyValueError::new_err("Invalid named envelope definition"));
+                    }
+                    Ok(NamedEnvelopeDefinition {
+                        initial,
+                        attack: attack
+                            .into_iter()
+                            .map(|(frames, target)| Segment { frames, target })
+                            .collect(),
+                        release: release
+                            .into_iter()
+                            .map(|(frames, target)| Segment { frames, target })
+                            .collect(),
+                        parameter,
+                        operation,
+                        intercept,
+                        slope,
+                    })
+                },
+            )
+            .collect::<PyResult<_>>()?;
+        let states = self.frequencies.len() * count;
+        self.named_envelopes = definitions;
+        self.named_release_frames = vec![None; states];
+        self.named_release_levels = vec![0.0; states];
+        Ok(())
+    }
+
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     fn noise(
@@ -647,6 +721,7 @@ impl SynthRuntime {
             control_states: self.control_states.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
             lfo_event_states: self.lfo_event_states.clone(),
+            named_envelopes: self.named_envelopes.clone(),
             filter_definitions: self.filter_definitions.clone(),
             context_kinds: self.context_kinds.clone(),
             context_states: self.context_states.clone(),
@@ -658,6 +733,8 @@ impl SynthRuntime {
             mod_errors: self.mod_errors.clone(),
             previous_modulators: self.previous_modulators.clone(),
             mod_release_levels: self.mod_release_levels.clone(),
+            named_release_frames: self.named_release_frames.clone(),
+            named_release_levels: self.named_release_levels.clone(),
             graph_phases: self.graph_phases.clone(),
             graph_errors: self.graph_errors.clone(),
             graph_outputs: self.graph_outputs.clone(),
@@ -703,6 +780,7 @@ impl SynthRuntime {
             || self.routes != snapshot.routes
             || self.control_definitions != snapshot.control_definitions
             || self.lfo_definitions != snapshot.lfo_definitions
+            || self.named_envelopes != snapshot.named_envelopes
             || self.filter_definitions != snapshot.filter_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
             || self.context_kinds.len() != snapshot.context_kinds.len()
@@ -720,6 +798,10 @@ impl SynthRuntime {
             .clone_from(&snapshot.previous_modulators);
         self.mod_release_levels
             .clone_from(&snapshot.mod_release_levels);
+        self.named_release_frames
+            .clone_from(&snapshot.named_release_frames);
+        self.named_release_levels
+            .clone_from(&snapshot.named_release_levels);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
@@ -1128,6 +1210,11 @@ impl SynthRuntime {
                     }
                     self.graph_history[voice * edges..(voice + 1) * edges].fill(0.0);
                 }
+                let envelope_base = voice * self.named_envelopes.len();
+                for index in 0..self.named_envelopes.len() {
+                    self.named_release_frames[envelope_base + index] = None;
+                    self.named_release_levels[envelope_base + index] = 0.0;
+                }
                 if self.source_kind == 2 {
                     self.noise_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
                     self.noise_counters[voice] = 0;
@@ -1164,6 +1251,12 @@ impl SynthRuntime {
                                 release_frame,
                             );
                         }
+                    }
+                    let envelope_base = voice * self.named_envelopes.len();
+                    for (index, definition) in self.named_envelopes.iter().enumerate() {
+                        self.named_release_levels[envelope_base + index] =
+                            envelope_value(definition.initial, &definition.attack, release_frame);
+                        self.named_release_frames[envelope_base + index] = Some(release_frame);
                     }
                     self.release_frames[voice] = Some(release_frame);
                 }
@@ -1332,6 +1425,29 @@ impl SynthRuntime {
                 addition += weight * amount;
             } else {
                 product *= 1.0 + weight * (amount - 1.0);
+            }
+        }
+        let envelope_base = voice * self.named_envelopes.len();
+        for (source, definition) in self.named_envelopes.iter().enumerate() {
+            if definition.parameter != parameter {
+                continue;
+            }
+            let age = self.ages[voice] as f64;
+            let value =
+                if let Some(release_frame) = self.named_release_frames[envelope_base + source] {
+                    envelope_value(
+                        self.named_release_levels[envelope_base + source],
+                        &definition.release,
+                        age - release_frame,
+                    )
+                } else {
+                    envelope_value(definition.initial, &definition.attack, age)
+                };
+            let amount = definition.intercept + definition.slope * value;
+            if definition.operation == 0 {
+                addition += amount;
+            } else {
+                product *= amount;
             }
         }
         let definition = &self.parameter_definitions[parameter * 3..parameter * 3 + 3];

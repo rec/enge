@@ -449,8 +449,6 @@ class PersistentFM(synth.PersistentSynth):
         if len(templates) != 1 or not isinstance(templates[0], FMVoice):
             raise synth.EngineError("Persistent FM requires one FM voice template")
         template = templates[0]
-        if template.envelopes:
-            raise synth.EngineError("Persistent FM named envelopes are not implemented")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             volume_db=template.processing.volume_db,
@@ -562,6 +560,10 @@ class PersistentFM(synth.PersistentSynth):
             lfos,
             lfo_rationals,
             self.lfo_sources,
+            envelope_initials,
+            envelope_attacks,
+            envelope_releases,
+            envelope_parameters,
             self.source_scopes,
             runtime_filters,
         ) = synth._persistent_modulation(shared, template, source_parameters)
@@ -634,6 +636,12 @@ class PersistentFM(synth.PersistentSynth):
             runtime_filters,
             parameters,
             context_capacity,
+        )
+        self.runtime.set_named_envelopes(
+            envelope_initials,
+            envelope_attacks,
+            envelope_releases,
+            envelope_parameters,
         )
 
     def snapshot(self) -> PersistentFMSnapshot:  # ty: ignore[invalid-method-override]
