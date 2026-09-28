@@ -7,7 +7,7 @@ import pytest
 from test_synth import check_audio
 from test_synth_demo import publish_flac
 from ufor import synth_trace
-from ufor.events import ControlChange, Release, Trigger
+from ufor.events import ControlChange, LFOChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
 from ufor.synth import SynthInstrumentScore
 
@@ -185,6 +185,72 @@ def test_named_envelope_modulates_fm_and_survives_restore(
         partitioned.restore(snapshot)
 
     check_audio(tmp_path / f"fm-named-envelope-{backend}.wav", actual, expected)
+    if backend == "native":
+        reference = fm.OfflineFM(definition).advance(actions, 0, 48000)
+        np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
+
+
+def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = score().model_dump()
+    voice = raw["body"]["voices"][0]
+    target = {"name": "edge-modulator-carrier", "parameter": "index"}
+    voice["lfos"] = {"motion": {"waveform": "sine", "rate": 2, "scope": "instrument"}}
+    voice["bindings"] = [{"name": "motion", "kind": "lfo", "reference": "motion"}]
+    voice["modulation"] = {
+        "sources": [
+            {"name": "motion", "scope": "instrument", "minimum": -1, "maximum": 1}
+        ],
+        "parameters": [
+            {
+                "target": target,
+                "unit": "radians",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 4,
+                "default": 2,
+            }
+        ],
+        "routes": [
+            {
+                "name": "motion",
+                "source": "motion",
+                "target": target,
+                "operation": "add",
+                "unit": "radians",
+                "points": [{"input": -1, "amount": -1}, {"input": 1, "amount": 1}],
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            trigger(),
+            LFOChange(tick=12000, ordinal=0, name="motion", action="rate", rate=5),
+            LFOChange(tick=24000, ordinal=0, name="motion", action="reset"),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    definition = fm.prepare(document)
+    whole = fm.OfflineFM(definition, backend)
+    expected = whole.advance(actions, 0, 48000)
+    partitioned = fm.OfflineFM(definition, backend)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = partitioned.advance(
+            [a for a in actions if start <= a.tick < end], start, end
+        )
+        snapshot = fm.FMSnapshot.model_validate_json(
+            partitioned.snapshot().model_dump_json()
+        )
+        partitioned = fm.OfflineFM(definition, backend)
+        partitioned.restore(snapshot)
+
+    check_audio(tmp_path / f"fm-lfo-events-{backend}.wav", actual, expected)
     if backend == "native":
         reference = fm.OfflineFM(definition).advance(actions, 0, 48000)
         np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
