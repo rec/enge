@@ -123,6 +123,73 @@ def test_four_operator_fan_in_partitions_and_restore(
         np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
 
 
+def test_named_envelope_modulates_fm_and_survives_restore(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = score().model_dump()
+    voice = raw["body"]["voices"][0]
+    voice["envelopes"] = {
+        "motion": {
+            "initial": 0,
+            "segments": [{"duration": "1/4", "target": 1}],
+            "release": [{"duration": "1/4", "target": 0}],
+        }
+    }
+    voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]
+    voice["modulation"] = {
+        "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
+        "parameters": [
+            {
+                "target": {"name": "fm", "parameter": "carrier_level"},
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 0.2,
+                "default": 0.2,
+            }
+        ],
+        "routes": [
+            {
+                "name": "motion",
+                "source": "motion",
+                "target": {"name": "fm", "parameter": "carrier_level"},
+                "operation": "multiply",
+                "unit": "ratio",
+                "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": 1}],
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            trigger(),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    definition = fm.prepare(document)
+    whole = fm.OfflineFM(definition, backend)
+    expected = whole.advance(actions, 0, 48000)
+    partitioned = fm.OfflineFM(definition, backend)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = partitioned.advance(
+            [a for a in actions if start <= a.tick < end], start, end
+        )
+        snapshot = fm.FMSnapshot.model_validate_json(
+            partitioned.snapshot().model_dump_json()
+        )
+        partitioned = fm.OfflineFM(definition, backend)
+        partitioned.restore(snapshot)
+
+    check_audio(tmp_path / f"fm-named-envelope-{backend}.wav", actual, expected)
+    if backend == "native":
+        reference = fm.OfflineFM(definition).advance(actions, 0, 48000)
+        np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
+
+
 def test_fm_operator_waveforms_match_in_both_backends() -> None:
     raw = score().model_dump()
     profile = raw["body"]["voices"][0]["fm"]
