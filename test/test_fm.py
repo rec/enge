@@ -493,6 +493,60 @@ def test_persistent_fm_matches_native_across_blocks_and_restore(tmp_path: Path) 
     np.testing.assert_allclose(replay, actual[24001:], atol=0)
 
 
+def test_persistent_fm_matches_native_four_operator_graph(tmp_path: Path) -> None:
+    raw = score().model_dump()
+    voice = raw["body"]["voices"][0]
+    profile = voice["fm"]
+    modulator = profile["operators"][0]
+    carrier = profile["operators"][1]
+    profile["operators"] = [
+        {**carrier, "name": "carrier", "waveform": "triangle"},
+        {**modulator, "name": "right", "ratio": 3, "waveform": "square"},
+        {**modulator, "name": "source", "ratio": 2},
+        {**modulator, "name": "left", "ratio": 5},
+    ]
+    profile["edges"] = [
+        {"source": "left", "destination": "carrier", "index": 0.5},
+        {"source": "carrier", "destination": "source", "index": 0.25, "delayed": True},
+        {"source": "source", "destination": "right", "index": 0.75},
+        {"source": "right", "destination": "carrier", "index": 1.0},
+        {"source": "source", "destination": "left", "index": 1.25},
+        {"source": "right", "destination": "source", "index": 0.125, "delayed": True},
+    ]
+    profile["carrier"] = "carrier"
+    voice["modulation"] = {}
+    voice["bindings"] = []
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            trigger(),
+            trigger(12001, "second", 330),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    definition = fm.prepare(document)
+    expected = fm.OfflineFM(definition, "native").advance(actions, 0, 48000)
+    engine = fm.PersistentFM(definition, voices=4)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = engine.advance(
+            [action for action in actions if start <= action.tick < end], start, end
+        )
+        if end == 24925:
+            snapshot = engine.snapshot()
+    restored = fm.PersistentFM(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [action for action in actions if 24925 <= action.tick < 48000], 24925, 48000
+    )
+
+    check_audio(tmp_path / "persistent-fm-four-operator.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[24925:], atol=0)
+
+
 def test_fm_rejects_wrong_source_profile_and_snapshot() -> None:
     document = score()
     with pytest.raises(synth.EngineError, match="oscillator voice"):

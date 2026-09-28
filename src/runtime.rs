@@ -59,6 +59,25 @@ struct FilterDefinition {
     q_parameter: usize,
 }
 
+#[derive(Clone, PartialEq)]
+struct GraphOperator {
+    waveform: u8,
+    initial: f64,
+    attack: Vec<Segment>,
+    release: Vec<Segment>,
+    phase_offset: f64,
+    ratio_parameter: usize,
+    tuning_parameter: usize,
+}
+
+#[derive(Clone, PartialEq)]
+struct GraphEdge {
+    source: usize,
+    destination: usize,
+    delayed: bool,
+    parameter: usize,
+}
+
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
@@ -70,6 +89,11 @@ pub struct SynthRuntimeSnapshot {
     mod_attack: Vec<Segment>,
     mod_release: Vec<Segment>,
     fm_phase_offsets: [f64; 2],
+    graph_operators: Vec<GraphOperator>,
+    graph_edges: Vec<GraphEdge>,
+    graph_order: Vec<usize>,
+    graph_carrier: usize,
+    graph_carrier_parameter: usize,
     initial: f64,
     attack: Vec<Segment>,
     release: Vec<Segment>,
@@ -89,6 +113,11 @@ pub struct SynthRuntimeSnapshot {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
+    graph_phases: Vec<f64>,
+    graph_errors: Vec<f64>,
+    graph_outputs: Vec<f64>,
+    graph_history: Vec<f64>,
+    graph_release_levels: Vec<f64>,
     noise_keys: Vec<u64>,
     noise_counters: Vec<u64>,
     gains: Vec<f64>,
@@ -118,6 +147,11 @@ pub struct SynthRuntime {
     mod_attack: Vec<Segment>,
     mod_release: Vec<Segment>,
     fm_phase_offsets: [f64; 2],
+    graph_operators: Vec<GraphOperator>,
+    graph_edges: Vec<GraphEdge>,
+    graph_order: Vec<usize>,
+    graph_carrier: usize,
+    graph_carrier_parameter: usize,
     initial: f64,
     attack: Vec<Segment>,
     release: Vec<Segment>,
@@ -137,6 +171,11 @@ pub struct SynthRuntime {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
+    graph_phases: Vec<f64>,
+    graph_errors: Vec<f64>,
+    graph_outputs: Vec<f64>,
+    graph_history: Vec<f64>,
+    graph_release_levels: Vec<f64>,
     noise_keys: Vec<u64>,
     noise_counters: Vec<u64>,
     gains: Vec<f64>,
@@ -232,6 +271,11 @@ impl SynthRuntime {
             mod_attack: Vec::new(),
             mod_release: Vec::new(),
             fm_phase_offsets: [0.0; 2],
+            graph_operators: Vec::new(),
+            graph_edges: Vec::new(),
+            graph_order: Vec::new(),
+            graph_carrier: 0,
+            graph_carrier_parameter: 0,
             initial,
             attack,
             release,
@@ -251,6 +295,11 @@ impl SynthRuntime {
             mod_errors: vec![0.0; slots],
             previous_modulators: vec![0.0; slots],
             mod_release_levels: vec![0.0; slots],
+            graph_phases: Vec::new(),
+            graph_errors: Vec::new(),
+            graph_outputs: Vec::new(),
+            graph_history: Vec::new(),
+            graph_release_levels: Vec::new(),
             noise_keys: vec![0; slots],
             noise_counters: vec![0; slots],
             gains: vec![0.0; slots],
@@ -321,6 +370,135 @@ impl SynthRuntime {
         runtime.mod_attack = mod_attack;
         runtime.mod_release = mod_release;
         runtime.fm_phase_offsets = [phase_offsets[0], phase_offsets[1]];
+        Ok(runtime)
+    }
+
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn fm_graph(
+        rate: f64,
+        routes: PyReadonlyArray2<'_, f64>,
+        carrier_initial: f64,
+        carrier_attack: PyReadonlyArray2<'_, f64>,
+        carrier_release: PyReadonlyArray2<'_, f64>,
+        waveforms: Vec<u8>,
+        initials: Vec<f64>,
+        attacks: Vec<Vec<(f64, f64)>>,
+        releases: Vec<Vec<(f64, f64)>>,
+        phase_offsets: Vec<f64>,
+        parameters: Vec<(usize, usize)>,
+        edges: Vec<(usize, usize, bool, usize)>,
+        order: Vec<usize>,
+        carrier: usize,
+        carrier_parameter: usize,
+        minimum_hold_frames: f64,
+        controls: PyReadonlyArray2<'_, f64>,
+        control_smoothing: Vec<(u64, u64)>,
+        lfos: PyReadonlyArray2<'_, f64>,
+        lfo_rationals: Vec<(u64, u64)>,
+        filters: PyReadonlyArray2<'_, f64>,
+        parameter_definitions: Vec<f64>,
+        context_capacity: usize,
+    ) -> PyResult<Self> {
+        let operators = waveforms.len();
+        if !(2..=6).contains(&operators)
+            || initials.len() != operators
+            || attacks.len() != operators
+            || releases.len() != operators
+            || phase_offsets.len() != operators
+            || parameters.len() != operators
+            || carrier >= operators
+            || carrier_parameter >= parameter_definitions.len() / 3
+            || waveforms.iter().any(|v| *v > 2)
+            || initials
+                .iter()
+                .chain(&phase_offsets)
+                .any(|v| !v.is_finite())
+            || order.len() != operators
+            || order.iter().any(|v| *v >= operators)
+        {
+            return Err(PyValueError::new_err("Invalid graph FM runtime definition"));
+        }
+        let graph_operators: Vec<GraphOperator> = waveforms
+            .into_iter()
+            .zip(initials)
+            .zip(attacks)
+            .zip(releases)
+            .zip(phase_offsets)
+            .zip(parameters)
+            .map(
+                |(((((waveform, initial), attack), release), phase_offset), parameters)| {
+                    if attack.iter().chain(&release).any(|(frames, target)| {
+                        !frames.is_finite() || *frames < 0.0 || !target.is_finite()
+                    }) || parameters.0 >= parameter_definitions.len() / 3
+                        || parameters.1 >= parameter_definitions.len() / 3
+                    {
+                        return Err(PyValueError::new_err("Invalid graph FM operator"));
+                    }
+                    Ok(GraphOperator {
+                        waveform,
+                        initial,
+                        attack: attack
+                            .into_iter()
+                            .map(|(frames, target)| Segment { frames, target })
+                            .collect(),
+                        release: release
+                            .into_iter()
+                            .map(|(frames, target)| Segment { frames, target })
+                            .collect(),
+                        phase_offset,
+                        ratio_parameter: parameters.0,
+                        tuning_parameter: parameters.1,
+                    })
+                },
+            )
+            .collect::<PyResult<_>>()?;
+        let graph_edges: Vec<GraphEdge> = edges
+            .into_iter()
+            .map(|(source, destination, delayed, parameter)| {
+                if source >= operators
+                    || destination >= operators
+                    || parameter >= parameter_definitions.len() / 3
+                {
+                    return Err(PyValueError::new_err("Invalid graph FM edge"));
+                }
+                Ok(GraphEdge {
+                    source,
+                    destination,
+                    delayed,
+                    parameter,
+                })
+            })
+            .collect::<PyResult<_>>()?;
+        let mut runtime = Self::new(
+            rate,
+            0,
+            0.5,
+            routes,
+            carrier_initial,
+            carrier_attack,
+            carrier_release,
+            minimum_hold_frames,
+            controls,
+            control_smoothing,
+            lfos,
+            lfo_rationals,
+            filters,
+            parameter_definitions,
+            context_capacity,
+        )?;
+        let slots = runtime.frequencies.len();
+        runtime.source_kind = 3;
+        runtime.graph_operators = graph_operators;
+        runtime.graph_edges = graph_edges;
+        runtime.graph_order = order;
+        runtime.graph_carrier = carrier;
+        runtime.graph_carrier_parameter = carrier_parameter;
+        runtime.graph_phases = vec![0.0; slots * operators];
+        runtime.graph_errors = vec![0.0; slots * operators];
+        runtime.graph_outputs = vec![0.0; slots * operators];
+        runtime.graph_history = vec![0.0; slots * runtime.graph_edges.len()];
+        runtime.graph_release_levels = vec![0.0; slots * operators];
         Ok(runtime)
     }
 
@@ -443,6 +621,11 @@ impl SynthRuntime {
             mod_attack: self.mod_attack.clone(),
             mod_release: self.mod_release.clone(),
             fm_phase_offsets: self.fm_phase_offsets,
+            graph_operators: self.graph_operators.clone(),
+            graph_edges: self.graph_edges.clone(),
+            graph_order: self.graph_order.clone(),
+            graph_carrier: self.graph_carrier,
+            graph_carrier_parameter: self.graph_carrier_parameter,
             initial: self.initial,
             attack: self.attack.clone(),
             release: self.release.clone(),
@@ -462,6 +645,11 @@ impl SynthRuntime {
             mod_errors: self.mod_errors.clone(),
             previous_modulators: self.previous_modulators.clone(),
             mod_release_levels: self.mod_release_levels.clone(),
+            graph_phases: self.graph_phases.clone(),
+            graph_errors: self.graph_errors.clone(),
+            graph_outputs: self.graph_outputs.clone(),
+            graph_history: self.graph_history.clone(),
+            graph_release_levels: self.graph_release_levels.clone(),
             noise_keys: self.noise_keys.clone(),
             noise_counters: self.noise_counters.clone(),
             gains: self.gains.clone(),
@@ -490,6 +678,11 @@ impl SynthRuntime {
             || self.mod_attack != snapshot.mod_attack
             || self.mod_release != snapshot.mod_release
             || self.fm_phase_offsets != snapshot.fm_phase_offsets
+            || self.graph_operators != snapshot.graph_operators
+            || self.graph_edges != snapshot.graph_edges
+            || self.graph_order != snapshot.graph_order
+            || self.graph_carrier != snapshot.graph_carrier
+            || self.graph_carrier_parameter != snapshot.graph_carrier_parameter
             || self.initial != snapshot.initial
             || self.attack != snapshot.attack
             || self.release != snapshot.release
@@ -514,6 +707,12 @@ impl SynthRuntime {
             .clone_from(&snapshot.previous_modulators);
         self.mod_release_levels
             .clone_from(&snapshot.mod_release_levels);
+        self.graph_phases.clone_from(&snapshot.graph_phases);
+        self.graph_errors.clone_from(&snapshot.graph_errors);
+        self.graph_outputs.clone_from(&snapshot.graph_outputs);
+        self.graph_history.clone_from(&snapshot.graph_history);
+        self.graph_release_levels
+            .clone_from(&snapshot.graph_release_levels);
         self.noise_keys.clone_from(&snapshot.noise_keys);
         self.noise_counters.clone_from(&snapshot.noise_counters);
         self.gains.clone_from(&snapshot.gains);
@@ -621,7 +820,9 @@ impl SynthRuntime {
                 }
                 let amplitude = self.parameter(voice, 0)?;
                 let age = self.ages[voice] as f64;
-                let level = if let Some(release_frame) = self.release_frames[voice] {
+                let level = if self.source_kind == 3 {
+                    1.0
+                } else if let Some(release_frame) = self.release_frames[voice] {
                     let end = release_frame + total_frames(&self.release);
                     if age >= end.ceil() {
                         self.active[voice] = false;
@@ -697,6 +898,92 @@ impl SynthRuntime {
                     let total = self.phases[voice] + increment;
                     self.errors[voice] = (total - self.phases[voice]) - increment;
                     self.phases[voice] = total.rem_euclid(self.rate);
+                    carrier
+                } else if self.source_kind == 3 {
+                    let operators = self.graph_operators.len();
+                    let edges = self.graph_edges.len();
+                    let operator_base = voice * operators;
+                    let edge_base = voice * edges;
+                    let process_tuning = self.parameter(voice, 1)?;
+                    for operator in &self.graph_order {
+                        let definition = &self.graph_operators[*operator];
+                        let level = if let Some(release_frame) = self.release_frames[voice] {
+                            let end = release_frame + total_frames(&definition.release);
+                            if age >= end.ceil() {
+                                0.0
+                            } else if age >= release_frame.ceil() {
+                                envelope_value(
+                                    self.graph_release_levels[operator_base + *operator],
+                                    &definition.release,
+                                    age - release_frame,
+                                )
+                            } else {
+                                envelope_value(definition.initial, &definition.attack, age)
+                            }
+                        } else {
+                            envelope_value(definition.initial, &definition.attack, age)
+                        };
+                        let mut offset = 0.0;
+                        for (index, edge) in self.graph_edges.iter().enumerate() {
+                            if edge.destination == *operator {
+                                offset += self.parameter(voice, edge.parameter)?
+                                    * if edge.delayed {
+                                        self.graph_history[edge_base + index]
+                                    } else {
+                                        self.graph_outputs[operator_base + edge.source]
+                                    };
+                            }
+                        }
+                        let angle =
+                            TAU * self.graph_phases[operator_base + *operator] / self.rate + offset;
+                        let phase = (angle / TAU).rem_euclid(1.0);
+                        let value = match definition.waveform {
+                            0 => angle.sin(),
+                            1 => {
+                                if phase < 0.5 {
+                                    1.0
+                                } else {
+                                    -1.0
+                                }
+                            }
+                            _ => {
+                                if phase < 0.5 {
+                                    4.0 * phase - 1.0
+                                } else {
+                                    3.0 - 4.0 * phase
+                                }
+                            }
+                        };
+                        self.graph_outputs[operator_base + *operator] = level * value;
+                    }
+                    if let Some(release_frame) = self.release_frames[voice] {
+                        let carrier = &self.graph_operators[self.graph_carrier];
+                        if age >= (release_frame + total_frames(&carrier.release)).ceil() {
+                            self.active[voice] = false;
+                            continue;
+                        }
+                    }
+                    let carrier = self.parameter(voice, self.graph_carrier_parameter)?
+                        * self.graph_outputs[operator_base + self.graph_carrier];
+                    for (index, edge) in self.graph_edges.iter().enumerate() {
+                        self.graph_history[edge_base + index] =
+                            self.graph_outputs[operator_base + edge.source];
+                    }
+                    for operator in 0..operators {
+                        let definition = &self.graph_operators[operator];
+                        let frequency = self.frequencies[voice]
+                            * self.parameter(voice, definition.ratio_parameter)?
+                            * 2_f64.powf(
+                                (process_tuning
+                                    + self.parameter(voice, definition.tuning_parameter)?)
+                                    / 1200.0,
+                            );
+                        let index = operator_base + operator;
+                        let increment = frequency - self.graph_errors[index];
+                        let total = self.graph_phases[index] + increment;
+                        self.graph_errors[index] = (total - self.graph_phases[index]) - increment;
+                        self.graph_phases[index] = total.rem_euclid(self.rate);
+                    }
                     carrier
                 } else {
                     let index = self.noise_counters[voice];
@@ -812,6 +1099,21 @@ impl SynthRuntime {
                 }
                 self.mod_errors[voice] = 0.0;
                 self.previous_modulators[voice] = 0.0;
+                if self.source_kind == 3 {
+                    let operators = self.graph_operators.len();
+                    let edges = self.graph_edges.len();
+                    let operator_base = voice * operators;
+                    for operator in 0..operators {
+                        let index = operator_base + operator;
+                        self.graph_phases[index] = (self.graph_operators[operator].phase_offset
+                            * self.rate)
+                            .rem_euclid(self.rate);
+                        self.graph_errors[index] = 0.0;
+                        self.graph_outputs[index] = 0.0;
+                        self.graph_release_levels[index] = 0.0;
+                    }
+                    self.graph_history[voice * edges..(voice + 1) * edges].fill(0.0);
+                }
                 if self.source_kind == 2 {
                     self.noise_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
                     self.noise_counters[voice] = 0;
@@ -839,6 +1141,16 @@ impl SynthRuntime {
                         envelope_value(self.initial, &self.attack, release_frame);
                     self.mod_release_levels[voice] =
                         envelope_value(self.mod_initial, &self.mod_attack, release_frame);
+                    if self.source_kind == 3 {
+                        let operator_base = voice * self.graph_operators.len();
+                        for (operator, definition) in self.graph_operators.iter().enumerate() {
+                            self.graph_release_levels[operator_base + operator] = envelope_value(
+                                definition.initial,
+                                &definition.attack,
+                                release_frame,
+                            );
+                        }
+                    }
                     self.release_frames[voice] = Some(release_frame);
                 }
             }

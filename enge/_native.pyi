@@ -101,6 +101,32 @@ class SynthRuntime:
         context_capacity: int,
     ) -> SynthRuntime: ...
     @staticmethod
+    def fm_graph(
+        rate: float,
+        routes: np.ndarray,
+        carrier_initial: float,
+        carrier_attack: np.ndarray,
+        carrier_release: np.ndarray,
+        waveforms: list[int],
+        initials: list[float],
+        attacks: list[list[tuple[float, float]]],
+        releases: list[list[tuple[float, float]]],
+        phase_offsets: list[float],
+        parameters: list[tuple[int, int]],
+        edges: list[tuple[int, int, bool, int]],
+        order: list[int],
+        carrier: int,
+        carrier_parameter: int,
+        minimum_hold_frames: float,
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        lfos: np.ndarray,
+        lfo_rationals: list[tuple[int, int]],
+        filters: np.ndarray,
+        parameter_definitions: list[float],
+        context_capacity: int,
+    ) -> SynthRuntime: ...
+    @staticmethod
     def noise(
         rate: float,
         routes: np.ndarray,

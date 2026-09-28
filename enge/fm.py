@@ -1,6 +1,5 @@
-"""Two-operator phase modulation with independent NumPy and Rust numerical kernels."""
+"""Graph phase modulation with independent NumPy and Rust numerical kernels."""
 
-from dataclasses import dataclass
 from math import ceil, isfinite
 from typing import Literal, Self, cast
 
@@ -16,42 +15,6 @@ from ufor.synth import FMVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
 
 from . import _native, filters, synth
-
-
-@dataclass(frozen=True)
-class _TwoOperatorConnection:
-    source: str
-    destination: str
-    index: float
-
-
-def _two_operator_connection(profile: FM) -> _TwoOperatorConnection:
-    if len(profile.operators) != 2:
-        raise synth.EngineError("Graph FM integration is not implemented")
-    destination = str(profile.carrier)
-    source = str(next(o.name for o in profile.operators if o.name != profile.carrier))
-    edge = next(
-        (
-            e
-            for e in profile.edges
-            if not e.delayed and e.source == source and e.destination == destination
-        ),
-        None,
-    )
-    if edge is None:
-        raise synth.EngineError("Two-operator FM requires a modulator-to-carrier edge")
-    return _TwoOperatorConnection(source, destination, edge.index)
-
-
-def _feedback(profile: FM, source: str) -> float:
-    return next(
-        (
-            e.index
-            for e in profile.edges
-            if e.delayed and e.source == source and e.destination == source
-        ),
-        0,
-    )
 
 
 class PreparedVoice(synth.PreparedEnvelope, frozen=True):
@@ -467,7 +430,7 @@ class OfflineFM:
 
 
 class PersistentFM(synth.PersistentSynth):
-    """Bounded native two-operator FM runtime for one static voice template."""
+    """Bounded native graph-FM runtime for one static voice template."""
 
     def __init__(
         self,
@@ -496,10 +459,11 @@ class PersistentFM(synth.PersistentSynth):
             raise synth.EngineError(
                 "Persistent FM spatial processing is not implemented"
             )
-        operators = {o.name: o for o in template.fm.operators}
-        connection = _two_operator_connection(template.fm)
-        modulator = operators[connection.source]
-        carrier = operators[connection.destination]
+        operators = template.fm.operators
+        operator_indices = {
+            operator.name: index for index, operator in enumerate(operators)
+        }
+        carrier = operator_indices[template.fm.carrier]
         route = [
             sum(r.gain for r in template.channels if r.output == c)
             for c in definition.channels
@@ -510,7 +474,9 @@ class PersistentFM(synth.PersistentSynth):
             channels=definition.channels,
             instrument=definition.score.body,
         )
-        source_parameters = [
+        source_parameters: list[
+            tuple[tuple[str, str], int, modulation.Operation, float, float, float]
+        ] = [
             (
                 ("processing", "amplitude"),
                 0,
@@ -527,63 +493,57 @@ class PersistentFM(synth.PersistentSynth):
                 -120000,
                 120000,
             ),
-            (
-                (f"operator-{modulator.name}", "ratio"),
-                2,
-                modulation.Operation.add,
-                modulator.ratio,
-                np.finfo(np.float64).tiny,
-                1e300,
-            ),
-            (
-                (f"operator-{modulator.name}", "tuning_cents"),
-                3,
-                modulation.Operation.add,
-                modulator.tuning_cents,
-                -120000,
-                120000,
-            ),
-            (
-                (f"operator-{carrier.name}", "ratio"),
-                4,
-                modulation.Operation.add,
-                carrier.ratio,
-                np.finfo(np.float64).tiny,
-                1e300,
-            ),
-            (
-                (f"operator-{carrier.name}", "tuning_cents"),
-                5,
-                modulation.Operation.add,
-                carrier.tuning_cents,
-                -120000,
-                120000,
-            ),
-            (
-                ("edge-modulator-carrier", "index"),
-                6,
-                modulation.Operation.add,
-                connection.index,
-                0,
-                1e300,
-            ),
-            (
-                ("edge-feedback", "index"),
-                7,
-                modulation.Operation.add,
-                _feedback(template.fm, connection.source),
-                0,
-                1e300,
-            ),
+        ]
+        operator_parameters: list[tuple[int, int]] = []
+        for operator in operators:
+            ratio = len(source_parameters)
+            source_parameters.append(
+                (
+                    (f"operator-{operator.name}", "ratio"),
+                    ratio,
+                    modulation.Operation.add,
+                    operator.ratio,
+                    np.finfo(np.float64).tiny,
+                    1e300,
+                )
+            )
+            tuning = len(source_parameters)
+            source_parameters.append(
+                (
+                    (f"operator-{operator.name}", "tuning_cents"),
+                    tuning,
+                    modulation.Operation.add,
+                    operator.tuning_cents,
+                    -120000,
+                    120000,
+                )
+            )
+            operator_parameters.append((ratio, tuning))
+        edge_parameters: list[int] = []
+        for edge in template.fm.edges:
+            parameter = len(source_parameters)
+            source_parameters.append(
+                (
+                    (f"edge-{edge_target_name(edge)}", "index"),
+                    parameter,
+                    modulation.Operation.add,
+                    edge.index,
+                    0,
+                    1e300,
+                )
+            )
+            edge_parameters.append(parameter)
+        carrier_parameter = len(source_parameters)
+        source_parameters.append(
             (
                 ("fm", "carrier_level"),
-                8,
+                carrier_parameter,
                 modulation.Operation.add,
                 template.fm.carrier_level,
                 0,
                 1e300,
-            ),
-        ]
+            )
+        )
         self.definition = definition.model_copy(deep=True)
         self.instrument = self.definition.score.body
         self.template = template
@@ -606,16 +566,65 @@ class PersistentFM(synth.PersistentSynth):
         ) = synth._persistent_modulation(shared, template, source_parameters)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
-        self.runtime = _native.SynthRuntime.fm(
+        self.runtime = _native.SynthRuntime.fm_graph(
             rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            carrier.envelope.initial,
-            synth._runtime_segments(carrier.envelope.segments, rate),
-            synth._runtime_segments(carrier.envelope.release, rate),
-            modulator.envelope.initial,
-            synth._runtime_segments(modulator.envelope.segments, rate),
-            synth._runtime_segments(modulator.envelope.release, rate),
-            [float(modulator.phase_cycles), float(carrier.phase_cycles)],
+            operators[carrier].envelope.initial,
+            synth._runtime_segments(operators[carrier].envelope.segments, rate),
+            synth._runtime_segments(operators[carrier].envelope.release, rate),
+            [
+                {
+                    Waveform.sine: 0,
+                    Waveform.square: 1,
+                    Waveform.triangle: 2,
+                }[operator.waveform]
+                for operator in operators
+            ],
+            [operator.envelope.initial for operator in operators],
+            [
+                [
+                    tuple(segment)
+                    for segment in synth._runtime_segments(
+                        operator.envelope.segments, rate
+                    )
+                ]
+                for operator in operators
+            ],
+            [
+                [
+                    tuple(segment)
+                    for segment in synth._runtime_segments(
+                        operator.envelope.release, rate
+                    )
+                ]
+                for operator in operators
+            ],
+            [float(operator.phase_cycles) for operator in operators],
+            operator_parameters,
+            [
+                (
+                    operator_indices[edge.source],
+                    operator_indices[edge.destination],
+                    edge.delayed,
+                    parameter,
+                )
+                for edge, parameter in zip(
+                    template.fm.edges, edge_parameters, strict=True
+                )
+            ],
+            _operator_order(
+                len(operators),
+                [
+                    (
+                        operator_indices[edge.source],
+                        operator_indices[edge.destination],
+                        edge.delayed,
+                    )
+                    for edge in template.fm.edges
+                ],
+            ),
+            carrier,
+            carrier_parameter,
             float(template.minimum_hold_seconds * rate),
             controls,
             smoothing,
