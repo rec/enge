@@ -82,10 +82,10 @@ slot/group filters precede instrument filters. Voice completion discards their
 state without adding a tail. See the revised [uFor filter contract](../ufor/doc/instrument-format.md#resonant-filters)
 and [enge's realization](plan/engine-execution.md#dynamic-filters).
 
-Decoding remains with the caller. Curved envelopes, named envelopes, equalizers,
+Decoding remains with the caller. Curved envelopes, equalizers,
 layer crossfades, delayed or offset sample starts, event bindings, other
 modulation targets, and fade
-retirements fail explicitly. The PyTorch backend is not yet implemented.
+retirements fail explicitly.
 
 The NumPy and Rust graph FM engine in [fm.py](enge/fm.py) renders two through six
 named sine, square, or triangle operators. Acyclic current-sample edges modulate
@@ -109,8 +109,7 @@ a different backend, including when no voices are active.
 `fm.fm_samples` is the pure numerical boundary: parameter/envelope arrays plus
 phase and feedback arrays produce audio and independent next-state arrays.
 Validation, models, control evaluation, and rational envelope boundaries stay
-outside it. This is a NumPy reference for a future tensor port, not an existing
-`torch.compile` implementation; feedback still requires a sequential recurrence.
+outside it; feedback requires a sequential recurrence.
 See the [FM plan and implementation status](plan/fm-synthesis.md) and
 [uFor FM semantics](../ufor/doc/fm-synthesis.md).
 
