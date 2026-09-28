@@ -218,6 +218,8 @@ class OfflineEffects:
                 else 1
                 if isinstance(processor, audio_effects.Multiply)
                 else 2
+                if isinstance(processor, audio_effects.Filter)
+                else 3
             )
             state_floors.append(
                 processor.state_floor
@@ -240,6 +242,8 @@ class OfflineEffects:
                 ) * state.bypass.value(frame)
                 if isinstance(processor, audio_effects.Gain):
                     values[i, j, 0] = state.parameters["gain_db"].value(frame)
+                elif isinstance(processor, audio_effects.SoftClip):
+                    values[i, j, 0] = state.parameters["drive"].value(frame)
                 elif isinstance(processor, audio_effects.Filter):
                     if (node_filter_values := filter_values[j]) is None:
                         node_filter_values = np.zeros(
@@ -484,6 +488,11 @@ class OfflineEffects:
         if isinstance(processor, audio_effects.Gain):
             dry = ports["input"]
             wet = dry * pow(10, state.parameters["gain_db"].value(frame) / 20)
+            return _mix(dry, wet, mix), ended["input"]
+        if isinstance(processor, audio_effects.SoftClip):
+            dry = ports["input"]
+            drive = state.parameters["drive"].value(frame)
+            wet = np.tanh(drive * dry) / np.tanh(drive)
             return _mix(dry, wet, mix), ended["input"]
         if isinstance(processor, audio_effects.Multiply):
             dry = ports["carrier"]
@@ -745,6 +754,9 @@ def native_live_graph(
             parameters[node, 0] = processor.gain_db
         elif isinstance(processor, audio_effects.Multiply):
             kinds.append(1)
+        elif isinstance(processor, audio_effects.SoftClip):
+            kinds.append(4)
+            parameters[node, 0] = processor.drive
         elif isinstance(processor, audio_effects.Filter):
             kinds.append(2)
             values = filters.parameters(processor.filters, definition.sample_rate, 1)[0]
@@ -817,6 +829,11 @@ def native_live_actions(
             elif (
                 isinstance(processor, audio_effects.Gain)
                 and action.parameter == "gain_db"
+            ):
+                parameter = 0
+            elif (
+                isinstance(processor, audio_effects.SoftClip)
+                and action.parameter == "drive"
             ):
                 parameter = 0
             elif isinstance(processor, audio_effects.Filter):
@@ -908,6 +925,8 @@ def _initial_state(processor: audio_effects.Processor, channels: int) -> Process
     filter_states: list[filters.FilterState] = []
     if isinstance(processor, audio_effects.Gain):
         values["gain_db"] = processor.gain_db
+    elif isinstance(processor, audio_effects.SoftClip):
+        values["drive"] = processor.drive
     elif isinstance(processor, audio_effects.Filter):
         filter_states = filters.initial_states(processor.filters, channels)
         for definition in processor.filters:

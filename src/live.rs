@@ -510,7 +510,7 @@ impl EffectRuntime {
         batch_capacity: usize,
     ) -> PyResult<Self> {
         let nodes = kinds.len();
-        if kinds.iter().any(|v| *v > 3)
+        if kinds.iter().any(|v| *v > 4)
             || sources.shape() != [nodes, 2]
             || parameters.shape()[0] != nodes
             || parameters.shape()[1] < 3
@@ -681,7 +681,7 @@ impl EffectRuntime {
                         }
                     }
                     2 => self.process_filters(node, rate)?,
-                    _ => {
+                    3 => {
                         let parameters = [
                             self.parameters[[node, 3]],
                             self.parameters[[node, 4]],
@@ -693,6 +693,16 @@ impl EffectRuntime {
                             .as_mut()
                             .expect("validated live granulator")
                             .process(&mut self.wet, parameters, rate)?;
+                    }
+                    _ => {
+                        let drive = self.parameters[[node, 0]];
+                        if drive <= 0.0 {
+                            return Err(PyValueError::new_err("Invalid live soft clip drive"));
+                        }
+                        let normalization = drive.tanh();
+                        for value in &mut self.wet {
+                            *value = (drive * *value).tanh() / normalization;
+                        }
                     }
                 }
                 for channel in 0..channels {

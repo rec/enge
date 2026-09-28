@@ -34,7 +34,7 @@ pub fn render_effects<'py>(
         || filter_inputs.len() != nodes
         || state_floors.len() != nodes
         || output_source >= input_count + nodes
-        || kinds.iter().any(|k| *k > 2)
+        || kinds.iter().any(|k| *k > 3)
         || state_floors.iter().any(|v| !v.is_finite() || *v < 0.0)
         || inputs.as_array().iter().any(|v| !v.is_finite())
         || parameters.as_array().iter().any(|v| !v.is_finite())
@@ -88,7 +88,7 @@ pub fn render_effects<'py>(
                             *value *= values[second][channel];
                         }
                     }
-                    _ => {
+                    2 => {
                         banks[node].process(frame, &mut wet)?;
                         let floor = state_floors[node];
                         if floor > 0.0 {
@@ -97,6 +97,16 @@ pub fn render_effects<'py>(
                                     *value = 0.0;
                                 }
                             }
+                        }
+                    }
+                    _ => {
+                        let drive = parameters[[frame, node, 0]];
+                        if drive <= 0.0 {
+                            return Err(PyValueError::new_err("Invalid soft clip drive"));
+                        }
+                        let normalization = drive.tanh();
+                        for value in &mut wet {
+                            *value = (drive * *value).tanh() / normalization;
                         }
                     }
                 }
