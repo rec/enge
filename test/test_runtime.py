@@ -8,7 +8,7 @@ from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
 from ufor.envelope import Envelope, Segment
-from ufor.events import Release, Trigger
+from ufor.events import LFOChange, Release, Trigger
 from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
@@ -335,6 +335,38 @@ def test_persistent_synth_evolves_scoped_lfos_in_rust(
 
     check_audio(tmp_path / f"persistent-{scope}-lfo.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[24001:], atol=0)
+
+
+def test_persistent_synth_applies_instrument_lfo_events(tmp_path: Path) -> None:
+    document = lfo_score("synth", "instrument")
+    actions = prepare_trace(
+        document.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            LFOChange(tick=12000, ordinal=0, name="motion", action="rate", rate=5),
+            LFOChange(tick=24000, ordinal=0, name="motion", action="reset"),
+        ],
+        seed=0,
+    ).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "native").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=4)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = renderer.advance(
+            [action for action in actions if start <= action.tick < end], start, end
+        )
+        if end == 24925:
+            snapshot = renderer.snapshot()
+    restored = PersistentSynth(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [action for action in actions if 24925 <= action.tick < 48000], 24925, 48000
+    )
+
+    check_audio(tmp_path / "persistent-instrument-lfo-events.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[24925:], atol=0)
 
 
 def test_persistent_synth_evolves_native_voice_filters(tmp_path: Path) -> None:

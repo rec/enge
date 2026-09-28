@@ -48,6 +48,14 @@ struct LfoDefinition {
     fade_frames: (u64, u64),
 }
 
+#[derive(Clone)]
+struct LfoEventState {
+    at: usize,
+    started: usize,
+    phase: f64,
+    rate: f64,
+}
+
 #[derive(Clone, PartialEq)]
 struct FilterDefinition {
     response: usize,
@@ -102,6 +110,7 @@ pub struct SynthRuntimeSnapshot {
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
+    lfo_event_states: Vec<Option<LfoEventState>>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -160,6 +169,7 @@ pub struct SynthRuntime {
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
+    lfo_event_states: Vec<Option<LfoEventState>>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -259,6 +269,7 @@ impl SynthRuntime {
         let slots = routes.shape()[0];
         let channels = routes.shape()[1];
         let filter_stages = filter_definitions.iter().map(|v| v.stages).sum();
+        let lfo_count = lfo_definitions.len();
         let context_states = (0..context_capacity)
             .flat_map(|_| control_states.clone())
             .collect();
@@ -284,6 +295,7 @@ impl SynthRuntime {
             control_definitions,
             control_states,
             lfo_definitions,
+            lfo_event_states: vec![None; lfo_count],
             filter_definitions,
             context_kinds: vec![0; context_capacity],
             context_states,
@@ -634,6 +646,7 @@ impl SynthRuntime {
             control_definitions: self.control_definitions.clone(),
             control_states: self.control_states.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
+            lfo_event_states: self.lfo_event_states.clone(),
             filter_definitions: self.filter_definitions.clone(),
             context_kinds: self.context_kinds.clone(),
             context_states: self.context_states.clone(),
@@ -730,6 +743,7 @@ impl SynthRuntime {
             .clone_from(&snapshot.voice_filter_states);
         self.frame = snapshot.frame;
         self.control_states.clone_from(&snapshot.control_states);
+        self.lfo_event_states.clone_from(&snapshot.lfo_event_states);
         self.context_kinds.clone_from(&snapshot.context_kinds);
         self.context_states.clone_from(&snapshot.context_states);
         self.voice_part_contexts
@@ -1229,6 +1243,49 @@ impl SynthRuntime {
                 self.context_states[index].target = action[4];
                 self.context_states[index].elapsed = 0;
             }
+            8 => {
+                let lfo = voice;
+                let action_kind = action[3] as usize;
+                if lfo >= self.lfo_definitions.len()
+                    || action[3] != action_kind as f64
+                    || action_kind > 1
+                    || !action[4].is_finite()
+                    || (action_kind == 0 && action[4] != 0.0)
+                    || (action_kind == 1 && action[4] < 0.0)
+                {
+                    return Err(PyValueError::new_err("Invalid synth LFO action"));
+                }
+                let definition = &self.lfo_definitions[lfo];
+                if definition.scope != 0 {
+                    return Err(PyValueError::new_err("Invalid synth LFO scope"));
+                }
+                let state = self.lfo_event_states[lfo].clone().unwrap_or(LfoEventState {
+                    at: 0,
+                    started: 0,
+                    phase: definition.phase.0 as f64 / definition.phase.1 as f64,
+                    rate: definition.rate.0 as f64 / definition.rate.1 as f64,
+                });
+                let phase = (state.phase + state.rate * (self.frame - state.at) as f64 / self.rate)
+                    .rem_euclid(1.0);
+                self.lfo_event_states[lfo] = Some(LfoEventState {
+                    at: self.frame,
+                    started: if action_kind == 0 {
+                        self.frame
+                    } else {
+                        state.started
+                    },
+                    phase: if action_kind == 0 {
+                        definition.phase.0 as f64 / definition.phase.1 as f64
+                    } else {
+                        phase
+                    },
+                    rate: if action_kind == 1 {
+                        action[4]
+                    } else {
+                        state.rate
+                    },
+                });
+            }
             _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
         }
         Ok(())
@@ -1253,7 +1310,7 @@ impl SynthRuntime {
                 product *= amount;
             }
         }
-        for definition in &self.lfo_definitions {
+        for (source, definition) in self.lfo_definitions.iter().enumerate() {
             if definition.parameter != parameter {
                 continue;
             }
@@ -1265,7 +1322,11 @@ impl SynthRuntime {
                 }
                 _ => self.ages[voice],
             };
-            let (value, weight) = lfo_value(definition, elapsed, self.rate as u64)?;
+            let (value, weight) = if let Some(state) = &self.lfo_event_states[source] {
+                lfo_event_value(definition, state, self.frame, self.rate)
+            } else {
+                lfo_value(definition, elapsed, self.rate as u64)?
+            };
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += weight * amount;
@@ -1611,6 +1672,42 @@ fn lfo_value(definition: &LfoDefinition, elapsed: usize, sample_rate: u64) -> Py
             .clamp(0.0, 1.0)
     };
     Ok((value.clamp(-1.0, 1.0), weight))
+}
+
+fn lfo_event_value(
+    definition: &LfoDefinition,
+    state: &LfoEventState,
+    frame: usize,
+    sample_rate: f64,
+) -> (f64, f64) {
+    let phase =
+        (state.phase + state.rate * (frame - state.at) as f64 / sample_rate).rem_euclid(1.0);
+    let duty = definition.duty.0 as f64 / definition.duty.1 as f64;
+    let value = match definition.waveform {
+        0 => (TAU * phase).sin(),
+        1 => {
+            if phase < duty {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        _ if duty == 0.0 => 1.0 - 2.0 * phase,
+        _ if duty == 1.0 => 2.0 * phase - 1.0,
+        _ if phase < duty => 2.0 * phase / duty - 1.0,
+        _ => (1.0 + duty - 2.0 * phase) / (1.0 - duty),
+    };
+    let age = (frame - state.started) as f64;
+    let delay = definition.delay_frames.0 as f64 / definition.delay_frames.1 as f64;
+    let fade = definition.fade_frames.0 as f64 / definition.fade_frames.1 as f64;
+    let weight = if age < delay {
+        0.0
+    } else if fade == 0.0 {
+        1.0
+    } else {
+        ((age - delay) / fade).clamp(0.0, 1.0)
+    };
+    (value, weight)
 }
 
 fn lfo_phase_denominator(definition: &LfoDefinition, sample_rate: u64) -> Option<u128> {

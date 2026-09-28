@@ -894,6 +894,7 @@ class PersistentSynth:
             self.source_controls,
             lfos,
             lfo_rationals,
+            self.lfo_sources,
             self.source_scopes,
             runtime_filters,
         ) = _persistent_modulation(definition, template)
@@ -1028,6 +1029,21 @@ class PersistentSynth:
                             count, offset, 4, source, action.value, context, 0
                         )
                         count += 1
+            elif isinstance(action, instrument_trace.LFOObservation):
+                sources = self.lfo_sources.get(action.name)
+                if not sources:
+                    raise EngineError(f"Unknown instrument LFO: {action.name}")
+                for source in sources:
+                    self._encode_action(
+                        count,
+                        offset,
+                        8,
+                        source,
+                        0 if action.action == "reset" else 1,
+                        0 if action.rate is None else action.rate,
+                        0,
+                    )
+                    count += 1
             elif isinstance(action, VoiceStart):
                 part_context = -1
                 trigger_context = -1
@@ -1471,6 +1487,7 @@ def _persistent_modulation(
     list[str],
     np.ndarray,
     list[tuple[int, int]],
+    dict[str, list[int]],
     set[str],
     np.ndarray,
 ]:
@@ -1574,6 +1591,7 @@ def _persistent_modulation(
     source_controls: list[str] = []
     lfo_rows: list[list[float]] = []
     lfo_rationals: list[tuple[int, int]] = []
+    lfo_sources: dict[str, list[int]] = {}
     source_scopes: set[str] = set()
     for route in routes:
         source = sources.get(route.source)
@@ -1652,6 +1670,7 @@ def _persistent_modulation(
         else:
             assert isinstance(binding, processing.GeneratorBinding)
             generator = template.lfos[binding.reference]
+            index = len(lfo_rows)
             lfo_rows.append(
                 [
                     ["instrument", "part", "trigger", "voice"].index(source.scope),
@@ -1672,6 +1691,8 @@ def _persistent_modulation(
                 generator.fade_in * definition.sample_rate,
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
+            if source.scope == "instrument":
+                lfo_sources.setdefault(binding.reference, []).append(index)
     for target, index, _, _, _, _ in source_parameters:
         if (parameter := parameters.get(target)) is not None:
             parameter_values[index * 3 : index * 3 + 3] = [
@@ -1688,6 +1709,7 @@ def _persistent_modulation(
         source_controls,
         np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 6),
         lfo_rationals,
+        lfo_sources,
         source_scopes,
         np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
     )

@@ -561,6 +561,7 @@ class PersistentFM(synth.PersistentSynth):
             self.source_controls,
             lfos,
             lfo_rationals,
+            self.lfo_sources,
             self.source_scopes,
             runtime_filters,
         ) = synth._persistent_modulation(shared, template, source_parameters)
