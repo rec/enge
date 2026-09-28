@@ -7,9 +7,10 @@ from test_dynamic_synth import change, dynamic_score, onset
 from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.events import LFOChange, Release, Trigger
 from ufor.samples.processing import FilterResponse, ResonantFilter
+from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
@@ -121,12 +122,12 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
             "envelope": Envelope(
                 initial=0.2,
                 segments=[
-                    Segment(duration="1/20", target=1),
-                    Segment(duration="1/10", target=0.7),
+                    Segment(duration="1/20", to=1),
+                    Segment(duration="1/10", to=0.7),
                 ],
                 release=[
-                    Segment(duration="7/100", target=0.3),
-                    Segment(duration="13/100", target=0),
+                    Segment(duration="7/100", to=0.3),
+                    Segment(duration="13/100", to=0),
                 ],
             ),
         }
@@ -257,7 +258,7 @@ def test_persistent_synth_keeps_part_controls_while_silent(tmp_path: Path) -> No
 def test_persistent_synth_keeps_reused_trigger_tails_separate(tmp_path: Path) -> None:
     document = dynamic_score(waveform="square")
     raw = document.model_dump(mode="json")
-    raw["body"]["voices"][0]["envelope"]["release"] = [{"duration": "1", "target": 0}]
+    raw["body"]["voices"][0]["envelope"]["release"] = [{"duration": "1", "to": 0}]
     document = type(document).model_validate(raw)
     events = [
         onset(pitch=0.1, gain=0.2),

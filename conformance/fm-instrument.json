@@ -2,38 +2,185 @@
   "name": "fm-bell",
   "title": "Two-operator FM bell",
   "kind": "synth_instrument",
-  "timebases": [{"name": "output", "kind": "physical", "rate": {"numerator": 48000}}],
-  "inputs": [{
-    "name": "performance",
-    "stream": {"family": "event", "timebase": "output", "kinds": ["trigger", "release", "control_change"]},
-    "binding": {"performance": true}
-  }],
-  "outputs": [{
-    "name": "audio",
-    "stream": {"family": "sampled", "quantity": "audio_amplitude", "unit": "full_scale", "timebase": "output", "channels": ["left", "right"]},
-    "binding": {"audio": true}
-  }],
+  "timebases": [
+    {
+      "name": "output",
+      "kind": "physical",
+      "rate": {
+        "numerator": 48000
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "name": "performance",
+      "stream": {
+        "family": "event",
+        "timebase": "output",
+        "kinds": [
+          "trigger",
+          "release",
+          "control_change"
+        ]
+      },
+      "binding": {
+        "performance": true
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "name": "audio",
+      "stream": {
+        "family": "sampled",
+        "quantity": "audio_amplitude",
+        "unit": "full_scale",
+        "timebase": "output",
+        "channels": [
+          "left",
+          "right"
+        ]
+      },
+      "binding": {
+        "audio": true
+      }
+    }
+  ],
   "body": {
-    "controls": {"color": {"default": 0}},
-    "voices": [{
-      "name": "bell",
-      "mapping": {"lowest_key": 0, "highest_key": 127, "reference_pitch_hz": 440},
-      "channels": [{"input": "mono", "output": "left", "gain": 1}, {"input": "mono", "output": "right", "gain": 0.5}],
-      "fm": {
-        "operators": [
-          {"name": "modulator", "ratio": 2, "envelope": {"segments": [{"duration": 0, "target": 1}], "release": [{"duration": "1/20", "target": 0}]}},
-          {"name": "carrier", "envelope": {"segments": [{"duration": 0, "target": 1}], "release": [{"duration": "1/10", "target": 0}]}}
+    "controls": {
+      "color": {
+        "default": 0
+      }
+    },
+    "voices": [
+      {
+        "name": "bell",
+        "mapping": {
+          "lowest_key": 0,
+          "highest_key": 127,
+          "reference_pitch_hz": 440
+        },
+        "channels": [
+          {
+            "input": "mono",
+            "output": "left",
+            "gain": 1
+          },
+          {
+            "input": "mono",
+            "output": "right",
+            "gain": 0.5
+          }
         ],
-        "edges": [{"source": "modulator", "destination": "carrier", "index": 2}, {"name": "feedback", "source": "modulator", "destination": "modulator", "index": 0, "delayed": true}],
-        "carrier": "carrier",
-        "carrier_level": 0.2
-      },
-      "modulation": {
-        "sources": [{"name": "color", "scope": "trigger", "minimum": 0, "maximum": 1}],
-        "parameters": [{"target": {"name": "edge-modulator-carrier", "parameter": "index"}, "unit": "radians", "scope": "voice", "minimum": 0, "maximum": 6, "default": 2}],
-        "routes": [{"name": "color", "source": "color", "target": {"name": "edge-modulator-carrier", "parameter": "index"}, "operation": "add", "unit": "radians", "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": 4}]}]
-      },
-      "bindings": [{"name": "color", "kind": "control", "control": "color", "smoothing": "1/20"}]
-    }]
+        "fm": {
+          "operators": [
+            {
+              "name": "modulator",
+              "ratio": 2,
+              "envelope": {
+                "segments": [
+                  {
+                    "duration": 0,
+                    "to": 1
+                  }
+                ],
+                "release": [
+                  {
+                    "duration": "1/20",
+                    "to": 0
+                  }
+                ]
+              }
+            },
+            {
+              "name": "carrier",
+              "envelope": {
+                "segments": [
+                  {
+                    "duration": 0,
+                    "to": 1
+                  }
+                ],
+                "release": [
+                  {
+                    "duration": "1/10",
+                    "to": 0
+                  }
+                ]
+              }
+            }
+          ],
+          "edges": [
+            {
+              "source": "modulator",
+              "destination": "carrier",
+              "index": 2
+            },
+            {
+              "name": "feedback",
+              "source": "modulator",
+              "destination": "modulator",
+              "index": 0,
+              "delayed": true
+            }
+          ],
+          "carrier": "carrier",
+          "carrier_level": 0.2
+        },
+        "modulation": {
+          "sources": [
+            {
+              "name": "color",
+              "scope": "trigger",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ],
+          "parameters": [
+            {
+              "target": {
+                "name": "edge-modulator-carrier",
+                "parameter": "index"
+              },
+              "unit": "radians",
+              "scope": "voice",
+              "minimum": 0,
+              "maximum": 6,
+              "default": 2
+            }
+          ],
+          "routes": [
+            {
+              "name": "color",
+              "source": "color",
+              "target": {
+                "name": "edge-modulator-carrier",
+                "parameter": "index"
+              },
+              "operation": "add",
+              "unit": "radians",
+              "points": [
+                {
+                  "input": 0,
+                  "amount": 0
+                },
+                {
+                  "input": 1,
+                  "amount": 4
+                }
+              ]
+            }
+          ]
+        },
+        "bindings": [
+          {
+            "name": "color",
+            "kind": "control",
+            "control": "color",
+            "smoothing": "1/20"
+          }
+        ]
+      }
+    ]
   }
 }

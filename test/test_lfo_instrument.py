@@ -69,8 +69,8 @@ def lfo_score(
     owner = raw["body"]["settings"] if kind == "sampler" and scope != "voice" else voice
     owner.update({n: settings[n] for n in ("lfos", "bindings", "modulation")})
     voice["envelope"] = {
-        "segments": [{"duration": "0", "target": 1}],
-        "release": [{"duration": "1/4", "target": 0}],
+        "segments": [{"duration": "0", "to": 1}],
+        "release": [{"duration": "1/4", "to": 0}],
     }
     if kind == "synth":
         voice["oscillator"]["waveform"] = "square"
@@ -85,14 +85,14 @@ def test_named_envelope_modulates_synth_and_releases(
 ) -> None:
     raw = score().model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["envelope"]["release"] = [{"duration": "1/4", "target": 1}]
+    voice["envelope"]["release"] = [{"duration": "1/4", "to": 1}]
     voice.update(
         {
             "envelopes": {
                 "motion": {
                     "initial": 0,
-                    "segments": [{"duration": "1/4", "target": 1}],
-                    "release": [{"duration": "1/4", "target": 0}],
+                    "segments": [{"duration": "1/4", "to": 1}],
+                    "release": [{"duration": "1/4", "to": 0}],
                 }
             },
             "bindings": [{"name": "motion", "kind": "envelope", "reference": "motion"}],

@@ -10,10 +10,11 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import envelope, instrument_trace, lfo, modulation
 from ufor.base import Model
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import ControlBinding, Processing, SoundSettings
+from ufor.segments import Segment
 from ufor.streams import AudioType
 from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, frequency
 from ufor.synth_trace import VoiceStart
@@ -1452,7 +1453,7 @@ def _envelope_values(
     frames: int,
     sample_rate: int,
 ) -> np.ndarray:
-    values = np.full(frames, segments[-1].target)
+    values = np.full(frames, segments[-1].to)
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
@@ -1463,8 +1464,8 @@ def _envelope_values(
             progress = float((elapsed - boundary) / segment.duration) + np.arange(
                 first, last
             ) / float(segment.duration * sample_rate)
-            values[first:last] = entry + (segment.target - entry) * progress
-        boundary, entry = end, segment.target
+            values[first:last] = entry + (segment.to - entry) * progress
+        boundary, entry = end, segment.to
     return values
 
 
@@ -1474,7 +1475,7 @@ def _duration(segments: list[Segment]) -> Fraction:
 
 def _runtime_segments(segments: list[Segment], sample_rate: int) -> np.ndarray:
     return np.asarray(
-        [[float(s.duration * sample_rate), s.target] for s in segments],
+        [[float(s.duration * sample_rate), s.to] for s in segments],
         dtype=np.float64,
     )
 
@@ -1703,7 +1704,7 @@ def _persistent_modulation(
                     [
                         (
                             float(segment.duration * definition.sample_rate),
-                            segment.target,
+                            segment.to,
                         )
                         for segment in generator.segments
                     ]
@@ -1712,7 +1713,7 @@ def _persistent_modulation(
                     [
                         (
                             float(segment.duration * definition.sample_rate),
-                            segment.target,
+                            segment.to,
                         )
                         for segment in generator.release
                     ]

@@ -7,12 +7,13 @@ import numpy as np
 import pytest
 from test_dynamic_synth import change, dynamic_score, onset
 from test_synth import check_audio, score
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.events import Release
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
 from ufor.samples import instrument, trace
 from ufor.samples.enums import LoopMode
 from ufor.samples.playback import Loop, Playback, Slice
+from ufor.segments import Segment
 
 from enge import live, sample_instrument, sampler
 from enge.synth import EngineError
@@ -73,8 +74,8 @@ def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
             "name": "group",
             "processing": {"volume_db": -6},
             "envelope": {
-                "segments": [{"duration": "1/20", "target": 1}],
-                "release": [{"duration": "1/4", "target": 0.25}],
+                "segments": [{"duration": "1/20", "to": 1}],
+                "release": [{"duration": "1/4", "to": 0.25}],
             },
             "bindings": dynamic["voices"][0]["bindings"],
             "modulation": dynamic["voices"][0]["modulation"],
@@ -187,8 +188,8 @@ def test_sample_voice_shares_fractional_minimum_hold_with_loop_and_envelope(
         pitch_ratio=2,
         minimum_hold_seconds=Fraction(3, 96000),
         envelope=Envelope(
-            segments=[Segment(duration=Fraction(4, 48000), target=1)],
-            release=[Segment(duration=Fraction(5, 96000), target=0.25)],
+            segments=[Segment(duration=Fraction(4, 48000), to=1)],
+            release=[Segment(duration=Fraction(5, 96000), to=0.25)],
         ),
     )
     renderer = sampler.SampleVoiceRenderer.start(definition, sample, backend=backend)
@@ -539,9 +540,7 @@ def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
     slot["modulation"]["routes"][0]["operation"] = "add"
     if loop:
         raw["body"]["slices"][0]["loop"] = {"start_frame": 0, "end_frame": 2}
-        raw["body"]["settings"]["envelope"]["release"] = [
-            {"duration": "1/2", "target": 0}
-        ]
+        raw["body"]["settings"]["envelope"]["release"] = [{"duration": "1/2", "to": 0}]
     document = instrument.SampleInstrumentScore.model_validate(raw)
     prepared = sample_instrument.prepare(document, {"asset": np.ones((2, 2))})
     actions = trace.prepare(

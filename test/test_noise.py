@@ -8,10 +8,11 @@ from test_filters import matrix_filter
 from test_synth import check_audio
 from test_synth_demo import publish_flac
 from ufor import synth_trace
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.events import ControlChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
 from ufor.samples.processing import ResonantFilter
+from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 
 from enge import filters, noise, synth
@@ -55,8 +56,8 @@ def definition() -> noise.PreparedVoice:
     return noise.PreparedVoice(
         sample_rate=48000,
         envelope=Envelope(
-            segments=[Segment(duration=0, target=1)],
-            release=[Segment(duration="1/10", target=0)],
+            segments=[Segment(duration=0, to=1)],
+            release=[Segment(duration="1/10", to=0)],
         ),
         routes=[[1, 0.5]],
     )
@@ -208,8 +209,8 @@ def test_persistent_noise_applies_named_envelope(tmp_path: Path) -> None:
     voice["envelopes"] = {
         "motion": {
             "initial": 0,
-            "segments": [{"duration": "1/4", "target": 1}],
-            "release": [{"duration": "1/4", "target": 0}],
+            "segments": [{"duration": "1/4", "to": 1}],
+            "release": [{"duration": "1/4", "to": 0}],
         }
     }
     voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]
@@ -372,8 +373,8 @@ def test_noise_lfo_amplitude_matches_oracle(
     voice = raw["body"]["voices"][0]
     voice["processing"] = {"volume_db": -12}
     voice["envelope"] = {
-        "segments": [{"duration": 0, "target": 1}],
-        "release": [{"duration": 0, "target": 0}],
+        "segments": [{"duration": 0, "to": 1}],
+        "release": [{"duration": 0, "to": 0}],
     }
     voice["lfos"] = {"pulse": {"waveform": "sine", "rate": 2}}
     voice["modulation"] = {

@@ -6,9 +6,10 @@ import numpy as np
 import pytest
 from test_dynamic_synth import dynamic_score, onset
 from test_synth import check_audio
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples.processing import ResonantFilter
+from ufor.segments import Segment
 from ufor.synth_trace import prepare
 
 from enge import filters, native, synth
@@ -32,13 +33,13 @@ def test_native_matches_reference_without_python_dsp(
         envelope=Envelope(
             initial=0.2,
             segments=[
-                Segment(duration=0, target=0.4),
-                Segment(duration=Fraction(96001, 192000), target=1),
+                Segment(duration=0, to=0.4),
+                Segment(duration=Fraction(96001, 192000), to=1),
             ],
             release=[
-                Segment(duration=Fraction(12001, 96000), target=0.7),
-                Segment(duration=0, target=0.4),
-                Segment(duration=Fraction(1, 8), target=0.25),
+                Segment(duration=Fraction(12001, 96000), to=0.7),
+                Segment(duration=0, to=0.4),
+                Segment(duration=Fraction(1, 8), to=0.25),
             ],
         ),
         frequencies=[100.25, 200.5],

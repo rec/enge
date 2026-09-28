@@ -29,8 +29,8 @@ class Patch(BaseModel, frozen=True):
             )
         ]
         envelope = {
-            "segments": [{"duration": "1/100", "target": 1}],
-            "release": [{"duration": "2/25", "target": 0}],
+            "segments": [{"duration": "1/100", "to": 1}],
+            "release": [{"duration": "2/25", "to": 0}],
         }
         settings = _settings(self.engine, self.index)
         voice = {

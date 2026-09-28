@@ -60,8 +60,8 @@ def test_lfo_demo_vibrato_tremolo_and_live_gain(
         common["controls"] = {"level": {"default": 1}}
         voice = raw["body"]["voices" if kind == "synth" else "slots"][0]
         voice["envelope"] = {
-            "segments": [{"duration": "1/50", "target": 0.3}],
-            "release": [{"duration": "1/4", "target": 0}],
+            "segments": [{"duration": "1/50", "to": 0.3}],
+            "release": [{"duration": "1/4", "to": 0}],
         }
         voice["bindings"].append(
             {

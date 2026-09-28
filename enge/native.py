@@ -4,8 +4,9 @@ from fractions import Fraction
 from math import ceil
 
 import numpy as np
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.oscillator import Oscillator, Waveform
+from ufor.segments import Segment
 
 
 def render(
@@ -68,11 +69,11 @@ def envelope_spans(
             for segment in envelope.segments:
                 end = boundary + segment.duration
                 if elapsed < end:
-                    level += (segment.target - level) * float(
+                    level += (segment.to - level) * float(
                         (elapsed - boundary) / segment.duration
                     )
                     break
-                boundary, level = end, segment.target
+                boundary, level = end, segment.to
             spans.extend(
                 _spans(
                     level,
@@ -94,7 +95,7 @@ def _spans(
     sample_rate: int,
     offset: int,
 ) -> list[list[float]]:
-    spans = [[offset, offset + frames, segments[-1].target, 0, 0, 1, offset]]
+    spans = [[offset, offset + frames, segments[-1].to, 0, 0, 1, offset]]
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
@@ -107,11 +108,11 @@ def _spans(
                     first + offset,
                     last + offset,
                     entry,
-                    segment.target - entry,
+                    segment.to - entry,
                     float((elapsed - boundary) / segment.duration),
                     float(segment.duration * sample_rate),
                     offset,
                 ]
             )
-        boundary, entry = end, segment.target
+        boundary, entry = end, segment.to
     return spans

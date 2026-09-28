@@ -31,10 +31,10 @@ def test_synth_demo_preserves_envelopes_and_live_controls(
     voice["envelope"] = {
         "initial": 0,
         "segments": [
-            {"duration": "1/100", "target": 1},
-            {"duration": "9/100", "target": 0.7},
+            {"duration": "1/100", "to": 1},
+            {"duration": "9/100", "to": 0.7},
         ],
-        "release": [{"duration": "1/4", "target": 0}],
+        "release": [{"duration": "1/4", "to": 0}],
     }
     document = SynthInstrumentScore.model_validate(raw)
     events: list[Trigger | Release | ControlChange] = []

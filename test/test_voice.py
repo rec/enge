@@ -6,8 +6,9 @@ from typing import Literal
 import numpy as np
 import pytest
 from test_synth import check_audio
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.oscillator import Oscillator, Waveform
+from ufor.segments import Segment
 
 from enge.synth import PreparedVoice, VoiceRenderer
 
@@ -20,8 +21,8 @@ def test_routed_voice_restores_pending_release_and_retires_exactly(
         sample_rate=48000,
         oscillator=Oscillator(waveform=Waveform.sine),
         envelope=Envelope(
-            segments=[Segment(duration=Fraction(1, 10), target=1)],
-            release=[Segment(duration=Fraction(12001, 96000), target=0.25)],
+            segments=[Segment(duration=Fraction(1, 10), to=1)],
+            release=[Segment(duration=Fraction(12001, 96000), to=0.25)],
         ),
         frequencies=[100, 200],
         routes=[[1, 1, 0], [-0.25, 0.5, 0]],
@@ -76,8 +77,8 @@ def test_voice_rejects_inconsistent_channel_routes(routes: list[list[float]]) ->
             sample_rate=48000,
             oscillator=Oscillator(),
             envelope=Envelope(
-                segments=[Segment(duration=0, target=1)],
-                release=[Segment(duration=0, target=0)],
+                segments=[Segment(duration=0, to=1)],
+                release=[Segment(duration=0, to=0)],
             ),
             frequencies=[100, 200],
             routes=routes,

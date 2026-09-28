@@ -4,8 +4,9 @@ from typing import Literal
 
 import numpy as np
 import pytest
-from ufor.envelope import Envelope, Segment
+from ufor.envelope import Envelope
 from ufor.events import Release, Trigger
+from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
@@ -154,8 +155,8 @@ def test_offline_synth_defers_release_until_the_voice_minimum_hold(
         update={
             "minimum_hold_seconds": 1,
             "envelope": Envelope(
-                segments=[Segment(duration=1, target=1)],
-                release=[Segment(duration=1, target=0)],
+                segments=[Segment(duration=1, to=1)],
+                release=[Segment(duration=1, to=0)],
             ),
         }
     )

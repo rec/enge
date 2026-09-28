@@ -131,8 +131,8 @@ def test_named_envelope_modulates_fm_and_survives_restore(
     voice["envelopes"] = {
         "motion": {
             "initial": 0,
-            "segments": [{"duration": "1/4", "target": 1}],
-            "release": [{"duration": "1/4", "target": 0}],
+            "segments": [{"duration": "1/4", "to": 1}],
+            "release": [{"duration": "1/4", "to": 0}],
         }
     }
     voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]
@@ -481,7 +481,7 @@ def test_fm_minimum_hold_and_duplicate_release_preserve_carrier_lifetime(
     voice = raw["body"]["voices"][0]
     voice["minimum_hold_seconds"] = "1/2"
     # Modulator ends immediately even with a nonzero terminal envelope value.
-    voice["fm"]["operators"][0]["envelope"]["release"] = [{"duration": 0, "target": 1}]
+    voice["fm"]["operators"][0]["envelope"]["release"] = [{"duration": 0, "to": 1}]
     document = SynthInstrumentScore.model_validate(raw)
     actions = synth_trace.prepare(document.body, [trigger()], seed=0).actions
     actions += [
