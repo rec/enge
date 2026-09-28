@@ -67,6 +67,62 @@ def test_offline_fm_renders_six_operator_graph_in_both_backends() -> None:
     np.testing.assert_allclose(native, reference, atol=1e-10, rtol=1e-9)
 
 
+def test_four_operator_fan_in_partitions_and_restore(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = score().model_dump()
+    voice = raw["body"]["voices"][0]
+    profile = voice["fm"]
+    modulator = profile["operators"][0]
+    carrier = profile["operators"][1]
+    profile["operators"] = [
+        {**carrier, "name": "carrier", "waveform": "triangle"},
+        {**modulator, "name": "right", "ratio": 3, "waveform": "square"},
+        {**modulator, "name": "source", "ratio": 2},
+        {**modulator, "name": "left", "ratio": 5},
+    ]
+    profile["edges"] = [
+        {"source": "left", "destination": "carrier", "index": 0.5},
+        {"source": "carrier", "destination": "source", "index": 0.25, "delayed": True},
+        {"source": "source", "destination": "right", "index": 0.75},
+        {"source": "right", "destination": "carrier", "index": 1.0},
+        {"source": "source", "destination": "left", "index": 1.25},
+        {"source": "right", "destination": "source", "index": 0.125, "delayed": True},
+    ]
+    voice["modulation"] = {}
+    voice["bindings"] = []
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            trigger(),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    definition = fm.prepare(document)
+    whole = fm.OfflineFM(definition, backend)
+    expected = whole.advance(actions, 0, 48000)
+    partitioned = fm.OfflineFM(definition, backend)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = partitioned.advance(
+            [a for a in actions if start <= a.tick < end], start, end
+        )
+        snapshot = fm.FMSnapshot.model_validate_json(
+            partitioned.snapshot().model_dump_json()
+        )
+        partitioned = fm.OfflineFM(definition, backend)
+        partitioned.restore(snapshot)
+
+    check_audio(tmp_path / f"fm-four-operator-{backend}.wav", actual, expected)
+    assert partitioned.snapshot() == whole.snapshot()
+    if backend == "native":
+        reference = fm.OfflineFM(definition).advance(actions, 0, 48000)
+        np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
+
+
 def test_fm_operator_waveforms_match_in_both_backends() -> None:
     raw = score().model_dump()
     profile = raw["body"]["voices"][0]["fm"]
