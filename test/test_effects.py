@@ -60,6 +60,40 @@ def test_soft_clip_matches_native_and_automates_drive(tmp_path: Path) -> None:
     check_audio(tmp_path / "soft-clip.wav", native, reference)
 
 
+def test_tap_delay_is_partition_independent_and_drains(tmp_path: Path) -> None:
+    graph = effects.serial_graph(
+        audio_effects.AttachmentScope.voice,
+        graph_input(),
+        [
+            audio_effects.TapDelay(
+                name="echo",
+                delay_seconds=0.001,
+                maximum_delay_seconds=0.01,
+                feedback=0.5,
+            )
+        ],
+        48000,
+    )
+    prepared = effects.prepare(graph, 48000)
+    source = np.zeros((48000, 2))
+    source[0] = 1
+    end = audio_effects.InputEndAction(tick=1, ordinal=0, input="main")
+    whole = effects.OfflineEffects(prepared)
+    expected = whole.advance({"main": source}, [end], 0, 48000)
+    split = effects.OfflineEffects(prepared)
+    actual = np.concatenate(
+        [
+            split.advance({"main": source[:997]}, [end], 0, 997),
+            split.advance({"main": source[997:]}, [], 997, 48000),
+        ]
+    )
+
+    check_audio(tmp_path / "tap-delay.wav", actual, expected)
+    assert split.drained
+    np.testing.assert_allclose(expected[48, 0], 1)
+    np.testing.assert_allclose(expected[96, 0], 0.5)
+
+
 def test_gain_automation_is_partition_independent(tmp_path: Path) -> None:
     prepared = effects.prepare(gain_graph(), 48000)
     frames = np.arange(48000)

@@ -63,6 +63,7 @@ struct EffectRuntime {
     filter_rows: Vec<EffectFilter>,
     filter_states: Array3<f64>,
     granulators: Vec<Option<LiveGranulator>>,
+    tap_delays: Vec<Option<LiveTapDelay>>,
     values: Array2<f64>,
     wet: Vec<f64>,
     producer: Producer<ActionBatch>,
@@ -91,6 +92,7 @@ struct EffectSnapshot {
     filter_rows: Vec<EffectFilter>,
     filter_states: Array3<f64>,
     granulators: Vec<Option<LiveGranulator>>,
+    tap_delays: Vec<Option<LiveTapDelay>>,
 }
 
 #[derive(Clone)]
@@ -105,6 +107,12 @@ struct LiveGranulator {
     frame: usize,
     frozen: bool,
     freeze_crossfade_frames: usize,
+}
+
+#[derive(Clone)]
+struct LiveTapDelay {
+    history: Array2<f64>,
+    write: usize,
 }
 
 #[derive(Clone)]
@@ -237,6 +245,7 @@ impl LiveRuntime {
         output_source: usize,
         filters: PyReadonlyArray2<'_, f64>,
         granulators: PyReadonlyArray2<'_, i64>,
+        tap_delays: PyReadonlyArray2<'_, i64>,
         batch_capacity: usize,
     ) -> PyResult<()> {
         if self.frame != 0 || self.effects.is_some() || batch_capacity == 0 {
@@ -249,6 +258,7 @@ impl LiveRuntime {
             output_source,
             filters,
             granulators,
+            tap_delays,
             self.channels,
             self.action_capacity,
             batch_capacity,
@@ -505,12 +515,13 @@ impl EffectRuntime {
         output_source: usize,
         filters: PyReadonlyArray2<'_, f64>,
         granulators: PyReadonlyArray2<'_, i64>,
+        tap_delays: PyReadonlyArray2<'_, i64>,
         channels: usize,
         action_capacity: usize,
         batch_capacity: usize,
     ) -> PyResult<Self> {
         let nodes = kinds.len();
-        if kinds.iter().any(|v| *v > 4)
+        if kinds.iter().any(|v| *v > 5)
             || sources.shape() != [nodes, 2]
             || parameters.shape()[0] != nodes
             || parameters.shape()[1] < 3
@@ -529,6 +540,7 @@ impl EffectRuntime {
             || filters.shape()[1] != 4
             || filters.as_array().iter().any(|v| !v.is_finite())
             || granulators.shape()[1] != 4
+            || tap_delays.shape()[1] != 2
         {
             return Err(PyValueError::new_err("Invalid live effect graph"));
         }
@@ -602,6 +614,32 @@ impl EffectRuntime {
         {
             return Err(PyValueError::new_err("Missing live granulator setup"));
         }
+        let mut prepared_tap_delays = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for row in tap_delays.as_array().rows() {
+            let node = usize::try_from(row[0])
+                .map_err(|_| PyValueError::new_err("Invalid live tap delay node"))?;
+            let history_frames = usize::try_from(row[1])
+                .map_err(|_| PyValueError::new_err("Invalid live tap delay history"))?;
+            if node >= nodes
+                || kinds[node] != 5
+                || history_frames == 0
+                || prepared_tap_delays[node].is_some()
+                || parameters.ncols() < 4
+            {
+                return Err(PyValueError::new_err("Invalid live tap delay"));
+            }
+            prepared_tap_delays[node] = Some(LiveTapDelay {
+                history: Array2::zeros((history_frames, channels)),
+                write: 0,
+            });
+        }
+        if kinds
+            .iter()
+            .enumerate()
+            .any(|(i, kind)| *kind == 5 && prepared_tap_delays[i].is_none())
+        {
+            return Err(PyValueError::new_err("Missing live tap delay setup"));
+        }
         let (producer, consumer) = RingBuffer::new(batch_capacity);
         Ok(Self {
             kinds,
@@ -614,6 +652,7 @@ impl EffectRuntime {
             filter_states: Array3::zeros((filter_rows.len(), channels, 2)),
             filter_rows,
             granulators: prepared_granulators,
+            tap_delays: prepared_tap_delays,
             values: Array2::zeros((nodes + 1, channels)),
             wet: vec![0.0; channels],
             producer,
@@ -694,7 +733,7 @@ impl EffectRuntime {
                             .expect("validated live granulator")
                             .process(&mut self.wet, parameters, rate)?;
                     }
-                    _ => {
+                    4 => {
                         let drive = self.parameters[[node, 0]];
                         if drive <= 0.0 {
                             return Err(PyValueError::new_err("Invalid live soft clip drive"));
@@ -704,6 +743,7 @@ impl EffectRuntime {
                             *value = (drive * *value).tanh() / normalization;
                         }
                     }
+                    _ => self.process_tap_delay(node, channels, rate)?,
                 }
                 for channel in 0..channels {
                     self.values[[node + 1, channel]] =
@@ -837,6 +877,34 @@ impl EffectRuntime {
         Ok(())
     }
 
+    fn process_tap_delay(&mut self, node: usize, channels: usize, rate: f64) -> PyResult<()> {
+        let delay_seconds = self.parameters[[node, 0]];
+        let feedback = self.parameters[[node, 3]];
+        let delay = self.tap_delays[node]
+            .as_mut()
+            .expect("validated live tap delay");
+        let frames = delay.history.nrows();
+        let delay_frames = (delay_seconds * rate).round() as usize;
+        if !delay_seconds.is_finite()
+            || delay_seconds <= 0.0
+            || delay_frames == 0
+            || delay_frames > frames
+            || !feedback.is_finite()
+            || !(0.0..1.0).contains(&feedback)
+        {
+            return Err(PyValueError::new_err("Invalid live tap delay parameters"));
+        }
+        let read = (delay.write + frames - delay_frames) % frames;
+        for channel in 0..channels {
+            let wet = delay.history[[read, channel]];
+            let value = self.wet[channel];
+            delay.history[[delay.write, channel]] = value + feedback * wet;
+            self.wet[channel] = wet;
+        }
+        delay.write = (delay.write + 1) % frames;
+        Ok(())
+    }
+
     fn snapshot(&self) -> EffectSnapshot {
         EffectSnapshot {
             kinds: self.kinds.clone(),
@@ -849,6 +917,7 @@ impl EffectRuntime {
             filter_rows: self.filter_rows.clone(),
             filter_states: self.filter_states.clone(),
             granulators: self.granulators.clone(),
+            tap_delays: self.tap_delays.clone(),
         }
     }
 
@@ -858,12 +927,22 @@ impl EffectRuntime {
             || self.output_source != snapshot.output_source
             || self.filter_rows != snapshot.filter_rows
             || self.granulators.len() != snapshot.granulators.len()
+            || self.tap_delays.len() != snapshot.tap_delays.len()
             || self
                 .granulators
                 .iter()
                 .zip(&snapshot.granulators)
                 .any(|(a, b)| match (a, b) {
                     (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
+            || self
+                .tap_delays
+                .iter()
+                .zip(&snapshot.tap_delays)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => a.history.raw_dim() != b.history.raw_dim(),
                     (None, None) => false,
                     _ => true,
                 })
@@ -880,6 +959,7 @@ impl EffectRuntime {
         self.remaining.assign(&snapshot.remaining);
         self.filter_states.assign(&snapshot.filter_states);
         self.granulators.clone_from(&snapshot.granulators);
+        self.tap_delays.clone_from(&snapshot.tap_delays);
         Ok(())
     }
 }

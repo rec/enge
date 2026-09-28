@@ -91,6 +91,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         1,
         np.empty((0, 4), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
+        np.empty((0, 2), dtype=np.int64),
         4,
     )
     runtime.submit(0, oscillator_start)
@@ -111,6 +112,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         1,
         np.empty((0, 4), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
+        np.empty((0, 2), dtype=np.int64),
         4,
     )
     restored.restore(snapshot)
@@ -178,6 +180,7 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         output_source,
         filter_rows,
         granulator_rows,
+        tap_delay_rows,
     ) = effects.native_live_graph(prepared)
     parameter_values = np.broadcast_to(initial[:, :2], (48000, 3, 2)).copy()
     duration = 257
@@ -208,6 +211,7 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         output_source,
         filter_rows,
         granulator_rows,
+        tap_delay_rows,
         4,
     )
     runtime.submit(0, start_action)
@@ -333,6 +337,63 @@ def test_native_live_runtime_owns_bounded_granulator_state(tmp_path: Path) -> No
         restored.process_into(replay[start - 23928 : end - 23928])
 
     check_audio(tmp_path / "native-live-granulator.wav", actual, expected)
+    np.testing.assert_allclose(replay, actual[23928:], atol=0)
+
+
+def test_native_live_runtime_owns_tap_delay_state(tmp_path: Path) -> None:
+    start_action = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
+    source = native_oscillator_runtime().process_actions(48000, 0, 1, 0, start_action)
+    graph = effects.serial_graph(
+        audio_effects.AttachmentScope.master,
+        graph_input(),
+        [
+            audio_effects.TapDelay(
+                name="echo",
+                delay_seconds=0.003,
+                maximum_delay_seconds=0.01,
+                feedback=0.6,
+            )
+        ],
+        997,
+    )
+    prepared = effects.prepare(graph, 48000)
+    action = audio_effects.ParameterAction(
+        tick=12000,
+        ordinal=0,
+        processor="echo",
+        parameter="feedback",
+        value=0.3,
+        duration_frames=64,
+    )
+    expected = effects.process_audio(
+        prepared, {"main": source}, [action], block_frames=997
+    )
+
+    def make_runtime() -> _native.LiveRuntime:
+        runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
+        runtime.set_effect_graph(*effects.native_live_graph(prepared), 4)
+        return runtime
+
+    runtime = make_runtime()
+    runtime.submit(0, start_action)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(start + 997, 48000)
+        if start <= action.tick < end:
+            runtime.submit_effects(
+                effects.native_live_actions(prepared, [action], start, end)
+            )
+        runtime.process_into(actual[start:end])
+        if end == 23928:
+            snapshot = runtime.snapshot()
+    restored = make_runtime()
+    restored.restore(snapshot)
+    replay = np.empty((48000 - 23928, 2))
+    for start in range(23928, 48000, 997):
+        end = min(start + 997, 48000)
+        restored.process_into(replay[start - 23928 : end - 23928])
+
+    check_audio(tmp_path / "native-live-tap-delay.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[23928:], atol=0)
 
 

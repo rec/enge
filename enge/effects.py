@@ -50,11 +50,19 @@ class GranulatorState(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class TapDelayState(BaseModel):
+    history: list[list[float]]
+    write: int = 0
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class ProcessorState(BaseModel):
     parameters: dict[str, ParameterRamp]
     bypass: ParameterRamp
     filter_states: list[filters.FilterState] = Field(default_factory=list)
     granulator: GranulatorState | None = None
+    tap_delay: TapDelayState | None = None
     ended_at: int | None = None
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -93,7 +101,7 @@ class OfflineEffects:
         self.stopped_at: int | None = None
         layouts = _processor_layouts(definition.definition)
         self.processors = {
-            p.name: _initial_state(p, len(layouts[p.name]))
+            p.name: _initial_state(p, len(layouts[p.name]), self.definition.sample_rate)
             for p in definition.definition.processors
         }
 
@@ -550,6 +558,29 @@ class OfflineEffects:
             assert granular is not None
             drained = ended["input"] and not granular.frozen and not granular.grains
             return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
+        if isinstance(processor, audio_effects.TapDelay):
+            dry = ports["input"]
+            delay = state.tap_delay
+            assert delay is not None
+            frames = len(delay.history)
+            delay_frames = max(
+                1,
+                round(
+                    state.parameters["delay_seconds"].value(frame)
+                    * self.definition.sample_rate
+                ),
+            )
+            wet = np.asarray(delay.history[(delay.write - delay_frames) % frames])
+            feedback = state.parameters["feedback"].value(frame)
+            value = dry if not ended["input"] else np.zeros_like(dry)
+            history = value + feedback * wet
+            history[np.abs(history) < processor.state_floor] = 0
+            delay.history[delay.write] = history.tolist()
+            delay.write = (delay.write + 1) % frames
+            drained = ended["input"] and all(
+                abs(v) < processor.tail_threshold for row in delay.history for v in row
+            )
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         raise ValueError("Unknown effect processor")
 
     def _granulator_frame(
@@ -711,7 +742,7 @@ def prepare(definition: audio_effects.EffectGraph, sample_rate: int) -> Prepared
 
 def native_live_graph(
     definition: PreparedEffects,
-) -> tuple[list[int], np.ndarray, np.ndarray, int, np.ndarray, np.ndarray]:
+) -> tuple[list[int], np.ndarray, np.ndarray, int, np.ndarray, np.ndarray, np.ndarray]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
     if len(graph.inputs) != 1:
@@ -726,6 +757,8 @@ def native_live_graph(
         if isinstance(p, audio_effects.Filter)
         else 8
         if isinstance(p, audio_effects.Granulator)
+        else 4
+        if isinstance(p, audio_effects.TapDelay)
         else 3
         for p in ordered
     ]
@@ -734,6 +767,7 @@ def native_live_graph(
     kinds: list[int] = []
     filter_rows: list[list[float]] = []
     granulator_rows: list[list[int]] = []
+    tap_delay_rows: list[list[int]] = []
     for node, processor in enumerate(ordered):
         ports = (
             ["carrier", "modulator"]
@@ -787,6 +821,18 @@ def native_live_graph(
                     processor.freeze_crossfade_frames,
                 ]
             )
+        elif isinstance(processor, audio_effects.TapDelay):
+            kinds.append(5)
+            parameters[node, [0, 3]] = [processor.delay_seconds, processor.feedback]
+            tap_delay_rows.append(
+                [
+                    node,
+                    max(
+                        1,
+                        round(processor.maximum_delay_seconds * definition.sample_rate),
+                    ),
+                ]
+            )
         else:
             raise EngineError("Unsupported native live effect processor")
     output_source = (
@@ -801,6 +847,7 @@ def native_live_graph(
         output_source,
         np.asarray(filter_rows, dtype=np.float64).reshape(-1, 4),
         np.asarray(granulator_rows, dtype=np.int64).reshape(-1, 4),
+        np.asarray(tap_delay_rows, dtype=np.int64).reshape(-1, 2),
     )
 
 
@@ -852,6 +899,8 @@ def native_live_actions(
                     "position_jitter_seconds",
                 ]
                 parameter = 3 + names.index(action.parameter)
+            elif isinstance(processor, audio_effects.TapDelay):
+                parameter = {"delay_seconds": 0, "feedback": 3}[action.parameter]
             else:
                 raise EngineError("Unsupported native live effect parameter")
             target = action.value
@@ -920,7 +969,9 @@ def serial_graph(
     )
 
 
-def _initial_state(processor: audio_effects.Processor, channels: int) -> ProcessorState:
+def _initial_state(
+    processor: audio_effects.Processor, channels: int, sample_rate: int
+) -> ProcessorState:
     values = {"mix": processor.mix}
     filter_states: list[filters.FilterState] = []
     if isinstance(processor, audio_effects.Gain):
@@ -940,6 +991,11 @@ def _initial_state(processor: audio_effects.Processor, channels: int) -> Process
             playback_ratio=processor.playback_ratio,
             position_jitter_seconds=processor.position_jitter_seconds,
         )
+    elif isinstance(processor, audio_effects.TapDelay):
+        values.update(
+            delay_seconds=processor.delay_seconds,
+            feedback=processor.feedback,
+        )
     return ProcessorState(
         parameters={
             name: ParameterRamp(at=0, start=value, target=value, duration=0)
@@ -950,6 +1006,18 @@ def _initial_state(processor: audio_effects.Processor, channels: int) -> Process
         granulator=(
             GranulatorState()
             if isinstance(processor, audio_effects.Granulator)
+            else None
+        ),
+        tap_delay=(
+            TapDelayState(
+                history=[
+                    [0.0] * channels
+                    for _ in range(
+                        max(1, round(processor.maximum_delay_seconds * sample_rate))
+                    )
+                ]
+            )
+            if isinstance(processor, audio_effects.TapDelay)
             else None
         ),
     )
@@ -1014,6 +1082,8 @@ def _native_supported(
     actions: list[audio_effects.EffectAction],
 ) -> bool:
     granular = [p for p in graph.processors if isinstance(p, audio_effects.Granulator)]
+    if any(isinstance(p, audio_effects.TapDelay) for p in graph.processors):
+        return False
     if not granular:
         return True
     if len(graph.processors) != 1:

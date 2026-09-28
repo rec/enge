@@ -35,6 +35,7 @@ class LiveRuntime:
         output_source: int,
         filters: np.ndarray,
         granulators: np.ndarray,
+        tap_delays: np.ndarray,
         batch_capacity: int,
     ) -> None: ...
     def submit_effects(self, actions: np.ndarray) -> None: ...
