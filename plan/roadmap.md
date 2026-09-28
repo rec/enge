@@ -33,12 +33,6 @@ effects that fit its fixed resource model; add Rubber Band time/pitch processing
 as an optional GPL-linked integration when its offline and live contracts are
 specified.
 
-## 6. Evaluate PyTorch last
-
-Define a supported recurrence subset and eager/compiled conformance before
-adding a PyTorch implementation. Do not make it a dependency or performance
-claim before measurement.
-
 ## Additional work beyond the prompt
 
 None.
