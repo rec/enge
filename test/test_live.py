@@ -92,6 +92,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.empty((0, 4), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
         np.empty((0, 2), dtype=np.int64),
+        np.empty((0, 5), dtype=np.float64),
         4,
     )
     runtime.submit(0, oscillator_start)
@@ -113,6 +114,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.empty((0, 4), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
         np.empty((0, 2), dtype=np.int64),
+        np.empty((0, 5), dtype=np.float64),
         4,
     )
     restored.restore(snapshot)
@@ -181,6 +183,7 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         filter_rows,
         granulator_rows,
         tap_delay_rows,
+        modulated_delay_rows,
     ) = effects.native_live_graph(prepared)
     parameter_values = np.broadcast_to(initial[:, :2], (48000, 3, 2)).copy()
     duration = 257
@@ -212,6 +215,7 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         filter_rows,
         granulator_rows,
         tap_delay_rows,
+        modulated_delay_rows,
         4,
     )
     runtime.submit(0, start_action)
@@ -404,6 +408,52 @@ def test_native_live_runtime_owns_tap_delay_state(tmp_path: Path) -> None:
 
     check_audio(tmp_path / "native-live-tap-delay.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[23928:], atol=0)
+
+
+def test_native_live_runtime_owns_modulated_delay_state(tmp_path: Path) -> None:
+    start_action = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
+    source = native_oscillator_runtime().process_actions(48000, 0, 1, 0, start_action)
+    graph = effects.serial_graph(
+        audio_effects.AttachmentScope.master,
+        graph_input(),
+        [
+            audio_effects.ModulatedDelay(
+                name="movement",
+                base_delay_seconds=0.003,
+                depth_seconds=0.001,
+                maximum_delay_seconds=0.005,
+                rate_hz=5,
+                channel_phase_offsets=[0, 0.5],
+                feedback=0.3,
+            )
+        ],
+        997,
+    )
+    prepared = effects.prepare(graph, 48000)
+    action = audio_effects.ParameterAction(
+        tick=12000,
+        ordinal=0,
+        processor="movement",
+        parameter="rate_hz",
+        value=8,
+        duration_frames=64,
+    )
+    expected = effects.process_audio(
+        prepared, {"main": source}, [action], block_frames=997
+    )
+    runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
+    runtime.set_effect_graph(*effects.native_live_graph(prepared), 4)
+    runtime.submit(0, start_action)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(start + 997, 48000)
+        if start <= action.tick < end:
+            runtime.submit_effects(
+                effects.native_live_actions(prepared, [action], start, end)
+            )
+        runtime.process_into(actual[start:end])
+
+    check_audio(tmp_path / "native-live-modulated-delay.wav", actual, expected)
 
 
 def test_native_live_runtime_owns_sample_asset_and_traversal(tmp_path: Path) -> None:

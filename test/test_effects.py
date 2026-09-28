@@ -94,6 +94,50 @@ def test_tap_delay_is_partition_independent_and_drains(tmp_path: Path) -> None:
     np.testing.assert_allclose(expected[96, 0], 0.5)
 
 
+def test_modulated_delay_preserves_stereo_phase_and_snapshots(tmp_path: Path) -> None:
+    graph = effects.serial_graph(
+        audio_effects.AttachmentScope.voice,
+        graph_input(),
+        [
+            audio_effects.ModulatedDelay(
+                name="movement",
+                base_delay_seconds=0.003,
+                depth_seconds=0.001,
+                maximum_delay_seconds=0.005,
+                rate_hz=8,
+                channel_phase_offsets=[0, 0.5],
+                feedback=0.25,
+            )
+        ],
+        48000,
+    )
+    prepared = effects.prepare(graph, 48000)
+    source = np.zeros((48000, 2))
+    source[0] = 1
+    action = audio_effects.ParameterAction(
+        tick=12000,
+        ordinal=0,
+        processor="movement",
+        parameter="depth_seconds",
+        value=0.0005,
+        duration_frames=64,
+    )
+    whole = effects.OfflineEffects(prepared)
+    expected = whole.advance({"main": source}, [action], 0, 48000)
+    split = effects.OfflineEffects(prepared)
+    first = split.advance({"main": source[:24000]}, [action], 0, 24000)
+    snapshot = split.snapshot()
+    actual = split.advance({"main": source[24000:]}, [], 24000, 48000)
+    restored = effects.OfflineEffects(prepared)
+    restored.restore(snapshot)
+
+    check_audio(tmp_path / "modulated-delay.wav", np.vstack((first, actual)), expected)
+    np.testing.assert_allclose(
+        restored.advance({"main": source[24000:]}, [], 24000, 48000), actual, atol=0
+    )
+    assert not np.array_equal(expected[:, 0], expected[:, 1])
+
+
 def test_gain_automation_is_partition_independent(tmp_path: Path) -> None:
     prepared = effects.prepare(gain_graph(), 48000)
     frames = np.arange(48000)

@@ -64,6 +64,7 @@ struct EffectRuntime {
     filter_states: Array3<f64>,
     granulators: Vec<Option<LiveGranulator>>,
     tap_delays: Vec<Option<LiveTapDelay>>,
+    modulated_delays: Vec<Option<LiveModulatedDelay>>,
     values: Array2<f64>,
     wet: Vec<f64>,
     producer: Producer<ActionBatch>,
@@ -93,6 +94,7 @@ struct EffectSnapshot {
     filter_states: Array3<f64>,
     granulators: Vec<Option<LiveGranulator>>,
     tap_delays: Vec<Option<LiveTapDelay>>,
+    modulated_delays: Vec<Option<LiveModulatedDelay>>,
 }
 
 #[derive(Clone)]
@@ -113,6 +115,15 @@ struct LiveGranulator {
 struct LiveTapDelay {
     history: Array2<f64>,
     write: usize,
+}
+
+#[derive(Clone)]
+struct LiveModulatedDelay {
+    history: Array2<f64>,
+    write: usize,
+    phase: f64,
+    waveform: u8,
+    phase_offsets: Vec<f64>,
 }
 
 #[derive(Clone)]
@@ -246,6 +257,7 @@ impl LiveRuntime {
         filters: PyReadonlyArray2<'_, f64>,
         granulators: PyReadonlyArray2<'_, i64>,
         tap_delays: PyReadonlyArray2<'_, i64>,
+        modulated_delays: PyReadonlyArray2<'_, f64>,
         batch_capacity: usize,
     ) -> PyResult<()> {
         if self.frame != 0 || self.effects.is_some() || batch_capacity == 0 {
@@ -259,6 +271,7 @@ impl LiveRuntime {
             filters,
             granulators,
             tap_delays,
+            modulated_delays,
             self.channels,
             self.action_capacity,
             batch_capacity,
@@ -516,12 +529,13 @@ impl EffectRuntime {
         filters: PyReadonlyArray2<'_, f64>,
         granulators: PyReadonlyArray2<'_, i64>,
         tap_delays: PyReadonlyArray2<'_, i64>,
+        modulated_delays: PyReadonlyArray2<'_, f64>,
         channels: usize,
         action_capacity: usize,
         batch_capacity: usize,
     ) -> PyResult<Self> {
         let nodes = kinds.len();
-        if kinds.iter().any(|v| *v > 5)
+        if kinds.iter().any(|v| *v > 6)
             || sources.shape() != [nodes, 2]
             || parameters.shape()[0] != nodes
             || parameters.shape()[1] < 3
@@ -541,6 +555,8 @@ impl EffectRuntime {
             || filters.as_array().iter().any(|v| !v.is_finite())
             || granulators.shape()[1] != 4
             || tap_delays.shape()[1] != 2
+            || modulated_delays.shape()[1] != channels + 3
+            || modulated_delays.as_array().iter().any(|v| !v.is_finite())
         {
             return Err(PyValueError::new_err("Invalid live effect graph"));
         }
@@ -640,6 +656,39 @@ impl EffectRuntime {
         {
             return Err(PyValueError::new_err("Missing live tap delay setup"));
         }
+        let mut prepared_modulated_delays = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for row in modulated_delays.as_array().rows() {
+            let node = row[0] as usize;
+            let history_frames = row[1] as usize;
+            let waveform = row[2] as u8;
+            if row[0] != node as f64
+                || node >= nodes
+                || kinds[node] != 6
+                || row[1] != history_frames as f64
+                || history_frames == 0
+                || row[2] != waveform as f64
+                || waveform > 2
+                || row.iter().skip(3).any(|v| !(0.0..1.0).contains(v))
+                || prepared_modulated_delays[node].is_some()
+                || parameters.ncols() < 6
+            {
+                return Err(PyValueError::new_err("Invalid live modulated delay"));
+            }
+            prepared_modulated_delays[node] = Some(LiveModulatedDelay {
+                history: Array2::zeros((history_frames, channels)),
+                write: 0,
+                phase: 0.0,
+                waveform,
+                phase_offsets: row.iter().skip(3).copied().collect(),
+            });
+        }
+        if kinds
+            .iter()
+            .enumerate()
+            .any(|(i, kind)| *kind == 6 && prepared_modulated_delays[i].is_none())
+        {
+            return Err(PyValueError::new_err("Missing live modulated delay setup"));
+        }
         let (producer, consumer) = RingBuffer::new(batch_capacity);
         Ok(Self {
             kinds,
@@ -653,6 +702,7 @@ impl EffectRuntime {
             filter_rows,
             granulators: prepared_granulators,
             tap_delays: prepared_tap_delays,
+            modulated_delays: prepared_modulated_delays,
             values: Array2::zeros((nodes + 1, channels)),
             wet: vec![0.0; channels],
             producer,
@@ -743,7 +793,8 @@ impl EffectRuntime {
                             *value = (drive * *value).tanh() / normalization;
                         }
                     }
-                    _ => self.process_tap_delay(node, channels, rate)?,
+                    5 => self.process_tap_delay(node, channels, rate)?,
+                    _ => self.process_modulated_delay(node, channels, rate)?,
                 }
                 for channel in 0..channels {
                     self.values[[node + 1, channel]] =
@@ -905,6 +956,61 @@ impl EffectRuntime {
         Ok(())
     }
 
+    fn process_modulated_delay(&mut self, node: usize, channels: usize, rate: f64) -> PyResult<()> {
+        let base = self.parameters[[node, 0]];
+        let depth = self.parameters[[node, 3]];
+        let rate_hz = self.parameters[[node, 4]];
+        let feedback = self.parameters[[node, 5]];
+        let delay = self.modulated_delays[node]
+            .as_mut()
+            .expect("validated live modulated delay");
+        let frames = delay.history.nrows();
+        if !base.is_finite()
+            || !depth.is_finite()
+            || !rate_hz.is_finite()
+            || base <= depth
+            || depth < 0.0
+            || rate_hz < 0.0
+            || !feedback.is_finite()
+            || !(0.0..1.0).contains(&feedback)
+        {
+            return Err(PyValueError::new_err(
+                "Invalid live modulated delay parameters",
+            ));
+        }
+        for channel in 0..channels {
+            let phase = (delay.phase + delay.phase_offsets[channel]) % 1.0;
+            let lfo = match delay.waveform {
+                0 => (2.0 * PI * phase).sin(),
+                1 => {
+                    if phase < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
+                _ => {
+                    if phase < 0.5 {
+                        4.0 * phase - 1.0
+                    } else {
+                        3.0 - 4.0 * phase
+                    }
+                }
+            };
+            let delay_frames = ((base + depth * lfo) * rate).round() as usize;
+            if delay_frames == 0 || delay_frames > frames {
+                return Err(PyValueError::new_err("Invalid live modulated delay read"));
+            }
+            let read = (delay.write + frames - delay_frames) % frames;
+            let wet = delay.history[[read, channel]];
+            delay.history[[delay.write, channel]] = self.wet[channel] + feedback * wet;
+            self.wet[channel] = wet;
+        }
+        delay.write = (delay.write + 1) % frames;
+        delay.phase = (delay.phase + rate_hz / rate) % 1.0;
+        Ok(())
+    }
+
     fn snapshot(&self) -> EffectSnapshot {
         EffectSnapshot {
             kinds: self.kinds.clone(),
@@ -918,6 +1024,7 @@ impl EffectRuntime {
             filter_states: self.filter_states.clone(),
             granulators: self.granulators.clone(),
             tap_delays: self.tap_delays.clone(),
+            modulated_delays: self.modulated_delays.clone(),
         }
     }
 
@@ -928,12 +1035,26 @@ impl EffectRuntime {
             || self.filter_rows != snapshot.filter_rows
             || self.granulators.len() != snapshot.granulators.len()
             || self.tap_delays.len() != snapshot.tap_delays.len()
+            || self.modulated_delays.len() != snapshot.modulated_delays.len()
             || self
                 .granulators
                 .iter()
                 .zip(&snapshot.granulators)
                 .any(|(a, b)| match (a, b) {
                     (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
+            || self
+                .modulated_delays
+                .iter()
+                .zip(&snapshot.modulated_delays)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => {
+                        a.history.raw_dim() != b.history.raw_dim()
+                            || a.waveform != b.waveform
+                            || a.phase_offsets != b.phase_offsets
+                    }
                     (None, None) => false,
                     _ => true,
                 })
@@ -960,6 +1081,7 @@ impl EffectRuntime {
         self.filter_states.assign(&snapshot.filter_states);
         self.granulators.clone_from(&snapshot.granulators);
         self.tap_delays.clone_from(&snapshot.tap_delays);
+        self.modulated_delays.clone_from(&snapshot.modulated_delays);
         Ok(())
     }
 }
