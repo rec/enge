@@ -122,12 +122,12 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
             "envelope": Envelope(
                 initial=0.2,
                 segments=[
-                    Segment(duration="1/20", to=1),
-                    Segment(duration="1/10", to=0.7),
+                    Segment(duration="1/20 s", to=1),
+                    Segment(duration="1/10 s", to=0.7),
                 ],
                 release=[
-                    Segment(duration="7/100", to=0.3),
-                    Segment(duration="13/100", to=0),
+                    Segment(duration="7/100 s", to=0.3),
+                    Segment(duration="13/100 s", to=0),
                 ],
             ),
         }
@@ -258,7 +258,7 @@ def test_persistent_synth_keeps_part_controls_while_silent(tmp_path: Path) -> No
 def test_persistent_synth_keeps_reused_trigger_tails_separate(tmp_path: Path) -> None:
     document = dynamic_score(waveform="square")
     raw = document.model_dump(mode="json")
-    raw["body"]["voices"][0]["envelope"]["release"] = [{"duration": "1", "to": 0}]
+    raw["body"]["voices"][0]["envelope"]["release"] = [{"duration": "1 s", "to": 0}]
     document = type(document).model_validate(raw)
     events = [
         onset(pitch=0.1, gain=0.2),

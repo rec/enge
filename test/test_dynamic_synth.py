@@ -225,7 +225,7 @@ def test_reused_trigger_does_not_reassign_an_old_release_tail(
 ) -> None:
     document = dynamic_score(waveform="square")
     raw = document.model_dump(mode="json")
-    raw["body"]["voices"][0]["envelope"]["release"] = [{"duration": "1", "to": 0}]
+    raw["body"]["voices"][0]["envelope"]["release"] = [{"duration": "1 s", "to": 0}]
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(pitch=0.1, gain=0.2),
@@ -261,7 +261,7 @@ def partition_case(
     voice = raw["body"]["voices"][0]
     voice["bindings"][1]["smoothing"] = "1/200"
     voice["minimum_hold_seconds"] = "1/2"
-    voice["envelope"]["release"] = [{"duration": "1/4", "to": 0.25}]
+    voice["envelope"]["release"] = [{"duration": "1/4 s", "to": 0.25}]
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(pitch=100.25),

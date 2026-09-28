@@ -57,7 +57,7 @@ def definition() -> noise.PreparedVoice:
         sample_rate=48000,
         envelope=Envelope(
             segments=[Segment(duration=0, to=1)],
-            release=[Segment(duration="1/10", to=0)],
+            release=[Segment(duration="1/10 s", to=0)],
         ),
         routes=[[1, 0.5]],
     )
@@ -209,8 +209,8 @@ def test_persistent_noise_applies_named_envelope(tmp_path: Path) -> None:
     voice["envelopes"] = {
         "motion": {
             "initial": 0,
-            "segments": [{"duration": "1/4", "to": 1}],
-            "release": [{"duration": "1/4", "to": 0}],
+            "segments": [{"duration": "1/4 s", "to": 1}],
+            "release": [{"duration": "1/4 s", "to": 0}],
         }
     }
     voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]

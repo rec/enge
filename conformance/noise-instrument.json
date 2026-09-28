@@ -129,13 +129,13 @@
         "envelope": {
           "segments": [
             {
-              "duration": "1/100",
+              "duration": "1/100 s",
               "to": 1
             }
           ],
           "release": [
             {
-              "duration": "1/10",
+              "duration": "1/10 s",
               "to": 0
             }
           ]

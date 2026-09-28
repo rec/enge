@@ -33,8 +33,8 @@ def filter_score(kind: str) -> SynthInstrumentScore | instrument.SampleInstrumen
         ]
     }
     voice["envelope"] = {
-        "segments": [{"duration": "1/100", "to": 0.2}],
-        "release": [{"duration": "1/8", "to": 0}],
+        "segments": [{"duration": "1/100 s", "to": 0.2}],
+        "release": [{"duration": "1/8 s", "to": 0}],
     }
     voice["lfos"] = {"motion": {"rate": "4", "scope": "voice"}}
     voice["bindings"] = [
@@ -194,7 +194,7 @@ def test_sample_exhaustion_discards_filter_state_and_later_invalid_values(
     raw["assets"][0]["audio"]["frames"] = 2
     raw["body"]["slices"][0]["end_frame"] = 2
     voice = raw["body"]["slots"][0]
-    voice["envelope"]["segments"] = [{"duration": "0", "to": 1}]
+    voice["envelope"]["segments"] = [{"duration": "0 s", "to": 1}]
     voice["modulation"]["parameters"][0]["maximum"] = 30000
     voice["modulation"]["routes"][0]["points"][1]["amount"] = 29500
     voice["bindings"][0]["smoothing"] = "1/12000"
@@ -239,8 +239,8 @@ def test_live_cutoff_obeys_boundary_policy_before_processing_its_sample(
     voice["modulation"]["routes"][0]["points"][1]["amount"] = 29500
     voice["bindings"][0]["smoothing"] = "0"
     voice["envelope"] = {
-        "segments": [{"duration": "0", "to": 1}],
-        "release": [{"duration": "0", "to": 0}],
+        "segments": [{"duration": "0 s", "to": 1}],
+        "release": [{"duration": "0 s", "to": 0}],
     }
     events = [
         onset(pitch=0.1).model_copy(update={"controls": {"tone": 0}}),

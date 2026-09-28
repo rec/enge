@@ -131,8 +131,8 @@ def test_named_envelope_modulates_fm_and_survives_restore(
     voice["envelopes"] = {
         "motion": {
             "initial": 0,
-            "segments": [{"duration": "1/4", "to": 1}],
-            "release": [{"duration": "1/4", "to": 0}],
+            "segments": [{"duration": "1/4 s", "to": 1}],
+            "release": [{"duration": "1/4 s", "to": 0}],
         }
     }
     voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]

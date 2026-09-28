@@ -74,8 +74,8 @@ def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
             "name": "group",
             "processing": {"volume_db": -6},
             "envelope": {
-                "segments": [{"duration": "1/20", "to": 1}],
-                "release": [{"duration": "1/4", "to": 0.25}],
+                "segments": [{"duration": "1/20 s", "to": 1}],
+                "release": [{"duration": "1/4 s", "to": 0.25}],
             },
             "bindings": dynamic["voices"][0]["bindings"],
             "modulation": dynamic["voices"][0]["modulation"],
@@ -540,7 +540,9 @@ def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
     slot["modulation"]["routes"][0]["operation"] = "add"
     if loop:
         raw["body"]["slices"][0]["loop"] = {"start_frame": 0, "end_frame": 2}
-        raw["body"]["settings"]["envelope"]["release"] = [{"duration": "1/2", "to": 0}]
+        raw["body"]["settings"]["envelope"]["release"] = [
+            {"duration": "1/2 s", "to": 0}
+        ]
     document = instrument.SampleInstrumentScore.model_validate(raw)
     prepared = sample_instrument.prepare(document, {"asset": np.ones((2, 2))})
     actions = trace.prepare(
