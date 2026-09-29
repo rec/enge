@@ -66,6 +66,7 @@ struct NamedEnvelopeDefinition {
     operation: usize,
     intercept: f64,
     slope: f64,
+    release_with_voice: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -612,7 +613,7 @@ impl SynthRuntime {
         initials: Vec<f64>,
         attacks: Vec<Vec<(f64, f64)>>,
         releases: Vec<Vec<(f64, f64)>>,
-        parameters: Vec<(usize, usize, f64, f64)>,
+        parameters: Vec<(usize, usize, f64, f64, bool)>,
     ) -> PyResult<()> {
         let count = initials.len();
         if attacks.len() != count || releases.len() != count || parameters.len() != count {
@@ -624,7 +625,10 @@ impl SynthRuntime {
             .zip(releases)
             .zip(parameters)
             .map(
-                |(((initial, attack), release), (parameter, operation, intercept, slope))| {
+                |(
+                    ((initial, attack), release),
+                    (parameter, operation, intercept, slope, release_with_voice),
+                )| {
                     if !initial.is_finite()
                         || attack.iter().chain(&release).any(|(frames, target)| {
                             !frames.is_finite() || *frames < 0.0 || !target.is_finite()
@@ -650,6 +654,7 @@ impl SynthRuntime {
                         operation,
                         intercept,
                         slope,
+                        release_with_voice,
                     })
                 },
             )
@@ -1505,7 +1510,11 @@ impl SynthRuntime {
                         if definition.release.is_empty() {
                             continue;
                         }
-                        let named_release_frame = self.ages[voice] as f64;
+                        let named_release_frame = if definition.release_with_voice {
+                            release_frame
+                        } else {
+                            self.ages[voice] as f64
+                        };
                         self.named_release_levels[envelope_base + index] = envelope_value(
                             definition.initial,
                             &definition.attack,
@@ -1517,7 +1526,11 @@ impl SynthRuntime {
                     self.release_frames[voice] = Some(release_frame);
                 }
             }
-            2 => self.active[voice] = false,
+            2 => {
+                self.active[voice] = false;
+                let base = voice * self.named_envelopes.len();
+                self.named_release_frames[base..base + self.named_envelopes.len()].fill(None);
+            }
             3 => {
                 let duration = action[5] as usize;
                 if action[3] <= 0.0 || action[4] < 0.0 || action[5] != duration as f64 {
@@ -1796,16 +1809,17 @@ impl SynthRuntime {
                 continue;
             }
             let age = self.ages[voice] as f64;
-            let value =
-                if let Some(release_frame) = self.named_release_frames[envelope_base + source] {
-                    envelope_value(
-                        self.named_release_levels[envelope_base + source],
-                        &definition.release,
-                        age - release_frame,
-                    )
-                } else {
-                    envelope_value(definition.initial, &definition.attack, age)
-                };
+            let value = if let Some(release_frame) =
+                self.named_release_frames[envelope_base + source].filter(|frame| age >= *frame)
+            {
+                envelope_value(
+                    self.named_release_levels[envelope_base + source],
+                    &definition.release,
+                    age - release_frame,
+                )
+            } else {
+                envelope_value(definition.initial, &definition.attack, age)
+            };
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;

@@ -221,16 +221,21 @@ class OfflineSampler:
                 raise synth.EngineError("Fade retirement is not implemented")
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
+                self.controls.stop(action.voice_id)
             elif voice := self.voices.get(action.voice_id):
-                self.controls.release(
-                    self.definition.document.body.settings,
-                    voice.instrument_sources,
-                    action,
-                )
-                self.controls.release(
-                    self.definition.settings[voice.template], voice.slot_sources, action
-                )
-                voice.renderer.release()
+                if voice.renderer.release():
+                    self.controls.release(
+                        self.definition.document.body.settings,
+                        voice.instrument_sources,
+                        action,
+                        voice.renderer,
+                    )
+                    self.controls.release(
+                        self.definition.settings[voice.template],
+                        voice.slot_sources,
+                        action,
+                        voice.renderer,
+                    )
         else:
             raise synth.EngineError(
                 f"Unsupported sampler action at frame {action.tick}: "

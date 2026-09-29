@@ -242,11 +242,15 @@ class OfflineNoise:
                 raise synth.EngineError("Fade retirement is not implemented")
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
+                self.controls.stop(action.voice_id)
             elif voice := self.voices.get(action.voice_id):
-                self.controls.release(
-                    self.templates[voice.template], voice.sources, action
-                )
-                voice.renderer.release()
+                if voice.renderer.release():
+                    self.controls.release(
+                        self.templates[voice.template],
+                        voice.sources,
+                        action,
+                        voice.renderer,
+                    )
             return
         if not isinstance(action, VoiceStart):
             raise synth.EngineError(f"Unsupported noise action at frame {action.tick}")

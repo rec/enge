@@ -195,7 +195,7 @@ class SynthRuntime:
         initials: list[float],
         attacks: list[list[tuple[float, float]]],
         releases: list[list[tuple[float, float]]],
-        parameters: list[tuple[int, int, float, float]],
+        parameters: list[tuple[int, int, float, float, bool]],
     ) -> None: ...
     def set_staged_motions(
         self,
