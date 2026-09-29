@@ -9,7 +9,11 @@ publish = false
 name = "_native"
 crate-type = ["cdylib"]
 
+[features]
+rubberband = ["dep:rubberband-sys"]
+
 [dependencies]
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module"] }
 rtrb = "0.4.0"
+rubberband-sys = { version = "0.1.4", optional = true }

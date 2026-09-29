@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![cfg_attr(not(feature = "rubberband"), forbid(unsafe_code))]
 
 mod effects;
 mod filters;
@@ -10,6 +10,8 @@ mod noise;
 mod queue;
 mod runtime;
 mod sampler;
+#[cfg(feature = "rubberband")]
+mod rubberband;
 
 use numpy::ndarray::Array2;
 use numpy::{
@@ -18,6 +20,9 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
+
+#[cfg(feature = "rubberband")]
+use rubberband::rubberband_stretch;
 
 type RenderedBlock<'py> = (
     Bound<'py, PyArray2<f64>>,
@@ -173,5 +178,9 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<runtime::SynthRuntimeSnapshot>()?;
     module.add_class::<sampler::SampleBuffer>()?;
     module.add_function(wrap_pyfunction!(sampler::render_sample, module)?)?;
-    module.add_function(wrap_pyfunction!(lfo::render_lfo, module)?)
+    module.add_function(wrap_pyfunction!(lfo::render_lfo, module)?)?;
+
+    #[cfg(feature = "rubberband")]
+    module.add_function(wrap_pyfunction!(rubberband_stretch, module)?)?;
+    Ok(())
 }
