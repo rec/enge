@@ -303,7 +303,7 @@ def test_persistent_synth_evolves_scoped_lfos_in_rust(
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     raw["body"]["voices"][0]["motions"]["motion"]["body"].update(
-        shape=waveform, duty_cycle=duty
+        shape=waveform, duty_cycle=duty, center=0.2, depth=0.7
     )
     document = SynthInstrumentScore.model_validate(raw)
     events = [

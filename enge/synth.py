@@ -13,8 +13,11 @@ from ufor.base import Model
 from ufor.envelope import Envelope
 from ufor.motion import (
     Contour,
+    Cycle,
     MotionEvent,
     MotionState,
+    Stages,
+    advance_motion,
     cycle_lfo,
     initial_motion,
     motion_at,
@@ -502,14 +505,16 @@ class ControlRenderer:
             if isinstance(binding, processing.GeneratorBinding):
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
                 motion = settings.motions[binding.reference]
-                if isinstance(motion.body, Contour):
+                if isinstance(motion.body, (Contour, Stages)):
                     if motion.scope != "voice":
-                        raise EngineError("Named envelopes must use the voice scope")
+                        raise EngineError(
+                            "Staged and contour Motions require voice scope"
+                        )
                     index = len(self.envelopes)
                     initial = initial_motion(
                         motion, Fraction(action.tick, self.sample_rate)
                     )
-                    if motion.body.release:
+                    if isinstance(motion.body, Stages) or motion.body.release:
                         initial = motion_event(
                             motion,
                             initial,
@@ -579,7 +584,7 @@ class ControlRenderer:
         self.clear_cache()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
-                settings.motions[binding.reference].body, Contour
+                settings.motions[binding.reference].body, (Contour, Stages)
             ):
                 continue
             index = sources[binding.name]
@@ -615,30 +620,42 @@ class ControlRenderer:
             if isinstance(binding, processing.GeneratorBinding):
                 index = sources[binding.name]
                 motion = settings.motions[binding.reference]
-                if isinstance(motion.body, Contour):
+                if isinstance(motion.body, (Contour, Stages)):
                     if index not in self.cached_envelopes:
                         state = self.envelopes[index].state
-                        self.cached_envelopes[index] = np.column_stack(
-                            (
-                                np.array(
-                                    [
-                                        motion_at(
-                                            motion,
-                                            state,
-                                            Fraction(start + i, self.sample_rate),
-                                        ).value
-                                        for i in range(frames)
-                                    ]
-                                ),
-                                np.ones(frames),
+                        if isinstance(motion.body, Stages):
+                            values = np.empty(frames)
+                            for i in range(frames):
+                                result = advance_motion(
+                                    motion,
+                                    state,
+                                    Fraction(start + i, self.sample_rate),
+                                )
+                                state = result.state
+                                values[i] = result.value.value
+                            self.envelopes[index] = self.envelopes[index].model_copy(
+                                update={"state": state}
                             )
+                        else:
+                            values = np.array(
+                                [
+                                    motion_at(
+                                        motion,
+                                        state,
+                                        Fraction(start + i, self.sample_rate),
+                                    ).value
+                                    for i in range(frames)
+                                ]
+                            )
+                        self.cached_envelopes[index] = np.column_stack(
+                            (values, np.ones(frames))
                         )
                     signals[binding.name] = self.cached_envelopes[index]
                     continue
                 if index not in self.cached_lfos:
                     state = self.lfos[index].state.runtime
                     assert isinstance(state, lfo.LFOState)
-                    self.cached_lfos[index] = lfo_samples(
+                    samples = lfo_samples(
                         cycle_lfo(motion),
                         state,
                         start,
@@ -647,6 +664,11 @@ class ControlRenderer:
                         self.backend,
                         self.control_interval,
                     )
+                    assert isinstance(motion.body, Cycle)
+                    samples[:, 0] = (
+                        motion.body.center + motion.body.depth * samples[:, 0]
+                    )
+                    self.cached_lfos[index] = samples
                 signals[binding.name] = self.cached_lfos[index]
                 continue
             assert isinstance(binding, ControlBinding)
@@ -1408,9 +1430,9 @@ def validate_generators(settings: SoundSettings) -> None:
     if any(
         g.clock != "seconds" or g.scope != "voice"
         for g in settings.motions.values()
-        if isinstance(g.body, Contour)
+        if isinstance(g.body, (Contour, Stages))
     ):
-        raise EngineError("Named envelopes must use the voice seconds clock")
+        raise EngineError("Staged and contour Motions require voice seconds clock")
     if any(g.clock != "seconds" for g in settings.motions.values()):
         raise EngineError("Motions must use the seconds clock")
     if any(
@@ -1702,6 +1724,7 @@ def _persistent_modulation(
             motion = template.motions[binding.reference]
             if isinstance(motion.body, Contour):
                 generator = motion.body
+                assert isinstance(generator.initial, float)
                 if source.scope != "voice" or any(
                     segment.curve != 0
                     for segment in [*generator.segments, *generator.release]
@@ -1737,6 +1760,13 @@ def _persistent_modulation(
                     )
                 )
                 continue
+            if isinstance(motion.body, Stages):
+                raise EngineError(
+                    "Persistent runtime does not yet implement staged Motions"
+                )
+            assert isinstance(motion.body, Cycle)
+            intercept += slope * motion.body.center
+            slope *= motion.body.depth
             generator = cycle_lfo(motion)
             index = len(lfo_rows)
             lfo_rows.append(

@@ -314,6 +314,110 @@ def test_release_free_contour_finishes_after_note_off_and_restores(
         np.testing.assert_allclose(native_replay, native_actual[18000:], atol=0)
 
 
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+@pytest.mark.parametrize("release_frame", [12000, 24000])
+def test_staged_motion_renders_and_restores_at_attack_boundary(
+    tmp_path: Path, backend: Literal["numpy", "native"], release_frame: int
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
+    voice["motions"]["motion"]["body"] = {
+        "kind": "stages",
+        "initial_stage": "waiting",
+        "stages": [
+            {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}},
+            {
+                "name": "attack",
+                "motion": {
+                    "kind": "contour",
+                    "initial": "current",
+                    "segments": [{"duration": "1/4 s", "to": 0.6}],
+                },
+            },
+            {
+                "name": "sway",
+                "motion": {
+                    "kind": "cycle",
+                    "rate": "4",
+                    "center": 0.6,
+                    "depth": 0.2,
+                },
+            },
+            {
+                "name": "release",
+                "motion": {
+                    "kind": "contour",
+                    "initial": "current",
+                    "segments": [{"duration": "1/4 s", "to": 0.0}],
+                },
+            },
+        ],
+        "transitions": [
+            {
+                "from": ["waiting", "attack", "sway", "release"],
+                "event": "note_on",
+                "action": {"kind": "enter", "stage": "attack"},
+            },
+            {
+                "from": ["attack"],
+                "event": "stage.done",
+                "action": {"kind": "enter", "stage": "sway"},
+            },
+            {
+                "from": ["attack", "sway"],
+                "event": "note_off",
+                "action": {"kind": "enter", "stage": "release"},
+            },
+            {
+                "from": ["release"],
+                "event": "stage.done",
+                "action": {"kind": "finish"},
+            },
+        ],
+    }
+    voice["modulation"]["routes"][0]["points"] = [
+        {"input": -1, "amount": 0},
+        {"input": 1, "amount": 1},
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=release_frame, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    expected = synth.OfflineSynth(prepared, backend).advance(actions, 0, 48000)
+    renderer = synth.OfflineSynth(prepared, backend)
+    first = renderer.advance([a for a in actions if a.tick < 18000], 0, 18000)
+    snapshot = renderer.snapshot()
+    second = renderer.advance([a for a in actions if a.tick >= 18000], 18000, 48000)
+    restored = synth.OfflineSynth(prepared, backend)
+    restored.restore(snapshot)
+    replay = restored.advance([a for a in actions if a.tick >= 18000], 18000, 48000)
+    check_audio(
+        tmp_path / f"staged-{backend}-{release_frame}.wav",
+        np.concatenate((first, second)),
+        expected,
+    )
+    np.testing.assert_allclose(replay, second, atol=0)
+    assert snapshot.envelopes[0].state.runtime.stage == (
+        "release" if release_frame == 12000 else "sway"
+    )
+    if release_frame == 12000:
+        assert np.max(np.abs(expected[12000:13000])) > np.max(
+            np.abs(expected[23000:24000])
+        )
+    else:
+        assert np.ptp(expected[12000:24000, 0]) > 0.19
+    if backend == "native":
+        with pytest.raises(synth.EngineError, match="does not yet implement staged"):
+            synth.PersistentSynth(prepared, voices=4)
+
+
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
 @pytest.mark.parametrize("scope", ["voice", "part", "instrument"])
 def test_lfo_scopes_silent_time_release_tails_and_restores(
