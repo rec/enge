@@ -302,8 +302,8 @@ def test_persistent_synth_evolves_scoped_lfos_in_rust(
     tmp_path: Path, scope: str, waveform: str, duty: str
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
-    raw["body"]["voices"][0]["lfos"]["motion"].update(
-        waveform=waveform, duty_cycle=duty
+    raw["body"]["voices"][0]["motions"]["motion"]["body"].update(
+        shape=waveform, duty_cycle=duty
     )
     document = SynthInstrumentScore.model_validate(raw)
     events = [

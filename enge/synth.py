@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import envelope, instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.envelope import Envelope
+from ufor.motion import Contour, Cycle, MotionUse
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import ControlBinding, Processing, SoundSettings
@@ -418,7 +419,9 @@ class ControlRenderer:
             if not matches:
                 raise EngineError(f"Unknown instrument LFO: {action.name}")
             for index, source in matches:
-                definition = self.settings[source.setting].lfos[source.name]
+                definition = _lfo_definition(
+                    self.settings[source.setting].motions[source.name]
+                )
                 self.lfos[index] = source.model_copy(
                     update={
                         "state": lfo.lfo_event(
@@ -492,9 +495,10 @@ class ControlRenderer:
             binding = bindings[source.name]
             if isinstance(binding, processing.GeneratorBinding):
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
-                if binding.kind == "envelope":
-                    definition = settings.envelopes[binding.reference]
-                    if definition.scope != "voice":
+                motion = settings.motions[binding.reference]
+                if isinstance(motion.body, Contour):
+                    definition = _envelope_definition(motion)
+                    if motion.scope != "voice":
                         raise EngineError("Named envelopes must use the voice scope")
                     index = len(self.envelopes)
                     initial = envelope.initial_envelope(
@@ -518,9 +522,9 @@ class ControlRenderer:
                     )
                     result[source.name] = index
                     continue
-                definition = settings.lfos[binding.reference]
-                part = action.part if definition.scope == "part" else None
-                voice_id = action.voice_id if definition.scope == "voice" else None
+                definition = _lfo_definition(motion)
+                part = action.part if motion.scope == "part" else None
+                voice_id = action.voice_id if motion.scope == "voice" else None
                 index = next(
                     (
                         i
@@ -568,14 +572,13 @@ class ControlRenderer:
     ) -> None:
         self.clear_cache()
         for binding in settings.bindings:
-            if (
-                not isinstance(binding, processing.GeneratorBinding)
-                or binding.kind != "envelope"
+            if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
+                settings.motions[binding.reference].body, Contour
             ):
                 continue
             index = sources[binding.name]
             source = self.envelopes[index]
-            definition = settings.envelopes[binding.reference]
+            definition = _envelope_definition(settings.motions[binding.reference])
             self.envelopes[index] = source.model_copy(
                 update={
                     "state": envelope.envelope_event(
@@ -605,9 +608,10 @@ class ControlRenderer:
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
                 index = sources[binding.name]
-                if binding.kind == "envelope":
+                motion = settings.motions[binding.reference]
+                if isinstance(motion.body, Contour):
                     if index not in self.cached_envelopes:
-                        definition = settings.envelopes[binding.reference]
+                        definition = _envelope_definition(motion)
                         state = self.envelopes[index].state
                         self.cached_envelopes[index] = np.column_stack(
                             (
@@ -628,7 +632,7 @@ class ControlRenderer:
                     continue
                 if index not in self.cached_lfos:
                     self.cached_lfos[index] = lfo_samples(
-                        settings.lfos[binding.reference],
+                        _lfo_definition(motion),
                         self.lfos[index].state,
                         start,
                         frames,
@@ -1390,22 +1394,57 @@ def validate_envelope(envelope: Envelope) -> None:
         raise EngineError("Only held linear envelopes are implemented")
 
 
+def _lfo_definition(motion: MotionUse) -> lfo.LFO:
+    body = motion.body
+    if not isinstance(body, Cycle):
+        raise EngineError("Motion is not a cycle")
+    return lfo.LFO(
+        clock=motion.clock,
+        scope=motion.scope,
+        rate=body.rate,
+        phase=body.phase,
+        reset=body.reset,
+        waveform=body.shape,
+        duty_cycle=body.duty_cycle,
+        delay=body.delay,
+        fade_in=body.fade_in,
+    )
+
+
+def _envelope_definition(motion: MotionUse) -> Envelope:
+    body = motion.body
+    if not isinstance(body, Contour):
+        raise EngineError("Motion is not a contour")
+    if not body.release:
+        raise EngineError("Named contour requires release segments")
+    return Envelope(
+        clock=motion.clock,
+        scope=motion.scope,
+        polarity=body.polarity,
+        initial=body.initial,
+        segments=body.segments,
+        release=body.release,
+        hold=body.hold,
+        retrigger=body.retrigger,
+    )
+
+
 def validate_generators(settings: SoundSettings) -> None:
     """Supported named sources share the seconds-clock LFO contract."""
     if any(
-        g.clock != "seconds" or g.scope != "voice" for g in settings.envelopes.values()
+        g.clock != "seconds" or g.scope != "voice"
+        for g in settings.motions.values()
+        if isinstance(g.body, Contour)
     ):
         raise EngineError("Named envelopes must use the voice seconds clock")
-    if any(g.clock != "seconds" for g in settings.lfos.values()):
-        raise EngineError("LFOs must use the seconds clock")
+    if any(g.clock != "seconds" for g in settings.motions.values()):
+        raise EngineError("Motions must use the seconds clock")
     if any(
         not isinstance(b, ControlBinding)
-        and not (
-            isinstance(b, processing.GeneratorBinding) and b.kind in ("envelope", "lfo")
-        )
+        and not isinstance(b, processing.GeneratorBinding)
         for b in settings.bindings
     ):
-        raise EngineError("Only control and LFO bindings are implemented")
+        raise EngineError("Only control and motion bindings are implemented")
 
 
 def validate_modulation(settings: SoundSettings) -> None:
@@ -1507,14 +1546,10 @@ def _persistent_modulation(
     bindings = {b.name: b for b in template.bindings}
     if any(
         not isinstance(b, ControlBinding)
-        and not (
-            isinstance(b, processing.GeneratorBinding) and b.kind in ("envelope", "lfo")
-        )
+        and not isinstance(b, processing.GeneratorBinding)
         for b in bindings.values()
     ):
-        raise EngineError(
-            "Persistent synth supports control, envelope, and LFO bindings"
-        )
+        raise EngineError("Persistent synth supports control and motion bindings")
     sources = {s.name: s for s in template.modulation.sources}
     if bindings.keys() != sources.keys():
         raise EngineError("Persistent synth modulation sources require bindings")
@@ -1690,8 +1725,9 @@ def _persistent_modulation(
             source_controls.append(binding.control)
         else:
             assert isinstance(binding, processing.GeneratorBinding)
-            if binding.kind == "envelope":
-                generator = template.envelopes[binding.reference]
+            motion = template.motions[binding.reference]
+            if isinstance(motion.body, Contour):
+                generator = _envelope_definition(motion)
                 if source.scope != "voice" or any(
                     segment.curve != 0
                     for segment in [*generator.segments, *generator.release]
@@ -1727,7 +1763,7 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            generator = template.lfos[binding.reference]
+            generator = _lfo_definition(motion)
             index = len(lfo_rows)
             lfo_rows.append(
                 [

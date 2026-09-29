@@ -18,16 +18,19 @@ from enge import sample_instrument, synth
 def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
     return processing.SoundSettings.model_validate(
         {
-            "lfos": {
+            "motions": {
                 "motion": {
-                    "rate": "4",
-                    "phase": "1/4",
                     "scope": scope,
-                    "delay": "1/8",
-                    "fade_in": "1/8",
+                    "body": {
+                        "kind": "cycle",
+                        "rate": "4",
+                        "phase": "1/4",
+                        "delay": "1/8",
+                        "fade_in": "1/8",
+                    },
                 }
             },
-            "bindings": [{"name": "motion", "kind": "lfo", "reference": "motion"}],
+            "bindings": [{"name": "motion", "kind": "motion", "reference": "motion"}],
             "modulation": {
                 "sources": [
                     {"name": "motion", "scope": scope, "minimum": -1, "maximum": 1}
@@ -67,7 +70,7 @@ def lfo_score(
     settings = lfo_settings(scope).model_dump(mode="json")
     voice = raw["body"]["voices" if kind == "synth" else "slots"][0]
     owner = raw["body"]["settings"] if kind == "sampler" and scope != "voice" else voice
-    owner.update({n: settings[n] for n in ("lfos", "bindings", "modulation")})
+    owner.update({n: settings[n] for n in ("motions", "bindings", "modulation")})
     voice["envelope"] = {
         "segments": [{"duration": "0 s", "to": 1}],
         "release": [{"duration": "1/4 s", "to": 0}],
@@ -88,14 +91,17 @@ def test_named_envelope_modulates_synth_and_releases(
     voice["envelope"]["release"] = [{"duration": "1/4 s", "to": 1}]
     voice.update(
         {
-            "envelopes": {
+            "motions": {
                 "motion": {
-                    "initial": 0,
-                    "segments": [{"duration": "1/4 s", "to": 1}],
-                    "release": [{"duration": "1/4 s", "to": 0}],
+                    "body": {
+                        "kind": "contour",
+                        "initial": 0,
+                        "segments": [{"duration": "1/4 s", "to": 1}],
+                        "release": [{"duration": "1/4 s", "to": 0}],
+                    }
                 }
             },
-            "bindings": [{"name": "motion", "kind": "envelope", "reference": "motion"}],
+            "bindings": [{"name": "motion", "kind": "motion", "reference": "motion"}],
             "modulation": {
                 "sources": [
                     {"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}
@@ -244,7 +250,12 @@ def test_named_lfo_names_remain_local_to_settings_and_instances(
         {
             **entries[0],
             "name": "second",
-            "lfos": {"motion": {"rate": "0", "phase": "3/4", "scope": scope}},
+            "motions": {
+                "motion": {
+                    "scope": scope,
+                    "body": {"kind": "cycle", "rate": "0", "phase": "3/4"},
+                }
+            },
         }
     )
     event = onset(pitch=0.1).model_copy(update={"controls": {}})

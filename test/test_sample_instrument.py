@@ -86,8 +86,7 @@ def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
     for name in (
         "processing",
         "envelope",
-        "envelopes",
-        "lfos",
+        "motions",
         "bindings",
         "modulation",
     ):

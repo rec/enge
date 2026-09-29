@@ -206,14 +206,17 @@ def test_persistent_noise_matches_native_across_blocks_and_restore(
 def test_persistent_noise_applies_named_envelope(tmp_path: Path) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["envelopes"] = {
+    voice["motions"] = {
         "motion": {
-            "initial": 0,
-            "segments": [{"duration": "1/4 s", "to": 1}],
-            "release": [{"duration": "1/4 s", "to": 0}],
+            "body": {
+                "kind": "contour",
+                "initial": 0,
+                "segments": [{"duration": "1/4 s", "to": 1}],
+                "release": [{"duration": "1/4 s", "to": 0}],
+            }
         }
     }
-    voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]
+    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
     voice["modulation"] = {
         "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
         "parameters": [
@@ -376,7 +379,9 @@ def test_noise_lfo_amplitude_matches_oracle(
         "segments": [{"duration": 0, "to": 1}],
         "release": [{"duration": 0, "to": 0}],
     }
-    voice["lfos"] = {"pulse": {"waveform": "sine", "rate": 2}}
+    voice["motions"] = {
+        "pulse": {"body": {"kind": "cycle", "shape": "sine", "rate": 2}}
+    }
     voice["modulation"] = {
         "sources": [{"name": "pulse", "scope": "voice", "minimum": -1, "maximum": 1}],
         "parameters": [
@@ -400,7 +405,7 @@ def test_noise_lfo_amplitude_matches_oracle(
             }
         ],
     }
-    voice["bindings"] = [{"name": "pulse", "kind": "lfo", "reference": "pulse"}]
+    voice["bindings"] = [{"name": "pulse", "kind": "motion", "reference": "pulse"}]
     document = SynthInstrumentScore.model_validate(raw)
     actions = synth_trace.prepare(document.body, [trigger()], seed=1).actions
     start = next(a for a in actions if isinstance(a, synth_trace.VoiceStart))

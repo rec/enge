@@ -128,14 +128,17 @@ def test_named_envelope_modulates_fm_and_survives_restore(
 ) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["envelopes"] = {
+    voice["motions"] = {
         "motion": {
-            "initial": 0,
-            "segments": [{"duration": "1/4 s", "to": 1}],
-            "release": [{"duration": "1/4 s", "to": 0}],
+            "body": {
+                "kind": "contour",
+                "initial": 0,
+                "segments": [{"duration": "1/4 s", "to": 1}],
+                "release": [{"duration": "1/4 s", "to": 0}],
+            }
         }
     }
-    voice["bindings"] = [{"name": "motion", "kind": "envelope", "reference": "motion"}]
+    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
     voice["modulation"] = {
         "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
         "parameters": [
@@ -218,8 +221,13 @@ def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
     target = {"name": "edge-modulator-carrier", "parameter": "index"}
-    voice["lfos"] = {"motion": {"waveform": "sine", "rate": 2, "scope": "instrument"}}
-    voice["bindings"] = [{"name": "motion", "kind": "lfo", "reference": "motion"}]
+    voice["motions"] = {
+        "motion": {
+            "scope": "instrument",
+            "body": {"kind": "cycle", "shape": "sine", "rate": 2},
+        }
+    }
+    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
     voice["modulation"] = {
         "sources": [
             {"name": "motion", "scope": "instrument", "minimum": -1, "maximum": 1}
@@ -673,13 +681,15 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
 
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["lfos"] = {"color": {"waveform": "sine", "rate": 2}}
+    voice["motions"] = {
+        "color": {"body": {"kind": "cycle", "shape": "sine", "rate": 2}}
+    }
     voice["modulation"]["sources"][0].update(scope="voice", minimum=-1)
     voice["modulation"]["routes"][0]["points"] = [
         {"input": -1, "amount": -1},
         {"input": 1, "amount": 1},
     ]
-    voice["bindings"] = [{"name": "color", "kind": "lfo", "reference": "color"}]
+    voice["bindings"] = [{"name": "color", "kind": "motion", "reference": "color"}]
     voice["processing"]["filters"] = [
         {"name": "tone", "response": "lowpass", "cutoff_hz": 1800, "q": 0.7}
     ]

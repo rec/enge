@@ -36,10 +36,12 @@ def filter_score(kind: str) -> SynthInstrumentScore | instrument.SampleInstrumen
         "segments": [{"duration": "1/100 s", "to": 0.2}],
         "release": [{"duration": "1/8 s", "to": 0}],
     }
-    voice["lfos"] = {"motion": {"rate": "4", "scope": "voice"}}
+    voice["motions"] = {
+        "motion": {"scope": "voice", "body": {"kind": "cycle", "rate": "4"}}
+    }
     voice["bindings"] = [
         {"name": "tone", "kind": "control", "control": "tone", "smoothing": "1/200"},
-        {"name": "motion", "kind": "lfo", "reference": "motion"},
+        {"name": "motion", "kind": "motion", "reference": "motion"},
     ]
     voice["modulation"] = {
         "sources": [

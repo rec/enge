@@ -272,7 +272,7 @@ def test_engine_control_intervals_survive_events_partitions_and_restore(
         raw = (test_fm.score() if kind == "fm" else test_noise.score()).model_dump()
         settings = lfo_settings().model_dump()
         raw["body"]["voices"][0].update(
-            {n: settings[n] for n in ("lfos", "modulation", "bindings")}
+            {n: settings[n] for n in ("motions", "modulation", "bindings")}
         )
         document = SynthInstrumentScore.model_validate(raw)
     events = [
