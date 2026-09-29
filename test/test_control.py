@@ -346,14 +346,16 @@ def test_control_cache_preserves_ownership_and_observes_same_frame_changes(
     renderer.apply(
         ControlObservation(
             tick=0, ordinal=0, control="color", value=1, scope="instrument"
-        )
+        ),
+        [],
     )
     raised = renderer.values(settings, sources, 0, 48000)
     assert raised["filter-tone", "cutoff_hz"][-1] == 8000
     renderer.apply(
         ControlObservation(
             tick=0, ordinal=1, control="color", value=0.5, scope="instrument"
-        )
+        ),
+        [],
     )
     interrupted = renderer.values(settings, sources, 0, 48000)
     assert interrupted["filter-tone", "cutoff_hz"][-1] == 4600

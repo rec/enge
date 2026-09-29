@@ -227,6 +227,7 @@ class PersistentFMSnapshot(Model, frozen=True):
     context_capacity: int
     frame: int
     voices: dict[str, int]
+    voice_triggers: dict[str, synth.VoiceAddress]
     part_contexts: dict[str, int]
     trigger_contexts: dict[tuple[str, str], int]
     state: _native.SynthRuntimeSnapshot
@@ -310,7 +311,7 @@ class OfflineFM:
         self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
-        if self.controls.apply(action):
+        if self.controls.apply(action, self.voices):
             return
         if isinstance(action, instrument_trace.VoiceRetirement):
             if action.action == "fade":
@@ -551,6 +552,7 @@ class PersistentFM(synth.PersistentSynth):
         self.template = template
         self.frame = 0
         self.voices: dict[str, int] = {}
+        self.voice_triggers: dict[str, synth.VoiceAddress] = {}
         self.action_capacity = action_capacity
         self.context_capacity = context_capacity
         self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
@@ -564,13 +566,16 @@ class PersistentFM(synth.PersistentSynth):
             lfos,
             lfo_rationals,
             self.lfo_sources,
+            self.voice_lfo_sources,
             envelope_initials,
             envelope_attacks,
             envelope_releases,
             envelope_parameters,
+            self.named_motion_sources,
             self.source_scopes,
             runtime_filters,
             staged_motions,
+            self.staged_motion_sources,
             event_connections,
         ) = synth._persistent_modulation(shared, template, source_parameters)
         self.part_contexts: dict[str, int] = {}
@@ -658,6 +663,7 @@ class PersistentFM(synth.PersistentSynth):
             context_capacity=self.context_capacity,
             frame=self.frame,
             voices=self.voices.copy(),
+            voice_triggers=self.voice_triggers.copy(),
             part_contexts=self.part_contexts.copy(),
             trigger_contexts=self.trigger_contexts.copy(),
             state=self.runtime.snapshot(),
@@ -675,6 +681,7 @@ class PersistentFM(synth.PersistentSynth):
         self.runtime.restore(snapshot.state)
         self.frame = snapshot.frame
         self.voices = snapshot.voices.copy()
+        self.voice_triggers = snapshot.voice_triggers.copy()
         self.part_contexts = snapshot.part_contexts.copy()
         self.trigger_contexts = snapshot.trigger_contexts.copy()
 
@@ -701,6 +708,9 @@ class PersistentFM(synth.PersistentSynth):
             raise synth.EngineError("Persistent FM voice capacity exceeded")
         active[slot] = True
         self.voices[action.voice_id] = slot
+        self.voice_triggers[action.voice_id] = synth.VoiceAddress(
+            part=action.part, trigger_id=action.trigger_id
+        )
         return slot, action.pitch_hz, 10 ** (self.template.processing.volume_db / 20), 0
 
 

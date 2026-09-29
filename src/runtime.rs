@@ -71,6 +71,14 @@ struct NamedEnvelopeDefinition {
     release_with_voice: bool,
 }
 
+#[derive(Clone)]
+struct NamedContourState {
+    playback: PlaybackState,
+    start_value: f64,
+    released: bool,
+    pending_release: Option<f64>,
+}
+
 #[derive(Clone, PartialEq)]
 struct StageDefinition {
     kind: u8,
@@ -95,13 +103,54 @@ struct StagedMotionDefinition {
 #[derive(Clone)]
 struct StagedMotionState {
     stage: usize,
-    entered_at: f64,
+    playback: PlaybackState,
     entry_value: f64,
     completed: bool,
     complete_value: f64,
-    done: bool,
     cursor_at: f64,
     cursor_order: usize,
+}
+
+#[derive(Clone)]
+struct PlaybackState {
+    at: f64,
+    coordinate: f64,
+    rate: f64,
+    direction: f64,
+    paused: bool,
+    age: f64,
+}
+
+impl PlaybackState {
+    fn coordinate_at(&self, at: f64) -> f64 {
+        self.coordinate
+            + if self.paused {
+                0.0
+            } else {
+                self.direction * self.rate * (at - self.at)
+            }
+    }
+
+    fn age_at(&self, at: f64) -> f64 {
+        self.age + if self.paused { 0.0 } else { at - self.at }
+    }
+
+    fn advance(&mut self, at: f64) {
+        self.coordinate = self.coordinate_at(at);
+        self.age = self.age_at(at);
+        self.at = at;
+    }
+
+    fn command(&mut self, kind: usize, position: f64, at: f64) {
+        self.advance(at);
+        match kind {
+            0 => self.paused = true,
+            1 => self.paused = false,
+            2 => self.direction = -self.direction,
+            3 => self.coordinate = position,
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -186,6 +235,7 @@ pub struct SynthRuntimeSnapshot {
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_event_states: Vec<Option<LfoEventState>>,
+    voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_states: Vec<StagedMotionState>,
@@ -202,8 +252,7 @@ pub struct SynthRuntimeSnapshot {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
-    named_release_frames: Vec<Option<f64>>,
-    named_release_levels: Vec<f64>,
+    named_states: Vec<NamedContourState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -252,6 +301,7 @@ pub struct SynthRuntime {
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_event_states: Vec<Option<LfoEventState>>,
+    voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_states: Vec<StagedMotionState>,
@@ -268,8 +318,7 @@ pub struct SynthRuntime {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
-    named_release_frames: Vec<Option<f64>>,
-    named_release_levels: Vec<f64>,
+    named_states: Vec<NamedContourState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -385,6 +434,7 @@ impl SynthRuntime {
             control_states,
             lfo_definitions,
             lfo_event_states: vec![None; lfo_count],
+            voice_lfo_event_states: vec![None; slots * lfo_count],
             named_envelopes: Vec::new(),
             staged_motions: Vec::new(),
             staged_states: Vec::new(),
@@ -401,8 +451,7 @@ impl SynthRuntime {
             mod_errors: vec![0.0; slots],
             previous_modulators: vec![0.0; slots],
             mod_release_levels: vec![0.0; slots],
-            named_release_frames: Vec::new(),
-            named_release_levels: Vec::new(),
+            named_states: Vec::new(),
             graph_phases: Vec::new(),
             graph_errors: Vec::new(),
             graph_outputs: Vec::new(),
@@ -663,8 +712,13 @@ impl SynthRuntime {
             .collect::<PyResult<_>>()?;
         let states = self.frequencies.len() * count;
         self.named_envelopes = definitions;
-        self.named_release_frames = vec![None; states];
-        self.named_release_levels = vec![0.0; states];
+        self.named_states = self
+            .named_envelopes
+            .iter()
+            .cycle()
+            .take(states)
+            .map(|definition| named_contour_initial(definition, 0.0))
+            .collect();
         Ok(())
     }
 
@@ -765,11 +819,15 @@ impl SynthRuntime {
             .flat_map(|_| {
                 definitions.iter().map(|definition| StagedMotionState {
                     stage: definition.initial_stage,
-                    entered_at: 0.0,
+                    playback: stage_playback(
+                        &definition.stages[definition.initial_stage],
+                        0.0,
+                        false,
+                        1.0,
+                    ),
                     entry_value: definition.stages[definition.initial_stage].initial,
                     completed: false,
                     complete_value: 0.0,
-                    done: false,
                     cursor_at: 0.0,
                     cursor_order: usize::MAX,
                 })
@@ -922,6 +980,7 @@ impl SynthRuntime {
             control_states: self.control_states.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
             lfo_event_states: self.lfo_event_states.clone(),
+            voice_lfo_event_states: self.voice_lfo_event_states.clone(),
             named_envelopes: self.named_envelopes.clone(),
             staged_motions: self.staged_motions.clone(),
             staged_states: self.staged_states.clone(),
@@ -938,8 +997,7 @@ impl SynthRuntime {
             mod_errors: self.mod_errors.clone(),
             previous_modulators: self.previous_modulators.clone(),
             mod_release_levels: self.mod_release_levels.clone(),
-            named_release_frames: self.named_release_frames.clone(),
-            named_release_levels: self.named_release_levels.clone(),
+            named_states: self.named_states.clone(),
             graph_phases: self.graph_phases.clone(),
             graph_errors: self.graph_errors.clone(),
             graph_outputs: self.graph_outputs.clone(),
@@ -1005,10 +1063,7 @@ impl SynthRuntime {
             .clone_from(&snapshot.previous_modulators);
         self.mod_release_levels
             .clone_from(&snapshot.mod_release_levels);
-        self.named_release_frames
-            .clone_from(&snapshot.named_release_frames);
-        self.named_release_levels
-            .clone_from(&snapshot.named_release_levels);
+        self.named_states.clone_from(&snapshot.named_states);
         self.staged_states.clone_from(&snapshot.staged_states);
         self.staged_pending.clone_from(&snapshot.staged_pending);
         self.graph_phases.clone_from(&snapshot.graph_phases);
@@ -1035,6 +1090,8 @@ impl SynthRuntime {
         self.frame = snapshot.frame;
         self.control_states.clone_from(&snapshot.control_states);
         self.lfo_event_states.clone_from(&snapshot.lfo_event_states);
+        self.voice_lfo_event_states
+            .clone_from(&snapshot.voice_lfo_event_states);
         self.context_kinds.clone_from(&snapshot.context_kinds);
         self.context_states.clone_from(&snapshot.context_states);
         self.voice_part_contexts
@@ -1383,7 +1440,7 @@ impl SynthRuntime {
         {
             return Err(PyValueError::new_err("Invalid synth runtime action"));
         }
-        if (kind <= 3 || kind == 5) && voice >= self.frequencies.len() {
+        if (kind <= 3 || kind == 5 || (9..=11).contains(&kind)) && voice >= self.frequencies.len() {
             return Err(PyValueError::new_err("Invalid synth runtime voice"));
         }
         match kind {
@@ -1398,15 +1455,22 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid voice start"));
                 }
                 self.active[voice] = true;
+                let lfo_base = voice * self.lfo_definitions.len();
+                self.voice_lfo_event_states[lfo_base..lfo_base + self.lfo_definitions.len()]
+                    .fill(None);
                 for (source, definition) in self.staged_motions.iter().enumerate() {
                     let index = voice * self.staged_motions.len() + source;
                     self.staged_states[index] = StagedMotionState {
                         stage: definition.initial_stage,
-                        entered_at: self.frame as f64,
+                        playback: stage_playback(
+                            &definition.stages[definition.initial_stage],
+                            self.frame as f64,
+                            false,
+                            1.0,
+                        ),
                         entry_value: definition.stages[definition.initial_stage].initial,
                         completed: false,
                         complete_value: 0.0,
-                        done: false,
                         cursor_at: self.frame as f64,
                         cursor_order: usize::MAX,
                     };
@@ -1450,9 +1514,9 @@ impl SynthRuntime {
                     self.graph_history[voice * edges..(voice + 1) * edges].fill(0.0);
                 }
                 let envelope_base = voice * self.named_envelopes.len();
-                for index in 0..self.named_envelopes.len() {
-                    self.named_release_frames[envelope_base + index] = None;
-                    self.named_release_levels[envelope_base + index] = 0.0;
+                for (index, definition) in self.named_envelopes.iter().enumerate() {
+                    self.named_states[envelope_base + index] =
+                        named_contour_initial(definition, self.frame as f64);
                 }
                 if self.source_kind == 2 {
                     self.noise_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
@@ -1512,18 +1576,13 @@ impl SynthRuntime {
                         if definition.release.is_empty() {
                             continue;
                         }
-                        let named_release_frame = if definition.release_with_voice {
-                            release_frame
+                        let named_release_at = if definition.release_with_voice {
+                            self.frame as f64 + release_frame - self.ages[voice] as f64
                         } else {
-                            self.ages[voice] as f64
+                            self.frame as f64
                         };
-                        self.named_release_levels[envelope_base + index] = envelope_value(
-                            definition.initial,
-                            &definition.attack,
-                            named_release_frame,
-                        );
-                        self.named_release_frames[envelope_base + index] =
-                            Some(named_release_frame);
+                        self.named_states[envelope_base + index].pending_release =
+                            Some(named_release_at);
                     }
                     self.release_frames[voice] = Some(release_frame);
                 }
@@ -1531,7 +1590,9 @@ impl SynthRuntime {
             2 => {
                 self.active[voice] = false;
                 let base = voice * self.named_envelopes.len();
-                self.named_release_frames[base..base + self.named_envelopes.len()].fill(None);
+                for state in &mut self.named_states[base..base + self.named_envelopes.len()] {
+                    state.pending_release = None;
+                }
             }
             3 => {
                 let duration = action[5] as usize;
@@ -1671,6 +1732,106 @@ impl SynthRuntime {
                     },
                 });
             }
+            9 => {
+                let source = action[3] as usize;
+                let command = action[4] as usize;
+                if !self.active[voice]
+                    || action[3] != source as f64
+                    || source >= self.named_envelopes.len()
+                    || action[4] != command as f64
+                    || command > 3
+                    || (command == 3 && !(0.0..=1.0).contains(&action[5]))
+                    || (command != 3 && action[5] != 0.0)
+                {
+                    return Err(PyValueError::new_err("Invalid named Motion action"));
+                }
+                let index = voice * self.named_envelopes.len() + source;
+                let definition = &self.named_envelopes[source];
+                let mut state =
+                    named_contour_settled(definition, &self.named_states[index], self.frame as f64);
+                state
+                    .playback
+                    .command(command, action[5], self.frame as f64);
+                self.named_states[index] = state;
+            }
+            10 => {
+                let source = action[3] as usize;
+                let command = action[4] as usize;
+                if !self.active[voice]
+                    || action[3] != source as f64
+                    || source >= self.staged_motions.len()
+                    || action[4] != command as f64
+                    || command > 3
+                    || (command == 3 && !(0.0..=1.0).contains(&action[5]))
+                    || (command != 3 && action[5] != 0.0)
+                {
+                    return Err(PyValueError::new_err("Invalid staged Motion action"));
+                }
+                let index = voice * self.staged_motions.len() + source;
+                let state = &mut self.staged_states[index];
+                if command == 3 && self.staged_motions[source].stages[state.stage].kind == 0 {
+                    return Err(PyValueError::new_err("Hold stage cannot seek"));
+                }
+                state
+                    .playback
+                    .command(command, action[5], self.frame as f64);
+                state.cursor_at = self.frame as f64;
+                state.cursor_order = usize::MAX;
+            }
+            11 => {
+                let source = action[3] as usize;
+                let command = action[4] as usize;
+                if !self.active[voice]
+                    || action[3] != source as f64
+                    || source >= self.lfo_definitions.len()
+                    || self.lfo_definitions[source].scope != 3
+                    || action[4] != command as f64
+                    || command > 3
+                    || (command == 3 && !(0.0..=1.0).contains(&action[5]))
+                    || (command != 3 && action[5] != 0.0)
+                {
+                    return Err(PyValueError::new_err("Invalid voice Cycle action"));
+                }
+                let definition = &self.lfo_definitions[source];
+                let index = voice * self.lfo_definitions.len() + source;
+                let state = self.voice_lfo_event_states[index]
+                    .clone()
+                    .unwrap_or(LfoEventState {
+                        at: self.frame - self.ages[voice],
+                        age: 0.0,
+                        phase: definition.phase.0 as f64 / definition.phase.1 as f64,
+                        rate: definition.rate.0 as f64 / definition.rate.1 as f64,
+                        direction: 1.0,
+                        paused: false,
+                    });
+                let elapsed = if state.paused {
+                    0.0
+                } else {
+                    (self.frame - state.at) as f64
+                };
+                self.voice_lfo_event_states[index] = Some(LfoEventState {
+                    at: self.frame,
+                    age: state.age + elapsed,
+                    phase: if command == 3 {
+                        action[5]
+                    } else {
+                        state.phase + state.direction * state.rate * elapsed / self.rate
+                    },
+                    rate: state.rate,
+                    direction: if command == 2 {
+                        -state.direction
+                    } else {
+                        state.direction
+                    },
+                    paused: if command == 0 {
+                        true
+                    } else if command == 1 {
+                        false
+                    } else {
+                        state.paused
+                    },
+                });
+            }
             _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
         }
         Ok(())
@@ -1720,8 +1881,16 @@ impl SynthRuntime {
                 let state = &mut self.staged_states[voice * self.staged_motions.len() + source];
                 state.cursor_at = at;
                 state.cursor_order = order;
+                state.playback.advance(at);
+                let stage = &definition.stages[state.stage];
                 if port == "done" {
-                    state.done = true;
+                    state.playback.coordinate = 1.0;
+                } else if stage.kind == 1 {
+                    state.playback.coordinate = stage.markers[order].0;
+                } else if stage.kind == 2 {
+                    let marker = stage.markers[order].0;
+                    state.playback.coordinate =
+                        (state.playback.coordinate - marker).round() + marker;
                 }
                 let finished = staged_transition(definition, state, &format!("stage.{port}"), at);
                 self.staged_pending.push_back(StagedEvent {
@@ -1814,7 +1983,12 @@ impl SynthRuntime {
                 }
                 _ => self.ages[voice],
             };
-            let (value, weight) = if let Some(state) = &self.lfo_event_states[source] {
+            let event_state = if definition.scope == 3 {
+                &self.voice_lfo_event_states[voice * self.lfo_definitions.len() + source]
+            } else {
+                &self.lfo_event_states[source]
+            };
+            let (value, weight) = if let Some(state) = event_state {
                 lfo_event_value(definition, state, self.frame, self.rate)
             } else {
                 lfo_value(definition, elapsed, self.rate as u64)?
@@ -1831,18 +2005,11 @@ impl SynthRuntime {
             if definition.parameter != parameter {
                 continue;
             }
-            let age = self.ages[voice] as f64;
-            let value = if let Some(release_frame) =
-                self.named_release_frames[envelope_base + source].filter(|frame| age >= *frame)
-            {
-                envelope_value(
-                    self.named_release_levels[envelope_base + source],
-                    &definition.release,
-                    age - release_frame,
-                )
-            } else {
-                envelope_value(definition.initial, &definition.attack, age)
-            };
+            let value = named_contour_value(
+                definition,
+                &self.named_states[envelope_base + source],
+                self.frame as f64,
+            );
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;
@@ -2309,6 +2476,75 @@ pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -
     entry
 }
 
+fn named_contour_initial(definition: &NamedEnvelopeDefinition, at: f64) -> NamedContourState {
+    let duration = total_frames(&definition.attack);
+    NamedContourState {
+        playback: PlaybackState {
+            at,
+            coordinate: if duration == 0.0 { 1.0 } else { 0.0 },
+            rate: if duration == 0.0 { 0.0 } else { 1.0 / duration },
+            direction: 1.0,
+            paused: false,
+            age: 0.0,
+        },
+        start_value: definition.initial,
+        released: false,
+        pending_release: None,
+    }
+}
+
+fn named_contour_settled(
+    definition: &NamedEnvelopeDefinition,
+    state: &NamedContourState,
+    at: f64,
+) -> NamedContourState {
+    let mut settled = state.clone();
+    if let Some(release_at) = state.pending_release.filter(|release_at| *release_at <= at) {
+        let duration = total_frames(&definition.attack);
+        let value = envelope_value(
+            state.start_value,
+            &definition.attack,
+            state.playback.coordinate_at(release_at).clamp(0.0, 1.0) * duration,
+        );
+        let release_duration = total_frames(&definition.release);
+        settled.start_value = value;
+        settled.released = true;
+        settled.pending_release = None;
+        settled.playback = PlaybackState {
+            at: release_at,
+            coordinate: if release_duration == 0.0 { 1.0 } else { 0.0 },
+            rate: if release_duration == 0.0 {
+                0.0
+            } else {
+                1.0 / release_duration
+            },
+            direction: state.playback.direction,
+            paused: state.playback.paused,
+            age: 0.0,
+        };
+    }
+    settled
+}
+
+fn named_contour_value(
+    definition: &NamedEnvelopeDefinition,
+    state: &NamedContourState,
+    at: f64,
+) -> f64 {
+    let settled = named_contour_settled(definition, state, at);
+    let segments = if settled.released {
+        &definition.release
+    } else {
+        &definition.attack
+    };
+    let duration = total_frames(segments);
+    envelope_value(
+        settled.start_value,
+        segments,
+        settled.playback.coordinate_at(at).clamp(0.0, 1.0) * duration,
+    )
+}
+
 fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, at: f64) -> f64 {
     if state.completed {
         return state.complete_value;
@@ -2316,17 +2552,24 @@ fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, 
     let stage = &definition.stages[state.stage];
     match stage.kind {
         0 => stage.initial,
-        1 => envelope_value(state.entry_value, &stage.segments, at - state.entered_at),
+        1 => {
+            let duration = total_frames(&stage.segments);
+            envelope_value(
+                state.entry_value,
+                &stage.segments,
+                state.playback.coordinate_at(at).clamp(0.0, 1.0) * duration,
+            )
+        }
         _ => {
             let cycle = &stage.cycle;
-            let elapsed = at - state.entered_at;
-            let phase = (cycle[2] + cycle[1] * elapsed).rem_euclid(1.0);
-            let weight = if elapsed < cycle[4] {
+            let phase = state.playback.coordinate_at(at).rem_euclid(1.0);
+            let age = state.playback.age_at(at);
+            let weight = if age < cycle[4] {
                 0.0
             } else if cycle[5] == 0.0 {
                 1.0
             } else {
-                ((elapsed - cycle[4]) / cycle[5]).clamp(0.0, 1.0)
+                ((age - cycle[4]) / cycle[5]).clamp(0.0, 1.0)
             };
             let shape = match cycle[0] as usize {
                 0 => (TAU * phase).sin(),
@@ -2345,6 +2588,28 @@ fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, 
     }
 }
 
+fn stage_playback(stage: &StageDefinition, at: f64, paused: bool, direction: f64) -> PlaybackState {
+    let (coordinate, rate) = match stage.kind {
+        0 => (0.0, 0.0),
+        1 => (0.0, 1.0 / total_frames(&stage.segments)),
+        _ => (stage.cycle[2], stage.cycle[1]),
+    };
+    PlaybackState {
+        at,
+        coordinate,
+        rate,
+        direction,
+        paused,
+        age: 0.0,
+    }
+}
+
+fn staged_event_time(playback: &PlaybackState, target: f64) -> f64 {
+    let at = playback.at + (target - playback.coordinate).abs() / playback.rate;
+    let frame = at.round();
+    if (at - frame).abs() < 1e-8 { frame } else { at }
+}
+
 fn next_staged_event(
     definition: &StagedMotionDefinition,
     state: &StagedMotionState,
@@ -2355,38 +2620,76 @@ fn next_staged_event(
         return None;
     }
     let stage = &definition.stages[state.stage];
+    let playback = &state.playback;
+    if playback.paused || playback.rate == 0.0 {
+        return None;
+    }
+    let start = playback.coordinate;
+    let forward = playback.direction > 0.0;
     let mut candidates = Vec::new();
     if stage.kind == 1 {
-        let duration = total_frames(&stage.segments);
         for (order, (position, name)) in stage.markers.iter().enumerate() {
-            candidates.push((state.entered_at + duration * position, order, name.clone()));
+            if (if forward {
+                *position > start
+            } else {
+                *position < start
+            }) || (*position == start
+                && state.cursor_order != usize::MAX
+                && if forward {
+                    order > state.cursor_order
+                } else {
+                    order < state.cursor_order
+                })
+            {
+                candidates.push((staged_event_time(playback, *position), order, name.clone()));
+            }
         }
-        if !state.done {
+        if forward
+            && (start < 1.0
+                || (start == 1.0
+                    && state.cursor_order != usize::MAX
+                    && state.cursor_order < stage.markers.len()))
+        {
             candidates.push((
-                state.entered_at + duration,
+                staged_event_time(playback, 1.0),
                 stage.markers.len(),
                 "done".to_owned(),
             ));
         }
-    } else if stage.kind == 2 && stage.cycle[1] > 0.0 {
+    } else if stage.kind == 2 {
         for (order, (position, name)) in stage.markers.iter().enumerate() {
-            let turn = ((state.cursor_at - state.entered_at) * stage.cycle[1] + stage.cycle[2]
-                - position)
-                .floor();
-            for count in [turn, turn + 1.0] {
-                let at = state.entered_at + (count + position - stage.cycle[2]) / stage.cycle[1];
-                candidates.push((at, order, name.clone()));
+            let offset = start - position;
+            let turn = if forward {
+                offset.floor() + 1.0
+            } else {
+                offset.ceil() - 1.0
+            };
+            let target = turn + position;
+            candidates.push((staged_event_time(playback, target), order, name.clone()));
+            if state.cursor_order != usize::MAX
+                && offset.fract() == 0.0
+                && if forward {
+                    order > state.cursor_order
+                } else {
+                    order < state.cursor_order
+                }
+            {
+                candidates.push((playback.at, order, name.clone()));
             }
         }
     }
     candidates
         .into_iter()
-        .filter(|(at, order, _)| {
-            *at > state.entered_at
-                && (*at, *order) > (state.cursor_at, state.cursor_order)
-                && if inclusive { *at <= limit } else { *at < limit }
+        .filter(|(at, _, _)| if inclusive { *at <= limit } else { *at < limit })
+        .min_by(|a, b| {
+            a.0.total_cmp(&b.0).then_with(|| {
+                if forward {
+                    a.1.cmp(&b.1)
+                } else {
+                    b.1.cmp(&a.1)
+                }
+            })
         })
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
 }
 
 fn staged_transition(
@@ -2414,7 +2717,7 @@ fn staged_transition(
         let stage = &definition.stages[*target];
         *state = StagedMotionState {
             stage: *target,
-            entered_at: at,
+            playback: stage_playback(stage, at, state.playback.paused, state.playback.direction),
             entry_value: if stage.current_initial {
                 value
             } else {
@@ -2422,7 +2725,6 @@ fn staged_transition(
             },
             completed: false,
             complete_value: 0.0,
-            done: false,
             cursor_at: at,
             cursor_order: usize::MAX,
         };
