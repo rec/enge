@@ -725,20 +725,49 @@ class ControlRenderer:
                     continue
                 if index not in self.cached_lfos:
                     state = self.lfos[index].state.runtime
-                    assert isinstance(state, lfo.LFOState)
-                    samples = lfo_samples(
-                        cycle_lfo(motion),
-                        state,
-                        start,
-                        frames,
-                        self.sample_rate,
-                        self.backend,
-                        self.control_interval,
-                    )
                     assert isinstance(motion.body, Cycle)
-                    samples[:, 0] = (
-                        motion.body.center + motion.body.depth * samples[:, 0]
-                    )
+                    if isinstance(state, lfo.LFOState):
+                        samples = lfo_samples(
+                            cycle_lfo(motion),
+                            state,
+                            start,
+                            frames,
+                            self.sample_rate,
+                            self.backend,
+                            self.control_interval,
+                        )
+                        samples[:, 0] = (
+                            motion.body.center + motion.body.depth * samples[:, 0]
+                        )
+                    else:
+                        position = state.position
+                        if not position.paused and position.direction == 1:
+                            samples = lfo_samples(
+                                cycle_lfo(motion),
+                                lfo.LFOState(
+                                    at=position.at,
+                                    started_at=position.at - position.age,
+                                    phase=position.coordinate % 1,
+                                    rate=position.rate,
+                                ),
+                                start,
+                                frames,
+                                self.sample_rate,
+                                self.backend,
+                                self.control_interval,
+                            )
+                            samples[:, 0] = (
+                                motion.body.center + motion.body.depth * samples[:, 0]
+                            )
+                        else:
+                            samples = np.empty((frames, 2))
+                            for i in range(frames):
+                                value = motion_at(
+                                    motion,
+                                    self.lfos[index].state,
+                                    Fraction(start + i, self.sample_rate),
+                                )
+                                samples[i] = value.value, value.weight
                     self.cached_lfos[index] = samples
                 signals[binding.name] = self.cached_lfos[index]
                 continue
