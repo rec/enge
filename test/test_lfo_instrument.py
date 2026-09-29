@@ -1,3 +1,4 @@
+from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
 from typing import Literal
@@ -9,6 +10,8 @@ from test_sample_instrument import sample_score
 from test_synth import check_audio, score
 from ufor import synth_trace
 from ufor.events import Release
+from ufor.library import Entry, Library
+from ufor.motion import Cycle, MotionParameter, MotionScore, ParameterReference
 from ufor.samples import instrument, processing, trace
 from ufor.synth import SynthInstrumentScore
 
@@ -80,6 +83,74 @@ def lfo_score(
         return SynthInstrumentScore.model_validate(raw)
     voice["mapping"].update(pitch_tracking=False, reference_pitch_hz=None)
     return instrument.SampleInstrumentScore.model_validate(raw)
+
+
+def test_library_motion_materializes_before_synth_preparation(tmp_path: Path) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    raw["body"]["voices"][0]["motions"]["motion"] = {
+        "scope": "voice",
+        "score": {"selector": "motions:vibrato"},
+        "parameters": {"speed": 6},
+    }
+    authored = SynthInstrumentScore.model_validate(raw)
+    with pytest.raises(synth.EngineError, match="materialized before rendering"):
+        synth.prepare(authored)
+    library = Library(
+        [
+            Entry(
+                library="motions",
+                address="/vibrato.toml",
+                name="vibrato",
+                sha256="c" * 64,
+                score=MotionScore(
+                    name="vibrato",
+                    title="Vibrato",
+                    parameters={
+                        "speed": MotionParameter(
+                            unit="hz", default=5, minimum=0.1, maximum=20
+                        )
+                    },
+                    body=Cycle(
+                        rate=ParameterReference(parameter="speed"),
+                        phase=Fraction(1, 4),
+                        delay=Fraction(1, 8),
+                        fade_in=Fraction(1, 8),
+                    ),
+                ),
+            ),
+            Entry(
+                library="motions", address="/patch.toml", name="patch", score=authored
+            ),
+        ]
+    )
+    materialized = library.materialize("motions:patch")
+    assert isinstance(materialized, SynthInstrumentScore)
+    inline = lfo_score("synth").model_dump(mode="json")
+    inline["body"]["voices"][0]["motions"]["motion"]["body"]["rate"] = "6"
+    expected = SynthInstrumentScore.model_validate(inline)
+    events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
+    actions = synth_trace.prepare(
+        materialized.body,
+        events,
+        seed=0,
+    ).actions
+    expected_actions = synth_trace.prepare(
+        expected.body,
+        events,
+        seed=0,
+    ).actions
+    renderer = synth.OfflineSynth(synth.prepare(materialized))
+    actual_audio = renderer.advance(actions, 0, 48000)
+    expected_audio = synth.OfflineSynth(synth.prepare(expected)).advance(
+        expected_actions, 0, 48000
+    )
+    check_audio(tmp_path / "library-vibrato.wav", actual_audio, expected_audio)
+    origin = (
+        renderer.snapshot().definition.instrument.voices[0].motions["motion"].origin
+    )
+    assert origin is not None
+    assert origin.identity == "motions:/vibrato.toml"
+    assert origin.sha256 == "c" * 64
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])

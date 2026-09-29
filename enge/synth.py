@@ -1403,6 +1403,8 @@ def validate_envelope(envelope: Envelope) -> None:
 
 def validate_generators(settings: SoundSettings) -> None:
     """Supported named sources share the seconds-clock LFO contract."""
+    if any(g.score is not None for g in settings.motions.values()):
+        raise EngineError("Library Motion uses must be materialized before rendering")
     if any(
         g.clock != "seconds" or g.scope != "voice"
         for g in settings.motions.values()
