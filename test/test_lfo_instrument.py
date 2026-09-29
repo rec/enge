@@ -531,8 +531,10 @@ def test_staged_sampler_motion_releases_and_restores(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
+@pytest.mark.parametrize("cascade", [False, True])
+@pytest.mark.parametrize("position", ["1/4", "24001/96000"])
 def test_staged_marker_cues_another_motion_at_exact_time(
-    tmp_path: Path, backend: Literal["numpy", "native"]
+    tmp_path: Path, backend: Literal["numpy", "native"], cascade: bool, position: str
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -547,7 +549,7 @@ def test_staged_marker_cues_another_motion_at_exact_time(
                         "motion": {
                             "kind": "cycle",
                             "rate": "1",
-                            "markers": [{"name": "peak", "position": "24001/96000"}],
+                            "markers": [{"name": "peak", "position": position}],
                         },
                     }
                 ],
@@ -588,6 +590,38 @@ def test_staged_marker_cues_another_motion_at_exact_time(
             "cue": "brighten",
         }
     ]
+    if cascade:
+        voice["motions"]["relay"] = {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "waiting",
+                "stages": [
+                    {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}}
+                ],
+                "transitions": [
+                    {
+                        "from": ["waiting"],
+                        "event": "cue.fire",
+                        "action": {"kind": "finish"},
+                    }
+                ],
+            }
+        }
+        voice["bindings"].append(
+            {"name": "relay", "kind": "motion", "reference": "relay"}
+        )
+        voice["modulation"]["sources"].append(
+            {"name": "relay", "scope": "voice", "minimum": -1, "maximum": 1}
+        )
+        voice["event_connections"] = [
+            {"source": "clock", "port": "peak", "destination": "relay", "cue": "fire"},
+            {
+                "source": "relay",
+                "port": "done",
+                "destination": "level",
+                "cue": "brighten",
+            },
+        ]
     document = SynthInstrumentScore.model_validate(raw)
     clock = document.body.voices[0].motions["clock"]
     probe = advance_motion(
@@ -611,17 +645,29 @@ def test_staged_marker_cues_another_motion_at_exact_time(
     restored = synth.OfflineSynth(prepared, backend)
     restored.restore(snapshot)
     replay = restored.advance([], 16000, 48000)
+    case = f"{cascade}-{position.replace('/', '-')}"
     check_audio(
-        tmp_path / f"staged-connection-{backend}.wav",
+        tmp_path / f"staged-connection-{backend}-{case}.wav",
         np.concatenate((first, second)),
         expected,
     )
     np.testing.assert_allclose(replay, second, atol=0)
-    assert expected[12000, 0] == pytest.approx(0.625)
+    assert expected[12000, 0] == pytest.approx(1 if position == "1/4" else 0.625)
     assert expected[12001, 0] == pytest.approx(1)
     if backend == "native":
-        with pytest.raises(synth.EngineError, match="Motion event connections"):
-            synth.PersistentSynth(prepared, voices=4)
+        persistent = synth.PersistentSynth(prepared, voices=4)
+        native_first = persistent.advance(actions, 0, 16000)
+        native_snapshot = persistent.snapshot()
+        native_second = persistent.advance([], 16000, 48000)
+        native_restored = synth.PersistentSynth(prepared, voices=4)
+        native_restored.restore(native_snapshot)
+        native_replay = native_restored.advance([], 16000, 48000)
+        check_audio(
+            tmp_path / f"persistent-staged-connection-{case}.wav",
+            np.concatenate((native_first, native_second)),
+            expected,
+        )
+        np.testing.assert_allclose(native_replay, native_second, atol=0)
 
 
 @pytest.mark.parametrize("kind", ["synth", "sampler"])

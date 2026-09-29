@@ -201,15 +201,25 @@ class SynthRuntime:
         self,
         definitions: list[
             tuple[
-                list[tuple[int, float, bool, list[tuple[float, float]], list[float]]],
-                list[tuple[int, int, int]],
+                list[
+                    tuple[
+                        int,
+                        float,
+                        bool,
+                        list[tuple[float, float]],
+                        list[float],
+                        list[tuple[float, str]],
+                    ]
+                ],
+                list[tuple[int, str, int]],
                 int,
-                int,
+                int | None,
                 int,
                 float,
                 float,
             ]
         ],
+        connections: list[tuple[int, str, int, str]],
     ) -> None: ...
     def active_slots(self) -> list[bool]: ...
     def active_contexts(self) -> list[bool]: ...

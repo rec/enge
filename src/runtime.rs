@@ -4,6 +4,7 @@ use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::collections::VecDeque;
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, PartialEq)]
@@ -74,14 +75,15 @@ struct StageDefinition {
     current_initial: bool,
     segments: Vec<Segment>,
     cycle: Vec<f64>,
+    markers: Vec<(f64, String)>,
 }
 
 #[derive(Clone, PartialEq)]
 struct StagedMotionDefinition {
     stages: Vec<StageDefinition>,
-    transitions: Vec<(usize, usize, usize)>,
+    transitions: Vec<(usize, String, usize)>,
     initial_stage: usize,
-    parameter: usize,
+    parameter: Option<usize>,
     operation: usize,
     intercept: f64,
     slope: f64,
@@ -95,14 +97,32 @@ struct StagedMotionState {
     completed: bool,
     complete_value: f64,
     done: bool,
+    cursor_at: f64,
+    cursor_order: usize,
 }
 
-type StageInput = (u8, f64, bool, Vec<(f64, f64)>, Vec<f64>);
+#[derive(Clone, PartialEq)]
+struct StagedConnection {
+    source: usize,
+    port: String,
+    destination: usize,
+    cue: String,
+}
+
+#[derive(Clone)]
+struct StagedEvent {
+    at: f64,
+    voice: usize,
+    source: usize,
+    port: String,
+}
+
+type StageInput = (u8, f64, bool, Vec<(f64, f64)>, Vec<f64>, Vec<(f64, String)>);
 type StagedMotionInput = (
     Vec<StageInput>,
-    Vec<(usize, usize, usize)>,
+    Vec<(usize, String, usize)>,
     usize,
-    usize,
+    Option<usize>,
     usize,
     f64,
     f64,
@@ -166,6 +186,8 @@ pub struct SynthRuntimeSnapshot {
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_states: Vec<StagedMotionState>,
+    staged_connections: Vec<StagedConnection>,
+    staged_pending: VecDeque<StagedEvent>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -230,6 +252,8 @@ pub struct SynthRuntime {
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_states: Vec<StagedMotionState>,
+    staged_connections: Vec<StagedConnection>,
+    staged_pending: VecDeque<StagedEvent>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -361,6 +385,8 @@ impl SynthRuntime {
             named_envelopes: Vec::new(),
             staged_motions: Vec::new(),
             staged_states: Vec::new(),
+            staged_connections: Vec::new(),
+            staged_pending: VecDeque::new(),
             filter_definitions,
             context_kinds: vec![0; context_capacity],
             context_states,
@@ -635,61 +661,75 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn set_staged_motions(&mut self, inputs: Vec<StagedMotionInput>) -> PyResult<()> {
+    fn set_staged_motions(
+        &mut self,
+        inputs: Vec<StagedMotionInput>,
+        connections: Vec<(usize, String, usize, String)>,
+    ) -> PyResult<()> {
         let mut definitions = Vec::with_capacity(inputs.len());
         for (stages, transitions, initial_stage, parameter, operation, intercept, slope) in inputs {
             if stages.is_empty()
                 || initial_stage >= stages.len()
-                || parameter >= self.parameter_definitions.len() / 3
+                || parameter.is_some_and(|p| p >= self.parameter_definitions.len() / 3)
                 || operation > 1
                 || !intercept.is_finite()
                 || !slope.is_finite()
                 || transitions.iter().any(|(source, event, target)| {
-                    *source >= stages.len() || *event > 2 || *target > stages.len()
+                    *source >= stages.len() || event.is_empty() || *target > stages.len()
                 })
             {
                 return Err(PyValueError::new_err("Invalid staged Motion definition"));
             }
             let stages: Vec<StageDefinition> = stages
                 .into_iter()
-                .map(|(kind, initial, current_initial, segments, cycle)| {
-                    if kind > 2
-                        || !initial.is_finite()
-                        || (kind != 1 && current_initial)
-                        || segments.iter().any(|(frames, target)| {
-                            !frames.is_finite() || *frames < 0.0 || !target.is_finite()
+                .map(
+                    |(kind, initial, current_initial, segments, cycle, markers)| {
+                        if kind > 2
+                            || !initial.is_finite()
+                            || (kind != 1 && current_initial)
+                            || segments.iter().any(|(frames, target)| {
+                                !frames.is_finite() || *frames < 0.0 || !target.is_finite()
+                            })
+                            || (kind == 1
+                                && segments.iter().map(|(frames, _)| frames).sum::<f64>() <= 0.0)
+                            || (kind != 1 && !segments.is_empty())
+                            || (kind == 2
+                                && (cycle.len() != 8
+                                    || cycle.iter().any(|value| !value.is_finite())
+                                    || !(0.0..=2.0).contains(&cycle[0])
+                                    || cycle[0].fract() != 0.0
+                                    || cycle[1] < 0.0
+                                    || !(0.0..1.0).contains(&cycle[2])
+                                    || !(0.0..=1.0).contains(&cycle[3])
+                                    || cycle[4] < 0.0
+                                    || cycle[5] < 0.0
+                                    || cycle[7] < 0.0
+                                    || cycle[6] - cycle[7] < -1.0
+                                    || cycle[6] + cycle[7] > 1.0))
+                            || (kind != 2 && !cycle.is_empty())
+                            || (kind == 0 && !markers.is_empty())
+                            || markers.iter().any(|(position, name)| {
+                                !position.is_finite()
+                                    || !(0.0..=1.0).contains(position)
+                                    || (kind == 2 && *position == 1.0)
+                                    || name.is_empty()
+                            })
+                        {
+                            return Err(PyValueError::new_err("Invalid staged Motion stage"));
+                        }
+                        Ok(StageDefinition {
+                            kind,
+                            initial,
+                            current_initial,
+                            segments: segments
+                                .into_iter()
+                                .map(|(frames, target)| Segment { frames, target })
+                                .collect(),
+                            cycle,
+                            markers,
                         })
-                        || (kind == 1
-                            && segments.iter().map(|(frames, _)| frames).sum::<f64>() <= 0.0)
-                        || (kind != 1 && !segments.is_empty())
-                        || (kind == 2
-                            && (cycle.len() != 8
-                                || cycle.iter().any(|value| !value.is_finite())
-                                || !(0.0..=2.0).contains(&cycle[0])
-                                || cycle[0].fract() != 0.0
-                                || cycle[1] < 0.0
-                                || !(0.0..1.0).contains(&cycle[2])
-                                || !(0.0..=1.0).contains(&cycle[3])
-                                || cycle[4] < 0.0
-                                || cycle[5] < 0.0
-                                || cycle[7] < 0.0
-                                || cycle[6] - cycle[7] < -1.0
-                                || cycle[6] + cycle[7] > 1.0))
-                        || (kind != 2 && !cycle.is_empty())
-                    {
-                        return Err(PyValueError::new_err("Invalid staged Motion stage"));
-                    }
-                    Ok(StageDefinition {
-                        kind,
-                        initial,
-                        current_initial,
-                        segments: segments
-                            .into_iter()
-                            .map(|(frames, target)| Segment { frames, target })
-                            .collect(),
-                        cycle,
-                    })
-                })
+                    },
+                )
                 .collect::<PyResult<_>>()?;
             if stages[initial_stage].current_initial {
                 return Err(PyValueError::new_err(
@@ -706,6 +746,14 @@ impl SynthRuntime {
                 slope,
             });
         }
+        if connections.iter().any(|(source, port, destination, cue)| {
+            *source >= definitions.len()
+                || *destination >= definitions.len()
+                || port.is_empty()
+                || cue.is_empty()
+        }) {
+            return Err(PyValueError::new_err("Invalid staged Motion connection"));
+        }
         self.staged_states = (0..self.frequencies.len())
             .flat_map(|_| {
                 definitions.iter().map(|definition| StagedMotionState {
@@ -715,10 +763,22 @@ impl SynthRuntime {
                     completed: false,
                     complete_value: 0.0,
                     done: false,
+                    cursor_at: 0.0,
+                    cursor_order: usize::MAX,
                 })
             })
             .collect();
         self.staged_motions = definitions;
+        self.staged_connections = connections
+            .into_iter()
+            .map(|(source, port, destination, cue)| StagedConnection {
+                source,
+                port,
+                destination,
+                cue,
+            })
+            .collect();
+        self.staged_pending.clear();
         Ok(())
     }
 
@@ -858,6 +918,8 @@ impl SynthRuntime {
             named_envelopes: self.named_envelopes.clone(),
             staged_motions: self.staged_motions.clone(),
             staged_states: self.staged_states.clone(),
+            staged_connections: self.staged_connections.clone(),
+            staged_pending: self.staged_pending.clone(),
             filter_definitions: self.filter_definitions.clone(),
             context_kinds: self.context_kinds.clone(),
             context_states: self.context_states.clone(),
@@ -918,6 +980,7 @@ impl SynthRuntime {
             || self.lfo_definitions != snapshot.lfo_definitions
             || self.named_envelopes != snapshot.named_envelopes
             || self.staged_motions != snapshot.staged_motions
+            || self.staged_connections != snapshot.staged_connections
             || self.filter_definitions != snapshot.filter_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
             || self.context_kinds.len() != snapshot.context_kinds.len()
@@ -940,6 +1003,7 @@ impl SynthRuntime {
         self.named_release_levels
             .clone_from(&snapshot.named_release_levels);
         self.staged_states.clone_from(&snapshot.staged_states);
+        self.staged_pending.clone_from(&snapshot.staged_pending);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
@@ -1044,12 +1108,14 @@ impl SynthRuntime {
         output.fill(0.0);
         let mut action = 0;
         for frame in 0..frames {
+            self.advance_staged(false)?;
             while action < actions.len() && actions[action] as usize == frame {
-                self.advance_staged(false)?;
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
+            self.dispatch_staged_events()?;
             self.advance_staged(true)?;
+            self.dispatch_staged_events()?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
@@ -1334,13 +1400,22 @@ impl SynthRuntime {
                         completed: false,
                         complete_value: 0.0,
                         done: false,
+                        cursor_at: self.frame as f64,
+                        cursor_order: usize::MAX,
                     };
-                    staged_transition(
+                    if staged_transition(
                         definition,
                         &mut self.staged_states[index],
-                        0,
+                        "note_on",
                         self.frame as f64,
-                    );
+                    ) {
+                        self.staged_pending.push_back(StagedEvent {
+                            at: self.frame as f64,
+                            voice,
+                            source,
+                            port: "done".to_owned(),
+                        });
+                    }
                 }
                 self.phases[voice] = action[5].rem_euclid(self.rate);
                 self.errors[voice] = 0.0;
@@ -1396,12 +1471,19 @@ impl SynthRuntime {
                 if self.active[voice] && self.release_frames[voice].is_none() {
                     for (source, definition) in self.staged_motions.iter().enumerate() {
                         let index = voice * self.staged_motions.len() + source;
-                        staged_transition(
+                        if staged_transition(
                             definition,
                             &mut self.staged_states[index],
-                            1,
+                            "note_off",
                             self.frame as f64,
-                        );
+                        ) {
+                            self.staged_pending.push_back(StagedEvent {
+                                at: self.frame as f64,
+                                voice,
+                                source,
+                                port: "done".to_owned(),
+                            });
+                        }
                     }
                     let release_frame = (self.ages[voice] as f64).max(self.minimum_hold_frames);
                     self.release_levels[voice] =
@@ -1554,32 +1636,107 @@ impl SynthRuntime {
     }
 
     fn advance_staged(&mut self, inclusive: bool) -> PyResult<()> {
-        let at = self.frame as f64;
-        for voice in 0..self.frequencies.len() {
-            if !self.active[voice] {
+        let mut count = 0;
+        let mut batch_at = None;
+        loop {
+            let mut next: Option<f64> = None;
+            let mut events = Vec::new();
+            for voice in 0..self.frequencies.len() {
+                if !self.active[voice] {
+                    continue;
+                }
+                for (source, definition) in self.staged_motions.iter().enumerate() {
+                    let state = &self.staged_states[voice * self.staged_motions.len() + source];
+                    if let Some((at, order, port)) =
+                        next_staged_event(definition, state, self.frame as f64, inclusive)
+                    {
+                        if next.is_none_or(|current| at < current) {
+                            next = Some(at);
+                            events.clear();
+                        }
+                        if next == Some(at) {
+                            events.push((voice, source, order, port));
+                        }
+                    }
+                }
+            }
+            if batch_at.is_some() && batch_at != next {
+                self.dispatch_staged_events()?;
+                batch_at = None;
                 continue;
             }
-            for (source, definition) in self.staged_motions.iter().enumerate() {
-                let state = &mut self.staged_states[voice * self.staged_motions.len() + source];
-                let mut count = 0;
-                while !state.completed && !state.done {
-                    let stage = &definition.stages[state.stage];
-                    if stage.kind != 1 {
-                        break;
-                    }
-                    let end = state.entered_at + total_frames(&stage.segments);
-                    if end > at || (!inclusive && end == at) {
-                        break;
-                    }
-                    if count == 4096 {
-                        return Err(PyValueError::new_err(
-                            "Staged Motion event capacity exceeded",
-                        ));
-                    }
-                    state.done = true;
-                    staged_transition(definition, state, 2, end);
-                    count += 1;
+            let Some(at) = next else {
+                break;
+            };
+            batch_at = Some(at);
+            for (voice, source, order, port) in events {
+                if count == 4096 {
+                    return Err(PyValueError::new_err(
+                        "Staged Motion event capacity exceeded",
+                    ));
                 }
+                let definition = &self.staged_motions[source];
+                let state = &mut self.staged_states[voice * self.staged_motions.len() + source];
+                state.cursor_at = at;
+                state.cursor_order = order;
+                if port == "done" {
+                    state.done = true;
+                }
+                let finished = staged_transition(definition, state, &format!("stage.{port}"), at);
+                self.staged_pending.push_back(StagedEvent {
+                    at,
+                    voice,
+                    source,
+                    port: if port == "done" {
+                        "stage.done".to_owned()
+                    } else {
+                        port
+                    },
+                });
+                if finished {
+                    self.staged_pending.push_back(StagedEvent {
+                        at,
+                        voice,
+                        source,
+                        port: "done".to_owned(),
+                    });
+                }
+                count += 1;
+            }
+        }
+        self.dispatch_staged_events()?;
+        Ok(())
+    }
+
+    fn dispatch_staged_events(&mut self) -> PyResult<()> {
+        let mut count = 0;
+        while let Some(event) = self.staged_pending.pop_front() {
+            for connection in &self.staged_connections {
+                if connection.source != event.source || connection.port != event.port {
+                    continue;
+                }
+                if count == 4096 {
+                    return Err(PyValueError::new_err(
+                        "Staged Motion event capacity exceeded",
+                    ));
+                }
+                let definition = &self.staged_motions[connection.destination];
+                let state = &mut self.staged_states
+                    [event.voice * self.staged_motions.len() + connection.destination];
+                if staged_transition(
+                    definition,
+                    state,
+                    &format!("cue.{}", connection.cue),
+                    event.at,
+                ) {
+                    self.staged_pending.push_back(StagedEvent {
+                        at: event.at,
+                        voice: event.voice,
+                        source: connection.destination,
+                        port: "done".to_owned(),
+                    });
+                }
+                count += 1;
             }
         }
         Ok(())
@@ -1652,7 +1809,7 @@ impl SynthRuntime {
             }
         }
         for (source, definition) in self.staged_motions.iter().enumerate() {
-            if definition.parameter != parameter {
+            if definition.parameter != Some(parameter) {
                 continue;
             }
             let state = &self.staged_states[voice * self.staged_motions.len() + source];
@@ -2141,26 +2298,71 @@ fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, 
     }
 }
 
+fn next_staged_event(
+    definition: &StagedMotionDefinition,
+    state: &StagedMotionState,
+    limit: f64,
+    inclusive: bool,
+) -> Option<(f64, usize, String)> {
+    if state.completed {
+        return None;
+    }
+    let stage = &definition.stages[state.stage];
+    let mut candidates = Vec::new();
+    if stage.kind == 1 {
+        let duration = total_frames(&stage.segments);
+        for (order, (position, name)) in stage.markers.iter().enumerate() {
+            candidates.push((state.entered_at + duration * position, order, name.clone()));
+        }
+        if !state.done {
+            candidates.push((
+                state.entered_at + duration,
+                stage.markers.len(),
+                "done".to_owned(),
+            ));
+        }
+    } else if stage.kind == 2 && stage.cycle[1] > 0.0 {
+        for (order, (position, name)) in stage.markers.iter().enumerate() {
+            let turn = ((state.cursor_at - state.entered_at) * stage.cycle[1] + stage.cycle[2]
+                - position)
+                .floor();
+            for count in [turn, turn + 1.0] {
+                let at = state.entered_at + (count + position - stage.cycle[2]) / stage.cycle[1];
+                candidates.push((at, order, name.clone()));
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|(at, order, _)| {
+            *at > state.entered_at
+                && (*at, *order) > (state.cursor_at, state.cursor_order)
+                && if inclusive { *at <= limit } else { *at < limit }
+        })
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+}
+
 fn staged_transition(
     definition: &StagedMotionDefinition,
     state: &mut StagedMotionState,
-    event: usize,
+    event: &str,
     at: f64,
-) {
+) -> bool {
     if state.completed {
-        return;
+        return false;
     }
     let Some((_, _, target)) = definition
         .transitions
         .iter()
         .find(|(source, kind, _)| *source == state.stage && *kind == event)
     else {
-        return;
+        return false;
     };
     let value = staged_value(definition, state, at);
     if *target == definition.stages.len() {
         state.completed = true;
         state.complete_value = value;
+        true
     } else {
         let stage = &definition.stages[*target];
         *state = StagedMotionState {
@@ -2174,7 +2376,10 @@ fn staged_transition(
             completed: false,
             complete_value: 0.0,
             done: false,
+            cursor_at: at,
+            cursor_order: usize::MAX,
         };
+        false
     }
 }
 
