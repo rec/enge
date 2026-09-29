@@ -8,10 +8,10 @@ mod lfo;
 mod live;
 mod noise;
 mod queue;
-mod runtime;
-mod sampler;
 #[cfg(feature = "rubberband")]
 mod rubberband;
+mod runtime;
+mod sampler;
 
 use numpy::ndarray::Array2;
 use numpy::{
@@ -22,7 +22,7 @@ use pyo3::prelude::*;
 use std::f64::consts::TAU;
 
 #[cfg(feature = "rubberband")]
-use rubberband::rubberband_stretch;
+use rubberband::{RubberBandLiveShifter, rubberband_stretch};
 
 type RenderedBlock<'py> = (
     Bound<'py, PyArray2<f64>>,
@@ -182,5 +182,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
     #[cfg(feature = "rubberband")]
     module.add_function(wrap_pyfunction!(rubberband_stretch, module)?)?;
+    #[cfg(feature = "rubberband")]
+    module.add_class::<RubberBandLiveShifter>()?;
     Ok(())
 }
