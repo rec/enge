@@ -93,6 +93,7 @@ class LFOSource(Model, frozen=True):
     setting: int
     name: str
     part: str | None
+    trigger_id: str | None
     voice_id: str | None
     state: MotionState
 
@@ -100,6 +101,9 @@ class LFOSource(Model, frozen=True):
 class EnvelopeSource(Model, frozen=True):
     setting: int
     name: str
+    binding_name: str
+    part: str
+    trigger_id: str | None
     voice_id: str
     state: MotionState
     pending_release: Fraction | None = None
@@ -486,6 +490,49 @@ class ControlRenderer:
                         )
                     }
                 )
+        elif isinstance(action, instrument_trace.MotionObservation):
+            event = MotionEvent(
+                at=Fraction(action.tick, self.sample_rate),
+                ordinal=action.ordinal,
+                action=action.action,
+                position=(
+                    None if action.position is None else Fraction(str(action.position))
+                ),
+            )
+            for index, source in enumerate(self.lfos):
+                if (
+                    source.name == action.name
+                    and source.voice_id is not None
+                    and (source.part, source.trigger_id)
+                    == (action.part, action.trigger_id)
+                ):
+                    definition = self.settings[source.setting].motions[source.name]
+                    self.lfos[index] = source.model_copy(
+                        update={"state": motion_event(definition, source.state, event)}
+                    )
+            for index, source in enumerate(self.envelopes):
+                if source.name != action.name or (source.part, source.trigger_id) != (
+                    action.part,
+                    action.trigger_id,
+                ):
+                    continue
+                settings = self.settings[source.setting]
+                definition = settings.motions[source.name]
+                if isinstance(definition.body, Stages):
+                    result = advance_motion(definition, source.state, event.at, event)
+                    state = result.state
+                    emitted = [(source.binding_name, e) for e in result.events]
+                else:
+                    state = motion_event(definition, source.state, event)
+                    emitted = []
+                self.envelopes[index] = source.model_copy(update={"state": state})
+                if emitted:
+                    sources = {
+                        s.binding_name: i
+                        for i, s in enumerate(self.envelopes)
+                        if s.setting == source.setting and s.voice_id == source.voice_id
+                    }
+                    self._dispatch_staged_events(settings, sources, emitted)
         elif isinstance(action, instrument_trace.TriggerContext):
             if action.controls.keys() != self.declarations.keys():
                 raise EngineError("Trigger context must contain all declared controls")
@@ -579,13 +626,16 @@ class ControlRenderer:
                         EnvelopeSource(
                             setting=setting,
                             name=binding.reference,
+                            binding_name=binding.name,
+                            part=action.part,
+                            trigger_id=action.trigger_id,
                             voice_id=action.voice_id,
                             state=initial,
                         )
                     )
                     result[source.name] = index
                     continue
-                part = action.part if motion.scope == "part" else None
+                part = action.part if motion.scope in ("part", "voice") else None
                 voice_id = action.voice_id if motion.scope == "voice" else None
                 index = next(
                     (
@@ -603,6 +653,9 @@ class ControlRenderer:
                             setting=setting,
                             name=binding.reference,
                             part=part,
+                            trigger_id=action.trigger_id
+                            if voice_id is not None
+                            else None,
                             voice_id=voice_id,
                             state=initial_motion(
                                 motion,
