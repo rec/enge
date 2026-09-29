@@ -494,6 +494,11 @@ class ControlRenderer:
                                     if action.position is None
                                     else Fraction(str(action.position))
                                 ),
+                                offset=(
+                                    None
+                                    if action.offset is None
+                                    else Fraction(str(action.offset))
+                                ),
                             ),
                         )
                     }
@@ -505,6 +510,9 @@ class ControlRenderer:
                 action=action.action,
                 position=(
                     None if action.position is None else Fraction(str(action.position))
+                ),
+                offset=(
+                    None if action.offset is None else Fraction(str(action.offset))
                 ),
             )
             for index, source in enumerate(self.lfos):
@@ -1362,17 +1370,22 @@ class PersistentSynth:
                             "resume",
                             "reverse",
                             "seek",
+                            "shift",
                         ).index(action.action),
                         action.rate
                         if action.rate is not None
                         else action.position
                         if action.position is not None
+                        else action.offset
+                        if action.offset is not None
                         else 0,
                         0,
                     )
                     count += 1
             elif isinstance(action, instrument_trace.MotionObservation):
-                command = ("pause", "resume", "reverse", "seek").index(action.action)
+                command = ("pause", "resume", "reverse", "seek", "shift").index(
+                    action.action
+                )
                 for voice_id, slot in self.voices.items():
                     if self.voice_triggers[voice_id] != VoiceAddress(
                         part=action.part, trigger_id=action.trigger_id
@@ -1391,7 +1404,11 @@ class PersistentSynth:
                                 slot,
                                 source,
                                 command,
-                                0 if action.position is None else action.position,
+                                action.position
+                                if action.position is not None
+                                else action.offset
+                                if action.offset is not None
+                                else 0,
                             )
                             count += 1
             elif isinstance(action, VoiceStart):

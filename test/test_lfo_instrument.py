@@ -149,6 +149,15 @@ def test_trigger_addressed_motion_changes_only_matching_voice(
             trigger_id="note",
             action="resume",
         ),
+        MotionChange(
+            tick=40000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="shift",
+            offset=-0.5,
+        ),
     ]
     definition = (
         synth.prepare(document)
