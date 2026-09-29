@@ -418,6 +418,87 @@ def test_staged_motion_renders_and_restores_at_attack_boundary(
             synth.PersistentSynth(prepared, voices=4)
 
 
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_staged_sampler_motion_releases_and_restores(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("sampler").model_dump(mode="json")
+    slot = raw["body"]["slots"][0]
+    slot["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
+    slot["motions"]["motion"]["body"] = {
+        "kind": "stages",
+        "initial_stage": "waiting",
+        "stages": [
+            {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}},
+            {
+                "name": "attack",
+                "motion": {
+                    "kind": "contour",
+                    "initial": "current",
+                    "segments": [{"duration": "1/4 s", "to": 1.0}],
+                },
+            },
+            {
+                "name": "release",
+                "motion": {
+                    "kind": "contour",
+                    "initial": "current",
+                    "segments": [{"duration": "1/4 s", "to": 0.0}],
+                },
+            },
+        ],
+        "transitions": [
+            {
+                "from": ["waiting"],
+                "event": "note_on",
+                "action": {"kind": "enter", "stage": "attack"},
+            },
+            {
+                "from": ["attack"],
+                "event": "note_off",
+                "action": {"kind": "enter", "stage": "release"},
+            },
+            {
+                "from": ["release"],
+                "event": "stage.done",
+                "action": {"kind": "finish"},
+            },
+        ],
+    }
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    prepared = sample_instrument.prepare(document, {"asset": np.ones((96000, 2))})
+    actions = trace.prepare(
+        document.body,
+        [
+            onset(0, pitch=440).model_copy(update={"controls": {}}),
+            Release(tick=24000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    expected = sample_instrument.OfflineSampler(prepared, backend).advance(
+        actions, 0, 48000
+    )
+    renderer = sample_instrument.OfflineSampler(prepared, backend)
+    first = renderer.advance([a for a in actions if a.tick < 30000], 0, 30000)
+    snapshot = renderer.snapshot()
+    second = renderer.advance([], 30000, 48000)
+    restored = sample_instrument.OfflineSampler(prepared, backend)
+    restored.restore(
+        sample_instrument.SamplerSnapshot.model_validate_json(
+            snapshot.model_dump_json()
+        )
+    )
+    replay = restored.advance([], 30000, 48000)
+    check_audio(
+        tmp_path / f"staged-sampler-{backend}.wav",
+        np.concatenate((first, second)),
+        expected,
+    )
+    np.testing.assert_allclose(replay, second, atol=0)
+    assert snapshot.envelopes[0].state.runtime.stage == "release"
+    assert expected[24000, 0] > expected[36000, 0]
+
+
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
 @pytest.mark.parametrize("scope", ["voice", "part", "instrument"])
 def test_lfo_scopes_silent_time_release_tails_and_restores(

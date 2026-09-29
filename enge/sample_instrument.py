@@ -40,6 +40,7 @@ class SamplerSnapshot(Model, frozen=True):
     voices: list[SampleVoiceSnapshot]
     contexts: list[synth.ControlContext]
     lfos: list[synth.LFOSource]
+    envelopes: list[synth.EnvelopeSource]
     backend: Literal["numpy", "native"]
 
 
@@ -182,6 +183,7 @@ class OfflineSampler:
             voices=list(self.voices.values()),
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
+            envelopes=self.controls.envelopes,
             backend=self.backend,
         ).model_copy(deep=True)
 
@@ -205,6 +207,7 @@ class OfflineSampler:
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
+        self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if self.controls.apply(action) or isinstance(
@@ -219,6 +222,14 @@ class OfflineSampler:
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
             elif voice := self.voices.get(action.voice_id):
+                self.controls.release(
+                    self.definition.document.body.settings,
+                    voice.instrument_sources,
+                    action,
+                )
+                self.controls.release(
+                    self.definition.settings[voice.template], voice.slot_sources, action
+                )
                 voice.renderer.release()
         else:
             raise synth.EngineError(
