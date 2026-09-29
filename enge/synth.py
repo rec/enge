@@ -1,7 +1,7 @@
 """Offline rendering for Ufor's oscillator synth profile."""
 
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from fractions import Fraction
 from functools import cached_property
 from math import ceil, isfinite
@@ -338,12 +338,18 @@ class SynthSnapshot(Model, frozen=True):
     envelopes: list[EnvelopeSource]
 
 
+class VoiceAddress(Model, frozen=True):
+    part: str
+    trigger_id: str | None
+
+
 class PersistentSynthSnapshot(Model, frozen=True):
     definition: PreparedSynth
     action_capacity: int
     context_capacity: int
     frame: int
     voices: dict[str, int]
+    voice_triggers: dict[str, VoiceAddress]
     part_contexts: dict[str, int]
     trigger_contexts: dict[tuple[str, str], int]
     state: _native.SynthRuntimeSnapshot
@@ -453,7 +459,9 @@ class ControlRenderer:
             None,
         )
 
-    def apply(self, action: instrument_trace.TraceAction) -> bool:
+    def apply(
+        self, action: instrument_trace.TraceAction, active_voice_ids: Collection[str]
+    ) -> bool:
         self.clear_cache()
         if isinstance(action, instrument_trace.LFOObservation):
             matches = [
@@ -503,6 +511,7 @@ class ControlRenderer:
                 if (
                     source.name == action.name
                     and source.voice_id is not None
+                    and source.voice_id in active_voice_ids
                     and (source.part, source.trigger_id)
                     == (action.part, action.trigger_id)
                 ):
@@ -511,9 +520,11 @@ class ControlRenderer:
                         update={"state": motion_event(definition, source.state, event)}
                     )
             for index, source in enumerate(self.envelopes):
-                if source.name != action.name or (source.part, source.trigger_id) != (
-                    action.part,
-                    action.trigger_id,
+                if (
+                    source.name != action.name
+                    or source.voice_id not in active_voice_ids
+                    or (source.part, source.trigger_id)
+                    != (action.part, action.trigger_id)
                 ):
                     continue
                 settings = self.settings[source.setting]
@@ -1032,7 +1043,7 @@ class OfflineSynth:
         self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
-        if self.controls.apply(action):
+        if self.controls.apply(action, self.voices):
             return
         elif isinstance(action, VoiceStart):
             self._start_voice(action)
@@ -1167,6 +1178,7 @@ class PersistentSynth:
         self.template = template
         self.frame = 0
         self.voices: dict[str, int] = {}
+        self.voice_triggers: dict[str, VoiceAddress] = {}
         self.action_capacity = action_capacity
         self.context_capacity = context_capacity
         self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
@@ -1180,13 +1192,16 @@ class PersistentSynth:
             lfos,
             lfo_rationals,
             self.lfo_sources,
+            self.voice_lfo_sources,
             envelope_initials,
             envelope_attacks,
             envelope_releases,
             envelope_parameters,
+            self.named_motion_sources,
             self.source_scopes,
             runtime_filters,
             staged_motions,
+            self.staged_motion_sources,
             event_connections,
         ) = _persistent_modulation(definition, template)
         self.part_contexts: dict[str, int] = {}
@@ -1277,6 +1292,9 @@ class PersistentSynth:
         if any(a.tick < start or a.tick >= end for a in ordered):
             raise EngineError("actions must belong to the rendered interval")
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
+        self.voice_triggers = {
+            n: address for n, address in self.voice_triggers.items() if n in self.voices
+        }
         self.trigger_contexts = {
             n: s for n, s in self.trigger_contexts.items() if contexts[s]
         }
@@ -1353,6 +1371,29 @@ class PersistentSynth:
                         0,
                     )
                     count += 1
+            elif isinstance(action, instrument_trace.MotionObservation):
+                command = ("pause", "resume", "reverse", "seek").index(action.action)
+                for voice_id, slot in self.voices.items():
+                    if self.voice_triggers[voice_id] != VoiceAddress(
+                        part=action.part, trigger_id=action.trigger_id
+                    ):
+                        continue
+                    for kind, sources in (
+                        (9, self.named_motion_sources),
+                        (10, self.staged_motion_sources),
+                        (11, self.voice_lfo_sources),
+                    ):
+                        for source in sources.get(action.name, []):
+                            self._encode_action(
+                                count,
+                                offset,
+                                kind,
+                                slot,
+                                source,
+                                command,
+                                0 if action.position is None else action.position,
+                            )
+                            count += 1
             elif isinstance(action, VoiceStart):
                 part_context = -1
                 trigger_context = -1
@@ -1395,6 +1436,7 @@ class PersistentSynth:
                     if kind == 2:
                         active[slot] = False
                         del self.voices[action.voice_id]
+                        del self.voice_triggers[action.voice_id]
             else:
                 raise EngineError(
                     f"Unsupported persistent synth action at frame {action.tick}: "
@@ -1407,6 +1449,9 @@ class PersistentSynth:
     ) -> None:
         """Commit native liveness after a successfully processed block."""
         self.voices = {n: s for n, s in self.voices.items() if active[s]}
+        self.voice_triggers = {
+            n: address for n, address in self.voice_triggers.items() if n in self.voices
+        }
         self.trigger_contexts = {
             n: s for n, s in self.trigger_contexts.items() if contexts[s]
         }
@@ -1419,6 +1464,7 @@ class PersistentSynth:
             context_capacity=self.context_capacity,
             frame=self.frame,
             voices=self.voices.copy(),
+            voice_triggers=self.voice_triggers.copy(),
             part_contexts=self.part_contexts.copy(),
             trigger_contexts=self.trigger_contexts.copy(),
             state=self.runtime.snapshot(),
@@ -1434,6 +1480,7 @@ class PersistentSynth:
         self.runtime.restore(snapshot.state)
         self.frame = snapshot.frame
         self.voices = snapshot.voices.copy()
+        self.voice_triggers = snapshot.voice_triggers.copy()
         self.part_contexts = snapshot.part_contexts.copy()
         self.trigger_contexts = snapshot.trigger_contexts.copy()
 
@@ -1481,6 +1528,9 @@ class PersistentSynth:
             raise EngineError("Persistent synth voice capacity exceeded")
         active[slot] = True
         self.voices[action.voice_id] = slot
+        self.voice_triggers[action.voice_id] = VoiceAddress(
+            part=action.part, trigger_id=action.trigger_id
+        )
         phase = (
             float(
                 (Fraction(action.tick) * Fraction(action.pitch_hz))
@@ -1799,13 +1849,16 @@ def _persistent_modulation(
     np.ndarray,
     list[tuple[int, int]],
     dict[str, list[int]],
+    dict[str, list[int]],
     list[float],
     list[list[tuple[float, float]]],
     list[list[tuple[float, float]]],
     list[tuple[int, int, float, float, bool]],
+    dict[str, list[int]],
     set[str],
     np.ndarray,
     list[StagedRuntimeDefinition],
+    dict[str, list[int]],
     list[tuple[int, str, int, str]],
 ]:
     bindings = {b.name: b for b in template.bindings}
@@ -1919,12 +1972,15 @@ def _persistent_modulation(
     lfo_rows: list[list[float]] = []
     lfo_rationals: list[tuple[int, int]] = []
     lfo_sources: dict[str, list[int]] = {}
+    voice_lfo_sources: dict[str, list[int]] = {}
     envelope_initials: list[float] = []
     envelope_attacks: list[list[tuple[float, float]]] = []
     envelope_releases: list[list[tuple[float, float]]] = []
     envelope_parameters: list[tuple[int, int, float, float, bool]] = []
+    named_motion_sources: dict[str, list[int]] = {}
     staged_motions: list[StagedRuntimeDefinition] = []
     staged_bindings: dict[str, int] = {}
+    staged_motion_sources: dict[str, list[int]] = {}
     source_scopes: set[str] = set()
     for route in routes:
         source = sources.get(route.source)
@@ -2013,6 +2069,9 @@ def _persistent_modulation(
                     raise EngineError(
                         "Persistent named envelopes require linear voice segments"
                     )
+                named_motion_sources.setdefault(binding.reference, []).append(
+                    len(envelope_initials)
+                )
                 envelope_initials.append(generator.initial)
                 envelope_attacks.append(
                     [
@@ -2044,6 +2103,9 @@ def _persistent_modulation(
                 continue
             if isinstance(motion.body, Stages):
                 staged_bindings[binding.name] = len(staged_motions)
+                staged_motion_sources.setdefault(binding.reference, []).append(
+                    len(staged_motions)
+                )
                 staged_motions.append(
                     _runtime_staged_motion(
                         motion.body,
@@ -2082,6 +2144,8 @@ def _persistent_modulation(
                 lfo_rationals.append((value.numerator, value.denominator))
             if source.scope == "instrument":
                 lfo_sources.setdefault(binding.reference, []).append(index)
+            elif source.scope == "voice":
+                voice_lfo_sources.setdefault(binding.reference, []).append(index)
     for binding in template.bindings:
         if binding.name not in event_sources or binding.name in routed_sources:
             continue
@@ -2090,6 +2154,9 @@ def _persistent_modulation(
         assert isinstance(motion.body, Stages)
         source_scopes.add(motion.scope)
         staged_bindings[binding.name] = len(staged_motions)
+        staged_motion_sources.setdefault(binding.reference, []).append(
+            len(staged_motions)
+        )
         staged_motions.append(
             _runtime_staged_motion(motion.body, definition.sample_rate, None, 0, 0, 0)
         )
@@ -2119,13 +2186,16 @@ def _persistent_modulation(
         np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 6),
         lfo_rationals,
         lfo_sources,
+        voice_lfo_sources,
         envelope_initials,
         envelope_attacks,
         envelope_releases,
         envelope_parameters,
+        named_motion_sources,
         source_scopes,
         np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
         staged_motions,
+        staged_motion_sources,
         event_connections,
     )
 

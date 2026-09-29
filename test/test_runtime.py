@@ -8,7 +8,7 @@ from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
 from ufor.envelope import Envelope
-from ufor.events import LFOChange, Release, Trigger
+from ufor.events import LFOChange, MotionChange, Release, Trigger
 from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
@@ -408,6 +408,170 @@ def test_instrument_lfo_playback_commands_match_offline_and_persistent(
     baseline_actions = prepare_trace(document.body, events[:1], seed=0).actions
     baseline = OfflineSynth(definition, "numpy").advance(baseline_actions, 0, 48000)
     assert not np.allclose(expected[18000:24000], baseline[18000:24000])
+
+
+@pytest.mark.parametrize("body_kind", ["cycle", "contour", "stages"])
+def test_trigger_motion_playback_matches_persistent_native(
+    tmp_path: Path, body_kind: str
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
+    if body_kind == "contour":
+        body = contour
+        modulation = raw["body"]["voices"][0]["modulation"]
+        modulation["sources"][0]["minimum"] = 0
+        modulation["routes"][0]["points"][0]["input"] = 0
+    elif body_kind == "stages":
+        body = {
+            "kind": "stages",
+            "initial_stage": "rise",
+            "stages": [{"name": "rise", "motion": contour}],
+        }
+    else:
+        body = raw["body"]["voices"][0]["motions"]["motion"]["body"]
+    raw["body"]["voices"][0]["motions"]["motion"]["body"] = body
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        onset(0, "second", pitch=0.2).model_copy(update={"controls": {}, "ordinal": 1}),
+        MotionChange(
+            tick=12000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="pause",
+        ),
+        MotionChange(
+            tick=18000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="seek",
+            position=0.75,
+        ),
+        MotionChange(
+            tick=24000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="resume",
+        ),
+        MotionChange(
+            tick=30000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="reverse",
+        ),
+        MotionChange(
+            tick=36000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="seek",
+            position=0.5,
+        ),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=4)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = renderer.advance(
+            [action for action in actions if start <= action.tick < end], start, end
+        )
+        if end == 37886:
+            snapshot = renderer.snapshot()
+    check_audio(tmp_path / f"trigger-motion-{body_kind}.wav", actual, expected)
+    restored = PersistentSynth(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance([], 37886, 48000)
+    np.testing.assert_allclose(replay, actual[37886:], atol=0)
+
+
+def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
+    tmp_path: Path,
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "clock": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "cycle",
+                "stages": [
+                    {
+                        "name": "cycle",
+                        "motion": {
+                            "kind": "cycle",
+                            "rate": "1",
+                            "phase": "1/2",
+                            "markers": [{"name": "quarter", "position": "1/4"}],
+                        },
+                    }
+                ],
+            }
+        },
+        "level": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "waiting",
+                "stages": [
+                    {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
+                    {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                ],
+                "transitions": [
+                    {
+                        "from": ["waiting"],
+                        "event": "cue.brighten",
+                        "action": {"kind": "enter", "stage": "bright"},
+                    }
+                ],
+            }
+        },
+    }
+    voice["bindings"] = [
+        {"name": "clock", "kind": "motion", "reference": "clock"},
+        {"name": "level", "kind": "motion", "reference": "level"},
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
+        {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1},
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["event_connections"] = [
+        {
+            "source": "clock",
+            "port": "quarter",
+            "destination": "level",
+            "cue": "brighten",
+        }
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        MotionChange(
+            tick=1,
+            ordinal=0,
+            name="clock",
+            part="main",
+            trigger_id="note",
+            action="reverse",
+        ),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    actual = PersistentSynth(definition, voices=2).advance(actions, 0, 48000)
+    check_audio(tmp_path / "reversed-stage-marker.wav", actual, expected)
+    assert abs(expected[12002, 0]) > abs(expected[12001, 0])
 
 
 def test_persistent_synth_evolves_native_voice_filters(tmp_path: Path) -> None:

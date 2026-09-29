@@ -210,7 +210,7 @@ class OfflineSampler:
         self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
-        if self.controls.apply(action) or isinstance(
+        if self.controls.apply(action, self.voices) or isinstance(
             action, instrument_trace.Diagnostic
         ):
             return

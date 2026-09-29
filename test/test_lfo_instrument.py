@@ -93,10 +93,12 @@ def lfo_score(
 
 
 @pytest.mark.parametrize("body_kind", ["contour", "stages"])
+@pytest.mark.parametrize("kind", ["synth", "sampler"])
 def test_trigger_addressed_motion_changes_only_matching_voice(
-    tmp_path: Path, body_kind: str
+    tmp_path: Path, body_kind: str, kind: str
 ) -> None:
-    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    raw = lfo_score(kind, "voice").model_dump(mode="json")
+    voice = raw["body"]["voices" if kind == "synth" else "slots"][0]
     contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
     body = (
         contour
@@ -107,12 +109,16 @@ def test_trigger_addressed_motion_changes_only_matching_voice(
             "stages": [{"name": "rise", "motion": contour}],
         }
     )
-    raw["body"]["voices"][0]["motions"]["motion"]["body"] = body
+    voice["motions"]["motion"]["body"] = body
     if body_kind == "contour":
-        modulation = raw["body"]["voices"][0]["modulation"]
+        modulation = voice["modulation"]
         modulation["sources"][0]["minimum"] = 0
         modulation["routes"][0]["points"][0]["input"] = 0
-    document = SynthInstrumentScore.model_validate(raw)
+    document = (
+        SynthInstrumentScore.model_validate(raw)
+        if kind == "synth"
+        else instrument.SampleInstrumentScore.model_validate(raw)
+    )
     first = onset(0, pitch=0.1).model_copy(update={"controls": {}})
     second = onset(0, "second", pitch=0.2).model_copy(
         update={"controls": {}, "ordinal": 1}
@@ -144,16 +150,60 @@ def test_trigger_addressed_motion_changes_only_matching_voice(
             action="resume",
         ),
     ]
-    definition = synth.prepare(document)
+    definition = (
+        synth.prepare(document)
+        if isinstance(document, SynthInstrumentScore)
+        else sample_instrument.prepare(document, {"asset": np.ones((96000, 2))})
+    )
 
     def render(events: list[object]) -> np.ndarray:
-        actions = synth_trace.prepare(document.body, events, seed=0).actions
-        return synth.OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+        if isinstance(document, SynthInstrumentScore):
+            assert isinstance(definition, synth.PreparedSynth)
+            actions = synth_trace.prepare(document.body, events, seed=0).actions
+            return synth.OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+        assert isinstance(definition, sample_instrument.PreparedSampler)
+        actions = trace.prepare(document.body, events, seed=0).actions
+        return sample_instrument.OfflineSampler(definition, "numpy").advance(
+            actions, 0, 48000
+        )
 
     actual = render([first, second, *changes])
     expected = render([first, *changes]) + render([second])
-    check_audio(tmp_path / f"trigger-{body_kind}.wav", actual, expected)
+    check_audio(tmp_path / f"trigger-{kind}-{body_kind}.wav", actual, expected)
     assert not np.allclose(actual, render([first, second]))
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_trigger_motion_change_reaches_every_started_voice(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    single = lfo_score("synth", "voice")
+    assert isinstance(single, SynthInstrumentScore)
+    raw = single.model_dump(mode="json")
+    layer = raw["body"]["voices"][0].copy()
+    layer["name"] = "second-layer"
+    raw["body"]["voices"].append(layer)
+    layered = SynthInstrumentScore.model_validate(raw)
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        MotionChange(
+            tick=12000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="pause",
+        ),
+    ]
+    expected_actions = synth_trace.prepare(single.body, events, seed=0).actions
+    actual_actions = synth_trace.prepare(layered.body, events, seed=0).actions
+    expected = 2 * synth.OfflineSynth(synth.prepare(single), backend).advance(
+        expected_actions, 0, 48000
+    )
+    actual = synth.OfflineSynth(synth.prepare(layered), backend).advance(
+        actual_actions, 0, 48000
+    )
+    check_audio(tmp_path / f"trigger-layers-{backend}.wav", actual, expected)
 
 
 def test_library_motion_materializes_before_synth_preparation(tmp_path: Path) -> None:
