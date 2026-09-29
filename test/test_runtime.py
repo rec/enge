@@ -384,6 +384,7 @@ def test_instrument_lfo_playback_commands_match_offline_and_persistent(
         LFOChange(tick=24000, ordinal=0, name="motion", action="reverse"),
         LFOChange(tick=30000, ordinal=0, name="motion", action="seek", position=0.75),
         LFOChange(tick=36000, ordinal=0, name="motion", action="rate", rate=2),
+        LFOChange(tick=39000, ordinal=0, name="motion", action="shift", offset=-0.5),
     ]
     actions = prepare_trace(document.body, events, seed=0).actions
     definition = prepare(document)
@@ -479,6 +480,24 @@ def test_trigger_motion_playback_matches_persistent_native(
             action="seek",
             position=0.5,
         ),
+        MotionChange(
+            tick=39000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="shift",
+            offset=0.75,
+        ),
+        MotionChange(
+            tick=42000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="shift",
+            offset=-0.5,
+        ),
     ]
     actions = prepare_trace(document.body, events, seed=0).actions
     definition = prepare(document)
@@ -495,7 +514,9 @@ def test_trigger_motion_playback_matches_persistent_native(
     check_audio(tmp_path / f"trigger-motion-{body_kind}.wav", actual, expected)
     restored = PersistentSynth(definition, voices=4)
     restored.restore(snapshot)
-    replay = restored.advance([], 37886, 48000)
+    replay = restored.advance(
+        [a for a in actions if 37886 <= a.tick < 48000], 37886, 48000
+    )
     np.testing.assert_allclose(replay, actual[37886:], atol=0)
 
 
@@ -593,6 +614,15 @@ def test_trigger_motion_playback_matches_persistent_fm_and_noise(
             trigger_id="note",
             action="seek",
             position=0.25,
+        ),
+        MotionChange(
+            tick=34000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="shift",
+            offset=-0.5,
         ),
     ]
     actions = prepare_trace(document.body, events, seed=0).actions

@@ -148,6 +148,7 @@ impl PlaybackState {
             1 => self.paused = false,
             2 => self.direction = -self.direction,
             3 => self.coordinate = position,
+            4 => self.coordinate += position,
             _ => unreachable!(),
         }
     }
@@ -1673,9 +1674,12 @@ impl SynthRuntime {
                 let action_kind = action[3] as usize;
                 if lfo >= self.lfo_definitions.len()
                     || action[3] != action_kind as f64
-                    || action_kind > 5
+                    || action_kind > 6
                     || !action[4].is_finite()
-                    || (action_kind != 1 && action_kind != 5 && action[4] != 0.0)
+                    || (action_kind != 1
+                        && action_kind != 5
+                        && action_kind != 6
+                        && action[4] != 0.0)
                     || (action_kind == 1 && action[4] < 0.0)
                     || (action_kind == 5 && !(0.0..=1.0).contains(&action[4]))
                 {
@@ -1710,6 +1714,8 @@ impl SynthRuntime {
                         definition.phase.0 as f64 / definition.phase.1 as f64
                     } else if action_kind == 5 {
                         action[4]
+                    } else if action_kind == 6 {
+                        phase + action[4]
                     } else {
                         phase
                     },
@@ -1739,9 +1745,10 @@ impl SynthRuntime {
                     || action[3] != source as f64
                     || source >= self.named_envelopes.len()
                     || action[4] != command as f64
-                    || command > 3
+                    || command > 4
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
-                    || (command != 3 && action[5] != 0.0)
+                    || (command == 4 && !action[5].is_finite())
+                    || (command != 3 && command != 4 && action[5] != 0.0)
                 {
                     return Err(PyValueError::new_err("Invalid named Motion action"));
                 }
@@ -1752,6 +1759,9 @@ impl SynthRuntime {
                 state
                     .playback
                     .command(command, action[5], self.frame as f64);
+                if command == 4 {
+                    state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
+                }
                 self.named_states[index] = state;
             }
             10 => {
@@ -1761,20 +1771,26 @@ impl SynthRuntime {
                     || action[3] != source as f64
                     || source >= self.staged_motions.len()
                     || action[4] != command as f64
-                    || command > 3
+                    || command > 4
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
-                    || (command != 3 && action[5] != 0.0)
+                    || (command == 4 && !action[5].is_finite())
+                    || (command != 3 && command != 4 && action[5] != 0.0)
                 {
                     return Err(PyValueError::new_err("Invalid staged Motion action"));
                 }
                 let index = voice * self.staged_motions.len() + source;
                 let state = &mut self.staged_states[index];
-                if command == 3 && self.staged_motions[source].stages[state.stage].kind == 0 {
-                    return Err(PyValueError::new_err("Hold stage cannot seek"));
+                if (command == 3 || command == 4)
+                    && self.staged_motions[source].stages[state.stage].kind == 0
+                {
+                    return Err(PyValueError::new_err("Hold stage cannot change position"));
                 }
                 state
                     .playback
                     .command(command, action[5], self.frame as f64);
+                if command == 4 && self.staged_motions[source].stages[state.stage].kind == 1 {
+                    state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
+                }
                 state.cursor_at = self.frame as f64;
                 state.cursor_order = usize::MAX;
             }
@@ -1786,9 +1802,10 @@ impl SynthRuntime {
                     || source >= self.lfo_definitions.len()
                     || self.lfo_definitions[source].scope != 3
                     || action[4] != command as f64
-                    || command > 3
+                    || command > 4
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
-                    || (command != 3 && action[5] != 0.0)
+                    || (command == 4 && !action[5].is_finite())
+                    || (command != 3 && command != 4 && action[5] != 0.0)
                 {
                     return Err(PyValueError::new_err("Invalid voice Cycle action"));
                 }
@@ -1814,6 +1831,8 @@ impl SynthRuntime {
                     age: state.age + elapsed,
                     phase: if command == 3 {
                         action[5]
+                    } else if command == 4 {
+                        state.phase + state.direction * state.rate * elapsed / self.rate + action[5]
                     } else {
                         state.phase + state.direction * state.rate * elapsed / self.rate
                     },
