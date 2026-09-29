@@ -36,4 +36,6 @@ reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }
 dev = [
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
+    "pyupgrade>=3.21.2",
+    "ruff>=0.16.8",
 ]
