@@ -11,7 +11,14 @@ from test_synth import check_audio, score
 from ufor import synth_trace
 from ufor.events import Release
 from ufor.library import Entry, Library
-from ufor.motion import Cycle, MotionParameter, MotionScore, ParameterReference
+from ufor.motion import (
+    Cycle,
+    MotionParameter,
+    MotionScore,
+    ParameterReference,
+    advance_motion,
+    initial_motion,
+)
 from ufor.samples import instrument, processing, trace
 from ufor.synth import SynthInstrumentScore
 
@@ -521,6 +528,100 @@ def test_staged_sampler_motion_releases_and_restores(
     np.testing.assert_allclose(replay, second, atol=0)
     assert snapshot.envelopes[0].state.runtime.stage == "release"
     assert expected[24000, 0] > expected[36000, 0]
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_staged_marker_cues_another_motion_at_exact_time(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "clock": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "cycle",
+                "stages": [
+                    {
+                        "name": "cycle",
+                        "motion": {
+                            "kind": "cycle",
+                            "rate": "1",
+                            "markers": [{"name": "peak", "position": "24001/96000"}],
+                        },
+                    }
+                ],
+            }
+        },
+        "level": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "waiting",
+                "stages": [
+                    {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}},
+                    {"name": "bright", "motion": {"kind": "hold", "value": 1.0}},
+                ],
+                "transitions": [
+                    {
+                        "from": ["waiting"],
+                        "event": "cue.brighten",
+                        "action": {"kind": "enter", "stage": "bright"},
+                    }
+                ],
+            }
+        },
+    }
+    voice["bindings"] = [
+        {"name": "clock", "kind": "motion", "reference": "clock"},
+        {"name": "level", "kind": "motion", "reference": "level"},
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
+        {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1},
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["event_connections"] = [
+        {
+            "source": "clock",
+            "port": "peak",
+            "destination": "level",
+            "cue": "brighten",
+        }
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    clock = document.body.voices[0].motions["clock"]
+    probe = advance_motion(
+        clock,
+        initial_motion(clock, Fraction(0)),
+        Fraction(12001, 48000),
+    )
+    assert [e.port for e in probe.events] == ["peak"]
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    expected = synth.OfflineSynth(prepared, backend).advance(actions, 0, 48000)
+    renderer = synth.OfflineSynth(prepared, backend)
+    first = renderer.advance(actions, 0, 16000)
+    snapshot = renderer.snapshot()
+    assert snapshot.envelopes[1].state.runtime.stage == "bright"
+    second = renderer.advance([], 16000, 48000)
+    restored = synth.OfflineSynth(prepared, backend)
+    restored.restore(snapshot)
+    replay = restored.advance([], 16000, 48000)
+    check_audio(
+        tmp_path / f"staged-connection-{backend}.wav",
+        np.concatenate((first, second)),
+        expected,
+    )
+    np.testing.assert_allclose(replay, second, atol=0)
+    assert expected[12000, 0] == pytest.approx(0.625)
+    assert expected[12001, 0] == pytest.approx(1)
+    if backend == "native":
+        with pytest.raises(synth.EngineError, match="Motion event connections"):
+            synth.PersistentSynth(prepared, voices=4)
 
 
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
