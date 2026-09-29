@@ -1505,9 +1505,14 @@ impl SynthRuntime {
                         if definition.release.is_empty() {
                             continue;
                         }
-                        self.named_release_levels[envelope_base + index] =
-                            envelope_value(definition.initial, &definition.attack, release_frame);
-                        self.named_release_frames[envelope_base + index] = Some(release_frame);
+                        let named_release_frame = self.ages[voice] as f64;
+                        self.named_release_levels[envelope_base + index] = envelope_value(
+                            definition.initial,
+                            &definition.attack,
+                            named_release_frame,
+                        );
+                        self.named_release_frames[envelope_base + index] =
+                            Some(named_release_frame);
                     }
                     self.release_frames[voice] = Some(release_frame);
                 }

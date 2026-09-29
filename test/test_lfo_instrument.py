@@ -254,6 +254,60 @@ def test_named_envelope_modulates_synth_and_releases(
         np.testing.assert_allclose(replay, persistent_actual[24925:], atol=0)
 
 
+def test_named_contour_releases_before_voice_minimum_hold(tmp_path: Path) -> None:
+    raw = score().model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["minimum_hold_seconds"] = "1/2"
+    voice["envelope"]["release"] = [{"duration": "1/4 s", "to": 0}]
+    voice["motions"] = {
+        "motion": {
+            "body": {
+                "kind": "contour",
+                "initial": 1,
+                "segments": [{"duration": "1/4 s", "to": 1}],
+                "release": [{"duration": "1/4 s", "to": 0}],
+            }
+        }
+    }
+    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
+    voice["modulation"] = {
+        "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
+        "parameters": [
+            {
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 1,
+            }
+        ],
+        "routes": [
+            {
+                "name": "shape",
+                "source": "motion",
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "operation": "multiply",
+                "unit": "ratio",
+                "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": 1}],
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=4800, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    reference = synth.OfflineSynth(prepared, "numpy").advance(actions, 0, 48000)
+    actual = synth.PersistentSynth(prepared, voices=4).advance(actions, 0, 48000)
+    check_audio(tmp_path / "named-contour-minimum-hold.wav", actual, reference)
+
+
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_release_free_contour_finishes_after_note_off_and_restores(
     tmp_path: Path, backend: Literal["numpy", "native"]
