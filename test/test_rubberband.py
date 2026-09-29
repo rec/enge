@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 
 from enge import _native
+from enge.rubberband import RealtimeRubberBand
+from enge.synth import EngineError
 
 
 @pytest.fixture
@@ -118,3 +120,95 @@ def test_live_rubberband_rejects_a_wrong_block_size(rubberband: object) -> None:
 
     with pytest.raises(ValueError, match="block size"):
         shifter.shift(audio(shifter.block_size - 1))
+
+
+@pytest.mark.parametrize("ratio", [0.5, 1.0, 2.0])
+def test_realtime_rubberband_meets_finite_segment_boundary(
+    rubberband: object, ratio: float, tmp_path: Path
+) -> None:
+    source = audio(channels=1)
+    renderer = RealtimeRubberBand(
+        sample_rate=48000,
+        channels=1,
+        ratio=ratio,
+        source_frames=len(source),
+        block_frames=512,
+        max_buffer_frames=100000,
+    )
+    blocks = []
+    while not renderer.complete:
+        start = renderer.source_received
+        end = min(start + renderer.block_frames, len(source))
+        blocks.append(renderer.advance(source[start:end]))
+    result = np.vstack(blocks)
+    audible = result[
+        renderer.startup_frames : renderer.startup_frames + renderer.output_frames
+    ]
+
+    assert renderer.source_received == len(source)
+    assert result.shape[1] == 1
+    assert len(audible) == round(len(source) * ratio)
+    assert np.allclose(result[: renderer.startup_frames], 0)
+    assert np.max(np.abs(audible)) > 0.5
+    assert renderer.buffered_frames == 0
+    assert renderer.complete
+    assert renderer.underrun_frames <= 512
+    center = audible[len(audible) // 4 : 3 * len(audible) // 4, 0]
+    cycles = np.count_nonzero((center[:-1] <= 0) & (center[1:] > 0))
+    assert 200 < cycles * 48000 / len(center) < 240
+    write_wav(tmp_path / f"realtime-time-{ratio}.wav", result)
+    with pytest.raises(EngineError, match="complete"):
+        renderer.advance(np.empty((0, 1)))
+
+
+def test_realtime_rubberband_rejects_buffer_growth_at_hard_limit(
+    rubberband: object,
+) -> None:
+    source = audio(channels=1)
+    renderer = RealtimeRubberBand(48000, 1, 2.0, len(source), 512, 512)
+
+    with pytest.raises(EngineError, match="buffer limit"):
+        while not renderer.complete:
+            start = renderer.source_received
+            renderer.advance(source[start : start + 512])
+
+    assert renderer.buffered_frames == 0
+    assert renderer.complete
+
+
+def test_realtime_rubberband_requires_each_input_clock_block(
+    rubberband: object,
+) -> None:
+    renderer = RealtimeRubberBand(48000, 1, 1.0, 48000, 512, 4096)
+
+    with pytest.raises(EngineError, match="next clock block"):
+        renderer.advance(audio(256, 1))
+
+
+def test_native_realtime_stretcher_processes_stereo_incrementally(
+    rubberband: object, tmp_path: Path
+) -> None:
+    source = audio()
+    stretcher = rubberband.RubberBandRealtimeStretcher(48000, 2, 1.0, 1.0, 512)
+    blocks = [
+        stretcher.process(source[start : start + 512], start + 512 >= len(source))
+        for start in range(0, len(source), 512)
+    ]
+    actual = np.vstack(blocks)
+
+    assert stretcher.start_delay > 0
+    assert actual.shape == source.shape
+    assert np.all(np.isfinite(actual))
+    assert np.corrcoef(source[:, 0], actual[:, 0])[0, 1] > 0.7
+    write_wav(tmp_path / "realtime-native-stereo.wav", actual)
+    with pytest.raises(ValueError, match="complete"):
+        stretcher.process(source[:512], False)
+
+
+def test_native_realtime_stretcher_rejects_oversized_blocks(
+    rubberband: object,
+) -> None:
+    stretcher = rubberband.RubberBandRealtimeStretcher(48000, 1, 1.0, 1.0, 512)
+
+    with pytest.raises(ValueError, match="block"):
+        stretcher.process(audio(513, 1), False)

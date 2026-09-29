@@ -12,6 +12,19 @@ class RubberBandLiveShifter:
     def start_delay(self) -> int: ...
     def shift(self, audio: np.ndarray) -> np.ndarray: ...
 
+class RubberBandRealtimeStretcher:
+    def __init__(
+        self,
+        sample_rate: int,
+        channels: int,
+        ratio: float,
+        pitch: float,
+        max_block_frames: int,
+    ) -> None: ...
+    @property
+    def start_delay(self) -> int: ...
+    def process(self, audio: np.ndarray, final_block: bool) -> np.ndarray: ...
+
 def rubberband_stretch(audio: np.ndarray, ratio: float, pitch: float) -> np.ndarray: ...
 
 class ActionQueue:

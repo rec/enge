@@ -42,9 +42,15 @@ Start with an offline, prepared time-and-pitch processor around
 before processing and retrieving output, so it belongs on prepared finite audio,
 not a live callback. Its output length, latency, final drain, transient mode,
 formant option, channel-together option, and parameter-change policy are part of
-the effect contract. A later real-time pitch-only processor can wrap
-`RubberBandLiveShifter`, whose fixed block size and start delay must participate
-in graph latency accounting. See the official [API overview](https://www.breakfastquay.com/rubberband/code-doc/).
+the effect contract. The optional native feature now also exposes
+`RubberBandRealtimeStretcher` for incremental time and pitch processing.
+`enge.rubberband.RealtimeRubberBand` clocks finite source segments through it.
+The caller declares the source length, ratio, block size, and maximum queued
+output; the renderer reserves startup latency for speedup, stops at the finite
+output boundary, reports shortfalls as underrun frames, and frees its buffers at
+that boundary. Its queue limit does not bound the library's internal memory.
+`RubberBandLiveShifter` separately offers fixed-block live pitch shifting. See
+the official [API overview](https://www.breakfastquay.com/rubberband/code-doc/).
 
 ## Current foundation
 

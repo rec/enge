@@ -22,7 +22,7 @@ use pyo3::prelude::*;
 use std::f64::consts::TAU;
 
 #[cfg(feature = "rubberband")]
-use rubberband::{RubberBandLiveShifter, rubberband_stretch};
+use rubberband::{RubberBandLiveShifter, RubberBandRealtimeStretcher, rubberband_stretch};
 
 type RenderedBlock<'py> = (
     Bound<'py, PyArray2<f64>>,
@@ -184,5 +184,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(rubberband_stretch, module)?)?;
     #[cfg(feature = "rubberband")]
     module.add_class::<RubberBandLiveShifter>()?;
+    #[cfg(feature = "rubberband")]
+    module.add_class::<RubberBandRealtimeStretcher>()?;
     Ok(())
 }
