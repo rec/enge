@@ -386,6 +386,7 @@ class PersistentNoise(synth.PersistentSynth):
             self.source_scopes,
             runtime_filters,
             staged_motions,
+            event_connections,
         ) = synth._persistent_modulation(shared, template, source_parameters)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
@@ -410,7 +411,7 @@ class PersistentNoise(synth.PersistentSynth):
             envelope_releases,
             envelope_parameters,
         )
-        self.runtime.set_staged_motions(staged_motions)
+        self.runtime.set_staged_motions(staged_motions, event_connections)
 
     def snapshot(self) -> PersistentNoiseSnapshot:  # ty: ignore[invalid-method-override]
         return PersistentNoiseSnapshot(

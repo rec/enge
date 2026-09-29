@@ -46,10 +46,19 @@ class EngineError(ValueError):
 
 
 StagedRuntimeDefinition = tuple[
-    list[tuple[int, float, bool, list[tuple[float, float]], list[float]]],
-    list[tuple[int, int, int]],
+    list[
+        tuple[
+            int,
+            float,
+            bool,
+            list[tuple[float, float]],
+            list[float],
+            list[tuple[float, str]],
+        ]
+    ],
+    list[tuple[int, str, int]],
     int,
-    int,
+    int | None,
     int,
     float,
     float,
@@ -1057,6 +1066,7 @@ class PersistentSynth:
             self.source_scopes,
             runtime_filters,
             staged_motions,
+            event_connections,
         ) = _persistent_modulation(definition, template)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
@@ -1085,7 +1095,7 @@ class PersistentSynth:
             envelope_releases,
             envelope_parameters,
         )
-        self.runtime.set_staged_motions(staged_motions)
+        self.runtime.set_staged_motions(staged_motions, event_connections)
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -1664,11 +1674,8 @@ def _persistent_modulation(
     set[str],
     np.ndarray,
     list[StagedRuntimeDefinition],
+    list[tuple[int, str, int, str]],
 ]:
-    if template.event_connections:
-        raise EngineError(
-            "Persistent runtime does not yet implement Motion event connections"
-        )
     bindings = {b.name: b for b in template.bindings}
     if any(
         not isinstance(b, ControlBinding)
@@ -1760,7 +1767,17 @@ def _persistent_modulation(
     if parameters.keys() - supported.keys():
         raise EngineError("Persistent runtime has an unsupported modulation target")
     routes = sorted(template.modulation.routes, key=lambda r: (r.source, r.name))
-    if len(routes) != len(sources) or len({r.target for r in routes}) != len(routes):
+    event_sources = {
+        name
+        for connection in template.event_connections
+        for name in (connection.source, connection.destination)
+    }
+    routed_sources = {route.source for route in routes}
+    if (
+        len(routed_sources) != len(routes)
+        or len({r.target for r in routes}) != len(routes)
+        or sources.keys() - routed_sources != event_sources - routed_sources
+    ):
         raise EngineError("Persistent synth requires one modulation route per target")
     rows: list[list[float]] = []
     smoothing: list[tuple[int, int]] = []
@@ -1775,6 +1792,7 @@ def _persistent_modulation(
     envelope_releases: list[list[tuple[float, float]]] = []
     envelope_parameters: list[tuple[int, int, float, float]] = []
     staged_motions: list[StagedRuntimeDefinition] = []
+    staged_bindings: dict[str, int] = {}
     source_scopes: set[str] = set()
     for route in routes:
         source = sources.get(route.source)
@@ -1892,6 +1910,7 @@ def _persistent_modulation(
                 )
                 continue
             if isinstance(motion.body, Stages):
+                staged_bindings[binding.name] = len(staged_motions)
                 staged_motions.append(
                     _runtime_staged_motion(
                         motion.body,
@@ -1930,6 +1949,26 @@ def _persistent_modulation(
                 lfo_rationals.append((value.numerator, value.denominator))
             if source.scope == "instrument":
                 lfo_sources.setdefault(binding.reference, []).append(index)
+    for binding in template.bindings:
+        if binding.name not in event_sources or binding.name in routed_sources:
+            continue
+        assert isinstance(binding, processing.GeneratorBinding)
+        motion = template.motions[binding.reference]
+        assert isinstance(motion.body, Stages)
+        source_scopes.add(motion.scope)
+        staged_bindings[binding.name] = len(staged_motions)
+        staged_motions.append(
+            _runtime_staged_motion(motion.body, definition.sample_rate, None, 0, 0, 0)
+        )
+    event_connections = [
+        (
+            staged_bindings[c.source],
+            c.port,
+            staged_bindings[c.destination],
+            c.cue,
+        )
+        for c in template.event_connections
+    ]
     for target, index, _, _, _, _ in source_parameters:
         if (parameter := parameters.get(target)) is not None:
             parameter_values[index * 3 : index * 3 + 3] = [
@@ -1954,28 +1993,36 @@ def _persistent_modulation(
         source_scopes,
         np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
         staged_motions,
+        event_connections,
     )
 
 
 def _runtime_staged_motion(
     body: Stages,
     sample_rate: int,
-    parameter: int,
+    parameter: int | None,
     operation: int,
     intercept: float,
     slope: float,
 ) -> StagedRuntimeDefinition:
     names = {stage.name: index for index, stage in enumerate(body.stages)}
-    stages: list[tuple[int, float, bool, list[tuple[float, float]], list[float]]] = []
+    stages: list[
+        tuple[
+            int,
+            float,
+            bool,
+            list[tuple[float, float]],
+            list[float],
+            list[tuple[float, str]],
+        ]
+    ] = []
     for stage in body.stages:
         motion = stage.motion
         if isinstance(motion, Hold):
-            stages.append((0, motion.value, False, [], []))
+            stages.append((0, motion.value, False, [], [], []))
         elif isinstance(motion, Contour):
-            if motion.markers or any(s.curve != 0 for s in motion.segments):
-                raise EngineError(
-                    "Persistent staged contours require linear segments and no markers"
-                )
+            if any(s.curve != 0 for s in motion.segments):
+                raise EngineError("Persistent staged contours require linear segments")
             stages.append(
                 (
                     1,
@@ -1983,12 +2030,11 @@ def _runtime_staged_motion(
                     motion.initial == "current",
                     [(float(s.duration * sample_rate), s.to) for s in motion.segments],
                     [],
+                    [(float(m.position), m.name) for m in motion.markers],
                 )
             )
         else:
             assert isinstance(motion, Cycle)
-            if motion.markers:
-                raise EngineError("Persistent staged cycles do not support markers")
             assert isinstance(motion.rate, Fraction)
             stages.append(
                 (
@@ -2010,22 +2056,18 @@ def _runtime_staged_motion(
                         motion.center,
                         motion.depth,
                     ],
+                    [(float(m.position), m.name) for m in motion.markers],
                 )
             )
-    events = {"note_on": 0, "note_off": 1, "stage.done": 2}
-    transitions: list[tuple[int, int, int]] = []
+    transitions: list[tuple[int, str, int]] = []
     for transition in body.transitions:
-        if transition.event not in events:
-            raise EngineError(
-                "Persistent staged Motions do not support cue or marker transitions"
-            )
         target = (
             names[transition.action.stage]
             if isinstance(transition.action, EnterStage)
             else len(stages)
         )
         for source in transition.from_stages:
-            transitions.append((names[source], events[transition.event], target))
+            transitions.append((names[source], transition.event, target))
     return (
         stages,
         transitions,
