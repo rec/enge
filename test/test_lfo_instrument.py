@@ -176,6 +176,73 @@ def test_named_envelope_modulates_synth_and_releases(
         np.testing.assert_allclose(replay, persistent_actual[24925:], atol=0)
 
 
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_release_free_contour_finishes_after_note_off_and_restores(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
+    voice["motions"]["motion"]["body"] = {
+        "kind": "contour",
+        "initial": 0,
+        "segments": [{"duration": "1/2 s", "to": 1}],
+    }
+    source = voice["modulation"]["sources"][0]
+    source["minimum"] = 0
+    route = voice["modulation"]["routes"][0]
+    route["points"] = [
+        {"input": 0, "amount": 0},
+        {"input": 1, "amount": 1},
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=12000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    prepared = synth.prepare(document)
+    expected = synth.OfflineSynth(prepared, backend).advance(actions, 0, 48000)
+    renderer = synth.OfflineSynth(prepared, backend)
+    first = renderer.advance([a for a in actions if a.tick < 18000], 0, 18000)
+    snapshot = renderer.snapshot()
+    second = renderer.advance([], 18000, 48000)
+    restored = synth.OfflineSynth(prepared, backend)
+    restored.restore(snapshot)
+    replay = restored.advance([], 18000, 48000)
+    actual = np.concatenate([first, second])
+    check_audio(tmp_path / f"one-shot-contour-{backend}.wav", actual, expected)
+    np.testing.assert_allclose(replay, second, atol=0)
+    assert np.max(np.abs(actual[23000:24000])) > np.max(np.abs(actual[11000:12000]))
+    assert np.max(np.abs(actual[36000:37000])) == pytest.approx(
+        np.max(np.abs(actual[24000:25000]))
+    )
+    if backend == "native":
+        reference = synth.OfflineSynth(prepared, "numpy").advance(actions, 0, 48000)
+        np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
+        persistent = synth.PersistentSynth(prepared, voices=4)
+        chunks = []
+        for start, end in ((0, 997), (997, 12000), (12000, 18000), (18000, 48000)):
+            chunks.append(
+                persistent.advance(
+                    [a for a in actions if start <= a.tick < end], start, end
+                )
+            )
+            if end == 18000:
+                native_snapshot = persistent.snapshot()
+        native_actual = np.concatenate(chunks)
+        native_restored = synth.PersistentSynth(prepared, voices=4)
+        native_restored.restore(native_snapshot)
+        native_replay = native_restored.advance([], 18000, 48000)
+        check_audio(
+            tmp_path / "one-shot-contour-persistent.wav", native_actual, expected
+        )
+        np.testing.assert_allclose(native_replay, native_actual[18000:], atol=0)
+
+
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
 @pytest.mark.parametrize("scope", ["voice", "part", "instrument"])
 def test_lfo_scopes_silent_time_release_tails_and_restores(

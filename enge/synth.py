@@ -8,10 +8,18 @@ from typing import Literal, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import envelope, instrument_trace, lfo, modulation
+from ufor import instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.envelope import Envelope
-from ufor.motion import Contour, Cycle, MotionUse
+from ufor.motion import (
+    Contour,
+    MotionEvent,
+    MotionState,
+    cycle_lfo,
+    initial_motion,
+    motion_at,
+    motion_event,
+)
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import ControlBinding, Processing, SoundSettings
@@ -52,14 +60,14 @@ class LFOSource(Model, frozen=True):
     name: str
     part: str | None
     voice_id: str | None
-    state: lfo.LFOState
+    state: MotionState
 
 
 class EnvelopeSource(Model, frozen=True):
     setting: int
     name: str
     voice_id: str
-    state: envelope.EnvelopeState
+    state: MotionState
 
 
 class OscillatorState(Model, frozen=True):
@@ -419,15 +427,13 @@ class ControlRenderer:
             if not matches:
                 raise EngineError(f"Unknown instrument LFO: {action.name}")
             for index, source in matches:
-                definition = _lfo_definition(
-                    self.settings[source.setting].motions[source.name]
-                )
+                definition = self.settings[source.setting].motions[source.name]
                 self.lfos[index] = source.model_copy(
                     update={
-                        "state": lfo.lfo_event(
+                        "state": motion_event(
                             definition,
                             source.state,
-                            lfo.LFOEvent(
+                            MotionEvent(
                                 at=Fraction(action.tick, self.sample_rate),
                                 ordinal=action.ordinal,
                                 action=action.action,
@@ -497,32 +503,32 @@ class ControlRenderer:
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
                 motion = settings.motions[binding.reference]
                 if isinstance(motion.body, Contour):
-                    definition = _envelope_definition(motion)
                     if motion.scope != "voice":
                         raise EngineError("Named envelopes must use the voice scope")
                     index = len(self.envelopes)
-                    initial = envelope.initial_envelope(
-                        definition, Fraction(action.tick, self.sample_rate)
+                    initial = initial_motion(
+                        motion, Fraction(action.tick, self.sample_rate)
                     )
+                    if motion.body.release:
+                        initial = motion_event(
+                            motion,
+                            initial,
+                            MotionEvent(
+                                at=Fraction(action.tick, self.sample_rate),
+                                ordinal=action.ordinal,
+                                action="note_on",
+                            ),
+                        )
                     self.envelopes.append(
                         EnvelopeSource(
                             setting=setting,
                             name=binding.reference,
                             voice_id=action.voice_id,
-                            state=envelope.envelope_event(
-                                definition,
-                                initial,
-                                envelope.EnvelopeEvent(
-                                    at=Fraction(action.tick, self.sample_rate),
-                                    ordinal=action.ordinal,
-                                    action="trigger",
-                                ),
-                            ),
+                            state=initial,
                         )
                     )
                     result[source.name] = index
                     continue
-                definition = _lfo_definition(motion)
                 part = action.part if motion.scope == "part" else None
                 voice_id = action.voice_id if motion.scope == "voice" else None
                 index = next(
@@ -542,8 +548,8 @@ class ControlRenderer:
                             name=binding.reference,
                             part=part,
                             voice_id=voice_id,
-                            state=lfo.initial_lfo(
-                                definition,
+                            state=initial_motion(
+                                motion,
                                 Fraction(
                                     action.tick if voice_id is not None else 0,
                                     self.sample_rate,
@@ -578,16 +584,16 @@ class ControlRenderer:
                 continue
             index = sources[binding.name]
             source = self.envelopes[index]
-            definition = _envelope_definition(settings.motions[binding.reference])
+            definition = settings.motions[binding.reference]
             self.envelopes[index] = source.model_copy(
                 update={
-                    "state": envelope.envelope_event(
+                    "state": motion_event(
                         definition,
                         source.state,
-                        envelope.EnvelopeEvent(
+                        MotionEvent(
                             at=Fraction(action.tick, self.sample_rate),
                             ordinal=action.ordinal,
-                            action="release",
+                            action="note_off",
                         ),
                     )
                 }
@@ -611,14 +617,13 @@ class ControlRenderer:
                 motion = settings.motions[binding.reference]
                 if isinstance(motion.body, Contour):
                     if index not in self.cached_envelopes:
-                        definition = _envelope_definition(motion)
                         state = self.envelopes[index].state
                         self.cached_envelopes[index] = np.column_stack(
                             (
                                 np.array(
                                     [
-                                        envelope.envelope_at(
-                                            definition,
+                                        motion_at(
+                                            motion,
                                             state,
                                             Fraction(start + i, self.sample_rate),
                                         ).value
@@ -631,9 +636,11 @@ class ControlRenderer:
                     signals[binding.name] = self.cached_envelopes[index]
                     continue
                 if index not in self.cached_lfos:
+                    state = self.lfos[index].state.runtime
+                    assert isinstance(state, lfo.LFOState)
                     self.cached_lfos[index] = lfo_samples(
-                        _lfo_definition(motion),
-                        self.lfos[index].state,
+                        cycle_lfo(motion),
+                        state,
                         start,
                         frames,
                         self.sample_rate,
@@ -1394,41 +1401,6 @@ def validate_envelope(envelope: Envelope) -> None:
         raise EngineError("Only held linear envelopes are implemented")
 
 
-def _lfo_definition(motion: MotionUse) -> lfo.LFO:
-    body = motion.body
-    if not isinstance(body, Cycle):
-        raise EngineError("Motion is not a cycle")
-    return lfo.LFO(
-        clock=motion.clock,
-        scope=motion.scope,
-        rate=body.rate,
-        phase=body.phase,
-        reset=body.reset,
-        waveform=body.shape,
-        duty_cycle=body.duty_cycle,
-        delay=body.delay,
-        fade_in=body.fade_in,
-    )
-
-
-def _envelope_definition(motion: MotionUse) -> Envelope:
-    body = motion.body
-    if not isinstance(body, Contour):
-        raise EngineError("Motion is not a contour")
-    if not body.release:
-        raise EngineError("Named contour requires release segments")
-    return Envelope(
-        clock=motion.clock,
-        scope=motion.scope,
-        polarity=body.polarity,
-        initial=body.initial,
-        segments=body.segments,
-        release=body.release,
-        hold=body.hold,
-        retrigger=body.retrigger,
-    )
-
-
 def validate_generators(settings: SoundSettings) -> None:
     """Supported named sources share the seconds-clock LFO contract."""
     if any(
@@ -1727,7 +1699,7 @@ def _persistent_modulation(
             assert isinstance(binding, processing.GeneratorBinding)
             motion = template.motions[binding.reference]
             if isinstance(motion.body, Contour):
-                generator = _envelope_definition(motion)
+                generator = motion.body
                 if source.scope != "voice" or any(
                     segment.curve != 0
                     for segment in [*generator.segments, *generator.release]
@@ -1763,7 +1735,7 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            generator = _lfo_definition(motion)
+            generator = cycle_lfo(motion)
             index = len(lfo_rows)
             lfo_rows.append(
                 [

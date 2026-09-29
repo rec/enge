@@ -1254,6 +1254,9 @@ impl SynthRuntime {
                     }
                     let envelope_base = voice * self.named_envelopes.len();
                     for (index, definition) in self.named_envelopes.iter().enumerate() {
+                        if definition.release.is_empty() {
+                            continue;
+                        }
                         self.named_release_levels[envelope_base + index] =
                             envelope_value(definition.initial, &definition.attack, release_frame);
                         self.named_release_frames[envelope_base + index] = Some(release_frame);
