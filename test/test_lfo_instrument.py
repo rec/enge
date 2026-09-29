@@ -315,7 +315,7 @@ def test_release_free_contour_finishes_after_note_off_and_restores(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
-@pytest.mark.parametrize("release_frame", [12000, 24000])
+@pytest.mark.parametrize("release_frame", [12000, 12001, 24000])
 def test_staged_motion_renders_and_restores_at_attack_boundary(
     tmp_path: Path, backend: Literal["numpy", "native"], release_frame: int
 ) -> None:
@@ -332,7 +332,14 @@ def test_staged_motion_renders_and_restores_at_attack_boundary(
                 "motion": {
                     "kind": "contour",
                     "initial": "current",
-                    "segments": [{"duration": "1/4 s", "to": 0.6}],
+                    "segments": [
+                        {
+                            "duration": "24001/96000 s"
+                            if release_frame == 12001
+                            else "1/4 s",
+                            "to": 0.6,
+                        }
+                    ],
                 },
             },
             {
@@ -405,17 +412,34 @@ def test_staged_motion_renders_and_restores_at_attack_boundary(
     )
     np.testing.assert_allclose(replay, second, atol=0)
     assert snapshot.envelopes[0].state.runtime.stage == (
-        "release" if release_frame == 12000 else "sway"
+        "release" if release_frame < 24000 else "sway"
     )
-    if release_frame == 12000:
+    if release_frame < 24000:
         assert np.max(np.abs(expected[12000:13000])) > np.max(
             np.abs(expected[23000:24000])
         )
     else:
         assert np.ptp(expected[12000:24000, 0]) > 0.19
     if backend == "native":
-        with pytest.raises(synth.EngineError, match="does not yet implement staged"):
-            synth.PersistentSynth(prepared, voices=4)
+        persistent = synth.PersistentSynth(prepared, voices=4)
+        native_first = persistent.advance(
+            [a for a in actions if a.tick < 18000], 0, 18000
+        )
+        native_snapshot = persistent.snapshot()
+        native_second = persistent.advance(
+            [a for a in actions if a.tick >= 18000], 18000, 48000
+        )
+        native_restored = synth.PersistentSynth(prepared, voices=4)
+        native_restored.restore(native_snapshot)
+        native_replay = native_restored.advance(
+            [a for a in actions if a.tick >= 18000], 18000, 48000
+        )
+        check_audio(
+            tmp_path / f"persistent-staged-{release_frame}.wav",
+            np.concatenate((native_first, native_second)),
+            expected,
+        )
+        np.testing.assert_allclose(native_replay, native_second, atol=0)
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])

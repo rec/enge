@@ -14,6 +14,8 @@ from ufor.envelope import Envelope
 from ufor.motion import (
     Contour,
     Cycle,
+    EnterStage,
+    Hold,
     MotionEvent,
     MotionState,
     Stages,
@@ -38,6 +40,17 @@ from .lfo import lfo_samples
 
 class EngineError(ValueError):
     """The requested input is invalid or outside Enge's implemented profile."""
+
+
+StagedRuntimeDefinition = tuple[
+    list[tuple[int, float, bool, list[tuple[float, float]], list[float]]],
+    list[tuple[int, int, int]],
+    int,
+    int,
+    int,
+    float,
+    float,
+]
 
 
 class PreparedSynth(Model, frozen=True):
@@ -933,6 +946,7 @@ class PersistentSynth:
             envelope_parameters,
             self.source_scopes,
             runtime_filters,
+            staged_motions,
         ) = _persistent_modulation(definition, template)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
@@ -961,6 +975,7 @@ class PersistentSynth:
             envelope_releases,
             envelope_parameters,
         )
+        self.runtime.set_staged_motions(staged_motions)
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -1538,6 +1553,7 @@ def _persistent_modulation(
     list[tuple[int, int, float, float]],
     set[str],
     np.ndarray,
+    list[StagedRuntimeDefinition],
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
@@ -1644,6 +1660,7 @@ def _persistent_modulation(
     envelope_attacks: list[list[tuple[float, float]]] = []
     envelope_releases: list[list[tuple[float, float]]] = []
     envelope_parameters: list[tuple[int, int, float, float]] = []
+    staged_motions: list[StagedRuntimeDefinition] = []
     source_scopes: set[str] = set()
     for route in routes:
         source = sources.get(route.source)
@@ -1761,9 +1778,17 @@ def _persistent_modulation(
                 )
                 continue
             if isinstance(motion.body, Stages):
-                raise EngineError(
-                    "Persistent runtime does not yet implement staged Motions"
+                staged_motions.append(
+                    _runtime_staged_motion(
+                        motion.body,
+                        definition.sample_rate,
+                        parameter,
+                        0 if operation == modulation.Operation.add else 1,
+                        intercept,
+                        slope,
+                    )
                 )
+                continue
             assert isinstance(motion.body, Cycle)
             intercept += slope * motion.body.center
             slope *= motion.body.depth
@@ -1814,6 +1839,87 @@ def _persistent_modulation(
         envelope_parameters,
         source_scopes,
         np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
+        staged_motions,
+    )
+
+
+def _runtime_staged_motion(
+    body: Stages,
+    sample_rate: int,
+    parameter: int,
+    operation: int,
+    intercept: float,
+    slope: float,
+) -> StagedRuntimeDefinition:
+    names = {stage.name: index for index, stage in enumerate(body.stages)}
+    stages: list[tuple[int, float, bool, list[tuple[float, float]], list[float]]] = []
+    for stage in body.stages:
+        motion = stage.motion
+        if isinstance(motion, Hold):
+            stages.append((0, motion.value, False, [], []))
+        elif isinstance(motion, Contour):
+            if motion.markers or any(s.curve != 0 for s in motion.segments):
+                raise EngineError(
+                    "Persistent staged contours require linear segments and no markers"
+                )
+            stages.append(
+                (
+                    1,
+                    0.0 if motion.initial == "current" else motion.initial,
+                    motion.initial == "current",
+                    [(float(s.duration * sample_rate), s.to) for s in motion.segments],
+                    [],
+                )
+            )
+        else:
+            assert isinstance(motion, Cycle)
+            if motion.markers:
+                raise EngineError("Persistent staged cycles do not support markers")
+            assert isinstance(motion.rate, Fraction)
+            stages.append(
+                (
+                    2,
+                    0.0,
+                    False,
+                    [],
+                    [
+                        float(
+                            [Waveform.sine, Waveform.square, Waveform.triangle].index(
+                                motion.shape
+                            )
+                        ),
+                        float(motion.rate / sample_rate),
+                        float(motion.phase),
+                        float(motion.duty_cycle),
+                        float(motion.delay * sample_rate),
+                        float(motion.fade_in * sample_rate),
+                        motion.center,
+                        motion.depth,
+                    ],
+                )
+            )
+    events = {"note_on": 0, "note_off": 1, "stage.done": 2}
+    transitions: list[tuple[int, int, int]] = []
+    for transition in body.transitions:
+        if transition.event not in events:
+            raise EngineError(
+                "Persistent staged Motions do not support cue or marker transitions"
+            )
+        target = (
+            names[transition.action.stage]
+            if isinstance(transition.action, EnterStage)
+            else len(stages)
+        )
+        for source in transition.from_stages:
+            transitions.append((names[source], events[transition.event], target))
+    return (
+        stages,
+        transitions,
+        names[body.initial_stage],
+        parameter,
+        operation,
+        intercept,
+        slope,
     )
 
 
