@@ -477,6 +477,11 @@ class ControlRenderer:
                                     if action.rate is None
                                     else Fraction(action.rate)
                                 ),
+                                position=(
+                                    None
+                                    if action.position is None
+                                    else Fraction(str(action.position))
+                                ),
                             ),
                         )
                     }
@@ -1279,8 +1284,19 @@ class PersistentSynth:
                         offset,
                         8,
                         source,
-                        0 if action.action == "reset" else 1,
-                        0 if action.rate is None else action.rate,
+                        (
+                            "reset",
+                            "rate",
+                            "pause",
+                            "resume",
+                            "reverse",
+                            "seek",
+                        ).index(action.action),
+                        action.rate
+                        if action.rate is not None
+                        else action.position
+                        if action.position is not None
+                        else 0,
                         0,
                     )
                     count += 1
