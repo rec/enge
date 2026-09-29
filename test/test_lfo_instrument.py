@@ -9,7 +9,7 @@ from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio, score
 from ufor import instrument_trace, synth_trace
-from ufor.events import Release
+from ufor.events import MotionChange, Release
 from ufor.library import Entry, Library
 from ufor.motion import (
     Cycle,
@@ -90,6 +90,70 @@ def lfo_score(
         return SynthInstrumentScore.model_validate(raw)
     voice["mapping"].update(pitch_tracking=False, reference_pitch_hz=None)
     return instrument.SampleInstrumentScore.model_validate(raw)
+
+
+@pytest.mark.parametrize("body_kind", ["contour", "stages"])
+def test_trigger_addressed_motion_changes_only_matching_voice(
+    tmp_path: Path, body_kind: str
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
+    body = (
+        contour
+        if body_kind == "contour"
+        else {
+            "kind": "stages",
+            "initial_stage": "rise",
+            "stages": [{"name": "rise", "motion": contour}],
+        }
+    )
+    raw["body"]["voices"][0]["motions"]["motion"]["body"] = body
+    if body_kind == "contour":
+        modulation = raw["body"]["voices"][0]["modulation"]
+        modulation["sources"][0]["minimum"] = 0
+        modulation["routes"][0]["points"][0]["input"] = 0
+    document = SynthInstrumentScore.model_validate(raw)
+    first = onset(0, pitch=0.1).model_copy(update={"controls": {}})
+    second = onset(0, "second", pitch=0.2).model_copy(
+        update={"controls": {}, "ordinal": 1}
+    )
+    changes = [
+        MotionChange(
+            tick=12000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="pause",
+        ),
+        MotionChange(
+            tick=24000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="seek",
+            position=0.75,
+        ),
+        MotionChange(
+            tick=36000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="resume",
+        ),
+    ]
+    definition = synth.prepare(document)
+
+    def render(events: list[object]) -> np.ndarray:
+        actions = synth_trace.prepare(document.body, events, seed=0).actions
+        return synth.OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+
+    actual = render([first, second, *changes])
+    expected = render([first, *changes]) + render([second])
+    check_audio(tmp_path / f"trigger-{body_kind}.wav", actual, expected)
+    assert not np.allclose(actual, render([first, second]))
 
 
 def test_library_motion_materializes_before_synth_preparation(tmp_path: Path) -> None:
