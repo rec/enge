@@ -52,9 +52,11 @@ struct LfoDefinition {
 #[derive(Clone)]
 struct LfoEventState {
     at: usize,
-    started: usize,
+    age: f64,
     phase: f64,
     rate: f64,
+    direction: f64,
+    paused: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -1610,10 +1612,11 @@ impl SynthRuntime {
                 let action_kind = action[3] as usize;
                 if lfo >= self.lfo_definitions.len()
                     || action[3] != action_kind as f64
-                    || action_kind > 1
+                    || action_kind > 5
                     || !action[4].is_finite()
-                    || (action_kind == 0 && action[4] != 0.0)
+                    || (action_kind != 1 && action_kind != 5 && action[4] != 0.0)
                     || (action_kind == 1 && action[4] < 0.0)
+                    || (action_kind == 5 && !(0.0..=1.0).contains(&action[4]))
                 {
                     return Err(PyValueError::new_err("Invalid synth LFO action"));
                 }
@@ -1623,21 +1626,29 @@ impl SynthRuntime {
                 }
                 let state = self.lfo_event_states[lfo].clone().unwrap_or(LfoEventState {
                     at: 0,
-                    started: 0,
+                    age: 0.0,
                     phase: definition.phase.0 as f64 / definition.phase.1 as f64,
                     rate: definition.rate.0 as f64 / definition.rate.1 as f64,
+                    direction: 1.0,
+                    paused: false,
                 });
-                let phase = (state.phase + state.rate * (self.frame - state.at) as f64 / self.rate)
-                    .rem_euclid(1.0);
+                let elapsed = if state.paused {
+                    0.0
+                } else {
+                    (self.frame - state.at) as f64
+                };
+                let phase = state.phase + state.direction * state.rate * elapsed / self.rate;
                 self.lfo_event_states[lfo] = Some(LfoEventState {
                     at: self.frame,
-                    started: if action_kind == 0 {
-                        self.frame
+                    age: if action_kind == 0 {
+                        0.0
                     } else {
-                        state.started
+                        state.age + elapsed
                     },
                     phase: if action_kind == 0 {
                         definition.phase.0 as f64 / definition.phase.1 as f64
+                    } else if action_kind == 5 {
+                        action[4]
                     } else {
                         phase
                     },
@@ -1645,6 +1656,18 @@ impl SynthRuntime {
                         action[4]
                     } else {
                         state.rate
+                    },
+                    direction: if action_kind == 4 {
+                        -state.direction
+                    } else {
+                        state.direction
+                    },
+                    paused: if action_kind == 2 {
+                        true
+                    } else if action_kind == 3 {
+                        false
+                    } else {
+                        state.paused
                     },
                 });
             }
@@ -2186,8 +2209,13 @@ fn lfo_event_value(
     frame: usize,
     sample_rate: f64,
 ) -> (f64, f64) {
+    let elapsed = if state.paused {
+        0.0
+    } else {
+        (frame - state.at) as f64
+    };
     let phase =
-        (state.phase + state.rate * (frame - state.at) as f64 / sample_rate).rem_euclid(1.0);
+        (state.phase + state.direction * state.rate * elapsed / sample_rate).rem_euclid(1.0);
     let duty = definition.duty.0 as f64 / definition.duty.1 as f64;
     let value = match definition.waveform {
         0 => (TAU * phase).sin(),
@@ -2203,7 +2231,7 @@ fn lfo_event_value(
         _ if phase < duty => 2.0 * phase / duty - 1.0,
         _ => (1.0 + duty - 2.0 * phase) / (1.0 - duty),
     };
-    let age = (frame - state.started) as f64;
+    let age = state.age + elapsed;
     let delay = definition.delay_frames.0 as f64 / definition.delay_frames.1 as f64;
     let fade = definition.fade_frames.0 as f64 / definition.fade_frames.1 as f64;
     let weight = if age < delay {

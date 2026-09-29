@@ -370,6 +370,46 @@ def test_persistent_synth_applies_instrument_lfo_events(tmp_path: Path) -> None:
     np.testing.assert_allclose(replay, actual[24925:], atol=0)
 
 
+def test_instrument_lfo_playback_commands_match_offline_and_persistent(
+    tmp_path: Path,
+) -> None:
+    document = lfo_score("synth", "instrument")
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        LFOChange(tick=12000, ordinal=0, name="motion", action="pause"),
+        LFOChange(tick=18000, ordinal=0, name="motion", action="resume"),
+        LFOChange(tick=24000, ordinal=0, name="motion", action="reverse"),
+        LFOChange(tick=30000, ordinal=0, name="motion", action="seek", position=0.75),
+        LFOChange(tick=36000, ordinal=0, name="motion", action="rate", rate=2),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    native = OfflineSynth(definition, "native").advance(actions, 0, 48000)
+    check_audio(tmp_path / "lfo-playback-native.wav", native, expected)
+    renderer = PersistentSynth(definition, voices=4)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = renderer.advance(
+            [action for action in actions if start <= action.tick < end], start, end
+        )
+        if end == 30907:
+            snapshot = renderer.snapshot()
+    check_audio(tmp_path / "lfo-playback-persistent.wav", actual, expected)
+    restored = PersistentSynth(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [action for action in actions if 30907 <= action.tick < 48000],
+        30907,
+        48000,
+    )
+    np.testing.assert_allclose(replay, actual[30907:], atol=0)
+    baseline_actions = prepare_trace(document.body, events[:1], seed=0).actions
+    baseline = OfflineSynth(definition, "numpy").advance(baseline_actions, 0, 48000)
+    assert not np.allclose(expected[18000:24000], baseline[18000:24000])
+
+
 def test_persistent_synth_evolves_native_voice_filters(tmp_path: Path) -> None:
     document = filter_score("synth")
     events = [
