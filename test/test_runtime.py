@@ -3,18 +3,21 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import test_fm
+import test_noise
 from test_dynamic_synth import change, dynamic_score, onset
 from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
 from ufor.envelope import Envelope
 from ufor.events import LFOChange, MotionChange, Release, Trigger
+from ufor.instrument_trace import VoiceRetirement
 from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
-from enge import _native, filters
+from enge import _native, filters, fm, noise
 from enge.synth import EngineError, OfflineSynth, PersistentSynth, prepare
 
 
@@ -494,6 +497,137 @@ def test_trigger_motion_playback_matches_persistent_native(
     restored.restore(snapshot)
     replay = restored.advance([], 37886, 48000)
     np.testing.assert_allclose(replay, actual[37886:], atol=0)
+
+
+@pytest.mark.parametrize("kind", ["fm", "noise"])
+def test_trigger_motion_playback_matches_persistent_fm_and_noise(
+    tmp_path: Path, kind: str
+) -> None:
+    raw = (test_fm.score() if kind == "fm" else test_noise.score()).model_dump(
+        mode="json"
+    )
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "motion": {"body": {"kind": "cycle", "rate": "2", "phase": "1/4"}}
+    }
+    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
+    target = (
+        {"name": "fm", "parameter": "carrier_level"}
+        if kind == "fm"
+        else {"name": "processing", "parameter": "amplitude"}
+    )
+    level = 0.2 if kind == "fm" else 1
+    voice["modulation"] = {
+        "sources": [{"name": "motion", "scope": "voice", "minimum": -1, "maximum": 1}],
+        "parameters": [
+            {
+                "target": target,
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": level,
+                "default": level,
+            }
+        ],
+        "routes": [
+            {
+                "name": "motion",
+                "source": "motion",
+                "target": target,
+                "operation": "multiply",
+                "unit": "ratio",
+                "points": [{"input": -1, "amount": 0.25}, {"input": 1, "amount": 1}],
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    first = test_fm.trigger(pitch=0.1) if kind == "fm" else test_noise.trigger()
+    second = (
+        test_fm.trigger(name="second", pitch=0.2)
+        if kind == "fm"
+        else test_noise.trigger(name="second")
+    ).model_copy(update={"ordinal": 1})
+    events = [
+        first,
+        second,
+        MotionChange(
+            tick=6000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="pause",
+        ),
+        MotionChange(
+            tick=10000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="seek",
+            position=0.75,
+        ),
+        MotionChange(
+            tick=12000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="resume",
+        ),
+        MotionChange(
+            tick=15000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="reverse",
+        ),
+        Release(tick=18000, ordinal=0, part="main", trigger_id="note"),
+        first.model_copy(update={"tick": 24000}),
+        MotionChange(
+            tick=30000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="seek",
+            position=0.25,
+        ),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    assert any(isinstance(a, VoiceRetirement) for a in actions)
+    baseline_actions = prepare_trace(
+        document.body, [e for e in events if not isinstance(e, MotionChange)], seed=0
+    ).actions
+    definition = fm.prepare(document) if kind == "fm" else noise.prepare(document)
+    if kind == "fm":
+        expected = fm.OfflineFM(definition).advance(actions, 0, 48000)
+        baseline = fm.OfflineFM(definition).advance(baseline_actions, 0, 48000)
+        renderer = fm.PersistentFM(definition, voices=4)
+    else:
+        expected = noise.OfflineNoise(definition).advance(actions, 0, 48000)
+        baseline = noise.OfflineNoise(definition).advance(baseline_actions, 0, 48000)
+        renderer = noise.PersistentNoise(definition, voices=4)
+    assert not np.allclose(expected, baseline)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = renderer.advance(
+            [a for a in actions if start <= a.tick < end], start, end
+        )
+        if end == 24925:
+            snapshot = renderer.snapshot()
+    check_audio(tmp_path / f"trigger-motion-{kind}.wav", actual, expected)
+    if kind == "fm":
+        restored = fm.PersistentFM(definition, voices=4)
+    else:
+        restored = noise.PersistentNoise(definition, voices=4)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 24925 <= a.tick < 48000], 24925, 48000
+    )
+    np.testing.assert_allclose(replay, actual[24925:], atol=0)
 
 
 def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
