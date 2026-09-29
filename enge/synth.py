@@ -1,5 +1,6 @@
 """Offline rendering for Ufor's oscillator synth profile."""
 
+from collections import deque
 from collections.abc import Callable
 from fractions import Fraction
 from functools import cached_property
@@ -17,8 +18,10 @@ from ufor.motion import (
     EnterStage,
     Hold,
     MotionEvent,
+    MotionOutputEvent,
     MotionState,
     Stages,
+    StageState,
     advance_motion,
     cycle_lfo,
     initial_motion,
@@ -512,6 +515,7 @@ class ControlRenderer:
         self, settings: SoundSettings, action: instrument_trace.VoiceStart
     ) -> dict[str, int]:
         result: dict[str, int] = {}
+        emitted: list[tuple[str, MotionOutputEvent]] = []
         bindings = {b.name: b for b in settings.bindings}
         for source in settings.modulation.sources:
             binding = bindings[source.name]
@@ -527,7 +531,20 @@ class ControlRenderer:
                     initial = initial_motion(
                         motion, Fraction(action.tick, self.sample_rate)
                     )
-                    if isinstance(motion.body, Stages) or motion.body.release:
+                    if isinstance(motion.body, Stages):
+                        advanced = advance_motion(
+                            motion,
+                            initial,
+                            Fraction(action.tick, self.sample_rate),
+                            MotionEvent(
+                                at=Fraction(action.tick, self.sample_rate),
+                                ordinal=action.ordinal,
+                                action="note_on",
+                            ),
+                        )
+                        initial = advanced.state
+                        emitted.extend((binding.name, e) for e in advanced.events)
+                    elif motion.body.release:
                         initial = motion_event(
                             motion,
                             initial,
@@ -586,6 +603,7 @@ class ControlRenderer:
                 assert source.scope in ("instrument", "part", "trigger")
                 context_id = self.new_context(source.scope, part, trigger_id, 0, {})
             result[source.name] = context_id
+        self._dispatch_staged_events(settings, result, emitted)
         return result
 
     def release(
@@ -595,6 +613,7 @@ class ControlRenderer:
         action: instrument_trace.VoiceRetirement,
     ) -> None:
         self.clear_cache()
+        emitted: list[tuple[str, MotionOutputEvent]] = []
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
                 settings.motions[binding.reference].body, (Contour, Stages)
@@ -603,19 +622,19 @@ class ControlRenderer:
             index = sources[binding.name]
             source = self.envelopes[index]
             definition = settings.motions[binding.reference]
-            self.envelopes[index] = source.model_copy(
-                update={
-                    "state": motion_event(
-                        definition,
-                        source.state,
-                        MotionEvent(
-                            at=Fraction(action.tick, self.sample_rate),
-                            ordinal=action.ordinal,
-                            action="note_off",
-                        ),
-                    )
-                }
+            event = MotionEvent(
+                at=Fraction(action.tick, self.sample_rate),
+                ordinal=action.ordinal,
+                action="note_off",
             )
+            if isinstance(definition.body, Stages):
+                advanced = advance_motion(definition, source.state, event.at, event)
+                state = advanced.state
+                emitted.extend((binding.name, e) for e in advanced.events)
+            else:
+                state = motion_event(definition, source.state, event)
+            self.envelopes[index] = source.model_copy(update={"state": state})
+        self._dispatch_staged_events(settings, sources, emitted)
 
     def values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
@@ -628,6 +647,7 @@ class ControlRenderer:
         key = (id(settings), tuple(sorted(sources.items())))
         if key in self.cached_values:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
+        self._staged_values(settings, sources, start, frames)
         signals: dict[str, np.ndarray] = {}
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
@@ -636,30 +656,17 @@ class ControlRenderer:
                 if isinstance(motion.body, (Contour, Stages)):
                     if index not in self.cached_envelopes:
                         state = self.envelopes[index].state
-                        if isinstance(motion.body, Stages):
-                            values = np.empty(frames)
-                            for i in range(frames):
-                                result = advance_motion(
+                        assert isinstance(motion.body, Contour)
+                        values = np.array(
+                            [
+                                motion_at(
                                     motion,
                                     state,
                                     Fraction(start + i, self.sample_rate),
-                                )
-                                state = result.state
-                                values[i] = result.value.value
-                            self.envelopes[index] = self.envelopes[index].model_copy(
-                                update={"state": state}
-                            )
-                        else:
-                            values = np.array(
-                                [
-                                    motion_at(
-                                        motion,
-                                        state,
-                                        Fraction(start + i, self.sample_rate),
-                                    ).value
-                                    for i in range(frames)
-                                ]
-                            )
+                                ).value
+                                for i in range(frames)
+                            ]
+                        )
                         self.cached_envelopes[index] = np.column_stack(
                             (values, np.ones(frames))
                         )
@@ -704,6 +711,109 @@ class ControlRenderer:
         output = control.modulation_samples(settings.modulation, signals, frames)
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
+
+    def _staged_values(
+        self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
+    ) -> None:
+        staged = [
+            (b.name, sources[b.name], settings.motions[b.reference])
+            for b in settings.bindings
+            if isinstance(b, processing.GeneratorBinding)
+            and isinstance(settings.motions[b.reference].body, Stages)
+        ]
+        if not staged or all(index in self.cached_envelopes for _, index, _ in staged):
+            return
+        values = {index: np.empty(frames) for _, index, _ in staged}
+        for i in range(frames):
+            boundary = Fraction(start + i, self.sample_rate)
+            events_seen = 0
+            sample_values: dict[int, float] = {}
+            while True:
+                attempts = [
+                    (
+                        name,
+                        index,
+                        motion,
+                        advance_motion(motion, self.envelopes[index].state, boundary),
+                    )
+                    for name, index, motion in staged
+                ]
+                next_event = (
+                    min(
+                        (
+                            event.at
+                            for _, _, _, result in attempts
+                            for event in result.events
+                        ),
+                        default=None,
+                    )
+                    if settings.event_connections
+                    else None
+                )
+                if next_event is None:
+                    for _, index, _, result in attempts:
+                        self.envelopes[index] = self.envelopes[index].model_copy(
+                            update={"state": result.state}
+                        )
+                        sample_values[index] = result.value.value
+                    break
+                emitted: list[tuple[str, MotionOutputEvent]] = []
+                for name, index, motion in staged:
+                    result = advance_motion(
+                        motion, self.envelopes[index].state, next_event
+                    )
+                    self.envelopes[index] = self.envelopes[index].model_copy(
+                        update={"state": result.state}
+                    )
+                    emitted.extend((name, event) for event in result.events)
+                events_seen += len(emitted)
+                if events_seen > 4096:
+                    raise EngineError("Motion event capacity exceeded")
+                if emitted:
+                    self._dispatch_staged_events(settings, sources, emitted)
+            for _, index, _ in staged:
+                values[index][i] = sample_values[index]
+        for index, samples in values.items():
+            self.cached_envelopes[index] = np.column_stack((samples, np.ones(frames)))
+
+    def _dispatch_staged_events(
+        self,
+        settings: SoundSettings,
+        sources: dict[str, int],
+        emitted: list[tuple[str, MotionOutputEvent]],
+    ) -> None:
+        pending = deque(emitted)
+        delivered = 0
+        bindings = {b.name: b for b in settings.bindings}
+        while pending:
+            name, event = pending.popleft()
+            for connection in settings.event_connections:
+                if connection.source != name or connection.port != event.port:
+                    continue
+                target_index = sources[connection.destination]
+                binding = bindings[connection.destination]
+                assert isinstance(binding, processing.GeneratorBinding)
+                target_motion = settings.motions[binding.reference]
+                state = self.envelopes[target_index].state
+                assert isinstance(state.runtime, StageState)
+                result = advance_motion(
+                    target_motion,
+                    state,
+                    event.at,
+                    MotionEvent(
+                        at=event.at,
+                        ordinal=state.runtime.ordinal + 1,
+                        action="cue",
+                        cue=connection.cue,
+                    ),
+                )
+                self.envelopes[target_index] = self.envelopes[target_index].model_copy(
+                    update={"state": result.state}
+                )
+                pending.extend((connection.destination, e) for e in result.events)
+                delivered += 1
+                if delivered > 4096:
+                    raise EngineError("Motion event connection capacity exceeded")
 
     def clear_cache(self) -> None:
         """Discard ephemeral arrays after an event, restore, or new render span."""
@@ -1555,6 +1665,10 @@ def _persistent_modulation(
     np.ndarray,
     list[StagedRuntimeDefinition],
 ]:
+    if template.event_connections:
+        raise EngineError(
+            "Persistent runtime does not yet implement Motion event connections"
+        )
     bindings = {b.name: b for b in template.bindings}
     if any(
         not isinstance(b, ControlBinding)
