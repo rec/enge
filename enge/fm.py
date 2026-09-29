@@ -566,6 +566,7 @@ class PersistentFM(synth.PersistentSynth):
             envelope_parameters,
             self.source_scopes,
             runtime_filters,
+            staged_motions,
         ) = synth._persistent_modulation(shared, template, source_parameters)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
@@ -643,6 +644,7 @@ class PersistentFM(synth.PersistentSynth):
             envelope_releases,
             envelope_parameters,
         )
+        self.runtime.set_staged_motions(staged_motions)
 
     def snapshot(self) -> PersistentFMSnapshot:  # ty: ignore[invalid-method-override]
         return PersistentFMSnapshot(

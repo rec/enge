@@ -68,6 +68,47 @@ struct NamedEnvelopeDefinition {
 }
 
 #[derive(Clone, PartialEq)]
+struct StageDefinition {
+    kind: u8,
+    initial: f64,
+    current_initial: bool,
+    segments: Vec<Segment>,
+    cycle: Vec<f64>,
+}
+
+#[derive(Clone, PartialEq)]
+struct StagedMotionDefinition {
+    stages: Vec<StageDefinition>,
+    transitions: Vec<(usize, usize, usize)>,
+    initial_stage: usize,
+    parameter: usize,
+    operation: usize,
+    intercept: f64,
+    slope: f64,
+}
+
+#[derive(Clone)]
+struct StagedMotionState {
+    stage: usize,
+    entered_at: f64,
+    entry_value: f64,
+    completed: bool,
+    complete_value: f64,
+    done: bool,
+}
+
+type StageInput = (u8, f64, bool, Vec<(f64, f64)>, Vec<f64>);
+type StagedMotionInput = (
+    Vec<StageInput>,
+    Vec<(usize, usize, usize)>,
+    usize,
+    usize,
+    usize,
+    f64,
+    f64,
+);
+
+#[derive(Clone, PartialEq)]
 struct FilterDefinition {
     response: usize,
     stages: usize,
@@ -123,6 +164,8 @@ pub struct SynthRuntimeSnapshot {
     lfo_definitions: Vec<LfoDefinition>,
     lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
+    staged_motions: Vec<StagedMotionDefinition>,
+    staged_states: Vec<StagedMotionState>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -185,6 +228,8 @@ pub struct SynthRuntime {
     lfo_definitions: Vec<LfoDefinition>,
     lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
+    staged_motions: Vec<StagedMotionDefinition>,
+    staged_states: Vec<StagedMotionState>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -314,6 +359,8 @@ impl SynthRuntime {
             lfo_definitions,
             lfo_event_states: vec![None; lfo_count],
             named_envelopes: Vec::new(),
+            staged_motions: Vec::new(),
+            staged_states: Vec::new(),
             filter_definitions,
             context_kinds: vec![0; context_capacity],
             context_states,
@@ -588,6 +635,93 @@ impl SynthRuntime {
         Ok(())
     }
 
+    fn set_staged_motions(&mut self, inputs: Vec<StagedMotionInput>) -> PyResult<()> {
+        let mut definitions = Vec::with_capacity(inputs.len());
+        for (stages, transitions, initial_stage, parameter, operation, intercept, slope) in inputs {
+            if stages.is_empty()
+                || initial_stage >= stages.len()
+                || parameter >= self.parameter_definitions.len() / 3
+                || operation > 1
+                || !intercept.is_finite()
+                || !slope.is_finite()
+                || transitions.iter().any(|(source, event, target)| {
+                    *source >= stages.len() || *event > 2 || *target > stages.len()
+                })
+            {
+                return Err(PyValueError::new_err("Invalid staged Motion definition"));
+            }
+            let stages: Vec<StageDefinition> = stages
+                .into_iter()
+                .map(|(kind, initial, current_initial, segments, cycle)| {
+                    if kind > 2
+                        || !initial.is_finite()
+                        || (kind != 1 && current_initial)
+                        || segments.iter().any(|(frames, target)| {
+                            !frames.is_finite() || *frames < 0.0 || !target.is_finite()
+                        })
+                        || (kind == 1
+                            && segments.iter().map(|(frames, _)| frames).sum::<f64>() <= 0.0)
+                        || (kind != 1 && !segments.is_empty())
+                        || (kind == 2
+                            && (cycle.len() != 8
+                                || cycle.iter().any(|value| !value.is_finite())
+                                || !(0.0..=2.0).contains(&cycle[0])
+                                || cycle[0].fract() != 0.0
+                                || cycle[1] < 0.0
+                                || !(0.0..1.0).contains(&cycle[2])
+                                || !(0.0..=1.0).contains(&cycle[3])
+                                || cycle[4] < 0.0
+                                || cycle[5] < 0.0
+                                || cycle[7] < 0.0
+                                || cycle[6] - cycle[7] < -1.0
+                                || cycle[6] + cycle[7] > 1.0))
+                        || (kind != 2 && !cycle.is_empty())
+                    {
+                        return Err(PyValueError::new_err("Invalid staged Motion stage"));
+                    }
+                    Ok(StageDefinition {
+                        kind,
+                        initial,
+                        current_initial,
+                        segments: segments
+                            .into_iter()
+                            .map(|(frames, target)| Segment { frames, target })
+                            .collect(),
+                        cycle,
+                    })
+                })
+                .collect::<PyResult<_>>()?;
+            if stages[initial_stage].current_initial {
+                return Err(PyValueError::new_err(
+                    "Initial staged Motion stage cannot capture current",
+                ));
+            }
+            definitions.push(StagedMotionDefinition {
+                stages,
+                transitions,
+                initial_stage,
+                parameter,
+                operation,
+                intercept,
+                slope,
+            });
+        }
+        self.staged_states = (0..self.frequencies.len())
+            .flat_map(|_| {
+                definitions.iter().map(|definition| StagedMotionState {
+                    stage: definition.initial_stage,
+                    entered_at: 0.0,
+                    entry_value: definition.stages[definition.initial_stage].initial,
+                    completed: false,
+                    complete_value: 0.0,
+                    done: false,
+                })
+            })
+            .collect();
+        self.staged_motions = definitions;
+        Ok(())
+    }
+
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     fn noise(
@@ -722,6 +856,8 @@ impl SynthRuntime {
             lfo_definitions: self.lfo_definitions.clone(),
             lfo_event_states: self.lfo_event_states.clone(),
             named_envelopes: self.named_envelopes.clone(),
+            staged_motions: self.staged_motions.clone(),
+            staged_states: self.staged_states.clone(),
             filter_definitions: self.filter_definitions.clone(),
             context_kinds: self.context_kinds.clone(),
             context_states: self.context_states.clone(),
@@ -781,6 +917,7 @@ impl SynthRuntime {
             || self.control_definitions != snapshot.control_definitions
             || self.lfo_definitions != snapshot.lfo_definitions
             || self.named_envelopes != snapshot.named_envelopes
+            || self.staged_motions != snapshot.staged_motions
             || self.filter_definitions != snapshot.filter_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
             || self.context_kinds.len() != snapshot.context_kinds.len()
@@ -802,6 +939,7 @@ impl SynthRuntime {
             .clone_from(&snapshot.named_release_frames);
         self.named_release_levels
             .clone_from(&snapshot.named_release_levels);
+        self.staged_states.clone_from(&snapshot.staged_states);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
@@ -907,9 +1045,11 @@ impl SynthRuntime {
         let mut action = 0;
         for frame in 0..frames {
             while action < actions.len() && actions[action] as usize == frame {
+                self.advance_staged(false)?;
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
+            self.advance_staged(true)?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
@@ -1185,6 +1325,23 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid voice start"));
                 }
                 self.active[voice] = true;
+                for (source, definition) in self.staged_motions.iter().enumerate() {
+                    let index = voice * self.staged_motions.len() + source;
+                    self.staged_states[index] = StagedMotionState {
+                        stage: definition.initial_stage,
+                        entered_at: self.frame as f64,
+                        entry_value: definition.stages[definition.initial_stage].initial,
+                        completed: false,
+                        complete_value: 0.0,
+                        done: false,
+                    };
+                    staged_transition(
+                        definition,
+                        &mut self.staged_states[index],
+                        0,
+                        self.frame as f64,
+                    );
+                }
                 self.phases[voice] = action[5].rem_euclid(self.rate);
                 self.errors[voice] = 0.0;
                 self.mod_phases[voice] =
@@ -1237,6 +1394,15 @@ impl SynthRuntime {
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
+                    for (source, definition) in self.staged_motions.iter().enumerate() {
+                        let index = voice * self.staged_motions.len() + source;
+                        staged_transition(
+                            definition,
+                            &mut self.staged_states[index],
+                            1,
+                            self.frame as f64,
+                        );
+                    }
                     let release_frame = (self.ages[voice] as f64).max(self.minimum_hold_frames);
                     self.release_levels[voice] =
                         envelope_value(self.initial, &self.attack, release_frame);
@@ -1387,6 +1553,38 @@ impl SynthRuntime {
         Ok(())
     }
 
+    fn advance_staged(&mut self, inclusive: bool) -> PyResult<()> {
+        let at = self.frame as f64;
+        for voice in 0..self.frequencies.len() {
+            if !self.active[voice] {
+                continue;
+            }
+            for (source, definition) in self.staged_motions.iter().enumerate() {
+                let state = &mut self.staged_states[voice * self.staged_motions.len() + source];
+                let mut count = 0;
+                while !state.completed && !state.done {
+                    let stage = &definition.stages[state.stage];
+                    if stage.kind != 1 {
+                        break;
+                    }
+                    let end = state.entered_at + total_frames(&stage.segments);
+                    if end > at || (!inclusive && end == at) {
+                        break;
+                    }
+                    if count == 4096 {
+                        return Err(PyValueError::new_err(
+                            "Staged Motion event capacity exceeded",
+                        ));
+                    }
+                    state.done = true;
+                    staged_transition(definition, state, 2, end);
+                    count += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn parameter(&self, voice: usize, parameter: usize) -> PyResult<f64> {
         let mut addition = 0.0;
         let mut product = 1.0;
@@ -1446,6 +1644,19 @@ impl SynthRuntime {
                 } else {
                     envelope_value(definition.initial, &definition.attack, age)
                 };
+            let amount = definition.intercept + definition.slope * value;
+            if definition.operation == 0 {
+                addition += amount;
+            } else {
+                product *= amount;
+            }
+        }
+        for (source, definition) in self.staged_motions.iter().enumerate() {
+            if definition.parameter != parameter {
+                continue;
+            }
+            let state = &self.staged_states[voice * self.staged_motions.len() + source];
+            let value = staged_value(definition, state, self.frame as f64);
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;
@@ -1892,6 +2103,79 @@ pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -
         entry = segment.target;
     }
     entry
+}
+
+fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, at: f64) -> f64 {
+    if state.completed {
+        return state.complete_value;
+    }
+    let stage = &definition.stages[state.stage];
+    match stage.kind {
+        0 => stage.initial,
+        1 => envelope_value(state.entry_value, &stage.segments, at - state.entered_at),
+        _ => {
+            let cycle = &stage.cycle;
+            let elapsed = at - state.entered_at;
+            let phase = (cycle[2] + cycle[1] * elapsed).rem_euclid(1.0);
+            let weight = if elapsed < cycle[4] {
+                0.0
+            } else if cycle[5] == 0.0 {
+                1.0
+            } else {
+                ((elapsed - cycle[4]) / cycle[5]).clamp(0.0, 1.0)
+            };
+            let shape = match cycle[0] as usize {
+                0 => (TAU * phase).sin(),
+                1 => {
+                    if phase < cycle[3] {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
+                _ if phase < cycle[3] => 2.0 * phase / cycle[3] - 1.0,
+                _ => (1.0 + cycle[3] - 2.0 * phase) / (1.0 - cycle[3]),
+            };
+            cycle[6] + cycle[7] * weight * shape
+        }
+    }
+}
+
+fn staged_transition(
+    definition: &StagedMotionDefinition,
+    state: &mut StagedMotionState,
+    event: usize,
+    at: f64,
+) {
+    if state.completed {
+        return;
+    }
+    let Some((_, _, target)) = definition
+        .transitions
+        .iter()
+        .find(|(source, kind, _)| *source == state.stage && *kind == event)
+    else {
+        return;
+    };
+    let value = staged_value(definition, state, at);
+    if *target == definition.stages.len() {
+        state.completed = true;
+        state.complete_value = value;
+    } else {
+        let stage = &definition.stages[*target];
+        *state = StagedMotionState {
+            stage: *target,
+            entered_at: at,
+            entry_value: if stage.current_initial {
+                value
+            } else {
+                stage.initial
+            },
+            completed: false,
+            complete_value: 0.0,
+            done: false,
+        };
+    }
 }
 
 fn advance_ramp(value: &mut f64, step: f64, remaining: &mut usize) {

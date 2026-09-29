@@ -197,6 +197,20 @@ class SynthRuntime:
         releases: list[list[tuple[float, float]]],
         parameters: list[tuple[int, int, float, float]],
     ) -> None: ...
+    def set_staged_motions(
+        self,
+        definitions: list[
+            tuple[
+                list[tuple[int, float, bool, list[tuple[float, float]], list[float]]],
+                list[tuple[int, int, int]],
+                int,
+                int,
+                int,
+                float,
+                float,
+            ]
+        ],
+    ) -> None: ...
     def active_slots(self) -> list[bool]: ...
     def active_contexts(self) -> list[bool]: ...
     def snapshot(self) -> SynthRuntimeSnapshot: ...
