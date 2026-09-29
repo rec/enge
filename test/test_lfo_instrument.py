@@ -8,7 +8,7 @@ import pytest
 from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio, score
-from ufor import synth_trace
+from ufor import instrument_trace, synth_trace
 from ufor.events import Release
 from ufor.library import Entry, Library
 from ufor.motion import (
@@ -254,10 +254,18 @@ def test_named_envelope_modulates_synth_and_releases(
         np.testing.assert_allclose(replay, persistent_actual[24925:], atol=0)
 
 
-def test_named_contour_releases_before_voice_minimum_hold(tmp_path: Path) -> None:
+@pytest.mark.parametrize("release_timing", ["event", "voice"])
+@pytest.mark.parametrize("hold", ["1/2", "48001/96000"])
+@pytest.mark.parametrize("release_duration", ["1/4 s", "0 s"])
+def test_named_contour_releases_before_voice_minimum_hold(
+    tmp_path: Path,
+    release_timing: Literal["event", "voice"],
+    hold: str,
+    release_duration: str,
+) -> None:
     raw = score().model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["minimum_hold_seconds"] = "1/2"
+    voice["minimum_hold_seconds"] = hold
     voice["envelope"]["release"] = [{"duration": "1/4 s", "to": 0}]
     voice["motions"] = {
         "motion": {
@@ -265,11 +273,18 @@ def test_named_contour_releases_before_voice_minimum_hold(tmp_path: Path) -> Non
                 "kind": "contour",
                 "initial": 1,
                 "segments": [{"duration": "1/4 s", "to": 1}],
-                "release": [{"duration": "1/4 s", "to": 0}],
+                "release": [{"duration": release_duration, "to": 0}],
             }
         }
     }
-    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
+    voice["bindings"] = [
+        {
+            "name": "motion",
+            "kind": "motion",
+            "reference": "motion",
+            "release_timing": release_timing,
+        }
+    ]
     voice["modulation"] = {
         "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
         "parameters": [
@@ -303,9 +318,54 @@ def test_named_contour_releases_before_voice_minimum_hold(tmp_path: Path) -> Non
         ],
         seed=0,
     ).actions
+    retirement = next(
+        a for a in actions if isinstance(a, instrument_trace.VoiceRetirement)
+    )
+    actions.append(retirement.model_copy(update={"tick": 9600}))
     reference = synth.OfflineSynth(prepared, "numpy").advance(actions, 0, 48000)
-    actual = synth.PersistentSynth(prepared, voices=4).advance(actions, 0, 48000)
-    check_audio(tmp_path / "named-contour-minimum-hold.wav", actual, reference)
+    offline = synth.OfflineSynth(prepared, "native")
+    offline_first = offline.advance(actions, 0, 20000)
+    offline_snapshot = offline.snapshot()
+    offline_second = offline.advance([], 20000, 48000)
+    offline_replay = synth.OfflineSynth(prepared, "native")
+    offline_replay.restore(offline_snapshot)
+    np.testing.assert_allclose(offline_replay.advance([], 20000, 48000), offline_second)
+    check_audio(
+        tmp_path / f"named-contour-minimum-hold-{release_timing}.wav",
+        np.concatenate((offline_first, offline_second)),
+        reference,
+    )
+    persistent = synth.PersistentSynth(prepared, voices=4)
+    first = persistent.advance(actions, 0, 20000)
+    snapshot = persistent.snapshot()
+    second = persistent.advance([], 20000, 48000)
+    restored = synth.PersistentSynth(prepared, voices=4)
+    restored.restore(snapshot)
+    np.testing.assert_allclose(restored.advance([], 20000, 48000), second, atol=0)
+    check_audio(
+        tmp_path / f"persistent-contour-minimum-hold-{release_timing}.wav",
+        np.concatenate((first, second)),
+        reference,
+    )
+    assert (np.max(np.abs(reference[18000:20000])) > 0.01) == (
+        release_timing == "voice"
+    )
+    if release_timing == "voice":
+        stopped_actions = [
+            *actions,
+            retirement.model_copy(update={"tick": 12000, "action": "stop"}),
+        ]
+        stopped = synth.OfflineSynth(prepared, "native")
+        stopped_audio = stopped.advance(stopped_actions, 0, 48000)
+        assert all(s.pending_release is None for s in stopped.snapshot().envelopes)
+        check_audio(
+            tmp_path / "stopped-contour-minimum-hold.wav",
+            synth.PersistentSynth(prepared, voices=4).advance(
+                stopped_actions, 0, 48000
+            ),
+            stopped_audio,
+        )
+        assert np.all(stopped_audio[12000:] == 0)
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])

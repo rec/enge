@@ -30,7 +30,12 @@ from ufor.motion import (
 )
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
-from ufor.samples.processing import ControlBinding, Processing, SoundSettings
+from ufor.samples.processing import (
+    ControlBinding,
+    Processing,
+    ReleaseTiming,
+    SoundSettings,
+)
 from ufor.segments import Segment
 from ufor.streams import AudioType
 from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, frequency
@@ -96,6 +101,7 @@ class EnvelopeSource(Model, frozen=True):
     name: str
     voice_id: str
     state: MotionState
+    pending_release: Fraction | None = None
 
 
 class OscillatorState(Model, frozen=True):
@@ -620,8 +626,14 @@ class ControlRenderer:
         settings: SoundSettings,
         sources: dict[str, int],
         action: instrument_trace.VoiceRetirement,
+        renderer: EnvelopeRenderer,
     ) -> None:
         self.clear_cache()
+        assert renderer.release_frame is not None
+        voice_release_at = (
+            Fraction(action.tick, self.sample_rate)
+            + (renderer.release_frame - renderer.frame_count) / self.sample_rate
+        )
         emitted: list[tuple[str, MotionOutputEvent]] = []
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
@@ -631,6 +643,15 @@ class ControlRenderer:
             index = sources[binding.name]
             source = self.envelopes[index]
             definition = settings.motions[binding.reference]
+            if (
+                isinstance(definition.body, Contour)
+                and binding.release_timing == ReleaseTiming.voice
+                and voice_release_at > Fraction(action.tick, self.sample_rate)
+            ):
+                self.envelopes[index] = source.model_copy(
+                    update={"pending_release": voice_release_at}
+                )
+                continue
             event = MotionEvent(
                 at=Fraction(action.tick, self.sample_rate),
                 ordinal=action.ordinal,
@@ -644,6 +665,15 @@ class ControlRenderer:
                 state = motion_event(definition, source.state, event)
             self.envelopes[index] = source.model_copy(update={"state": state})
         self._dispatch_staged_events(settings, sources, emitted)
+
+    def stop(self, voice_id: str) -> None:
+        self.clear_cache()
+        self.envelopes = [
+            s.model_copy(update={"pending_release": None})
+            if s.voice_id == voice_id and s.pending_release is not None
+            else s
+            for s in self.envelopes
+        ]
 
     def values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
@@ -664,18 +694,30 @@ class ControlRenderer:
                 motion = settings.motions[binding.reference]
                 if isinstance(motion.body, (Contour, Stages)):
                     if index not in self.cached_envelopes:
-                        state = self.envelopes[index].state
+                        source = self.envelopes[index]
+                        state = source.state
                         assert isinstance(motion.body, Contour)
-                        values = np.array(
-                            [
-                                motion_at(
+                        values = np.empty(frames)
+                        for i in range(frames):
+                            at = Fraction(start + i, self.sample_rate)
+                            if (
+                                source.pending_release is not None
+                                and at >= source.pending_release
+                            ):
+                                state = motion_event(
                                     motion,
                                     state,
-                                    Fraction(start + i, self.sample_rate),
-                                ).value
-                                for i in range(frames)
-                            ]
-                        )
+                                    MotionEvent(
+                                        at=source.pending_release,
+                                        ordinal=0,
+                                        action="note_off",
+                                    ),
+                                )
+                                source = source.model_copy(
+                                    update={"state": state, "pending_release": None}
+                                )
+                                self.envelopes[index] = source
+                            values[i] = motion_at(motion, state, at).value
                         self.cached_envelopes[index] = np.column_stack(
                             (values, np.ones(frames))
                         )
@@ -924,11 +966,15 @@ class OfflineSynth:
                 raise EngineError("Fade retirement is not implemented")
             if action.action == "stop":
                 self.voices.pop(action.voice_id, None)
+                self.controls.stop(action.voice_id)
             elif voice := self.voices.get(action.voice_id):
-                self.controls.release(
-                    self.templates[voice.template], voice.sources, action
-                )
-                voice.renderer.release()
+                if voice.renderer.release():
+                    self.controls.release(
+                        self.templates[voice.template],
+                        voice.sources,
+                        action,
+                        voice.renderer,
+                    )
         else:
             raise EngineError(
                 f"Unsupported synth action at frame {action.tick}: "
@@ -1670,7 +1716,7 @@ def _persistent_modulation(
     list[float],
     list[list[tuple[float, float]]],
     list[list[tuple[float, float]]],
-    list[tuple[int, int, float, float]],
+    list[tuple[int, int, float, float, bool]],
     set[str],
     np.ndarray,
     list[StagedRuntimeDefinition],
@@ -1790,7 +1836,7 @@ def _persistent_modulation(
     envelope_initials: list[float] = []
     envelope_attacks: list[list[tuple[float, float]]] = []
     envelope_releases: list[list[tuple[float, float]]] = []
-    envelope_parameters: list[tuple[int, int, float, float]] = []
+    envelope_parameters: list[tuple[int, int, float, float, bool]] = []
     staged_motions: list[StagedRuntimeDefinition] = []
     staged_bindings: dict[str, int] = {}
     source_scopes: set[str] = set()
@@ -1906,6 +1952,7 @@ def _persistent_modulation(
                         0 if operation == modulation.Operation.add else 1,
                         intercept,
                         slope,
+                        binding.release_timing == ReleaseTiming.voice,
                     )
                 )
                 continue
