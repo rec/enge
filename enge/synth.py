@@ -15,6 +15,7 @@ from ufor.envelope import Envelope
 from ufor.motion import (
     Contour,
     Cycle,
+    CycleState,
     EnterStage,
     Hold,
     MotionEvent,
@@ -726,10 +727,17 @@ class ControlRenderer:
                 if index not in self.cached_lfos:
                     state = self.lfos[index].state.runtime
                     assert isinstance(motion.body, Cycle)
-                    if isinstance(state, lfo.LFOState):
+                    assert isinstance(state, CycleState)
+                    position = state.position
+                    if not position.paused and position.direction == 1:
                         samples = lfo_samples(
                             cycle_lfo(motion),
-                            state,
+                            lfo.LFOState(
+                                at=position.at,
+                                started_at=position.at - position.age,
+                                phase=position.coordinate % 1,
+                                rate=position.rate,
+                            ),
                             start,
                             frames,
                             self.sample_rate,
@@ -740,34 +748,14 @@ class ControlRenderer:
                             motion.body.center + motion.body.depth * samples[:, 0]
                         )
                     else:
-                        position = state.position
-                        if not position.paused and position.direction == 1:
-                            samples = lfo_samples(
-                                cycle_lfo(motion),
-                                lfo.LFOState(
-                                    at=position.at,
-                                    started_at=position.at - position.age,
-                                    phase=position.coordinate % 1,
-                                    rate=position.rate,
-                                ),
-                                start,
-                                frames,
-                                self.sample_rate,
-                                self.backend,
-                                self.control_interval,
+                        samples = np.empty((frames, 2))
+                        for i in range(frames):
+                            value = motion_at(
+                                motion,
+                                self.lfos[index].state,
+                                Fraction(start + i, self.sample_rate),
                             )
-                            samples[:, 0] = (
-                                motion.body.center + motion.body.depth * samples[:, 0]
-                            )
-                        else:
-                            samples = np.empty((frames, 2))
-                            for i in range(frames):
-                                value = motion_at(
-                                    motion,
-                                    self.lfos[index].state,
-                                    Fraction(start + i, self.sample_rate),
-                                )
-                                samples[i] = value.value, value.weight
+                            samples[i] = value.value, value.weight
                     self.cached_lfos[index] = samples
                 signals[binding.name] = self.cached_lfos[index]
                 continue
