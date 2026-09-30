@@ -123,8 +123,9 @@ def test_four_operator_fan_in_partitions_and_restore(
         np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
 
 
-def test_named_envelope_modulates_fm_and_survives_restore(
-    tmp_path: Path, backend: Literal["numpy", "native"]
+@pytest.mark.parametrize("playback", ["once", "loop", "ping_pong"])
+def test_contour_playback_modulates_fm_and_survives_restore(
+    tmp_path: Path, backend: Literal["numpy", "native"], playback: str
 ) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
@@ -132,6 +133,7 @@ def test_named_envelope_modulates_fm_and_survives_restore(
         "motion": {
             "body": {
                 "kind": "contour",
+                "playback": playback,
                 "initial": 0,
                 "segments": [{"duration": "1/4 s", "to": 1}],
                 "release": [{"duration": "1/4 s", "to": 0}],
@@ -187,7 +189,7 @@ def test_named_envelope_modulates_fm_and_survives_restore(
         partitioned = fm.OfflineFM(definition, backend)
         partitioned.restore(snapshot)
 
-    check_audio(tmp_path / f"fm-named-envelope-{backend}.wav", actual, expected)
+    check_audio(tmp_path / f"fm-contour-{playback}-{backend}.wav", actual, expected)
     if backend == "native":
         reference = fm.OfflineFM(definition).advance(actions, 0, 48000)
         np.testing.assert_allclose(actual, reference, atol=1e-10, rtol=1e-9)
@@ -210,7 +212,9 @@ def test_named_envelope_modulates_fm_and_survives_restore(
             48000,
         )
         check_audio(
-            tmp_path / "persistent-fm-named-envelope.wav", persistent_actual, actual
+            tmp_path / f"persistent-fm-contour-{playback}.wav",
+            persistent_actual,
+            actual,
         )
         np.testing.assert_allclose(replay, persistent_actual[24925:], atol=0)
 

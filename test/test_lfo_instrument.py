@@ -182,6 +182,55 @@ def test_trigger_addressed_motion_changes_only_matching_voice(
     assert not np.allclose(actual, render([first, second]))
 
 
+@pytest.mark.parametrize("playback", ["loop", "ping_pong"])
+def test_sampler_contour_playback_and_release_survive_restore(
+    tmp_path: Path, playback: str
+) -> None:
+    raw = lfo_score("sampler", "voice").model_dump(mode="json")
+    slot = raw["body"]["slots"][0]
+    slot["motions"]["motion"]["body"] = {
+        "kind": "contour",
+        "playback": playback,
+        "segments": [{"duration": "1/2 s", "to": 1}],
+        "release": [{"duration": "1/4 s", "to": 0}],
+    }
+    slot["modulation"]["sources"][0]["minimum"] = 0
+    slot["modulation"]["routes"][0]["points"][0]["input"] = 0
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        MotionChange(
+            tick=26000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="shift",
+            offset=1.5,
+        ),
+        Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+    ]
+    actions = trace.prepare(document.body, events, seed=0).actions
+    definition = sample_instrument.prepare(document, {"asset": np.ones((96000, 2))})
+    expected = sample_instrument.OfflineSampler(definition).advance(actions, 0, 48000)
+    renderer = sample_instrument.OfflineSampler(definition)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = renderer.advance(
+            [a for a in actions if start <= a.tick < end], start, end
+        )
+        if end == 24925:
+            snapshot = renderer.snapshot()
+    check_audio(tmp_path / f"sampler-contour-{playback}.wav", actual, expected)
+    restored = sample_instrument.OfflineSampler(definition)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 24925 <= a.tick < 48000], 24925, 48000
+    )
+    np.testing.assert_allclose(replay, actual[24925:], atol=1e-12)
+
+
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_trigger_motion_change_reaches_every_started_voice(
     tmp_path: Path, backend: Literal["numpy", "native"]

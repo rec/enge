@@ -21,6 +21,7 @@ from ufor.motion import (
     MotionEvent,
     MotionOutputEvent,
     MotionState,
+    PlaybackMode,
     Stages,
     StageState,
     advance_motion,
@@ -1870,7 +1871,7 @@ def _persistent_modulation(
     list[float],
     list[list[tuple[float, float]]],
     list[list[tuple[float, float]]],
-    list[tuple[int, int, float, float, bool]],
+    list[tuple[int, int, float, float, bool, int]],
     dict[str, list[int]],
     set[str],
     np.ndarray,
@@ -1993,7 +1994,7 @@ def _persistent_modulation(
     envelope_initials: list[float] = []
     envelope_attacks: list[list[tuple[float, float]]] = []
     envelope_releases: list[list[tuple[float, float]]] = []
-    envelope_parameters: list[tuple[int, int, float, float, bool]] = []
+    envelope_parameters: list[tuple[int, int, float, float, bool, int]] = []
     named_motion_sources: dict[str, list[int]] = {}
     staged_motions: list[StagedRuntimeDefinition] = []
     staged_bindings: dict[str, int] = {}
@@ -2115,6 +2116,11 @@ def _persistent_modulation(
                         intercept,
                         slope,
                         binding.release_timing == ReleaseTiming.voice,
+                        [
+                            PlaybackMode.once,
+                            PlaybackMode.loop,
+                            PlaybackMode.ping_pong,
+                        ].index(generator.playback),
                     )
                 )
                 continue
