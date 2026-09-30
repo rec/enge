@@ -577,6 +577,118 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
     np.testing.assert_allclose(replay, actual[24925:], atol=0)
 
 
+@pytest.mark.parametrize("playback", ["loop", "ping_pong"])
+def test_staged_contour_playback_and_release_match_persistent_native(
+    tmp_path: Path, playback: str
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+        "kind": "stages",
+        "initial_stage": "sweep",
+        "stages": [
+            {
+                "name": "sweep",
+                "motion": {
+                    "kind": "contour",
+                    "playback": playback,
+                    "segments": [{"duration": "1/4 s", "to": 1}],
+                    "markers": [{"name": "quarter", "position": "1/4"}],
+                },
+            },
+            {
+                "name": "release",
+                "motion": {
+                    "kind": "contour",
+                    "initial": "current",
+                    "segments": [{"duration": "1/4 s", "to": 0}],
+                },
+            },
+        ],
+        "transitions": [
+            {
+                "from": ["sweep"],
+                "event": "note_off",
+                "action": {"kind": "enter", "stage": "release"},
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        MotionChange(
+            tick=13000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="shift",
+            offset=0.5,
+        ),
+        Release(tick=19000, ordinal=0, part="main", trigger_id="note"),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=2)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = renderer.advance(
+            [a for a in actions if start <= a.tick < end], start, end
+        )
+        if end == 9970:
+            snapshot = renderer.snapshot()
+    check_audio(tmp_path / f"staged-contour-{playback}.wav", actual, expected)
+    restored = PersistentSynth(definition, voices=2)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 9970 <= a.tick < 48000], 9970, 48000
+    )
+    np.testing.assert_allclose(replay, actual[9970:], atol=0)
+
+
+@pytest.mark.parametrize(
+    ("playback", "boundary"), [("loop", 12000), ("ping_pong", 24000)]
+)
+def test_staged_contour_cycle_enters_next_stage_in_native_runtime(
+    tmp_path: Path, playback: str, boundary: int
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+        "kind": "stages",
+        "initial_stage": "sweep",
+        "stages": [
+            {
+                "name": "sweep",
+                "motion": {
+                    "kind": "contour",
+                    "playback": playback,
+                    "segments": [{"duration": "1/4 s", "to": 1}],
+                },
+            },
+            {"name": "held", "motion": {"kind": "hold", "value": 0.5}},
+        ],
+        "transitions": [
+            {
+                "from": ["sweep"],
+                "event": "stage.cycle",
+                "action": {"kind": "enter", "stage": "held"},
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = prepare_trace(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    actual = PersistentSynth(definition, voices=2).advance(actions, 0, 48000)
+    check_audio(tmp_path / f"staged-cycle-{playback}.wav", actual, expected)
+    assert not np.isclose(expected[boundary - 1, 0], expected[boundary + 1, 0])
+
+
 @pytest.mark.parametrize("kind", ["fm", "noise"])
 def test_trigger_motion_playback_matches_persistent_fm_and_noise(
     tmp_path: Path, kind: str

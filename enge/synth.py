@@ -61,6 +61,7 @@ StagedRuntimeDefinition = tuple[
             list[tuple[float, float]],
             list[float],
             list[tuple[float, str]],
+            int,
         ]
     ],
     list[tuple[int, str, int]],
@@ -2240,12 +2241,13 @@ def _runtime_staged_motion(
             list[tuple[float, float]],
             list[float],
             list[tuple[float, str]],
+            int,
         ]
     ] = []
     for stage in body.stages:
         motion = stage.motion
         if isinstance(motion, Hold):
-            stages.append((0, motion.value, False, [], [], []))
+            stages.append((0, motion.value, False, [], [], [], 0))
         elif isinstance(motion, Contour):
             if any(s.curve != 0 for s in motion.segments):
                 raise EngineError("Persistent staged contours require linear segments")
@@ -2257,6 +2259,11 @@ def _runtime_staged_motion(
                     [(float(s.duration * sample_rate), s.to) for s in motion.segments],
                     [],
                     [(float(m.position), m.name) for m in motion.markers],
+                    [
+                        PlaybackMode.once,
+                        PlaybackMode.loop,
+                        PlaybackMode.ping_pong,
+                    ].index(motion.playback),
                 )
             )
         else:
@@ -2283,6 +2290,7 @@ def _runtime_staged_motion(
                         motion.depth,
                     ],
                     [(float(m.position), m.name) for m in motion.markers],
+                    0,
                 )
             )
     transitions: list[tuple[int, str, int]] = []
