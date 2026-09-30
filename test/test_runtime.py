@@ -1012,6 +1012,7 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
         ("loop", "cycle", 9000, True),
         ("ping_pong", "turned", 9000, True),
         ("ping_pong", "cycle", 15000, True),
+        ("loop", "stage.done", 12000, False),
     ],
 )
 def test_staged_contour_events_cue_another_motion_in_native_runtime(
@@ -1054,6 +1055,8 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
             }
         },
     }
+    if port == "stage.done":
+        voice["motions"]["clock"]["body"]["stages"][0]["motion"]["repeat_count"] = 1
     if named:
         voice["motions"]["clock"]["body"]["stages"][0]["motion"].update(
             {

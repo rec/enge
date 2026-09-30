@@ -2050,15 +2050,23 @@ impl SynthRuntime {
                 {
                     state.traversals += 1;
                 }
+                let final_repeat = stage.repeat_count.is_some_and(|count| {
+                    state.traversals == count
+                        && port
+                            == if stage.playback == 1 {
+                                "cycle"
+                            } else {
+                                "turned"
+                            }
+                });
+                let returning = final_repeat
+                    && stage.playback == 2
+                    && (((state.playback.coordinate - stage.loop_end)
+                        / (stage.loop_end - stage.loop_start))
+                        .round()
+                        .rem_euclid(2.0)
+                        == 1.0);
                 let finished = staged_transition(definition, state, &format!("stage.{port}"), at);
-                if port == "done"
-                    && stage.repeat_count.is_some()
-                    && !finished
-                    && state.stage == stage_index
-                {
-                    state.complete_value = staged_value(definition, state, at);
-                    state.completed = true;
-                }
                 self.staged_pending.push_back(StagedEvent {
                     at,
                     voice,
@@ -2069,6 +2077,35 @@ impl SynthRuntime {
                         port
                     },
                 });
+                if final_repeat {
+                    if returning {
+                        self.staged_pending.push_back(StagedEvent {
+                            at,
+                            voice,
+                            source,
+                            port: "cycle".to_owned(),
+                        });
+                    }
+                    self.staged_pending.push_back(StagedEvent {
+                        at,
+                        voice,
+                        source,
+                        port: "stage.done".to_owned(),
+                    });
+                    if !finished && state.stage == stage_index {
+                        if staged_transition(definition, state, "stage.done", at) {
+                            self.staged_pending.push_back(StagedEvent {
+                                at,
+                                voice,
+                                source,
+                                port: "done".to_owned(),
+                            });
+                        } else if state.stage == stage_index {
+                            state.complete_value = staged_value(definition, state, at);
+                            state.completed = true;
+                        }
+                    }
+                }
                 if finished {
                     self.staged_pending.push_back(StagedEvent {
                         at,
@@ -2935,22 +2972,6 @@ fn next_staged_event(
     }
     let stage = &definition.stages[state.stage];
     let playback = &state.playback;
-    if stage
-        .repeat_count
-        .is_some_and(|count| state.traversals >= count)
-    {
-        let width = stage.loop_end - stage.loop_start;
-        let relative = (playback.coordinate - stage.loop_end) / width;
-        let order = stage.markers.len();
-        let returning = stage.playback == 2
-            && (relative.round() - relative).abs() < 1e-8
-            && relative.round().rem_euclid(2.0) == 1.0
-            && state.cursor_order == order;
-        let port = if returning { "cycle" } else { "done" };
-        let at = playback.at;
-        return (if inclusive { at <= limit } else { at < limit })
-            .then(|| (at, order + if returning { 1 } else { 2 }, port.to_owned()));
-    }
     if playback.paused || playback.rate == 0.0 {
         return None;
     }
