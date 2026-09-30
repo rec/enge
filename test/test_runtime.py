@@ -855,6 +855,76 @@ def test_trigger_motion_playback_matches_persistent_fm_and_noise(
     np.testing.assert_allclose(replay, actual[24925:], atol=0)
 
 
+@pytest.mark.parametrize("playback", ["loop", "ping_pong"])
+@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize("staged", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_finite_contour_repeats_match_persistent_native(
+    tmp_path: Path, playback: str, named: bool, staged: bool, reverse: bool
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    contour = {
+        "kind": "contour",
+        "playback": playback,
+        "segments": [{"duration": "1/4 s", "to": 1}],
+        "repeat_count": 2,
+    }
+    if named:
+        contour.update(
+            {
+                "markers": [
+                    {"name": "start", "position": "1/4"},
+                    {"name": "end", "position": "3/4"},
+                ],
+                "loop_start": "start",
+                "loop_end": "end",
+            }
+        )
+    voice["motions"]["motion"]["body"] = (
+        {
+            "kind": "stages",
+            "initial_stage": "sweep",
+            "stages": [{"name": "sweep", "motion": contour}],
+        }
+        if staged
+        else contour
+    )
+    if not staged:
+        voice["modulation"]["sources"][0]["minimum"] = 0
+        voice["modulation"]["routes"][0]["points"][0]["input"] = 0
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
+    if reverse:
+        events.append(
+            MotionChange(
+                tick=14000,
+                ordinal=0,
+                name="motion",
+                part="main",
+                trigger_id="note",
+                action="reverse",
+            )
+        )
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=2)
+    first = renderer.advance([a for a in actions if a.tick < 13337], 0, 13337)
+    snapshot = renderer.snapshot()
+    later = [a for a in actions if a.tick >= 13337]
+    second = renderer.advance(later, 13337, 48000)
+    actual = np.concatenate([first, second])
+    check_audio(
+        tmp_path / f"finite-contour-{playback}-{named}-{staged}-{reverse}.wav",
+        actual,
+        expected,
+    )
+    replay = PersistentSynth(definition, voices=2)
+    replay.restore(snapshot)
+    np.testing.assert_allclose(replay.advance(later, 13337, 48000), second, atol=0)
+
+
 def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
     tmp_path: Path,
 ) -> None:
@@ -942,6 +1012,7 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
         ("loop", "cycle", 9000, True),
         ("ping_pong", "turned", 9000, True),
         ("ping_pong", "cycle", 15000, True),
+        ("loop", "stage.done", 12000, False),
     ],
 )
 def test_staged_contour_events_cue_another_motion_in_native_runtime(
@@ -984,6 +1055,8 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
             }
         },
     }
+    if port == "stage.done":
+        voice["motions"]["clock"]["body"]["stages"][0]["motion"]["repeat_count"] = 1
     if named:
         voice["motions"]["clock"]["body"]["stages"][0]["motion"].update(
             {
