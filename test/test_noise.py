@@ -203,13 +203,17 @@ def test_persistent_noise_matches_native_across_blocks_and_restore(
     np.testing.assert_allclose(replay, actual[24001:], atol=0)
 
 
-def test_persistent_noise_applies_named_envelope(tmp_path: Path) -> None:
+@pytest.mark.parametrize("playback", ["once", "loop", "ping_pong"])
+def test_persistent_noise_applies_contour_playback(
+    tmp_path: Path, playback: str
+) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
     voice["motions"] = {
         "motion": {
             "body": {
                 "kind": "contour",
+                "playback": playback,
                 "initial": 0,
                 "segments": [{"duration": "1/4 s", "to": 1}],
                 "release": [{"duration": "1/4 s", "to": 0}],
@@ -247,7 +251,7 @@ def test_persistent_noise_applies_named_envelope(tmp_path: Path) -> None:
         seed=0,
     ).actions
     prepared = noise.prepare(document)
-    expected = noise.OfflineNoise(prepared, "native").advance(actions, 0, 48000)
+    expected = noise.OfflineNoise(prepared, "numpy").advance(actions, 0, 48000)
     persistent = noise.PersistentNoise(prepared, voices=4)
     actual = np.empty_like(expected)
     for start in range(0, 48000, 997):
@@ -263,7 +267,7 @@ def test_persistent_noise_applies_named_envelope(tmp_path: Path) -> None:
         [action for action in actions if 24925 <= action.tick < 48000], 24925, 48000
     )
 
-    check_audio(tmp_path / "persistent-noise-named-envelope.wav", actual, expected)
+    check_audio(tmp_path / f"persistent-noise-contour-{playback}.wav", actual, expected)
     np.testing.assert_allclose(replay, actual[24925:], atol=0)
 
 

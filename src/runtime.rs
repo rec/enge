@@ -69,6 +69,7 @@ struct NamedEnvelopeDefinition {
     intercept: f64,
     slope: f64,
     release_with_voice: bool,
+    playback: usize,
 }
 
 #[derive(Clone)]
@@ -665,7 +666,7 @@ impl SynthRuntime {
         initials: Vec<f64>,
         attacks: Vec<Vec<(f64, f64)>>,
         releases: Vec<Vec<(f64, f64)>>,
-        parameters: Vec<(usize, usize, f64, f64, bool)>,
+        parameters: Vec<(usize, usize, f64, f64, bool, usize)>,
     ) -> PyResult<()> {
         let count = initials.len();
         if attacks.len() != count || releases.len() != count || parameters.len() != count {
@@ -679,7 +680,7 @@ impl SynthRuntime {
             .map(
                 |(
                     ((initial, attack), release),
-                    (parameter, operation, intercept, slope, release_with_voice),
+                    (parameter, operation, intercept, slope, release_with_voice, playback),
                 )| {
                     if !initial.is_finite()
                         || attack.iter().chain(&release).any(|(frames, target)| {
@@ -687,6 +688,7 @@ impl SynthRuntime {
                         })
                         || parameter >= self.parameter_definitions.len() / 3
                         || operation > 1
+                        || playback > 2
                         || !intercept.is_finite()
                         || !slope.is_finite()
                     {
@@ -707,6 +709,7 @@ impl SynthRuntime {
                         intercept,
                         slope,
                         release_with_voice,
+                        playback,
                     })
                 },
             )
@@ -1759,7 +1762,7 @@ impl SynthRuntime {
                 state
                     .playback
                     .command(command, action[5], self.frame as f64);
-                if command == 4 {
+                if command == 4 && (state.released || definition.playback == 0) {
                     state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
                 }
                 self.named_states[index] = state;
@@ -2523,7 +2526,10 @@ fn named_contour_settled(
         let value = envelope_value(
             state.start_value,
             &definition.attack,
-            state.playback.coordinate_at(release_at).clamp(0.0, 1.0) * duration,
+            contour_coordinate(
+                state.playback.coordinate_at(release_at),
+                definition.playback,
+            ) * duration,
         );
         let release_duration = total_frames(&definition.release);
         settled.start_value = value;
@@ -2560,8 +2566,31 @@ fn named_contour_value(
     envelope_value(
         settled.start_value,
         segments,
-        settled.playback.coordinate_at(at).clamp(0.0, 1.0) * duration,
+        contour_coordinate(
+            settled.playback.coordinate_at(at),
+            if settled.released {
+                0
+            } else {
+                definition.playback
+            },
+        ) * duration,
     )
+}
+
+fn contour_coordinate(coordinate: f64, playback: usize) -> f64 {
+    match playback {
+        0 => coordinate.clamp(0.0, 1.0),
+        1 => coordinate.rem_euclid(1.0),
+        2 => {
+            let position = coordinate.rem_euclid(2.0);
+            if position <= 1.0 {
+                position
+            } else {
+                2.0 - position
+            }
+        }
+        _ => unreachable!(),
+    }
 }
 
 fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, at: f64) -> f64 {

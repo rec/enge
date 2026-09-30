@@ -520,6 +520,63 @@ def test_trigger_motion_playback_matches_persistent_native(
     np.testing.assert_allclose(replay, actual[37886:], atol=0)
 
 
+@pytest.mark.parametrize("playback", ["loop", "ping_pong"])
+def test_contour_playback_and_immediate_release_match_persistent_native(
+    tmp_path: Path, playback: str
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"]["motion"]["body"] = {
+        "kind": "contour",
+        "playback": playback,
+        "segments": [{"duration": "1/2 s", "to": 1}],
+        "release": [{"duration": "1/4 s", "to": 0}],
+    }
+    voice["modulation"]["sources"][0]["minimum"] = 0
+    voice["modulation"]["routes"][0]["points"][0]["input"] = 0
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        MotionChange(
+            tick=26000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="shift",
+            offset=1.5,
+        ),
+        MotionChange(
+            tick=28000,
+            ordinal=0,
+            name="motion",
+            part="main",
+            trigger_id="note",
+            action="reverse",
+        ),
+        Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=2)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        end = min(48000, start + 997)
+        actual[start:end] = renderer.advance(
+            [a for a in actions if start <= a.tick < end], start, end
+        )
+        if end == 24925:
+            snapshot = renderer.snapshot()
+    check_audio(tmp_path / f"contour-{playback}.wav", actual, expected)
+    restored = PersistentSynth(definition, voices=2)
+    restored.restore(snapshot)
+    replay = restored.advance(
+        [a for a in actions if 24925 <= a.tick < 48000], 24925, 48000
+    )
+    np.testing.assert_allclose(replay, actual[24925:], atol=0)
+
+
 @pytest.mark.parametrize("kind", ["fm", "noise"])
 def test_trigger_motion_playback_matches_persistent_fm_and_noise(
     tmp_path: Path, kind: str
