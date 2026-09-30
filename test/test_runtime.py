@@ -982,6 +982,122 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
     assert abs(expected[boundary + 1, 0]) > abs(expected[boundary - 1, 0])
 
 
+def test_reversed_contour_markers_repeat_across_native_snapshot(
+    tmp_path: Path,
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "clock": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "sweep",
+                "stages": [
+                    {
+                        "name": "sweep",
+                        "motion": {
+                            "kind": "contour",
+                            "playback": "loop",
+                            "segments": [{"duration": "1/4 s", "to": 1}],
+                            "markers": [
+                                {"name": "quarter", "position": "1/4"},
+                                {"name": "threequarter", "position": "3/4"},
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+        "level": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "quiet",
+                "stages": [
+                    {"name": "quiet", "motion": {"kind": "hold", "value": 0}},
+                    {"name": "loud", "motion": {"kind": "hold", "value": 1}},
+                ],
+                "transitions": [
+                    {
+                        "from": ["quiet"],
+                        "event": "cue.raise",
+                        "action": {"kind": "enter", "stage": "loud"},
+                    },
+                    {
+                        "from": ["loud"],
+                        "event": "cue.lower",
+                        "action": {"kind": "enter", "stage": "quiet"},
+                    },
+                    {
+                        "from": ["loud"],
+                        "event": "cue.raise",
+                        "action": {"kind": "enter", "stage": "quiet"},
+                    },
+                    {
+                        "from": ["quiet"],
+                        "event": "cue.lower",
+                        "action": {"kind": "enter", "stage": "loud"},
+                    },
+                ],
+            }
+        },
+    }
+    voice["bindings"] = [
+        {"name": "clock", "kind": "motion", "reference": "clock"},
+        {"name": "level", "kind": "motion", "reference": "level"},
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
+        {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1},
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["event_connections"] = [
+        {
+            "source": "clock",
+            "port": "quarter",
+            "destination": "level",
+            "cue": "raise",
+        },
+        {
+            "source": "clock",
+            "port": "threequarter",
+            "destination": "level",
+            "cue": "lower",
+        },
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+        MotionChange(
+            tick=18000,
+            ordinal=0,
+            name="clock",
+            part="main",
+            trigger_id="note",
+            action="reverse",
+        ),
+    ]
+    actions = prepare_trace(document.body, events, seed=0).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    renderer = PersistentSynth(definition, voices=2)
+    first = renderer.advance([a for a in actions if a.tick < 24001], 0, 24001)
+    snapshot = renderer.snapshot()
+    second = renderer.advance([a for a in actions if a.tick >= 24001], 24001, 48000)
+    actual = np.concatenate((first, second))
+    check_audio(tmp_path / "reversed-contour-markers.wav", actual, expected)
+    restored = PersistentSynth(definition, voices=2)
+    restored.restore(snapshot)
+    np.testing.assert_allclose(
+        restored.advance([a for a in actions if a.tick >= 24001], 24001, 48000),
+        second,
+        atol=0,
+    )
+    for boundary in (3000, 9000, 21000, 27000):
+        assert not np.isclose(expected[boundary - 1, 0], expected[boundary + 1, 0]), (
+            boundary
+        )
+
+
 def test_persistent_synth_evolves_native_voice_filters(tmp_path: Path) -> None:
     document = filter_score("synth")
     events = [
