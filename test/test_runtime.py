@@ -9,6 +9,7 @@ from test_dynamic_synth import change, dynamic_score, onset
 from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
+from ufor.control import TempoMap
 from ufor.envelope import Envelope
 from ufor.events import LFOChange, MotionChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
@@ -923,6 +924,53 @@ def test_finite_contour_repeats_match_persistent_native(
     replay = PersistentSynth(definition, voices=2)
     replay.restore(snapshot)
     np.testing.assert_allclose(replay.advance(later, 13337, 48000), second, atol=0)
+
+
+def test_host_tempo_quantizes_motion_change_for_both_renderers(tmp_path: Path) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"]["motion"]["body"] = {
+        "kind": "contour",
+        "segments": [{"duration": "1 s", "to": 1}],
+    }
+    voice["modulation"]["sources"][0]["minimum"] = 0
+    voice["modulation"]["routes"][0]["points"][0]["input"] = 0
+    document = SynthInstrumentScore.model_validate(raw)
+    clock = TempoMap.model_validate(
+        {
+            "points": [
+                {"at_seconds": "0", "beat": "0", "bpm": "120"},
+                {"at_seconds": "1/4", "beat": "1/2", "bpm": "60"},
+            ]
+        }
+    )
+    start = onset(0, pitch=0.1).model_copy(update={"controls": {}})
+    command = MotionChange(
+        tick=12000,
+        ordinal=0,
+        name="motion",
+        part="main",
+        trigger_id="note",
+        action="pause",
+        quantize_beats=Fraction(1),
+    )
+    actions = prepare_trace(
+        document.body,
+        [start, command],
+        seed=0,
+        tempo_map=clock,
+        sample_rate=48000,
+    ).actions
+    manual = prepare_trace(
+        document.body,
+        [start, command.model_copy(update={"tick": 36000, "quantize_beats": None})],
+        seed=0,
+    ).actions
+    assert actions == manual
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(manual, 0, 48000)
+    actual = PersistentSynth(definition, voices=2).advance(actions, 0, 48000)
+    check_audio(tmp_path / "quantized-motion.wav", actual, expected)
 
 
 def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
