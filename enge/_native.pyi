@@ -209,6 +209,7 @@ class SynthRuntime:
                         list[tuple[float, float]],
                         list[float],
                         list[tuple[float, str]],
+                        int,
                     ]
                 ],
                 list[tuple[int, str, int]],

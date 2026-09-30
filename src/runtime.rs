@@ -83,6 +83,7 @@ struct NamedContourState {
 #[derive(Clone, PartialEq)]
 struct StageDefinition {
     kind: u8,
+    playback: usize,
     initial: f64,
     current_initial: bool,
     segments: Vec<Segment>,
@@ -171,7 +172,15 @@ struct StagedEvent {
     port: String,
 }
 
-type StageInput = (u8, f64, bool, Vec<(f64, f64)>, Vec<f64>, Vec<(f64, String)>);
+type StageInput = (
+    u8,
+    f64,
+    bool,
+    Vec<(f64, f64)>,
+    Vec<f64>,
+    Vec<(f64, String)>,
+    usize,
+);
 type StagedMotionInput = (
     Vec<StageInput>,
     Vec<(usize, String, usize)>,
@@ -748,8 +757,10 @@ impl SynthRuntime {
             let stages: Vec<StageDefinition> = stages
                 .into_iter()
                 .map(
-                    |(kind, initial, current_initial, segments, cycle, markers)| {
+                    |(kind, initial, current_initial, segments, cycle, markers, playback)| {
                         if kind > 2
+                            || playback > 2
+                            || (kind != 1 && playback != 0)
                             || !initial.is_finite()
                             || (kind != 1 && current_initial)
                             || segments.iter().any(|(frames, target)| {
@@ -784,6 +795,7 @@ impl SynthRuntime {
                         }
                         Ok(StageDefinition {
                             kind,
+                            playback,
                             initial,
                             current_initial,
                             segments: segments
@@ -1791,7 +1803,10 @@ impl SynthRuntime {
                 state
                     .playback
                     .command(command, action[5], self.frame as f64);
-                if command == 4 && self.staged_motions[source].stages[state.stage].kind == 1 {
+                if command == 4
+                    && self.staged_motions[source].stages[state.stage].kind == 1
+                    && self.staged_motions[source].stages[state.stage].playback == 0
+                {
                     state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
                 }
                 state.cursor_at = self.frame as f64;
@@ -1908,7 +1923,34 @@ impl SynthRuntime {
                 if port == "done" {
                     state.playback.coordinate = 1.0;
                 } else if stage.kind == 1 {
-                    state.playback.coordinate = stage.markers[order].0;
+                    if port == "cycle" || port == "turned" {
+                        state.playback.coordinate = state.playback.coordinate.round();
+                    } else if stage.playback == 0 {
+                        state.playback.coordinate = stage.markers[order].0;
+                    } else {
+                        let marker = stage.markers[order].0;
+                        let period = if stage.playback == 1 { 1.0 } else { 2.0 };
+                        let outward = ((state.playback.coordinate - marker) / period).round()
+                            * period
+                            + marker;
+                        if stage.playback == 1 {
+                            state.playback.coordinate = outward;
+                        } else {
+                            let returning = ((state.playback.coordinate - (2.0 - marker)) / period)
+                                .round()
+                                * period
+                                + 2.0
+                                - marker;
+                            state.playback.coordinate = if (outward - state.playback.coordinate)
+                                .abs()
+                                < (returning - state.playback.coordinate).abs()
+                            {
+                                outward
+                            } else {
+                                returning
+                            };
+                        }
+                    }
                 } else if stage.kind == 2 {
                     let marker = stage.markers[order].0;
                     state.playback.coordinate =
@@ -2605,7 +2647,7 @@ fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, 
             envelope_value(
                 state.entry_value,
                 &stage.segments,
-                state.playback.coordinate_at(at).clamp(0.0, 1.0) * duration,
+                contour_coordinate(state.playback.coordinate_at(at), stage.playback) * duration,
             )
         }
         _ => {
@@ -2675,7 +2717,7 @@ fn next_staged_event(
     let start = playback.coordinate;
     let forward = playback.direction > 0.0;
     let mut candidates = Vec::new();
-    if stage.kind == 1 {
+    if stage.kind == 1 && stage.playback == 0 {
         for (order, (position, name)) in stage.markers.iter().enumerate() {
             if (if forward {
                 *position > start
@@ -2704,6 +2746,64 @@ fn next_staged_event(
                 "done".to_owned(),
             ));
         }
+    } else if stage.kind == 1 {
+        let period = if stage.playback == 1 { 1.0 } else { 2.0 };
+        for (order, (position, name)) in stage.markers.iter().enumerate() {
+            let offsets = if stage.playback == 1 {
+                vec![*position]
+            } else {
+                vec![*position, 2.0 - position]
+            };
+            for offset in offsets {
+                let relative = (start - offset) / period;
+                let turn = if forward {
+                    relative.floor() + 1.0
+                } else {
+                    relative.ceil() - 1.0
+                };
+                let target = turn * period + offset;
+                candidates.push((staged_event_time(playback, target), order, name.clone()));
+                if state.cursor_order != usize::MAX
+                    && (relative - relative.round()).abs() < 1e-8
+                    && if forward {
+                        order > state.cursor_order
+                    } else {
+                        order < state.cursor_order
+                    }
+                {
+                    candidates.push((playback.at, order, name.clone()));
+                }
+            }
+        }
+        let boundary = if forward {
+            start.floor() + 1.0
+        } else {
+            start.ceil() - 1.0
+        };
+        let order = stage.markers.len();
+        candidates.push((
+            staged_event_time(playback, boundary),
+            order,
+            if stage.playback == 1 {
+                "cycle"
+            } else {
+                "turned"
+            }
+            .to_owned(),
+        ));
+        if stage.playback == 2 {
+            if boundary.rem_euclid(2.0) == 0.0 {
+                candidates.push((
+                    staged_event_time(playback, boundary),
+                    order + 1,
+                    "cycle".to_owned(),
+                ));
+            }
+            if start == start.round() && start.rem_euclid(2.0) == 0.0 && state.cursor_order == order
+            {
+                candidates.push((playback.at, order + 1, "cycle".to_owned()));
+            }
+        }
     } else if stage.kind == 2 {
         for (order, (position, name)) in stage.markers.iter().enumerate() {
             let offset = start - position;
@@ -2731,7 +2831,7 @@ fn next_staged_event(
         .filter(|(at, _, _)| if inclusive { *at <= limit } else { *at < limit })
         .min_by(|a, b| {
             a.0.total_cmp(&b.0).then_with(|| {
-                if forward {
+                if forward || (a.2 == "turned" || a.2 == "cycle") {
                     a.1.cmp(&b.1)
                 } else {
                     b.1.cmp(&a.1)
