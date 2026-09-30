@@ -70,6 +70,8 @@ struct NamedEnvelopeDefinition {
     slope: f64,
     release_with_voice: bool,
     playback: usize,
+    loop_start: f64,
+    loop_end: f64,
 }
 
 #[derive(Clone)]
@@ -84,6 +86,8 @@ struct NamedContourState {
 struct StageDefinition {
     kind: u8,
     playback: usize,
+    loop_start: f64,
+    loop_end: f64,
     initial: f64,
     current_initial: bool,
     segments: Vec<Segment>,
@@ -180,7 +184,10 @@ type StageInput = (
     Vec<f64>,
     Vec<(f64, String)>,
     usize,
+    f64,
+    f64,
 );
+type NamedContourInput = (usize, usize, f64, f64, bool, usize, f64, f64);
 type StagedMotionInput = (
     Vec<StageInput>,
     Vec<(usize, String, usize)>,
@@ -675,7 +682,7 @@ impl SynthRuntime {
         initials: Vec<f64>,
         attacks: Vec<Vec<(f64, f64)>>,
         releases: Vec<Vec<(f64, f64)>>,
-        parameters: Vec<(usize, usize, f64, f64, bool, usize)>,
+        parameters: Vec<NamedContourInput>,
     ) -> PyResult<()> {
         let count = initials.len();
         if attacks.len() != count || releases.len() != count || parameters.len() != count {
@@ -689,7 +696,16 @@ impl SynthRuntime {
             .map(
                 |(
                     ((initial, attack), release),
-                    (parameter, operation, intercept, slope, release_with_voice, playback),
+                    (
+                        parameter,
+                        operation,
+                        intercept,
+                        slope,
+                        release_with_voice,
+                        playback,
+                        loop_start,
+                        loop_end,
+                    ),
                 )| {
                     if !initial.is_finite()
                         || attack.iter().chain(&release).any(|(frames, target)| {
@@ -698,6 +714,9 @@ impl SynthRuntime {
                         || parameter >= self.parameter_definitions.len() / 3
                         || operation > 1
                         || playback > 2
+                        || !(0.0..1.0).contains(&loop_start)
+                        || !(loop_start..=1.0).contains(&loop_end)
+                        || loop_start == loop_end
                         || !intercept.is_finite()
                         || !slope.is_finite()
                     {
@@ -719,6 +738,8 @@ impl SynthRuntime {
                         slope,
                         release_with_voice,
                         playback,
+                        loop_start,
+                        loop_end,
                     })
                 },
             )
@@ -757,10 +778,23 @@ impl SynthRuntime {
             let stages: Vec<StageDefinition> = stages
                 .into_iter()
                 .map(
-                    |(kind, initial, current_initial, segments, cycle, markers, playback)| {
+                    |(
+                        kind,
+                        initial,
+                        current_initial,
+                        segments,
+                        cycle,
+                        markers,
+                        playback,
+                        loop_start,
+                        loop_end,
+                    )| {
                         if kind > 2
                             || playback > 2
                             || (kind != 1 && playback != 0)
+                            || !(0.0..1.0).contains(&loop_start)
+                            || !(loop_start..=1.0).contains(&loop_end)
+                            || loop_start == loop_end
                             || !initial.is_finite()
                             || (kind != 1 && current_initial)
                             || segments.iter().any(|(frames, target)| {
@@ -796,6 +830,8 @@ impl SynthRuntime {
                         Ok(StageDefinition {
                             kind,
                             playback,
+                            loop_start,
+                            loop_end,
                             initial,
                             current_initial,
                             segments: segments
@@ -1923,7 +1959,14 @@ impl SynthRuntime {
                 if port == "done" {
                     state.playback.coordinate = 1.0;
                 } else if stage.kind == 1 {
-                    if port == "cycle" || port == "turned" {
+                    if stage.loop_start != 0.0 || stage.loop_end != 1.0 {
+                        if port == "cycle" || port == "turned" {
+                            let width = stage.loop_end - stage.loop_start;
+                            state.playback.coordinate = stage.loop_end
+                                + ((state.playback.coordinate - stage.loop_end) / width).round()
+                                    * width;
+                        }
+                    } else if port == "cycle" || port == "turned" {
                         state.playback.coordinate = state.playback.coordinate.round();
                     } else if stage.playback == 0 {
                         state.playback.coordinate = stage.markers[order].0;
@@ -2571,6 +2614,8 @@ fn named_contour_settled(
             contour_coordinate(
                 state.playback.coordinate_at(release_at),
                 definition.playback,
+                definition.loop_start,
+                definition.loop_end,
             ) * duration,
         );
         let release_duration = total_frames(&definition.release);
@@ -2615,11 +2660,30 @@ fn named_contour_value(
             } else {
                 definition.playback
             },
+            definition.loop_start,
+            definition.loop_end,
         ) * duration,
     )
 }
 
-fn contour_coordinate(coordinate: f64, playback: usize) -> f64 {
+fn contour_coordinate(coordinate: f64, playback: usize, start: f64, end: f64) -> f64 {
+    if start != 0.0 || end != 1.0 {
+        if coordinate < end {
+            return coordinate.max(0.0);
+        }
+        let width = end - start;
+        if playback == 1 {
+            return start + (coordinate - end).rem_euclid(width);
+        }
+        if playback == 2 {
+            let position = (coordinate - end).rem_euclid(2.0 * width);
+            return if position <= width {
+                end - position
+            } else {
+                start + position - width
+            };
+        }
+    }
     match playback {
         0 => coordinate.clamp(0.0, 1.0),
         1 => coordinate.rem_euclid(1.0),
@@ -2647,7 +2711,12 @@ fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, 
             envelope_value(
                 state.entry_value,
                 &stage.segments,
-                contour_coordinate(state.playback.coordinate_at(at), stage.playback) * duration,
+                contour_coordinate(
+                    state.playback.coordinate_at(at),
+                    stage.playback,
+                    stage.loop_start,
+                    stage.loop_end,
+                ) * duration,
             )
         }
         _ => {
@@ -2746,6 +2815,107 @@ fn next_staged_event(
                 "done".to_owned(),
             ));
         }
+    } else if stage.kind == 1 && (stage.loop_start != 0.0 || stage.loop_end != 1.0) {
+        let width = stage.loop_end - stage.loop_start;
+        let period = if stage.playback == 1 {
+            width
+        } else {
+            2.0 * width
+        };
+        for (order, (position, name)) in stage.markers.iter().enumerate() {
+            let mut targets = vec![*position];
+            let mut bases = Vec::new();
+            if *position >= stage.loop_start {
+                if stage.playback == 1 {
+                    bases.push(stage.loop_end + position - stage.loop_start);
+                } else {
+                    if *position < stage.loop_end {
+                        bases.push(2.0 * stage.loop_end - position);
+                    }
+                    if *position > stage.loop_start {
+                        bases.push(stage.loop_end + width + position - stage.loop_start);
+                    }
+                }
+            }
+            for base in bases {
+                let relative = (start - base) / period;
+                let turn = if forward {
+                    (relative.floor() + 1.0).max(0.0)
+                } else {
+                    relative.ceil() - 1.0
+                };
+                if turn >= 0.0 {
+                    targets.push(base + turn * period);
+                }
+                if start >= base && (relative - relative.round()).abs() < 1e-8 {
+                    targets.push(start);
+                }
+            }
+            for target in targets {
+                if (if forward {
+                    target > start
+                } else {
+                    target < start
+                }) || ((target - start).abs() < 1e-8
+                    && state.cursor_order != usize::MAX
+                    && if forward {
+                        order > state.cursor_order
+                    } else {
+                        state.cursor_order < stage.markers.len() && order < state.cursor_order
+                    })
+                {
+                    candidates.push((staged_event_time(playback, target), order, name.clone()));
+                }
+            }
+        }
+        let order = stage.markers.len();
+        let turn = if forward {
+            ((start - stage.loop_end) / width).floor() + 1.0
+        } else {
+            ((start - stage.loop_end) / width).ceil() - 1.0
+        };
+        let turn = if forward { turn.max(0.0) } else { turn };
+        if turn >= 0.0 {
+            let target = stage.loop_end + turn * width;
+            candidates.push((
+                staged_event_time(playback, target),
+                order,
+                if stage.playback == 1 {
+                    "cycle"
+                } else {
+                    "turned"
+                }
+                .to_owned(),
+            ));
+            if stage.playback == 2 && turn.rem_euclid(2.0) == 1.0 {
+                candidates.push((
+                    staged_event_time(playback, target),
+                    order + 1,
+                    "cycle".to_owned(),
+                ));
+            }
+        }
+        let relative = (start - stage.loop_end) / width;
+        if start >= stage.loop_end && (relative - relative.round()).abs() < 1e-8 {
+            if state.cursor_order < order {
+                candidates.push((
+                    playback.at,
+                    order,
+                    if stage.playback == 1 {
+                        "cycle"
+                    } else {
+                        "turned"
+                    }
+                    .to_owned(),
+                ));
+            }
+            if stage.playback == 2
+                && relative.round().rem_euclid(2.0) == 1.0
+                && state.cursor_order == order
+            {
+                candidates.push((playback.at, order + 1, "cycle".to_owned()));
+            }
+        }
     } else if stage.kind == 1 {
         let period = if stage.playback == 1 { 1.0 } else { 2.0 };
         for (order, (position, name)) in stage.markers.iter().enumerate() {
@@ -2831,11 +3001,14 @@ fn next_staged_event(
         .filter(|(at, _, _)| if inclusive { *at <= limit } else { *at < limit })
         .min_by(|a, b| {
             a.0.total_cmp(&b.0).then_with(|| {
-                if forward || (a.2 == "turned" || a.2 == "cycle") {
-                    a.1.cmp(&b.1)
-                } else {
-                    b.1.cmp(&a.1)
-                }
+                let order = |candidate: &(f64, usize, String)| {
+                    if forward || candidate.2 == "turned" || candidate.2 == "cycle" {
+                        candidate.1 as i64
+                    } else {
+                        -(candidate.1 as i64)
+                    }
+                };
+                order(a).cmp(&order(b))
             })
         })
 }

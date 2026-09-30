@@ -521,8 +521,9 @@ def test_trigger_motion_playback_matches_persistent_native(
 
 
 @pytest.mark.parametrize("playback", ["loop", "ping_pong"])
+@pytest.mark.parametrize("named", [False, True])
 def test_contour_playback_and_immediate_release_match_persistent_native(
-    tmp_path: Path, playback: str
+    tmp_path: Path, playback: str, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -532,6 +533,17 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
         "segments": [{"duration": "1/2 s", "to": 1}],
         "release": [{"duration": "1/4 s", "to": 0}],
     }
+    if named:
+        voice["motions"]["motion"]["body"].update(
+            {
+                "markers": [
+                    {"name": "start", "position": "1/4"},
+                    {"name": "end", "position": "3/4"},
+                ],
+                "loop_start": "start",
+                "loop_end": "end",
+            }
+        )
     voice["modulation"]["sources"][0]["minimum"] = 0
     voice["modulation"]["routes"][0]["points"][0]["input"] = 0
     document = SynthInstrumentScore.model_validate(raw)
@@ -568,7 +580,7 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
         )
         if end == 24925:
             snapshot = renderer.snapshot()
-    check_audio(tmp_path / f"contour-{playback}.wav", actual, expected)
+    check_audio(tmp_path / f"contour-{playback}-{named}.wav", actual, expected)
     restored = PersistentSynth(definition, voices=2)
     restored.restore(snapshot)
     replay = restored.advance(
@@ -578,8 +590,9 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
 
 
 @pytest.mark.parametrize("playback", ["loop", "ping_pong"])
+@pytest.mark.parametrize("named", [False, True])
 def test_staged_contour_playback_and_release_match_persistent_native(
-    tmp_path: Path, playback: str
+    tmp_path: Path, playback: str, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
@@ -612,6 +625,19 @@ def test_staged_contour_playback_and_release_match_persistent_native(
             }
         ],
     }
+    if named:
+        raw["body"]["voices"][0]["motions"]["motion"]["body"]["stages"][0][
+            "motion"
+        ].update(
+            {
+                "markers": [
+                    {"name": "start", "position": "1/4"},
+                    {"name": "end", "position": "3/4"},
+                ],
+                "loop_start": "start",
+                "loop_end": "end",
+            }
+        )
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
@@ -638,7 +664,7 @@ def test_staged_contour_playback_and_release_match_persistent_native(
         )
         if end == 9970:
             snapshot = renderer.snapshot()
-    check_audio(tmp_path / f"staged-contour-{playback}.wav", actual, expected)
+    check_audio(tmp_path / f"staged-contour-{playback}-{named}.wav", actual, expected)
     restored = PersistentSynth(definition, voices=2)
     restored.restore(snapshot)
     replay = restored.advance(
@@ -908,15 +934,18 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
 
 
 @pytest.mark.parametrize(
-    ("playback", "port", "boundary"),
+    ("playback", "port", "boundary", "named"),
     [
-        ("loop", "cycle", 12000),
-        ("ping_pong", "turned", 12000),
-        ("ping_pong", "cycle", 24000),
+        ("loop", "cycle", 12000, False),
+        ("ping_pong", "turned", 12000, False),
+        ("ping_pong", "cycle", 24000, False),
+        ("loop", "cycle", 9000, True),
+        ("ping_pong", "turned", 9000, True),
+        ("ping_pong", "cycle", 15000, True),
     ],
 )
 def test_staged_contour_events_cue_another_motion_in_native_runtime(
-    tmp_path: Path, playback: str, port: str, boundary: int
+    tmp_path: Path, playback: str, port: str, boundary: int, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -955,6 +984,31 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
             }
         },
     }
+    if named:
+        voice["motions"]["clock"]["body"]["stages"][0]["motion"].update(
+            {
+                "markers": [
+                    {"name": "start", "position": "1/4"},
+                    {"name": "end", "position": "3/4"},
+                ],
+                "loop_start": "start",
+                "loop_end": "end",
+            }
+        )
+        if boundary == 9000:
+            level = voice["motions"]["level"]["body"]
+            level["stages"].insert(
+                1, {"name": "middle", "motion": {"kind": "hold", "value": 0}}
+            )
+            level["transitions"][0]["from"] = ["middle"]
+            level["transitions"].insert(
+                0,
+                {
+                    "from": ["waiting"],
+                    "event": "cue.marker",
+                    "action": {"kind": "enter", "stage": "middle"},
+                },
+            )
     voice["bindings"] = [
         {"name": "clock", "kind": "motion", "reference": "clock"},
         {"name": "level", "kind": "motion", "reference": "level"},
@@ -967,6 +1021,16 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
     voice["event_connections"] = [
         {"source": "clock", "port": port, "destination": "level", "cue": "brighten"}
     ]
+    if named and boundary == 9000:
+        voice["event_connections"].insert(
+            0,
+            {
+                "source": "clock",
+                "port": "end",
+                "destination": "level",
+                "cue": "marker",
+            },
+        )
     document = SynthInstrumentScore.model_validate(raw)
     actions = prepare_trace(
         document.body,
@@ -977,7 +1041,9 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
     expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
     actual = PersistentSynth(definition, voices=2).advance(actions, 0, 48000)
     check_audio(
-        tmp_path / f"staged-contour-event-{playback}-{port}.wav", actual, expected
+        tmp_path / f"staged-contour-event-{playback}-{port}-{named}.wav",
+        actual,
+        expected,
     )
     assert abs(expected[boundary + 1, 0]) > abs(expected[boundary - 1, 0])
 

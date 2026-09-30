@@ -62,6 +62,8 @@ StagedRuntimeDefinition = tuple[
             list[float],
             list[tuple[float, str]],
             int,
+            float,
+            float,
         ]
     ],
     list[tuple[int, str, int]],
@@ -1872,7 +1874,7 @@ def _persistent_modulation(
     list[float],
     list[list[tuple[float, float]]],
     list[list[tuple[float, float]]],
-    list[tuple[int, int, float, float, bool, int]],
+    list[tuple[int, int, float, float, bool, int, float, float]],
     dict[str, list[int]],
     set[str],
     np.ndarray,
@@ -1995,7 +1997,9 @@ def _persistent_modulation(
     envelope_initials: list[float] = []
     envelope_attacks: list[list[tuple[float, float]]] = []
     envelope_releases: list[list[tuple[float, float]]] = []
-    envelope_parameters: list[tuple[int, int, float, float, bool, int]] = []
+    envelope_parameters: list[
+        tuple[int, int, float, float, bool, int, float, float]
+    ] = []
     named_motion_sources: dict[str, list[int]] = {}
     staged_motions: list[StagedRuntimeDefinition] = []
     staged_bindings: dict[str, int] = {}
@@ -2122,6 +2126,24 @@ def _persistent_modulation(
                             PlaybackMode.loop,
                             PlaybackMode.ping_pong,
                         ].index(generator.playback),
+                        float(
+                            next(
+                                m.position
+                                for m in generator.markers
+                                if m.name == generator.loop_start
+                            )
+                        )
+                        if generator.loop_start is not None
+                        else 0.0,
+                        float(
+                            next(
+                                m.position
+                                for m in generator.markers
+                                if m.name == generator.loop_end
+                            )
+                        )
+                        if generator.loop_end is not None
+                        else 1.0,
                     )
                 )
                 continue
@@ -2242,12 +2264,14 @@ def _runtime_staged_motion(
             list[float],
             list[tuple[float, str]],
             int,
+            float,
+            float,
         ]
     ] = []
     for stage in body.stages:
         motion = stage.motion
         if isinstance(motion, Hold):
-            stages.append((0, motion.value, False, [], [], [], 0))
+            stages.append((0, motion.value, False, [], [], [], 0, 0.0, 1.0))
         elif isinstance(motion, Contour):
             if any(s.curve != 0 for s in motion.segments):
                 raise EngineError("Persistent staged contours require linear segments")
@@ -2264,6 +2288,24 @@ def _runtime_staged_motion(
                         PlaybackMode.loop,
                         PlaybackMode.ping_pong,
                     ].index(motion.playback),
+                    float(
+                        next(
+                            m.position
+                            for m in motion.markers
+                            if m.name == motion.loop_start
+                        )
+                    )
+                    if motion.loop_start is not None
+                    else 0.0,
+                    float(
+                        next(
+                            m.position
+                            for m in motion.markers
+                            if m.name == motion.loop_end
+                        )
+                    )
+                    if motion.loop_end is not None
+                    else 1.0,
                 )
             )
         else:
@@ -2291,6 +2333,8 @@ def _runtime_staged_motion(
                     ],
                     [(float(m.position), m.name) for m in motion.markers],
                     0,
+                    0.0,
+                    1.0,
                 )
             )
     transitions: list[tuple[int, str, int]] = []
