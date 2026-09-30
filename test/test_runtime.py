@@ -907,6 +907,81 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
     assert abs(expected[12002, 0]) > abs(expected[12001, 0])
 
 
+@pytest.mark.parametrize(
+    ("playback", "port", "boundary"),
+    [
+        ("loop", "cycle", 12000),
+        ("ping_pong", "turned", 12000),
+        ("ping_pong", "cycle", 24000),
+    ],
+)
+def test_staged_contour_events_cue_another_motion_in_native_runtime(
+    tmp_path: Path, playback: str, port: str, boundary: int
+) -> None:
+    raw = lfo_score("synth", "voice").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "clock": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "sweep",
+                "stages": [
+                    {
+                        "name": "sweep",
+                        "motion": {
+                            "kind": "contour",
+                            "playback": playback,
+                            "segments": [{"duration": "1/4 s", "to": 1}],
+                        },
+                    }
+                ],
+            }
+        },
+        "level": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "waiting",
+                "stages": [
+                    {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
+                    {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                ],
+                "transitions": [
+                    {
+                        "from": ["waiting"],
+                        "event": "cue.brighten",
+                        "action": {"kind": "enter", "stage": "bright"},
+                    }
+                ],
+            }
+        },
+    }
+    voice["bindings"] = [
+        {"name": "clock", "kind": "motion", "reference": "clock"},
+        {"name": "level", "kind": "motion", "reference": "level"},
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
+        {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1},
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["event_connections"] = [
+        {"source": "clock", "port": port, "destination": "level", "cue": "brighten"}
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = prepare_trace(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    definition = prepare(document)
+    expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
+    actual = PersistentSynth(definition, voices=2).advance(actions, 0, 48000)
+    check_audio(
+        tmp_path / f"staged-contour-event-{playback}-{port}.wav", actual, expected
+    )
+    assert abs(expected[boundary + 1, 0]) > abs(expected[boundary - 1, 0])
+
+
 def test_persistent_synth_evolves_native_voice_filters(tmp_path: Path) -> None:
     document = filter_score("synth")
     events = [
