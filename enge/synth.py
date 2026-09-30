@@ -64,6 +64,7 @@ StagedRuntimeDefinition = tuple[
             int,
             float,
             float,
+            int | None,
         ]
     ],
     list[tuple[int, str, int]],
@@ -1874,7 +1875,7 @@ def _persistent_modulation(
     list[float],
     list[list[tuple[float, float]]],
     list[list[tuple[float, float]]],
-    list[tuple[int, int, float, float, bool, int, float, float]],
+    list[tuple[int, int, float, float, bool, int, float, float, int | None]],
     dict[str, list[int]],
     set[str],
     np.ndarray,
@@ -1998,7 +1999,7 @@ def _persistent_modulation(
     envelope_attacks: list[list[tuple[float, float]]] = []
     envelope_releases: list[list[tuple[float, float]]] = []
     envelope_parameters: list[
-        tuple[int, int, float, float, bool, int, float, float]
+        tuple[int, int, float, float, bool, int, float, float, int | None]
     ] = []
     named_motion_sources: dict[str, list[int]] = {}
     staged_motions: list[StagedRuntimeDefinition] = []
@@ -2144,6 +2145,7 @@ def _persistent_modulation(
                         )
                         if generator.loop_end is not None
                         else 1.0,
+                        generator.repeat_count,
                     )
                 )
                 continue
@@ -2266,12 +2268,13 @@ def _runtime_staged_motion(
             int,
             float,
             float,
+            int | None,
         ]
     ] = []
     for stage in body.stages:
         motion = stage.motion
         if isinstance(motion, Hold):
-            stages.append((0, motion.value, False, [], [], [], 0, 0.0, 1.0))
+            stages.append((0, motion.value, False, [], [], [], 0, 0.0, 1.0, None))
         elif isinstance(motion, Contour):
             if any(s.curve != 0 for s in motion.segments):
                 raise EngineError("Persistent staged contours require linear segments")
@@ -2306,6 +2309,7 @@ def _runtime_staged_motion(
                     )
                     if motion.loop_end is not None
                     else 1.0,
+                    motion.repeat_count,
                 )
             )
         else:
@@ -2335,6 +2339,7 @@ def _runtime_staged_motion(
                     0,
                     0.0,
                     1.0,
+                    None,
                 )
             )
     transitions: list[tuple[int, str, int]] = []

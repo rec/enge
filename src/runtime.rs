@@ -72,6 +72,7 @@ struct NamedEnvelopeDefinition {
     playback: usize,
     loop_start: f64,
     loop_end: f64,
+    repeat_count: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -80,6 +81,8 @@ struct NamedContourState {
     start_value: f64,
     released: bool,
     pending_release: Option<f64>,
+    traversals: usize,
+    complete_coordinate: Option<f64>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -88,6 +91,7 @@ struct StageDefinition {
     playback: usize,
     loop_start: f64,
     loop_end: f64,
+    repeat_count: Option<usize>,
     initial: f64,
     current_initial: bool,
     segments: Vec<Segment>,
@@ -115,6 +119,7 @@ struct StagedMotionState {
     complete_value: f64,
     cursor_at: f64,
     cursor_order: usize,
+    traversals: usize,
 }
 
 #[derive(Clone)]
@@ -186,8 +191,9 @@ type StageInput = (
     usize,
     f64,
     f64,
+    Option<usize>,
 );
-type NamedContourInput = (usize, usize, f64, f64, bool, usize, f64, f64);
+type NamedContourInput = (usize, usize, f64, f64, bool, usize, f64, f64, Option<usize>);
 type StagedMotionInput = (
     Vec<StageInput>,
     Vec<(usize, String, usize)>,
@@ -705,6 +711,7 @@ impl SynthRuntime {
                         playback,
                         loop_start,
                         loop_end,
+                        repeat_count,
                     ),
                 )| {
                     if !initial.is_finite()
@@ -717,6 +724,7 @@ impl SynthRuntime {
                         || !(0.0..1.0).contains(&loop_start)
                         || !(loop_start..=1.0).contains(&loop_end)
                         || loop_start == loop_end
+                        || repeat_count.is_some_and(|count| count == 0 || playback == 0)
                         || !intercept.is_finite()
                         || !slope.is_finite()
                     {
@@ -740,6 +748,7 @@ impl SynthRuntime {
                         playback,
                         loop_start,
                         loop_end,
+                        repeat_count,
                     })
                 },
             )
@@ -788,6 +797,7 @@ impl SynthRuntime {
                         playback,
                         loop_start,
                         loop_end,
+                        repeat_count,
                     )| {
                         if kind > 2
                             || playback > 2
@@ -795,6 +805,8 @@ impl SynthRuntime {
                             || !(0.0..1.0).contains(&loop_start)
                             || !(loop_start..=1.0).contains(&loop_end)
                             || loop_start == loop_end
+                            || repeat_count
+                                .is_some_and(|count| count == 0 || kind != 1 || playback == 0)
                             || !initial.is_finite()
                             || (kind != 1 && current_initial)
                             || segments.iter().any(|(frames, target)| {
@@ -832,6 +844,7 @@ impl SynthRuntime {
                             playback,
                             loop_start,
                             loop_end,
+                            repeat_count,
                             initial,
                             current_initial,
                             segments: segments
@@ -882,6 +895,7 @@ impl SynthRuntime {
                     complete_value: 0.0,
                     cursor_at: 0.0,
                     cursor_order: usize::MAX,
+                    traversals: 0,
                 })
             })
             .collect();
@@ -1525,6 +1539,7 @@ impl SynthRuntime {
                         complete_value: 0.0,
                         cursor_at: self.frame as f64,
                         cursor_order: usize::MAX,
+                        traversals: 0,
                     };
                     if staged_transition(
                         definition,
@@ -1807,6 +1822,29 @@ impl SynthRuntime {
                 let definition = &self.named_envelopes[source];
                 let mut state =
                     named_contour_settled(definition, &self.named_states[index], self.frame as f64);
+                if let Some(count) = definition.repeat_count.filter(|_| !state.released) {
+                    if state.complete_coordinate.is_none() {
+                        let (crossed, boundary) = repeat_crossings(
+                            &state.playback,
+                            self.frame as f64,
+                            definition.loop_start,
+                            definition.loop_end,
+                            count - state.traversals,
+                        );
+                        state.traversals += crossed;
+                        if let Some(boundary) = boundary {
+                            state.playback.advance(self.frame as f64);
+                            state.playback.coordinate = boundary;
+                            state.complete_coordinate = Some(repeat_boundary_coordinate(
+                                definition.playback,
+                                boundary,
+                                state.playback.direction,
+                                definition.loop_start,
+                                definition.loop_end,
+                            ));
+                        }
+                    }
+                }
                 state
                     .playback
                     .command(command, action[5], self.frame as f64);
@@ -1955,9 +1993,12 @@ impl SynthRuntime {
                 state.cursor_at = at;
                 state.cursor_order = order;
                 state.playback.advance(at);
+                let stage_index = state.stage;
                 let stage = &definition.stages[state.stage];
                 if port == "done" {
-                    state.playback.coordinate = 1.0;
+                    if stage.repeat_count.is_none() {
+                        state.playback.coordinate = 1.0;
+                    }
                 } else if stage.kind == 1 {
                     if stage.loop_start != 0.0 || stage.loop_end != 1.0 {
                         if port == "cycle" || port == "turned" {
@@ -1999,7 +2040,25 @@ impl SynthRuntime {
                     state.playback.coordinate =
                         (state.playback.coordinate - marker).round() + marker;
                 }
+                if stage.repeat_count.is_some()
+                    && port
+                        == if stage.playback == 1 {
+                            "cycle"
+                        } else {
+                            "turned"
+                        }
+                {
+                    state.traversals += 1;
+                }
                 let finished = staged_transition(definition, state, &format!("stage.{port}"), at);
+                if port == "done"
+                    && stage.repeat_count.is_some()
+                    && !finished
+                    && state.stage == stage_index
+                {
+                    state.complete_value = staged_value(definition, state, at);
+                    state.completed = true;
+                }
                 self.staged_pending.push_back(StagedEvent {
                     at,
                     voice,
@@ -2597,6 +2656,8 @@ fn named_contour_initial(definition: &NamedEnvelopeDefinition, at: f64) -> Named
         start_value: definition.initial,
         released: false,
         pending_release: None,
+        traversals: 0,
+        complete_coordinate: None,
     }
 }
 
@@ -2611,17 +2672,14 @@ fn named_contour_settled(
         let value = envelope_value(
             state.start_value,
             &definition.attack,
-            contour_coordinate(
-                state.playback.coordinate_at(release_at),
-                definition.playback,
-                definition.loop_start,
-                definition.loop_end,
-            ) * duration,
+            named_contour_coordinate(definition, state, release_at) * duration,
         );
         let release_duration = total_frames(&definition.release);
         settled.start_value = value;
         settled.released = true;
         settled.pending_release = None;
+        settled.traversals = 0;
+        settled.complete_coordinate = None;
         settled.playback = PlaybackState {
             at: release_at,
             coordinate: if release_duration == 0.0 { 1.0 } else { 0.0 },
@@ -2653,16 +2711,107 @@ fn named_contour_value(
     envelope_value(
         settled.start_value,
         segments,
-        contour_coordinate(
-            settled.playback.coordinate_at(at),
-            if settled.released {
-                0
-            } else {
-                definition.playback
-            },
-            definition.loop_start,
-            definition.loop_end,
-        ) * duration,
+        named_contour_coordinate(definition, &settled, at) * duration,
+    )
+}
+
+fn repeat_crossings(
+    playback: &PlaybackState,
+    at: f64,
+    loop_start: f64,
+    loop_end: f64,
+    remaining: usize,
+) -> (usize, Option<f64>) {
+    let width = loop_end - loop_start;
+    let coordinate = playback.coordinate;
+    let target = playback.coordinate_at(at);
+    if playback.paused || playback.rate == 0.0 || target == coordinate {
+        return (0, None);
+    }
+    let named = loop_start != 0.0 || loop_end != 1.0;
+    let forward = playback.direction > 0.0;
+    let first = if forward {
+        if named {
+            loop_end + (((coordinate - loop_end) / width).floor() + 1.0).max(0.0) * width
+        } else {
+            coordinate.floor() + 1.0
+        }
+    } else if named {
+        loop_end + (((coordinate - loop_end) / width).ceil() - 1.0) * width
+    } else {
+        coordinate.ceil() - 1.0
+    };
+    if !forward && named && first < loop_end {
+        return (0, None);
+    }
+    let crossed = if forward {
+        (((target - first) / width + 1e-8).floor() + 1.0).max(0.0) as usize
+    } else {
+        (((first - target) / width + 1e-8).floor() + 1.0).max(0.0) as usize
+    };
+    let boundary = if crossed >= remaining {
+        Some(first + (remaining - 1) as f64 * width * playback.direction)
+    } else {
+        None
+    };
+    (crossed.min(remaining), boundary)
+}
+
+fn repeat_boundary_coordinate(
+    playback: usize,
+    boundary: f64,
+    direction: f64,
+    loop_start: f64,
+    loop_end: f64,
+) -> f64 {
+    if playback == 1 {
+        if direction > 0.0 {
+            loop_end
+        } else {
+            loop_start
+        }
+    } else {
+        contour_coordinate(boundary, playback, loop_start, loop_end)
+    }
+}
+
+fn named_contour_coordinate(
+    definition: &NamedEnvelopeDefinition,
+    state: &NamedContourState,
+    at: f64,
+) -> f64 {
+    if let Some(coordinate) = state.complete_coordinate {
+        return coordinate;
+    }
+    if !state.released {
+        if let Some(count) = definition.repeat_count {
+            let (_, boundary) = repeat_crossings(
+                &state.playback,
+                at,
+                definition.loop_start,
+                definition.loop_end,
+                count - state.traversals,
+            );
+            if let Some(boundary) = boundary {
+                return repeat_boundary_coordinate(
+                    definition.playback,
+                    boundary,
+                    state.playback.direction,
+                    definition.loop_start,
+                    definition.loop_end,
+                );
+            }
+        }
+    }
+    contour_coordinate(
+        state.playback.coordinate_at(at),
+        if state.released {
+            0
+        } else {
+            definition.playback
+        },
+        definition.loop_start,
+        definition.loop_end,
     )
 }
 
@@ -2708,16 +2857,22 @@ fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, 
         0 => stage.initial,
         1 => {
             let duration = total_frames(&stage.segments);
-            envelope_value(
-                state.entry_value,
-                &stage.segments,
-                contour_coordinate(
-                    state.playback.coordinate_at(at),
+            let coordinate = state.playback.coordinate_at(at);
+            let bounded = if stage
+                .repeat_count
+                .is_some_and(|count| state.traversals >= count)
+            {
+                repeat_boundary_coordinate(
                     stage.playback,
+                    coordinate,
+                    state.playback.direction,
                     stage.loop_start,
                     stage.loop_end,
-                ) * duration,
-            )
+                )
+            } else {
+                contour_coordinate(coordinate, stage.playback, stage.loop_start, stage.loop_end)
+            };
+            envelope_value(state.entry_value, &stage.segments, bounded * duration)
         }
         _ => {
             let cycle = &stage.cycle;
@@ -2780,6 +2935,22 @@ fn next_staged_event(
     }
     let stage = &definition.stages[state.stage];
     let playback = &state.playback;
+    if stage
+        .repeat_count
+        .is_some_and(|count| state.traversals >= count)
+    {
+        let width = stage.loop_end - stage.loop_start;
+        let relative = (playback.coordinate - stage.loop_end) / width;
+        let order = stage.markers.len();
+        let returning = stage.playback == 2
+            && (relative.round() - relative).abs() < 1e-8
+            && relative.round().rem_euclid(2.0) == 1.0
+            && state.cursor_order == order;
+        let port = if returning { "cycle" } else { "done" };
+        let at = playback.at;
+        return (if inclusive { at <= limit } else { at < limit })
+            .then(|| (at, order + if returning { 1 } else { 2 }, port.to_owned()));
+    }
     if playback.paused || playback.rate == 0.0 {
         return None;
     }
@@ -2896,7 +3067,7 @@ fn next_staged_event(
             }
         }
         let relative = (start - stage.loop_end) / width;
-        if start >= stage.loop_end && (relative - relative.round()).abs() < 1e-8 {
+        if start + 1e-8 >= stage.loop_end && (relative - relative.round()).abs() < 1e-8 {
             if state.cursor_order < order {
                 candidates.push((
                     playback.at,
@@ -3048,6 +3219,7 @@ fn staged_transition(
             complete_value: 0.0,
             cursor_at: at,
             cursor_order: usize::MAX,
+            traversals: 0,
         };
         false
     }
