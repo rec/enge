@@ -187,14 +187,21 @@ def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     voice = raw["body"]["voices"][0]
     voice["motions"]["motion"] = {
         "clock": "beats",
-        "body": {"kind": "cycle", "rate": "1"},
+        "body": {
+            "kind": "cycle",
+            "rate": "1",
+            "delay": "1/4",
+            "fade_in": "1/4",
+        },
     }
     document = SynthInstrumentScore.model_validate(raw)
     clock = TempoMap.model_validate(
         {
             "points": [
                 {"at_seconds": "0", "beat": "0", "bpm": "120"},
-                {"at_seconds": "1/2", "beat": "1", "bpm": "60"},
+                {"at_seconds": "1/4", "beat": "1/2", "bpm": "60"},
+                {"at_seconds": "1/2", "beat": "3/4", "bpm": "60", "running": False},
+                {"at_seconds": "3/4", "beat": "8", "bpm": "120"},
             ]
         }
     )
@@ -207,10 +214,20 @@ def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
         synth.prepare(document), backend, tempo_map=clock
     ).advance(actions, 0, 48000)
     seconds = np.arange(48000) / 48000
-    beats = 2 * np.minimum(seconds, 0.5) + np.maximum(seconds - 0.5, 0)
+    beats = (
+        2 * np.minimum(seconds, 0.25)
+        + np.clip(seconds - 0.25, 0, 0.25)
+        + 2 * np.maximum(seconds - 0.75, 0)
+    )
     expected = np.zeros((48000, 2), dtype=np.float64)
-    expected[:, 0] = 0.625 + 0.375 * np.sin(2 * np.pi * beats)
+    weight = np.clip((beats - 0.25) / 0.25, 0, 1)
+    expected[:, 0] = 1 + weight * (0.625 + 0.375 * np.sin(2 * np.pi * beats) - 1)
     check_audio(tmp_path / f"beat-cycle-{backend}.wav", actual, expected)
+    if backend == "numpy":
+        native = synth.PersistentSynth(
+            synth.prepare(document), voices=2, tempo_map=clock
+        ).advance(actions, 0, 48000)
+        check_audio(tmp_path / "beat-cycle-persistent.wav", native, expected)
 
 
 def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
@@ -316,6 +333,23 @@ def test_beat_cycle_pause_preserves_musical_phase(
     expected = np.zeros((48000, 2), dtype=np.float64)
     expected[:, 0] = 0.625 + 0.375 * np.sin(2 * np.pi * beats)
     check_audio(tmp_path / f"beat-cycle-pause-{backend}-{scope}.wav", actual, expected)
+    if backend == "numpy":
+        definition = synth.prepare(document)
+        native = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
+        first = native.advance([a for a in actions if a.tick < 24000], 0, 24000)
+        saved = native.snapshot()
+        second = native.advance([a for a in actions if a.tick >= 24000], 24000, 48000)
+        replay = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
+        replay.restore(saved)
+        np.testing.assert_array_equal(
+            replay.advance([a for a in actions if a.tick >= 24000], 24000, 48000),
+            second,
+        )
+        check_audio(
+            tmp_path / f"beat-cycle-pause-persistent-{scope}.wav",
+            np.vstack((first, second)),
+            expected,
+        )
 
 
 @pytest.mark.parametrize("body_kind", ["contour", "stages"])

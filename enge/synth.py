@@ -1232,11 +1232,6 @@ class PersistentSynth:
         if any(m.clock == "beats" for m in template.motions.values()):
             if tempo_map is None:
                 raise EngineError("Beat-clock Motion requires a host tempo map")
-            if any(
-                m.clock == "beats" and not isinstance(m.body, Contour)
-                for m in template.motions.values()
-            ):
-                raise EngineError("Persistent beat-clock Cycles are not implemented")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             filters=template.processing.filters,
@@ -2265,14 +2260,17 @@ def _persistent_modulation(
                     0 if operation == modulation.Operation.add else 1,
                     intercept,
                     slope,
+                    1.0 if motion.clock == "beats" else 0.0,
                 ]
             )
             for value in (
                 generator.duty_cycle,
                 generator.rate,
                 generator.phase,
-                generator.delay * definition.sample_rate,
-                generator.fade_in * definition.sample_rate,
+                generator.delay
+                * (1 if motion.clock == "beats" else definition.sample_rate),
+                generator.fade_in
+                * (1 if motion.clock == "beats" else definition.sample_rate),
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
             if source.scope == "instrument":
@@ -2316,7 +2314,7 @@ def _persistent_modulation(
         control_sources,
         control_scopes,
         source_controls,
-        np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 6),
+        np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 7),
         lfo_rationals,
         lfo_sources,
         voice_lfo_sources,
