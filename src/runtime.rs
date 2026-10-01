@@ -60,6 +60,13 @@ struct LfoEventState {
 }
 
 #[derive(Clone, PartialEq)]
+struct BeatPoint {
+    frame: f64,
+    beat: f64,
+    rate: f64,
+}
+
+#[derive(Clone, PartialEq)]
 struct NamedEnvelopeDefinition {
     initial: f64,
     attack: Vec<Segment>,
@@ -73,6 +80,7 @@ struct NamedEnvelopeDefinition {
     loop_start: f64,
     loop_end: f64,
     repeat_count: Option<usize>,
+    beat_clock: bool,
 }
 
 #[derive(Clone)]
@@ -80,7 +88,7 @@ struct NamedContourState {
     playback: PlaybackState,
     start_value: f64,
     released: bool,
-    pending_release: Option<f64>,
+    pending_release: Option<(f64, f64)>,
     traversals: usize,
     complete_coordinate: Option<f64>,
 }
@@ -261,6 +269,7 @@ pub struct SynthRuntimeSnapshot {
     lfo_event_states: Vec<Option<LfoEventState>>,
     voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
+    beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_states: Vec<StagedMotionState>,
     staged_connections: Vec<StagedConnection>,
@@ -327,6 +336,7 @@ pub struct SynthRuntime {
     lfo_event_states: Vec<Option<LfoEventState>>,
     voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
+    beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_states: Vec<StagedMotionState>,
     staged_connections: Vec<StagedConnection>,
@@ -460,6 +470,7 @@ impl SynthRuntime {
             lfo_event_states: vec![None; lfo_count],
             voice_lfo_event_states: vec![None; slots * lfo_count],
             named_envelopes: Vec::new(),
+            beat_points: Vec::new(),
             staged_motions: Vec::new(),
             staged_states: Vec::new(),
             staged_connections: Vec::new(),
@@ -749,6 +760,7 @@ impl SynthRuntime {
                         loop_start,
                         loop_end,
                         repeat_count,
+                        beat_clock: false,
                     })
                 },
             )
@@ -762,6 +774,43 @@ impl SynthRuntime {
             .take(states)
             .map(|definition| named_contour_initial(definition, 0.0))
             .collect();
+        Ok(())
+    }
+
+    fn set_beat_clock(&mut self, points: Vec<(f64, f64, f64)>) -> PyResult<()> {
+        if self.frame != 0
+            || points.is_empty()
+            || points[0].0 != 0.0
+            || points.iter().any(|(frame, beat, rate)| {
+                !frame.is_finite()
+                    || !beat.is_finite()
+                    || !rate.is_finite()
+                    || *beat < 0.0
+                    || *rate < 0.0
+            })
+            || points.windows(2).any(|pair| pair[1].0 <= pair[0].0)
+        {
+            return Err(PyValueError::new_err("Invalid native beat clock"));
+        }
+        self.beat_points = points
+            .into_iter()
+            .map(|(frame, beat, rate)| BeatPoint { frame, beat, rate })
+            .collect();
+        Ok(())
+    }
+
+    fn set_beat_named_envelopes(&mut self, indices: Vec<usize>) -> PyResult<()> {
+        if self.frame != 0
+            || self.beat_points.is_empty()
+            || indices
+                .iter()
+                .any(|index| *index >= self.named_envelopes.len())
+        {
+            return Err(PyValueError::new_err("Invalid beat-clock named Motion"));
+        }
+        for index in indices {
+            self.named_envelopes[index].beat_clock = true;
+        }
         Ok(())
     }
 
@@ -1048,6 +1097,7 @@ impl SynthRuntime {
             lfo_event_states: self.lfo_event_states.clone(),
             voice_lfo_event_states: self.voice_lfo_event_states.clone(),
             named_envelopes: self.named_envelopes.clone(),
+            beat_points: self.beat_points.clone(),
             staged_motions: self.staged_motions.clone(),
             staged_states: self.staged_states.clone(),
             staged_connections: self.staged_connections.clone(),
@@ -1110,6 +1160,7 @@ impl SynthRuntime {
             || self.control_definitions != snapshot.control_definitions
             || self.lfo_definitions != snapshot.lfo_definitions
             || self.named_envelopes != snapshot.named_envelopes
+            || self.beat_points != snapshot.beat_points
             || self.staged_motions != snapshot.staged_motions
             || self.staged_connections != snapshot.staged_connections
             || self.filter_definitions != snapshot.filter_definitions
@@ -1169,6 +1220,22 @@ impl SynthRuntime {
 }
 
 impl SynthRuntime {
+    fn local_beat_at(&self, frame: f64) -> f64 {
+        let index = self
+            .beat_points
+            .partition_point(|point| point.frame <= frame);
+        let point = &self.beat_points[index - 1];
+        point.beat + (frame - point.frame) * point.rate
+    }
+
+    fn named_time(&self, definition: &NamedEnvelopeDefinition, frame: f64) -> f64 {
+        if definition.beat_clock {
+            self.local_beat_at(frame)
+        } else {
+            frame
+        }
+    }
+
     pub(crate) fn channels(&self) -> usize {
         self.routes.ncols()
     }
@@ -1582,8 +1649,10 @@ impl SynthRuntime {
                 }
                 let envelope_base = voice * self.named_envelopes.len();
                 for (index, definition) in self.named_envelopes.iter().enumerate() {
-                    self.named_states[envelope_base + index] =
-                        named_contour_initial(definition, self.frame as f64);
+                    self.named_states[envelope_base + index] = named_contour_initial(
+                        definition,
+                        self.named_time(definition, self.frame as f64),
+                    );
                 }
                 if self.source_kind == 2 {
                     self.noise_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
@@ -1648,8 +1717,10 @@ impl SynthRuntime {
                         } else {
                             self.frame as f64
                         };
-                        self.named_states[envelope_base + index].pending_release =
-                            Some(named_release_at);
+                        self.named_states[envelope_base + index].pending_release = Some((
+                            named_release_at,
+                            self.named_time(definition, named_release_at),
+                        ));
                     }
                     self.release_frames[voice] = Some(release_frame);
                 }
@@ -1820,20 +1891,21 @@ impl SynthRuntime {
                 }
                 let index = voice * self.named_envelopes.len() + source;
                 let definition = &self.named_envelopes[source];
+                let at = self.named_time(definition, self.frame as f64);
                 let mut state =
                     named_contour_settled(definition, &self.named_states[index], self.frame as f64);
                 if let Some(count) = definition.repeat_count.filter(|_| !state.released) {
                     if state.complete_coordinate.is_none() {
                         let (crossed, boundary) = repeat_crossings(
                             &state.playback,
-                            self.frame as f64,
+                            at,
                             definition.loop_start,
                             definition.loop_end,
                             count - state.traversals,
                         );
                         state.traversals += crossed;
                         if let Some(boundary) = boundary {
-                            state.playback.advance(self.frame as f64);
+                            state.playback.advance(at);
                             state.playback.coordinate = boundary;
                             state.complete_coordinate = Some(repeat_boundary_coordinate(
                                 definition.playback,
@@ -1845,9 +1917,7 @@ impl SynthRuntime {
                         }
                     }
                 }
-                state
-                    .playback
-                    .command(command, action[5], self.frame as f64);
+                state.playback.command(command, action[5], at);
                 if command == 4 && (state.released || definition.playback == 0) {
                     state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
                 }
@@ -2211,6 +2281,7 @@ impl SynthRuntime {
             let value = named_contour_value(
                 definition,
                 &self.named_states[envelope_base + source],
+                self.named_time(definition, self.frame as f64),
                 self.frame as f64,
             );
             let amount = definition.intercept + definition.slope * value;
@@ -2701,10 +2772,13 @@ fn named_contour_initial(definition: &NamedEnvelopeDefinition, at: f64) -> Named
 fn named_contour_settled(
     definition: &NamedEnvelopeDefinition,
     state: &NamedContourState,
-    at: f64,
+    frame: f64,
 ) -> NamedContourState {
     let mut settled = state.clone();
-    if let Some(release_at) = state.pending_release.filter(|release_at| *release_at <= at) {
+    if let Some((_, release_at)) = state
+        .pending_release
+        .filter(|(release_frame, _)| *release_frame <= frame)
+    {
         let duration = total_frames(&definition.attack);
         let value = envelope_value(
             state.start_value,
@@ -2737,8 +2811,9 @@ fn named_contour_value(
     definition: &NamedEnvelopeDefinition,
     state: &NamedContourState,
     at: f64,
+    frame: f64,
 ) -> f64 {
-    let settled = named_contour_settled(definition, state, at);
+    let settled = named_contour_settled(definition, state, frame);
     let segments = if settled.released {
         &definition.release
     } else {
