@@ -10,7 +10,7 @@ from test_sample_instrument import sample_score
 from test_synth import check_audio, score
 from ufor import instrument_trace, synth_trace
 from ufor.control import TempoMap
-from ufor.events import MotionChange, Release
+from ufor.events import LFOChange, MotionChange, Release
 from ufor.library import Entry, Library
 from ufor.motion import (
     Cycle,
@@ -155,6 +155,100 @@ def test_beat_contour_follows_tempo_without_following_transport_seek(
     check_audio(
         tmp_path / f"beat-contour-{backend}.wav", np.vstack((first, second)), expected
     )
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"]["motion"] = {
+        "clock": "beats",
+        "body": {"kind": "cycle", "rate": "1"},
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    clock = TempoMap.model_validate(
+        {
+            "points": [
+                {"at_seconds": "0", "beat": "0", "bpm": "120"},
+                {"at_seconds": "1/2", "beat": "1", "bpm": "60"},
+            ]
+        }
+    )
+    actions = synth_trace.prepare(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    actual = synth.OfflineSynth(
+        synth.prepare(document), backend, tempo_map=clock
+    ).advance(actions, 0, 48000)
+    seconds = np.arange(48000) / 48000
+    beats = 2 * np.minimum(seconds, 0.5) + np.maximum(seconds - 0.5, 0)
+    expected = np.zeros((48000, 2), dtype=np.float64)
+    expected[:, 0] = 0.625 + 0.375 * np.sin(2 * np.pi * beats)
+    check_audio(tmp_path / f"beat-cycle-{backend}.wav", actual, expected)
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+@pytest.mark.parametrize("scope", ["voice", "instrument"])
+def test_beat_cycle_pause_preserves_musical_phase(
+    tmp_path: Path, backend: Literal["numpy", "native"], scope: str
+) -> None:
+    raw = lfo_score("synth", scope).model_dump(mode="json")
+    raw["body"]["voices"][0]["motions"]["motion"] = {
+        "scope": scope,
+        "clock": "beats",
+        "body": {"kind": "cycle", "rate": "1"},
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    clock = TempoMap.model_validate(
+        {
+            "points": [
+                {"at_seconds": "0", "beat": "0", "bpm": "120"},
+                {"at_seconds": "1/2", "beat": "1", "bpm": "60"},
+            ]
+        }
+    )
+    changes = (
+        [
+            LFOChange(tick=12000, ordinal=0, name="motion", action="pause"),
+            LFOChange(tick=24000, ordinal=0, name="motion", action="resume"),
+        ]
+        if scope == "instrument"
+        else [
+            MotionChange(
+                tick=12000,
+                ordinal=0,
+                name="motion",
+                part="main",
+                trigger_id="note",
+                action="pause",
+            ),
+            MotionChange(
+                tick=24000,
+                ordinal=0,
+                name="motion",
+                part="main",
+                trigger_id="note",
+                action="resume",
+            ),
+        ]
+    )
+    actions = synth_trace.prepare(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}}), *changes],
+        seed=0,
+    ).actions
+    actual = synth.OfflineSynth(
+        synth.prepare(document), backend, tempo_map=clock
+    ).advance(actions, 0, 48000)
+    seconds = np.arange(48000) / 48000
+    beats = 2 * np.minimum(seconds, 0.25) + np.maximum(seconds - 0.5, 0)
+    expected = np.zeros((48000, 2), dtype=np.float64)
+    expected[:, 0] = 0.625 + 0.375 * np.sin(2 * np.pi * beats)
+    check_audio(tmp_path / f"beat-cycle-pause-{backend}-{scope}.wav", actual, expected)
 
 
 @pytest.mark.parametrize("body_kind", ["contour", "stages"])

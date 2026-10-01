@@ -412,7 +412,14 @@ def test_preparation_rejects_unsupported_features(feature: str) -> None:
         voice["processing"]["pan"] = 0.5
     elif feature == "generator":
         voice["motions"] = {
-            "vibrato": {"clock": "beats", "body": {"kind": "cycle", "rate": "1"}}
+            "vibrato": {
+                "clock": "beats",
+                "body": {
+                    "kind": "stages",
+                    "initial_stage": "hold",
+                    "stages": [{"name": "hold", "motion": {"kind": "hold"}}],
+                },
+            }
         }
     elif feature == "curve":
         voice["envelope"]["segments"][0]["curve"] = 5

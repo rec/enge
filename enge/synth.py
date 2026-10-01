@@ -498,7 +498,9 @@ class ControlRenderer:
                             definition,
                             source.state,
                             MotionEvent(
-                                at=Fraction(action.tick, self.sample_rate),
+                                at=self.motion_time(
+                                    definition, Fraction(action.tick, self.sample_rate)
+                                ),
                                 ordinal=action.ordinal,
                                 action=action.action,
                                 rate=(
@@ -709,9 +711,12 @@ class ControlRenderer:
                             voice_id=voice_id,
                             state=initial_motion(
                                 motion,
-                                Fraction(
-                                    action.tick if voice_id is not None else 0,
-                                    self.sample_rate,
+                                self.motion_time(
+                                    motion,
+                                    Fraction(
+                                        action.tick if voice_id is not None else 0,
+                                        self.sample_rate,
+                                    ),
                                 ),
                             ),
                         )
@@ -843,7 +848,11 @@ class ControlRenderer:
                     assert isinstance(motion.body, Cycle)
                     assert isinstance(state, CycleState)
                     position = state.position
-                    if not position.paused and position.direction == 1:
+                    if (
+                        motion.clock == "seconds"
+                        and not position.paused
+                        and position.direction == 1
+                    ):
                         samples = lfo_samples(
                             cycle_lfo(motion),
                             lfo.LFOState(
@@ -867,7 +876,9 @@ class ControlRenderer:
                             value = motion_at(
                                 motion,
                                 self.lfos[index].state,
-                                Fraction(start + i, self.sample_rate),
+                                self.motion_time(
+                                    motion, Fraction(start + i, self.sample_rate)
+                                ),
                             )
                             samples[i] = value.value, value.weight
                     self.cached_lfos[index] = samples
@@ -1808,7 +1819,7 @@ def validate_envelope(envelope: Envelope) -> None:
 
 
 def validate_generators(
-    settings: SoundSettings, allow_beat_contours: bool = False
+    settings: SoundSettings, allow_beat_motions: bool = False
 ) -> None:
     """Validate the Motion clocks supported by the selected renderer."""
     if any(g.score is not None for g in settings.motions.values()):
@@ -1821,10 +1832,10 @@ def validate_generators(
         raise EngineError("Staged and contour Motions require voice scope")
     if any(
         g.clock != "seconds"
-        and not (allow_beat_contours and isinstance(g.body, Contour))
+        and not (allow_beat_motions and isinstance(g.body, (Contour, Cycle)))
         for g in settings.motions.values()
     ):
-        raise EngineError("Only standalone contours may use the beats clock")
+        raise EngineError("Only standalone contours and cycles may use the beats clock")
     if any(
         not isinstance(b, ControlBinding)
         and not isinstance(b, processing.GeneratorBinding)
@@ -1865,7 +1876,7 @@ def _validate_voice(voice: SynthVoice) -> None:
         tuning_cents=voice.processing.tuning_cents, filters=voice.processing.filters
     ):
         raise EngineError("Only tuning and filter processing are implemented")
-    validate_generators(voice, allow_beat_contours=True)
+    validate_generators(voice, allow_beat_motions=True)
     if any(c.mode == "fade" for c in voice.chokes):
         raise EngineError("Fade retirement is not implemented")
     validate_modulation(voice)
