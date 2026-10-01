@@ -9,6 +9,7 @@ from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio, score
 from ufor import instrument_trace, synth_trace
+from ufor.control import TempoMap
 from ufor.events import MotionChange, Release
 from ufor.library import Entry, Library
 from ufor.motion import (
@@ -90,6 +91,70 @@ def lfo_score(
         return SynthInstrumentScore.model_validate(raw)
     voice["mapping"].update(pitch_tracking=False, reference_pitch_hz=None)
     return instrument.SampleInstrumentScore.model_validate(raw)
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_beat_contour_follows_tempo_without_following_transport_seek(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"]["motion"] = {
+        "clock": "beats",
+        "body": {
+            "kind": "contour",
+            "segments": [{"duration": "2 beats", "to": 1}],
+        },
+    }
+    voice["modulation"]["sources"][0]["minimum"] = 0
+    voice["modulation"]["routes"][0]["points"][0]["input"] = 0
+    document = SynthInstrumentScore.model_validate(raw)
+    definition = synth.prepare(document)
+    clock = TempoMap.model_validate(
+        {
+            "points": [
+                {"at_seconds": "0", "beat": "0", "bpm": "120"},
+                {"at_seconds": "1/4", "beat": "1/2", "bpm": "60"},
+                {"at_seconds": "1/2", "beat": "3/4", "bpm": "60", "running": False},
+                {"at_seconds": "3/4", "beat": "8", "bpm": "120"},
+            ]
+        }
+    )
+    actions = synth_trace.prepare(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    with pytest.raises(synth.EngineError, match="requires a host tempo map"):
+        synth.OfflineSynth(definition, backend)
+    with pytest.raises(synth.EngineError, match="not implemented"):
+        synth.PersistentSynth(definition)
+    renderer = synth.OfflineSynth(definition, backend, tempo_map=clock)
+    first = renderer.advance(actions, 0, 24000)
+    saved = renderer.snapshot()
+    second = renderer.advance([], 24000, 48000)
+    replay = synth.OfflineSynth(definition, backend, tempo_map=clock)
+    replay.restore(synth.SynthSnapshot.model_validate_json(saved.model_dump_json()))
+    np.testing.assert_array_equal(replay.advance([], 24000, 48000), second)
+    with pytest.raises(synth.EngineError, match="different host tempo map"):
+        synth.OfflineSynth(
+            definition,
+            backend,
+            tempo_map=TempoMap.model_validate(
+                {"points": [{"at_seconds": "0", "beat": "0", "bpm": "120"}]}
+            ),
+        ).restore(saved)
+    seconds = np.arange(48000) / 48000
+    beats = (
+        2 * np.minimum(seconds, 0.25)
+        + np.clip(seconds - 0.25, 0, 0.25)
+        + 2 * np.maximum(seconds - 0.75, 0)
+    )
+    expected = np.zeros((48000, 2), dtype=np.float64)
+    expected[:, 0] = 0.25 + 0.75 * beats / 2
+    check_audio(
+        tmp_path / f"beat-contour-{backend}.wav", np.vstack((first, second)), expected
+    )
 
 
 @pytest.mark.parametrize("body_kind", ["contour", "stages"])
