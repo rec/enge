@@ -45,8 +45,9 @@ struct LfoDefinition {
     duty: (u64, u64),
     rate: (u64, u64),
     phase: (u64, u64),
-    delay_frames: (u64, u64),
-    fade_frames: (u64, u64),
+    delay: (u64, u64),
+    fade: (u64, u64),
+    beat_clock: bool,
 }
 
 #[derive(Clone)]
@@ -432,9 +433,9 @@ impl SynthRuntime {
                 .any(|definition| definition.parameter >= parameters.len() / 3)
             || context_capacity == 0
             || (!lfo_definitions.is_empty() && rate != rate as u64 as f64)
-            || lfo_definitions
-                .iter()
-                .any(|definition| lfo_phase_denominator(definition, rate as u64).is_none())
+            || lfo_definitions.iter().any(|definition| {
+                !definition.beat_clock && lfo_phase_denominator(definition, rate as u64).is_none()
+            })
         {
             return Err(PyValueError::new_err("Invalid synth runtime definition"));
         }
@@ -1236,6 +1237,22 @@ impl SynthRuntime {
         }
     }
 
+    fn lfo_elapsed(&self, definition: &LfoDefinition, from: usize, to: usize) -> f64 {
+        if definition.beat_clock {
+            self.local_beat_at(to as f64) - self.local_beat_at(from as f64)
+        } else {
+            (to - from) as f64
+        }
+    }
+
+    fn lfo_divisor(&self, definition: &LfoDefinition) -> f64 {
+        if definition.beat_clock {
+            1.0
+        } else {
+            self.rate
+        }
+    }
+
     pub(crate) fn channels(&self) -> usize {
         self.routes.ncols()
     }
@@ -1273,6 +1290,11 @@ impl SynthRuntime {
         let frames = output.nrows();
         if frames == 0
             || output.ncols() != self.routes.ncols()
+            || (self.beat_points.is_empty()
+                && self
+                    .lfo_definitions
+                    .iter()
+                    .any(|definition| definition.beat_clock))
             || !cutoff_hz.is_finite()
             || cutoff_hz < 0.0
             || cutoff_hz >= self.rate / 2.0
@@ -1837,9 +1859,10 @@ impl SynthRuntime {
                 let elapsed = if state.paused {
                     0.0
                 } else {
-                    (self.frame - state.at) as f64
+                    self.lfo_elapsed(definition, state.at, self.frame)
                 };
-                let phase = state.phase + state.direction * state.rate * elapsed / self.rate;
+                let phase = state.phase
+                    + state.direction * state.rate * elapsed / self.lfo_divisor(definition);
                 self.lfo_event_states[lfo] = Some(LfoEventState {
                     at: self.frame,
                     age: if action_kind == 0 {
@@ -1986,17 +2009,19 @@ impl SynthRuntime {
                 let elapsed = if state.paused {
                     0.0
                 } else {
-                    (self.frame - state.at) as f64
+                    self.lfo_elapsed(definition, state.at, self.frame)
                 };
+                let phase = state.phase
+                    + state.direction * state.rate * elapsed / self.lfo_divisor(definition);
                 self.voice_lfo_event_states[index] = Some(LfoEventState {
                     at: self.frame,
                     age: state.age + elapsed,
                     phase: if command == 3 {
                         action[5]
                     } else if command == 4 {
-                        state.phase + state.direction * state.rate * elapsed / self.rate + action[5]
+                        phase + action[5]
                     } else {
-                        state.phase + state.direction * state.rate * elapsed / self.rate
+                        phase
                     },
                     rate: state.rate,
                     direction: if command == 2 {
@@ -2262,7 +2287,36 @@ impl SynthRuntime {
                 &self.lfo_event_states[source]
             };
             let (value, weight) = if let Some(state) = event_state {
-                lfo_event_value(definition, state, self.frame, self.rate)
+                lfo_event_value(
+                    definition,
+                    state,
+                    if state.paused {
+                        0.0
+                    } else {
+                        self.lfo_elapsed(definition, state.at, self.frame)
+                    },
+                    self.lfo_divisor(definition),
+                )
+            } else if definition.beat_clock {
+                let start = if definition.scope == 3 {
+                    self.frame - self.ages[voice]
+                } else {
+                    0
+                };
+                let state = LfoEventState {
+                    at: start,
+                    age: 0.0,
+                    phase: definition.phase.0 as f64 / definition.phase.1 as f64,
+                    rate: definition.rate.0 as f64 / definition.rate.1 as f64,
+                    direction: 1.0,
+                    paused: false,
+                };
+                lfo_event_value(
+                    definition,
+                    &state,
+                    self.lfo_elapsed(definition, start, self.frame),
+                    1.0,
+                )
             } else {
                 lfo_value(definition, elapsed, self.rate as u64)?
             };
@@ -2504,7 +2558,7 @@ fn lfo_definitions(
     values: PyReadonlyArray2<'_, f64>,
     rationals: &[(u64, u64)],
 ) -> PyResult<Vec<LfoDefinition>> {
-    if values.shape()[1] != 6
+    if values.shape()[1] != 7
         || rationals.len() != values.shape()[0] * 5
         || rationals.iter().any(|(_, denominator)| *denominator == 0)
         || values.as_array().iter().any(|v| !v.is_finite())
@@ -2525,6 +2579,7 @@ fn lfo_definitions(
             || row[2] != parameter as f64
             || row[3] != operation as f64
             || operation > 1
+            || (row[6] != 0.0 && row[6] != 1.0)
             || exact[0].0 > exact[0].1
             || exact[2].0 >= exact[2].1
         {
@@ -2540,8 +2595,9 @@ fn lfo_definitions(
             duty: exact[0],
             rate: exact[1],
             phase: exact[2],
-            delay_frames: exact[3],
-            fade_frames: exact[4],
+            delay: exact[3],
+            fade: exact[4],
+            beat_clock: row[6] == 1.0,
         });
     }
     Ok(definitions)
@@ -2630,15 +2686,15 @@ fn lfo_value(definition: &LfoDefinition, elapsed: usize, sample_rate: u64) -> Py
             (1.0 + duty - 2.0 * phase) / (1.0 - duty)
         }
     };
-    let delayed = (elapsed as u128)
-        < (definition.delay_frames.0 as u128).div_ceil(definition.delay_frames.1 as u128);
+    let delayed =
+        (elapsed as u128) < (definition.delay.0 as u128).div_ceil(definition.delay.1 as u128);
     let weight = if delayed {
         0.0
-    } else if definition.fade_frames.0 == 0 {
+    } else if definition.fade.0 == 0 {
         1.0
     } else {
-        ((elapsed as f64 - definition.delay_frames.0 as f64 / definition.delay_frames.1 as f64)
-            / (definition.fade_frames.0 as f64 / definition.fade_frames.1 as f64))
+        ((elapsed as f64 - definition.delay.0 as f64 / definition.delay.1 as f64)
+            / (definition.fade.0 as f64 / definition.fade.1 as f64))
             .clamp(0.0, 1.0)
     };
     Ok((value.clamp(-1.0, 1.0), weight))
@@ -2647,16 +2703,10 @@ fn lfo_value(definition: &LfoDefinition, elapsed: usize, sample_rate: u64) -> Py
 fn lfo_event_value(
     definition: &LfoDefinition,
     state: &LfoEventState,
-    frame: usize,
-    sample_rate: f64,
+    elapsed: f64,
+    divisor: f64,
 ) -> (f64, f64) {
-    let elapsed = if state.paused {
-        0.0
-    } else {
-        (frame - state.at) as f64
-    };
-    let phase =
-        (state.phase + state.direction * state.rate * elapsed / sample_rate).rem_euclid(1.0);
+    let phase = (state.phase + state.direction * state.rate * elapsed / divisor).rem_euclid(1.0);
     let duty = definition.duty.0 as f64 / definition.duty.1 as f64;
     let value = match definition.waveform {
         0 => (TAU * phase).sin(),
@@ -2673,8 +2723,8 @@ fn lfo_event_value(
         _ => (1.0 + duty - 2.0 * phase) / (1.0 - duty),
     };
     let age = state.age + elapsed;
-    let delay = definition.delay_frames.0 as f64 / definition.delay_frames.1 as f64;
-    let fade = definition.fade_frames.0 as f64 / definition.fade_frames.1 as f64;
+    let delay = definition.delay.0 as f64 / definition.delay.1 as f64;
+    let fade = definition.fade.0 as f64 / definition.fade.1 as f64;
     let weight = if age < delay {
         0.0
     } else if fade == 0.0 {
