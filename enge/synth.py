@@ -1217,6 +1217,7 @@ class PersistentSynth:
         voices: int = 16,
         action_capacity: int = 64,
         context_capacity: int = 64,
+        tempo_map: TempoMap | None = None,
     ) -> None:
         if type(voices) is not int or voices <= 0:
             raise EngineError("Persistent synth voice capacity must be positive")
@@ -1229,7 +1230,13 @@ class PersistentSynth:
             raise EngineError("Persistent synth requires one oscillator voice template")
         template = templates[0]
         if any(m.clock == "beats" for m in template.motions.values()):
-            raise EngineError("Persistent synth beat-clock Motions are not implemented")
+            if tempo_map is None:
+                raise EngineError("Beat-clock Motion requires a host tempo map")
+            if any(
+                m.clock == "beats" and not isinstance(m.body, Contour)
+                for m in template.motions.values()
+            ):
+                raise EngineError("Persistent beat-clock Cycles are not implemented")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             filters=template.processing.filters,
@@ -1300,6 +1307,25 @@ class PersistentSynth:
             envelope_releases,
             envelope_parameters,
         )
+        if tempo_map is not None:
+            self.runtime.set_beat_clock(
+                [
+                    (
+                        float(p.at_seconds * rate),
+                        float(tempo_map.elapsed_beats(Fraction(0), p.at_seconds)),
+                        float(p.bpm / (60 * rate)) if p.running else 0.0,
+                    )
+                    for p in tempo_map.points
+                ]
+            )
+            self.runtime.set_beat_named_envelopes(
+                [
+                    i
+                    for name, indices in self.named_motion_sources.items()
+                    if template.motions[name].clock == "beats"
+                    for i in indices
+                ]
+            )
         self.runtime.set_staged_motions(staged_motions, event_connections)
 
     def advance(
@@ -2159,21 +2185,18 @@ def _persistent_modulation(
                     len(envelope_initials)
                 )
                 envelope_initials.append(generator.initial)
+                duration_scale = (
+                    1 if motion.clock == "beats" else definition.sample_rate
+                )
                 envelope_attacks.append(
                     [
-                        (
-                            float(segment.duration * definition.sample_rate),
-                            segment.to,
-                        )
+                        (float(segment.duration * duration_scale), segment.to)
                         for segment in generator.segments
                     ]
                 )
                 envelope_releases.append(
                     [
-                        (
-                            float(segment.duration * definition.sample_rate),
-                            segment.to,
-                        )
+                        (float(segment.duration * duration_scale), segment.to)
                         for segment in generator.release
                     ]
                 )

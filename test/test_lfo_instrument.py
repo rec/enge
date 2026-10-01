@@ -127,7 +127,7 @@ def test_beat_contour_follows_tempo_without_following_transport_seek(
     ).actions
     with pytest.raises(synth.EngineError, match="requires a host tempo map"):
         synth.OfflineSynth(definition, backend)
-    with pytest.raises(synth.EngineError, match="not implemented"):
+    with pytest.raises(synth.EngineError, match="requires a host tempo map"):
         synth.PersistentSynth(definition)
     renderer = synth.OfflineSynth(definition, backend, tempo_map=clock)
     first = renderer.advance(actions, 0, 24000)
@@ -154,6 +154,28 @@ def test_beat_contour_follows_tempo_without_following_transport_seek(
     expected[:, 0] = 0.25 + 0.75 * beats / 2
     check_audio(
         tmp_path / f"beat-contour-{backend}.wav", np.vstack((first, second)), expected
+    )
+    persistent = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
+    native_first = persistent.advance(actions, 0, 24000)
+    native_snapshot = persistent.snapshot()
+    native_second = persistent.advance([], 24000, 48000)
+    native_replay = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
+    native_replay.restore(native_snapshot)
+    np.testing.assert_array_equal(
+        native_replay.advance([], 24000, 48000), native_second
+    )
+    with pytest.raises(ValueError, match="different synth runtime"):
+        synth.PersistentSynth(
+            definition,
+            voices=2,
+            tempo_map=TempoMap.model_validate(
+                {"points": [{"at_seconds": "0", "beat": "0", "bpm": "120"}]}
+            ),
+        ).restore(native_snapshot)
+    check_audio(
+        tmp_path / f"beat-contour-persistent-{backend}.wav",
+        np.vstack((native_first, native_second)),
+        expected,
     )
 
 
@@ -189,6 +211,51 @@ def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     expected = np.zeros((48000, 2), dtype=np.float64)
     expected[:, 0] = 0.625 + 0.375 * np.sin(2 * np.pi * beats)
     check_audio(tmp_path / f"beat-cycle-{backend}.wav", actual, expected)
+
+
+def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
+    tmp_path: Path,
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["envelope"]["release"] = [{"duration": "1 s", "to": 0}]
+    voice["motions"]["motion"] = {
+        "clock": "beats",
+        "body": {
+            "kind": "contour",
+            "initial": 1,
+            "segments": [{"duration": "1 beat", "to": 1}],
+            "release": [{"duration": "1 beat", "to": 0}],
+        },
+    }
+    voice["modulation"]["sources"][0]["minimum"] = 0
+    voice["modulation"]["routes"][0]["points"][0]["input"] = 0
+    document = SynthInstrumentScore.model_validate(raw)
+    definition = synth.prepare(document)
+    clock = TempoMap.model_validate(
+        {
+            "points": [
+                {"at_seconds": "0", "beat": "0", "bpm": "120"},
+                {"at_seconds": "1/2", "beat": "1", "bpm": "120", "running": False},
+                {"at_seconds": "3/4", "beat": "8", "bpm": "120"},
+            ]
+        }
+    )
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=24000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    expected = synth.OfflineSynth(definition, tempo_map=clock).advance(
+        actions, 0, 48000
+    )
+    actual = synth.PersistentSynth(definition, voices=2, tempo_map=clock).advance(
+        actions, 0, 48000
+    )
+    check_audio(tmp_path / "beat-contour-stop-release.wav", actual, expected)
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
