@@ -11,6 +11,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import instrument_trace, lfo, modulation
 from ufor.base import Model
+from ufor.control import TempoMap
 from ufor.envelope import Envelope
 from ufor.motion import (
     Contour,
@@ -21,6 +22,7 @@ from ufor.motion import (
     MotionEvent,
     MotionOutputEvent,
     MotionState,
+    MotionUse,
     PlaybackMode,
     Stages,
     StageState,
@@ -341,6 +343,7 @@ class SynthSnapshot(Model, frozen=True):
     contexts: list[ControlContext]
     lfos: list[LFOSource]
     envelopes: list[EnvelopeSource]
+    tempo_map: TempoMap | None = None
 
 
 class VoiceAddress(Model, frozen=True):
@@ -391,6 +394,7 @@ class ControlRenderer:
         settings: list[SoundSettings],
         backend: Literal["numpy", "native"] = "numpy",
         control_interval: int = 1,
+        tempo_map: TempoMap | None = None,
     ) -> None:
         if type(control_interval) is not int or control_interval <= 0:
             raise EngineError("Control interval must be a positive integer")
@@ -403,6 +407,7 @@ class ControlRenderer:
         self.cached_envelopes: dict[int, np.ndarray] = {}
         self.cached_controls: dict[tuple[int, str, Fraction], np.ndarray] = {}
         self.sample_rate = sample_rate
+        self.tempo_map = tempo_map.model_copy(deep=True) if tempo_map else None
         self.declarations = declarations
         self.settings = settings
         self.backend = backend
@@ -410,6 +415,13 @@ class ControlRenderer:
         self.lfos: list[LFOSource] = []
         self.envelopes: list[EnvelopeSource] = []
         self.new_context("instrument", None, None, 0, {})
+
+    def motion_time(self, motion: MotionUse, seconds: Fraction) -> Fraction:
+        if motion.clock == "seconds":
+            return seconds
+        if self.tempo_map is None:
+            raise EngineError("Beat-clock Motion requires a host tempo map")
+        return self.tempo_map.elapsed_beats(Fraction(0), seconds)
 
     def new_context(
         self,
@@ -509,17 +521,6 @@ class ControlRenderer:
                     }
                 )
         elif isinstance(action, instrument_trace.MotionObservation):
-            event = MotionEvent(
-                at=Fraction(action.tick, self.sample_rate),
-                ordinal=action.ordinal,
-                action=action.action,
-                position=(
-                    None if action.position is None else Fraction(str(action.position))
-                ),
-                offset=(
-                    None if action.offset is None else Fraction(str(action.offset))
-                ),
-            )
             for index, source in enumerate(self.lfos):
                 if (
                     source.name == action.name
@@ -530,7 +531,13 @@ class ControlRenderer:
                 ):
                     definition = self.settings[source.setting].motions[source.name]
                     self.lfos[index] = source.model_copy(
-                        update={"state": motion_event(definition, source.state, event)}
+                        update={
+                            "state": motion_event(
+                                definition,
+                                source.state,
+                                self._motion_observation(action, definition),
+                            )
+                        }
                     )
             for index, source in enumerate(self.envelopes):
                 if (
@@ -542,6 +549,7 @@ class ControlRenderer:
                     continue
                 settings = self.settings[source.setting]
                 definition = settings.motions[source.name]
+                event = self._motion_observation(action, definition)
                 if isinstance(definition.body, Stages):
                     result = advance_motion(definition, source.state, event.at, event)
                     state = result.state
@@ -603,6 +611,19 @@ class ControlRenderer:
             return False
         return True
 
+    def _motion_observation(
+        self, action: instrument_trace.MotionObservation, motion: MotionUse
+    ) -> MotionEvent:
+        return MotionEvent(
+            at=self.motion_time(motion, Fraction(action.tick, self.sample_rate)),
+            ordinal=action.ordinal,
+            action=action.action,
+            position=None
+            if action.position is None
+            else Fraction(str(action.position)),
+            offset=None if action.offset is None else Fraction(str(action.offset)),
+        )
+
     def sources(
         self, settings: SoundSettings, action: instrument_trace.VoiceStart
     ) -> dict[str, int]:
@@ -621,7 +642,10 @@ class ControlRenderer:
                         )
                     index = len(self.envelopes)
                     initial = initial_motion(
-                        motion, Fraction(action.tick, self.sample_rate)
+                        motion,
+                        self.motion_time(
+                            motion, Fraction(action.tick, self.sample_rate)
+                        ),
                     )
                     if isinstance(motion.body, Stages):
                         advanced = advance_motion(
@@ -641,7 +665,9 @@ class ControlRenderer:
                             motion,
                             initial,
                             MotionEvent(
-                                at=Fraction(action.tick, self.sample_rate),
+                                at=self.motion_time(
+                                    motion, Fraction(action.tick, self.sample_rate)
+                                ),
                                 ordinal=action.ordinal,
                                 action="note_on",
                             ),
@@ -736,7 +762,9 @@ class ControlRenderer:
                 )
                 continue
             event = MotionEvent(
-                at=Fraction(action.tick, self.sample_rate),
+                at=self.motion_time(
+                    definition, Fraction(action.tick, self.sample_rate)
+                ),
                 ordinal=action.ordinal,
                 action="note_off",
             )
@@ -791,7 +819,9 @@ class ControlRenderer:
                                     motion,
                                     state,
                                     MotionEvent(
-                                        at=source.pending_release,
+                                        at=self.motion_time(
+                                            motion, source.pending_release
+                                        ),
                                         ordinal=0,
                                         action="note_off",
                                     ),
@@ -800,7 +830,9 @@ class ControlRenderer:
                                     update={"state": state, "pending_release": None}
                                 )
                                 self.envelopes[index] = source
-                            values[i] = motion_at(motion, state, at).value
+                            values[i] = motion_at(
+                                motion, state, self.motion_time(motion, at)
+                            ).value
                         self.cached_envelopes[index] = np.column_stack(
                             (values, np.ones(frames))
                         )
@@ -993,6 +1025,7 @@ class OfflineSynth:
         definition: PreparedSynth,
         backend: Literal["numpy", "native"] = "numpy",
         control_interval: int = 1,
+        tempo_map: TempoMap | None = None,
     ) -> None:
         if backend not in ("numpy", "native"):
             raise EngineError(f"Unknown synth backend: {backend}")
@@ -1005,12 +1038,19 @@ class OfflineSynth:
             for v in self.definition.instrument.voices
             if isinstance(v, SynthVoice)
         }
+        if tempo_map is None and any(
+            m.clock == "beats"
+            for v in self.templates.values()
+            for m in v.motions.values()
+        ):
+            raise EngineError("Beat-clock Motion requires a host tempo map")
         self.controls = ControlRenderer(
             self.definition.sample_rate,
             self.definition.instrument.controls,
             list(self.templates.values()),
             backend,
             control_interval,
+            tempo_map,
         )
 
     def advance(
@@ -1038,6 +1078,7 @@ class OfflineSynth:
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
             envelopes=self.controls.envelopes,
+            tempo_map=self.controls.tempo_map,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: SynthSnapshot) -> None:
@@ -1045,6 +1086,8 @@ class OfflineSynth:
             raise EngineError("Snapshot belongs to a different control interval")
         if snapshot.definition != self.definition:
             raise EngineError("Snapshot belongs to a different prepared synth")
+        if snapshot.tempo_map != self.controls.tempo_map:
+            raise EngineError("Snapshot belongs to a different host tempo map")
         if any(v.renderer.backend != self.backend for v in snapshot.voices):
             raise EngineError("Snapshot belongs to a different synth backend")
         snapshot = snapshot.model_copy(deep=True)
@@ -1174,6 +1217,8 @@ class PersistentSynth:
         if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
             raise EngineError("Persistent synth requires one oscillator voice template")
         template = templates[0]
+        if any(m.clock == "beats" for m in template.motions.values()):
+            raise EngineError("Persistent synth beat-clock Motions are not implemented")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             filters=template.processing.filters,
@@ -1762,18 +1807,24 @@ def validate_envelope(envelope: Envelope) -> None:
         raise EngineError("Only held linear envelopes are implemented")
 
 
-def validate_generators(settings: SoundSettings) -> None:
-    """Supported named sources share the seconds-clock LFO contract."""
+def validate_generators(
+    settings: SoundSettings, allow_beat_contours: bool = False
+) -> None:
+    """Validate the Motion clocks supported by the selected renderer."""
     if any(g.score is not None for g in settings.motions.values()):
         raise EngineError("Library Motion uses must be materialized before rendering")
     if any(
-        g.clock != "seconds" or g.scope != "voice"
+        g.scope != "voice"
         for g in settings.motions.values()
         if isinstance(g.body, (Contour, Stages))
     ):
-        raise EngineError("Staged and contour Motions require voice seconds clock")
-    if any(g.clock != "seconds" for g in settings.motions.values()):
-        raise EngineError("Motions must use the seconds clock")
+        raise EngineError("Staged and contour Motions require voice scope")
+    if any(
+        g.clock != "seconds"
+        and not (allow_beat_contours and isinstance(g.body, Contour))
+        for g in settings.motions.values()
+    ):
+        raise EngineError("Only standalone contours may use the beats clock")
     if any(
         not isinstance(b, ControlBinding)
         and not isinstance(b, processing.GeneratorBinding)
@@ -1814,7 +1865,7 @@ def _validate_voice(voice: SynthVoice) -> None:
         tuning_cents=voice.processing.tuning_cents, filters=voice.processing.filters
     ):
         raise EngineError("Only tuning and filter processing are implemented")
-    validate_generators(voice)
+    validate_generators(voice, allow_beat_contours=True)
     if any(c.mode == "fade" for c in voice.chokes):
         raise EngineError("Fade retirement is not implemented")
     validate_modulation(voice)
