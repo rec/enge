@@ -225,6 +225,7 @@ class SynthRuntime:
                 int,
                 float,
                 float,
+                bool,
             ]
         ],
         connections: list[tuple[int, str, int, str]],

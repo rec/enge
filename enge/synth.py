@@ -75,6 +75,7 @@ StagedRuntimeDefinition = tuple[
     int,
     float,
     float,
+    bool,
 ]
 
 
@@ -423,6 +424,15 @@ class ControlRenderer:
             raise EngineError("Beat-clock Motion requires a host tempo map")
         return self.tempo_map.elapsed_beats(Fraction(0), seconds)
 
+    def motion_seconds(self, motion: MotionUse, at: Fraction) -> Fraction:
+        if motion.clock == "seconds":
+            return at
+        assert self.tempo_map is not None
+        seconds = self.tempo_map.time_for_elapsed_beat(at)
+        if seconds is None:
+            raise EngineError("Beat-clock Motion event has no host time")
+        return seconds
+
     def new_context(
         self,
         scope: Literal["instrument", "part", "trigger"],
@@ -653,9 +663,13 @@ class ControlRenderer:
                         advanced = advance_motion(
                             motion,
                             initial,
-                            Fraction(action.tick, self.sample_rate),
+                            self.motion_time(
+                                motion, Fraction(action.tick, self.sample_rate)
+                            ),
                             MotionEvent(
-                                at=Fraction(action.tick, self.sample_rate),
+                                at=self.motion_time(
+                                    motion, Fraction(action.tick, self.sample_rate)
+                                ),
                                 ordinal=action.ordinal,
                                 action="note_on",
                             ),
@@ -927,15 +941,19 @@ class ControlRenderer:
                         name,
                         index,
                         motion,
-                        advance_motion(motion, self.envelopes[index].state, boundary),
+                        advance_motion(
+                            motion,
+                            self.envelopes[index].state,
+                            self.motion_time(motion, boundary),
+                        ),
                     )
                     for name, index, motion in staged
                 ]
                 next_event = (
                     min(
                         (
-                            event.at
-                            for _, _, _, result in attempts
+                            self.motion_seconds(motion, event.at)
+                            for _, _, motion, result in attempts
                             for event in result.events
                         ),
                         default=None,
@@ -953,7 +971,9 @@ class ControlRenderer:
                 emitted: list[tuple[str, MotionOutputEvent]] = []
                 for name, index, motion in staged:
                     result = advance_motion(
-                        motion, self.envelopes[index].state, next_event
+                        motion,
+                        self.envelopes[index].state,
+                        self.motion_time(motion, next_event),
                     )
                     self.envelopes[index] = self.envelopes[index].model_copy(
                         update={"state": result.state}
@@ -980,6 +1000,10 @@ class ControlRenderer:
         bindings = {b.name: b for b in settings.bindings}
         while pending:
             name, event = pending.popleft()
+            source_binding = bindings[name]
+            assert isinstance(source_binding, processing.GeneratorBinding)
+            source_motion = settings.motions[source_binding.reference]
+            seconds = self.motion_seconds(source_motion, event.at)
             for connection in settings.event_connections:
                 if connection.source != name or connection.port != event.port:
                     continue
@@ -987,14 +1011,15 @@ class ControlRenderer:
                 binding = bindings[connection.destination]
                 assert isinstance(binding, processing.GeneratorBinding)
                 target_motion = settings.motions[binding.reference]
+                at = self.motion_time(target_motion, seconds)
                 state = self.envelopes[target_index].state
                 assert isinstance(state.runtime, StageState)
                 result = advance_motion(
                     target_motion,
                     state,
-                    event.at,
+                    at,
                     MotionEvent(
-                        at=event.at,
+                        at=at,
                         ordinal=state.runtime.ordinal + 1,
                         action="cue",
                         cue=connection.cue,
@@ -1853,10 +1878,10 @@ def validate_generators(
         raise EngineError("Staged and contour Motions require voice scope")
     if any(
         g.clock != "seconds"
-        and not (allow_beat_motions and isinstance(g.body, (Contour, Cycle)))
+        and not (allow_beat_motions and isinstance(g.body, (Contour, Cycle, Stages)))
         for g in settings.motions.values()
     ):
-        raise EngineError("Only standalone contours and cycles may use the beats clock")
+        raise EngineError("Beat-clock Motions require a supported synth renderer")
     if any(
         not isinstance(b, ControlBinding)
         and not isinstance(b, processing.GeneratorBinding)
@@ -2242,6 +2267,7 @@ def _persistent_modulation(
                         0 if operation == modulation.Operation.add else 1,
                         intercept,
                         slope,
+                        motion.clock == "beats",
                     )
                 )
                 continue
@@ -2289,7 +2315,15 @@ def _persistent_modulation(
             len(staged_motions)
         )
         staged_motions.append(
-            _runtime_staged_motion(motion.body, definition.sample_rate, None, 0, 0, 0)
+            _runtime_staged_motion(
+                motion.body,
+                definition.sample_rate,
+                None,
+                0,
+                0,
+                0,
+                motion.clock == "beats",
+            )
         )
     event_connections = [
         (
@@ -2338,6 +2372,7 @@ def _runtime_staged_motion(
     operation: int,
     intercept: float,
     slope: float,
+    beat_clock: bool,
 ) -> StagedRuntimeDefinition:
     names = {stage.name: index for index, stage in enumerate(body.stages)}
     stages: list[
@@ -2366,7 +2401,10 @@ def _runtime_staged_motion(
                     1,
                     0.0 if motion.initial == "current" else motion.initial,
                     motion.initial == "current",
-                    [(float(s.duration * sample_rate), s.to) for s in motion.segments],
+                    [
+                        (float(s.duration * (1 if beat_clock else sample_rate)), s.to)
+                        for s in motion.segments
+                    ],
                     [],
                     [(float(m.position), m.name) for m in motion.markers],
                     [
@@ -2410,11 +2448,11 @@ def _runtime_staged_motion(
                                 motion.shape
                             )
                         ),
-                        float(motion.rate / sample_rate),
+                        float(motion.rate / (1 if beat_clock else sample_rate)),
                         float(motion.phase),
                         float(motion.duty_cycle),
-                        float(motion.delay * sample_rate),
-                        float(motion.fade_in * sample_rate),
+                        float(motion.delay * (1 if beat_clock else sample_rate)),
+                        float(motion.fade_in * (1 if beat_clock else sample_rate)),
                         motion.center,
                         motion.depth,
                     ],
@@ -2442,6 +2480,7 @@ def _runtime_staged_motion(
         operation,
         intercept,
         slope,
+        beat_clock,
     )
 
 
