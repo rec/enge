@@ -1673,6 +1673,101 @@ def test_staged_marker_cues_another_motion_at_exact_time(
         np.testing.assert_allclose(native_replay, native_second, atol=0)
 
 
+@pytest.mark.parametrize("child_kind", ["cycle", "stages"])
+@pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_patch_named_event_output_cues_stage(
+    tmp_path: Path, backend: Literal["numpy", "native"], child_kind: str
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    pulse = {
+        "kind": "cycle",
+        "rate": "1",
+        "markers": [{"name": "peak", "position": "1/4"}],
+    }
+    if child_kind == "stages":
+        pulse = {
+            "kind": "stages",
+            "initial_stage": "playing",
+            "stages": [{"name": "playing", "motion": pulse}],
+        }
+    voice["motions"] = {
+        "patch": {
+            "body": {
+                "kind": "patch",
+                "motions": {"carrier": {"kind": "cycle", "rate": "1"}, "pulse": pulse},
+                "outputs": {"signal": "carrier"},
+                "event_outputs": {"strike": "pulse.peak"},
+            }
+        },
+        "level": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "waiting",
+                "stages": [
+                    {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
+                    {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                ],
+                "transitions": [
+                    {
+                        "from": ["waiting"],
+                        "event": "cue.brighten",
+                        "action": {"kind": "enter", "stage": "bright"},
+                    }
+                ],
+            }
+        },
+    }
+    voice["bindings"] = [
+        {"name": "patch", "kind": "motion", "reference": "patch", "output": "signal"},
+        {"name": "level", "kind": "motion", "reference": "level"},
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "patch", "scope": "voice", "minimum": -1, "maximum": 1},
+        {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1},
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["event_connections"] = [
+        {"source": "patch", "port": "strike", "destination": "level", "cue": "brighten"}
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    expected = synth.OfflineSynth(prepared, backend).advance(actions, 0, 48000)
+    renderer = synth.OfflineSynth(prepared, backend)
+    first = renderer.advance(actions, 0, 16000)
+    snapshot = renderer.snapshot()
+    second = renderer.advance([], 16000, 48000)
+    restored = synth.OfflineSynth(prepared, backend)
+    restored.restore(snapshot)
+    np.testing.assert_allclose(restored.advance([], 16000, 48000), second, atol=0)
+    check_audio(
+        tmp_path / f"patch-event-{child_kind}-{backend}.wav",
+        np.concatenate((first, second)),
+        expected,
+    )
+    assert expected[12000, 0] == pytest.approx(1)
+    if backend == "native":
+        persistent = synth.PersistentSynth(prepared, voices=4)
+        native_first = persistent.advance(actions, 0, 16000)
+        native_snapshot = persistent.snapshot()
+        native_second = persistent.advance([], 16000, 48000)
+        native_restored = synth.PersistentSynth(prepared, voices=4)
+        native_restored.restore(native_snapshot)
+        np.testing.assert_allclose(
+            native_restored.advance([], 16000, 48000), native_second, atol=0
+        )
+        check_audio(
+            tmp_path / f"patch-event-{child_kind}-persistent.wav",
+            np.concatenate((native_first, native_second)),
+            expected,
+        )
+
+
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
 @pytest.mark.parametrize("scope", ["voice", "part", "instrument"])
 def test_lfo_scopes_silent_time_release_tails_and_restores(

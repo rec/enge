@@ -427,7 +427,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             name
             for connection in parent.body.events
             for name in (connection.source.partition(".")[0], connection.target)
-        }
+        } | {source.partition(".")[0] for source in parent.body.event_outputs.values()}
         for child_name in children:
             name = f"patch-{parent_name}-{child_name}"
             if name in voice.motions:
@@ -456,6 +456,27 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                 )
             )
             changed = True
+    event_connections = list(voice.event_connections)
+    original_bindings = {binding.name: binding for binding in voice.bindings}
+    for index, connection in enumerate(event_connections):
+        source_binding = original_bindings[connection.source]
+        if not isinstance(source_binding, processing.GeneratorBinding):
+            continue
+        parent = voice.motions[source_binding.reference]
+        if not isinstance(parent.body, Patch):
+            continue
+        child_name, _, port = parent.body.event_outputs[connection.port].partition(".")
+        child_motion = f"patch-{source_binding.reference}-{child_name}"
+        child_binding = next(
+            binding.name
+            for binding in bindings
+            if isinstance(binding, processing.GeneratorBinding)
+            and binding.reference == child_motion
+        )
+        event_connections[index] = connection.model_copy(
+            update={"source": child_binding, "port": port}
+        )
+        changed = True
     if not changed:
         return voice
     return SynthVoice.model_validate(
@@ -463,6 +484,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         | {
             "motions": motions,
             "bindings": bindings,
+            "event_connections": event_connections,
             "modulation": voice.modulation.model_copy(update={"sources": sources}),
         }
     )
@@ -1147,10 +1169,46 @@ class ControlRenderer:
         if not staged or all(index in self.cached_envelopes for _, index, _ in staged):
             return
         values = {index: np.empty(frames) for _, index, _ in staged}
+        bindings = {binding.name: binding for binding in settings.bindings}
+        cycle_connections = [
+            connection
+            for connection in settings.event_connections
+            if isinstance(
+                (binding := bindings[connection.source]), processing.GeneratorBinding
+            )
+            if isinstance(settings.motions[binding.reference].body, Cycle)
+        ]
         for i in range(frames):
             boundary = Fraction(start + i, self.sample_rate)
             events_seen = 0
             sample_values: dict[int, float] = {}
+            cycle_events: list[tuple[Fraction, int, str, str]] = []
+            for order, connection in enumerate(cycle_connections):
+                binding = bindings[connection.source]
+                assert isinstance(binding, processing.GeneratorBinding)
+                motion = settings.motions[binding.reference]
+                assert isinstance(motion.body, Cycle)
+                source = self.lfos[sources[connection.source]]
+                assert isinstance(source.state.runtime, CycleState)
+                position = source.state.runtime.position
+                origin = position.at
+                previous = max(origin, boundary - Fraction(1, self.sample_rate))
+                if boundary <= previous:
+                    continue
+                marker = next(
+                    m.position for m in motion.body.markers if m.name == connection.port
+                )
+                first = position.coordinate + position.rate * (previous - origin)
+                last = position.coordinate + position.rate * (boundary - origin)
+                first_turn = floor(first - marker) + 1
+                last_turn = floor(last - marker)
+                if last_turn - first_turn + 1 > 4096 - len(cycle_events):
+                    raise EngineError("Motion event capacity exceeded")
+                for turn in range(first_turn, last_turn + 1):
+                    at = origin + (turn + marker - position.coordinate) / position.rate
+                    cycle_events.append((at, order, connection.source, connection.port))
+            cycle_events.sort()
+            cycle_event_index = 0
             while True:
                 attempts = [
                     (
@@ -1165,7 +1223,7 @@ class ControlRenderer:
                     )
                     for name, index, motion in staged
                 ]
-                next_event = (
+                next_staged_event = (
                     min(
                         (
                             self.motion_seconds(motion, event.at)
@@ -1176,6 +1234,19 @@ class ControlRenderer:
                     )
                     if settings.event_connections
                     else None
+                )
+                next_cycle_event = (
+                    cycle_events[cycle_event_index][0]
+                    if cycle_event_index < len(cycle_events)
+                    else None
+                )
+                next_event = min(
+                    (
+                        at
+                        for at in (next_staged_event, next_cycle_event)
+                        if at is not None
+                    ),
+                    default=None,
                 )
                 if next_event is None:
                     for _, index, _, result in attempts:
@@ -1195,6 +1266,23 @@ class ControlRenderer:
                         update={"state": result.state}
                     )
                     emitted.extend((name, event) for event in result.events)
+                while (
+                    cycle_event_index < len(cycle_events)
+                    and cycle_events[cycle_event_index][0] == next_event
+                ):
+                    at, _, name, port = cycle_events[cycle_event_index]
+                    emitted.append(
+                        (
+                            name,
+                            MotionOutputEvent(
+                                at=at,
+                                port=port,
+                                stage=name,
+                                activation=0,
+                            ),
+                        )
+                    )
+                    cycle_event_index += 1
                 events_seen += len(emitted)
                 if events_seen > 4096:
                     raise EngineError("Motion event capacity exceeded")
@@ -1593,7 +1681,7 @@ class PersistentSynth:
             for name, indices in source_map.items():
                 if name in patch_children:
                     source_map[name] = indices[:1]
-        patch_events: list[tuple[int, float, int]] = []
+        patch_events: list[tuple[int, float, int, str | None]] = []
         for parent_name, parent in template.motions.items():
             if not isinstance(parent.body, Patch):
                 continue
@@ -1614,8 +1702,31 @@ class PersistentSynth:
                         self.named_motion_sources[
                             f"patch-{parent_name}-{connection.target}"
                         ][0],
+                        None,
                     )
                 )
+        bindings = {binding.name: binding for binding in template.bindings}
+        for connection in template.event_connections:
+            source_binding = bindings[connection.source]
+            assert isinstance(source_binding, processing.GeneratorBinding)
+            source_motion = template.motions[source_binding.reference]
+            if not isinstance(source_motion.body, Cycle):
+                continue
+            marker = next(
+                m.position
+                for m in source_motion.body.markers
+                if m.name == connection.port
+            )
+            target_binding = bindings[connection.destination]
+            assert isinstance(target_binding, processing.GeneratorBinding)
+            patch_events.append(
+                (
+                    self.voice_lfo_sources[source_binding.reference][0],
+                    float(marker),
+                    self.staged_motion_sources[target_binding.reference][0],
+                    connection.cue,
+                )
+            )
         self.runtime.set_patch_events(patch_events)
 
     def advance(
@@ -2373,14 +2484,29 @@ def _persistent_modulation(
         f"patch-{parent_name}-{child}"
         for parent_name, parent in template.motions.items()
         if isinstance(parent.body, Patch)
-        for connection in parent.body.events
-        for child in (connection.source.partition(".")[0], connection.target)
+        for child in (
+            {
+                name
+                for connection in parent.body.events
+                for name in (connection.source.partition(".")[0], connection.target)
+            }
+            | {
+                source.partition(".")[0]
+                for source in parent.body.event_outputs.values()
+            }
+        )
+    }
+    event_only_patch_outputs = {
+        f"patch-{parent_name}-{child}"
+        for parent_name, parent in template.motions.items()
+        if isinstance(parent.body, Patch) and parent.body.event_outputs
+        for child in parent.body.outputs.values()
     }
     event_sources.update(
         binding.name
         for binding in template.bindings
         if isinstance(binding, processing.GeneratorBinding)
-        and binding.reference in patch_children
+        and binding.reference in patch_children | event_only_patch_outputs
     )
     routed_sources = {route.source for route in routes}
     if (
@@ -2674,6 +2800,8 @@ def _persistent_modulation(
             c.cue,
         )
         for c in template.event_connections
+        if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)
+        if isinstance(template.motions[binding.reference].body, Stages)
     ]
     for target, index, _, _, _, _ in source_parameters:
         if (parameter := parameters.get(target)) is not None:
