@@ -540,23 +540,63 @@ def test_patch_named_outputs_match_separate_motions(
         )
 
 
-@pytest.mark.parametrize(("phase", "first_marker"), [("0", 6000), ("1/7", 2572)])
-def test_patch_cycle_marker_starts_unexposed_child_contour(
-    tmp_path: Path, phase: str, first_marker: int
+@pytest.mark.parametrize(
+    ("source_kind", "phase", "first_marker"),
+    [
+        ("cycle", "0", 6000),
+        ("cycle", "1/7", 2572),
+        ("staged-marker", "0", 6000),
+        ("staged-marker", "1/7", 2572),
+        ("staged-done", "0", 12000),
+        ("staged-action", "0", 1),
+    ],
+)
+def test_patch_child_event_starts_unexposed_contour(
+    tmp_path: Path, source_kind: str, phase: str, first_marker: int
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
+    clock = {
+        "kind": "cycle",
+        "rate": "2",
+        "phase": phase,
+        "markers": [{"name": "peak", "position": "1/4"}],
+    }
+    if source_kind == "staged-action":
+        clock = {
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [{"name": "waiting", "motion": {"kind": "hold"}}],
+            "transitions": [
+                {
+                    "from": ["waiting"],
+                    "event": "note_on",
+                    "action": {"kind": "finish"},
+                }
+            ],
+        }
+    elif source_kind != "cycle":
+        clock = {
+            "kind": "stages",
+            "initial_stage": "playing",
+            "stages": [
+                {
+                    "name": "playing",
+                    "motion": clock
+                    if source_kind == "staged-marker"
+                    else {
+                        "kind": "contour",
+                        "segments": [{"duration": "1/4 s", "to": 1}],
+                    },
+                }
+            ],
+        }
     voice["motions"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
                 "motions": {
-                    "clock": {
-                        "kind": "cycle",
-                        "rate": "2",
-                        "phase": phase,
-                        "markers": [{"name": "peak", "position": "1/4"}],
-                    },
+                    "clock": clock,
                     "accent": {
                         "kind": "contour",
                         "start": "event",
@@ -567,7 +607,14 @@ def test_patch_cycle_marker_starts_unexposed_child_contour(
                     },
                 },
                 "events": [
-                    {"source": "clock.peak", "target": "accent", "action": "start"}
+                    {
+                        "source": {
+                            "staged-done": "clock.stage.done",
+                            "staged-action": "clock.done",
+                        }.get(source_kind, "clock.peak"),
+                        "target": "accent",
+                        "action": "start",
+                    }
                 ],
                 "outputs": {"value": "accent"},
             }
@@ -618,7 +665,8 @@ def test_patch_cycle_marker_starts_unexposed_child_contour(
         restored.restore(snapshot)
         np.testing.assert_array_equal(restored.advance([], first_marker, 48000), second)
         check_audio(
-            tmp_path / f"patch-events-{backend}-{phase.replace('/', '-')}.wav",
+            tmp_path
+            / f"patch-events-{source_kind}-{backend}-{phase.replace('/', '-')}.wav",
             np.vstack((first, second)),
             offline,
         )
@@ -630,10 +678,101 @@ def test_patch_cycle_marker_starts_unexposed_child_contour(
     restored.restore(snapshot)
     np.testing.assert_array_equal(restored.advance([], 24000, 48000), second)
     check_audio(
-        tmp_path / f"patch-events-persistent-{phase.replace('/', '-')}.wav",
+        tmp_path
+        / f"patch-events-{source_kind}-persistent-{phase.replace('/', '-')}.wav",
         np.vstack((first, second)),
         offline,
     )
+
+
+@pytest.mark.parametrize("reverse_connections", [False, True])
+def test_patch_child_starts_follow_event_time_within_one_sample(
+    tmp_path: Path, reverse_connections: bool
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    connections = [
+        {"source": "late.mark", "target": "accent", "action": "start"},
+        {"source": "early.mark", "target": "accent", "action": "start"},
+    ]
+    if reverse_connections:
+        connections.reverse()
+    voice["motions"] = {
+        "gesture": {
+            "body": {
+                "kind": "patch",
+                "motions": {
+                    "early": {
+                        "kind": "cycle",
+                        "rate": "1",
+                        "markers": [{"name": "mark", "position": "1/192000"}],
+                    },
+                    "late": {
+                        "kind": "stages",
+                        "initial_stage": "playing",
+                        "stages": [
+                            {
+                                "name": "playing",
+                                "motion": {
+                                    "kind": "contour",
+                                    "segments": [{"duration": "1/48000 s", "to": 1}],
+                                    "markers": [{"name": "mark", "position": "3/4"}],
+                                },
+                            }
+                        ],
+                    },
+                    "accent": {
+                        "kind": "contour",
+                        "start": "event",
+                        "segments": [{"duration": "1/1000 s", "to": 1}],
+                    },
+                },
+                "events": connections,
+                "outputs": {"value": "accent"},
+            }
+        }
+    }
+    voice["bindings"] = [
+        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "level", "scope": "voice", "minimum": 0, "maximum": 1}
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["modulation"]["routes"][0]["points"] = [
+        {"input": 0, "amount": 0},
+        {"input": 1, "amount": 1},
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body, [onset(0, pitch=0.1).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    reference = synth.OfflineSynth(prepared).advance(actions, 0, 48000)
+    assert reference[0, 0] == 0
+    expected = Fraction(1, 96) + (1 - Fraction(1, 96)) * Fraction(1, 192)
+    assert reference[1, 0] == pytest.approx(float(expected))
+    for backend in ("native", "persistent"):
+        renderer = (
+            synth.OfflineSynth(prepared, "native")
+            if backend == "native"
+            else synth.PersistentSynth(prepared, voices=2)
+        )
+        first = renderer.advance(actions, 0, 1)
+        snapshot = renderer.snapshot()
+        second = renderer.advance([], 1, 48000)
+        restored = (
+            synth.OfflineSynth(prepared, "native")
+            if backend == "native"
+            else synth.PersistentSynth(prepared, voices=2)
+        )
+        restored.restore(snapshot)
+        np.testing.assert_array_equal(restored.advance([], 1, 48000), second)
+        check_audio(
+            tmp_path / f"patch-mixed-start-{backend}-{reverse_connections}.wav",
+            np.vstack((first, second)),
+            reference,
+        )
 
 
 @pytest.mark.parametrize(

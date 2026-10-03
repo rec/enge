@@ -15,6 +15,7 @@ from ufor.control import TempoMap
 from ufor.envelope import Envelope
 from ufor.motion import (
     Contour,
+    ContourState,
     Cycle,
     CycleState,
     EnterStage,
@@ -534,6 +535,35 @@ def _patch_child_names(settings: SoundSettings) -> set[str]:
     }
 
 
+def _patch_start_connections(
+    settings: SoundSettings, sources: dict[str, int]
+) -> list[tuple[str, str, int, int]]:
+    bindings = {
+        binding.reference: binding.name
+        for binding in settings.bindings
+        if isinstance(binding, processing.GeneratorBinding)
+    }
+    connections: list[tuple[str, str, int, int]] = []
+    for parent_name, parent in settings.motions.items():
+        if not isinstance(parent.body, Patch):
+            continue
+        for order, connection in enumerate(parent.body.events):
+            if connection.action != "start":
+                continue
+            child_name, _, port = connection.source.partition(".")
+            source_name = f"patch-{parent_name}-{child_name}"
+            target_name = f"patch-{parent_name}-{connection.target}"
+            if (
+                source_name not in settings.motions
+                or target_name not in settings.motions
+            ):
+                continue
+            connections.append(
+                (bindings[source_name], port, sources[bindings[target_name]], order)
+            )
+    return connections
+
+
 class ControlRenderer:
     """Resolve scoped controls and LFO sources for one instrument instance."""
 
@@ -995,8 +1025,7 @@ class ControlRenderer:
         key = (id(settings), tuple(sorted(sources.items())))
         if key in self.cached_values:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
-        self._patch_values(settings, sources, start, frames)
-        self._staged_values(settings, sources, start, frames)
+        self._motion_event_values(settings, sources, start, frames)
         signals: dict[str, np.ndarray] = {}
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
@@ -1099,101 +1128,7 @@ class ControlRenderer:
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
 
-    def _patch_values(
-        self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
-    ) -> None:
-        bindings = {
-            b.reference: b.name
-            for b in settings.bindings
-            if isinstance(b, processing.GeneratorBinding)
-        }
-        for parent_name, parent in settings.motions.items():
-            if not isinstance(parent.body, Patch):
-                continue
-            start_connections = [
-                connection
-                for connection in parent.body.events
-                if connection.action == "start"
-            ]
-            if not start_connections:
-                continue
-            first_target = f"patch-{parent_name}-{start_connections[0].target}"
-            if first_target not in settings.motions:
-                continue
-            targets: dict[
-                int, tuple[MotionUse, list[tuple[int, Fraction, Fraction]]]
-            ] = {}
-            for connection in start_connections:
-                source_name, _, marker_name = connection.source.partition(".")
-                origin = f"patch-{parent_name}-{source_name}"
-                destination = f"patch-{parent_name}-{connection.target}"
-                source = self.lfos[sources[bindings[origin]]]
-                source_motion = settings.motions[origin]
-                target_motion = settings.motions[destination]
-                assert isinstance(source_motion.body, Cycle)
-                assert isinstance(target_motion.body, Contour)
-                assert isinstance(source.state.runtime, CycleState)
-                marker = next(
-                    m.position
-                    for m in source_motion.body.markers
-                    if m.name == marker_name
-                )
-                target_index = sources[bindings[destination]]
-                targets.setdefault(target_index, (target_motion, []))[1].append(
-                    (
-                        sources[bindings[origin]],
-                        marker,
-                        source.state.runtime.position.at,
-                    )
-                )
-            for target_index, (motion, connections) in targets.items():
-                if target_index in self.cached_envelopes:
-                    continue
-                state = self.envelopes[target_index].state
-                values = np.empty(frames)
-                for i in range(frames):
-                    at = Fraction(start + i, self.sample_rate)
-                    events: list[tuple[Fraction, int]] = []
-                    for order, (source_index, marker, origin) in enumerate(connections):
-                        source = self.lfos[source_index]
-                        source_motion = settings.motions[source.name]
-                        assert isinstance(source_motion.body, Cycle)
-                        assert isinstance(source.state.runtime, CycleState)
-                        position = source.state.runtime.position
-                        previous = max(origin, at - Fraction(1, self.sample_rate))
-                        if at <= previous:
-                            continue
-                        first = position.coordinate + position.rate * (
-                            previous - origin
-                        )
-                        last = position.coordinate + position.rate * (at - origin)
-                        first_turn = floor(first - marker) + 1
-                        last_turn = floor(last - marker)
-                        if last_turn - first_turn + 1 > 4096 - len(events):
-                            raise EngineError("Patch event capacity exceeded")
-                        for turn in range(first_turn, last_turn + 1):
-                            event_at = (
-                                origin
-                                + (turn + marker - position.coordinate) / position.rate
-                            )
-                            events.append((event_at, order))
-                    if len(events) > 4096:
-                        raise EngineError("Patch event capacity exceeded")
-                    for event_at, order in sorted(events):
-                        state = motion_event(
-                            motion,
-                            state,
-                            MotionEvent(at=event_at, ordinal=order, action="start"),
-                        )
-                    values[i] = motion_at(motion, state, at).value
-                self.envelopes[target_index] = self.envelopes[target_index].model_copy(
-                    update={"state": state}
-                )
-                self.cached_envelopes[target_index] = np.column_stack(
-                    (values, np.ones(frames))
-                )
-
-    def _staged_values(
+    def _motion_event_values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
     ) -> None:
         staged: list[tuple[str, int, MotionUse]] = []
@@ -1208,38 +1143,56 @@ class ControlRenderer:
                 continue
             seen.add(index)
             staged.append((binding.name, index, settings.motions[binding.reference]))
-        if not staged or all(index in self.cached_envelopes for _, index, _ in staged):
+        patch_starts = _patch_start_connections(settings, sources)
+        contour_targets = {target for _, _, target, _ in patch_starts}
+        motion_indices = {index for _, index, _ in staged} | contour_targets
+        if not motion_indices or all(
+            index in self.cached_envelopes for index in motion_indices
+        ):
             return
-        values = {index: np.empty(frames) for _, index, _ in staged}
+        values = {index: np.empty(frames) for index in motion_indices}
         bindings = {binding.name: binding for binding in settings.bindings}
-        cycle_connections = [
-            connection
-            for connection in settings.event_connections
-            if isinstance(
-                (binding := bindings[connection.source]), processing.GeneratorBinding
+        cycle_ports = list(
+            dict.fromkeys(
+                [
+                    (connection.source, connection.port)
+                    for connection in settings.event_connections
+                    if isinstance(
+                        (binding := bindings[connection.source]),
+                        processing.GeneratorBinding,
+                    )
+                    and isinstance(settings.motions[binding.reference].body, Cycle)
+                ]
+                + [
+                    (source, port)
+                    for source, port, _, _ in patch_starts
+                    if isinstance(
+                        (binding := bindings[source]),
+                        processing.GeneratorBinding,
+                    )
+                    and isinstance(settings.motions[binding.reference].body, Cycle)
+                ]
             )
-            if isinstance(settings.motions[binding.reference].body, Cycle)
-        ]
+        )
         for i in range(frames):
             boundary = Fraction(start + i, self.sample_rate)
             events_seen = 0
             sample_values: dict[int, float] = {}
+            pending_starts: list[tuple[Fraction, int, int]] = []
             cycle_events: list[tuple[Fraction, int, str, str]] = []
-            for order, connection in enumerate(cycle_connections):
-                binding = bindings[connection.source]
+            for order, (source_name, port) in enumerate(cycle_ports):
+                binding = bindings[source_name]
                 assert isinstance(binding, processing.GeneratorBinding)
                 motion = settings.motions[binding.reference]
                 assert isinstance(motion.body, Cycle)
-                source = self.lfos[sources[connection.source]]
+                source = self.lfos[sources[source_name]]
                 assert isinstance(source.state.runtime, CycleState)
                 position = source.state.runtime.position
                 origin = position.at
                 previous = max(origin, boundary - Fraction(1, self.sample_rate))
                 if boundary <= previous:
                     continue
-                marker = next(
-                    m.position for m in motion.body.markers if m.name == connection.port
-                )
+                marker = next(m.position for m in motion.body.markers if m.name == port)
                 first = position.coordinate + position.rate * (previous - origin)
                 last = position.coordinate + position.rate * (boundary - origin)
                 first_turn = floor(first - marker) + 1
@@ -1248,7 +1201,7 @@ class ControlRenderer:
                     raise EngineError("Motion event capacity exceeded")
                 for turn in range(first_turn, last_turn + 1):
                     at = origin + (turn + marker - position.coordinate) / position.rate
-                    cycle_events.append((at, order, connection.source, connection.port))
+                    cycle_events.append((at, order, source_name, port))
             cycle_events.sort()
             cycle_event_index = 0
             while True:
@@ -1274,7 +1227,7 @@ class ControlRenderer:
                         ),
                         default=None,
                     )
-                    if settings.event_connections
+                    if settings.event_connections or patch_starts
                     else None
                 )
                 next_cycle_event = (
@@ -1329,9 +1282,19 @@ class ControlRenderer:
                 if events_seen > 4096:
                     raise EngineError("Motion event capacity exceeded")
                 if emitted:
-                    self._dispatch_staged_events(settings, sources, emitted)
+                    self._dispatch_staged_events(
+                        settings, sources, emitted, pending_starts
+                    )
+            self._start_patch_contours(settings, pending_starts)
             for _, index, _ in staged:
                 values[index][i] = sample_values[index]
+            for index in contour_targets:
+                motion = settings.motions[self.envelopes[index].name]
+                values[index][i] = motion_at(
+                    motion,
+                    self.envelopes[index].state,
+                    self.motion_time(motion, boundary),
+                ).value
         for index, samples in values.items():
             self.cached_envelopes[index] = np.column_stack((samples, np.ones(frames)))
 
@@ -1340,16 +1303,25 @@ class ControlRenderer:
         settings: SoundSettings,
         sources: dict[str, int],
         emitted: list[tuple[str, MotionOutputEvent]],
+        starts: list[tuple[Fraction, int, int]] | None = None,
     ) -> None:
         pending = deque(emitted)
         delivered = 0
         bindings = {b.name: b for b in settings.bindings}
+        patch_starts = _patch_start_connections(settings, sources)
+        pending_starts = [] if starts is None else starts
         while pending:
             name, event = pending.popleft()
             source_binding = bindings[name]
             assert isinstance(source_binding, processing.GeneratorBinding)
             source_motion = settings.motions[source_binding.reference]
             seconds = self.motion_seconds(source_motion, event.at)
+            for source_name, port, target_index, order in patch_starts:
+                if source_name == name and port == event.port:
+                    pending_starts.append((seconds, order, target_index))
+                    delivered += 1
+                    if delivered > 4096:
+                        raise EngineError("Motion event connection capacity exceeded")
             for connection in settings.event_connections:
                 if connection.source != name or connection.port != event.port:
                     continue
@@ -1378,6 +1350,29 @@ class ControlRenderer:
                 delivered += 1
                 if delivered > 4096:
                     raise EngineError("Motion event connection capacity exceeded")
+        if starts is None:
+            self._start_patch_contours(settings, pending_starts)
+
+    def _start_patch_contours(
+        self, settings: SoundSettings, starts: list[tuple[Fraction, int, int]]
+    ) -> None:
+        if len(starts) > 4096:
+            raise EngineError("Patch event capacity exceeded")
+        for seconds, _, index in sorted(starts):
+            source = self.envelopes[index]
+            motion = settings.motions[source.name]
+            at = self.motion_time(motion, seconds)
+            assert isinstance(source.state.runtime, ContourState)
+            state = motion_event(
+                motion,
+                source.state,
+                MotionEvent(
+                    at=at,
+                    ordinal=source.state.runtime.ordinal + 1,
+                    action="start",
+                ),
+            )
+            self.envelopes[index] = source.model_copy(update={"state": state})
 
     def clear_cache(self) -> None:
         """Discard ephemeral arrays after an event, restore, or new render span."""
@@ -1723,7 +1718,8 @@ class PersistentSynth:
             for name, indices in source_map.items():
                 if name in patch_children:
                     source_map[name] = indices[:1]
-        patch_events: list[tuple[int, float, int, str | None]] = []
+        patch_events: list[tuple[int, float, int, str | None, int]] = []
+        patch_stage_starts: list[tuple[int, str, int, int]] = []
         for parent_name, parent in template.motions.items():
             if not isinstance(parent.body, Patch):
                 continue
@@ -1732,23 +1728,39 @@ class PersistentSynth:
                 not in template.motions
             ):
                 continue
-            for connection in parent.body.events:
+            for order, connection in enumerate(parent.body.events):
                 if connection.action != "start":
                     continue
                 child_name, _, port = connection.source.partition(".")
                 child = parent.body.motions[child_name]
-                assert isinstance(child, Cycle)
-                marker = next(m.position for m in child.markers if m.name == port)
-                patch_events.append(
-                    (
-                        self.voice_lfo_sources[f"patch-{parent_name}-{child_name}"][0],
-                        float(marker),
-                        self.named_motion_sources[
-                            f"patch-{parent_name}-{connection.target}"
-                        ][0],
-                        None,
+                destination = self.named_motion_sources[
+                    f"patch-{parent_name}-{connection.target}"
+                ][0]
+                if isinstance(child, Cycle):
+                    marker = next(m.position for m in child.markers if m.name == port)
+                    patch_events.append(
+                        (
+                            self.voice_lfo_sources[f"patch-{parent_name}-{child_name}"][
+                                0
+                            ],
+                            float(marker),
+                            destination,
+                            None,
+                            order,
+                        )
                     )
-                )
+                else:
+                    assert isinstance(child, Stages)
+                    patch_stage_starts.append(
+                        (
+                            self.staged_motion_sources[
+                                f"patch-{parent_name}-{child_name}"
+                            ][0],
+                            port,
+                            destination,
+                            order,
+                        )
+                    )
         bindings = {binding.name: binding for binding in template.bindings}
         for connection in template.event_connections:
             source_binding = bindings[connection.source]
@@ -1769,9 +1781,11 @@ class PersistentSynth:
                     float(marker),
                     self.staged_motion_sources[target_binding.reference][0],
                     connection.cue,
+                    len(patch_events),
                 )
             )
         self.runtime.set_patch_events(patch_events)
+        self.runtime.set_patch_stage_starts(patch_stage_starts)
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
