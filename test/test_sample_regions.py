@@ -71,6 +71,39 @@ def test_reordered_and_repeated_regions_follow_selected_identity(
     check_audio(tmp_path / "reordered.wav", actual, expected)
 
 
+def test_seam_fade_applies_only_when_source_regions_jump(
+    backend: Literal["numpy", "native"], tmp_path: Path
+) -> None:
+    phrase = _phrase()
+    source = np.ones((48_000, 1), dtype=np.float64)
+    source[12_000:32_000] = -1
+    source[32_000:] = 0.5
+    identity = render_regions(
+        phrase,
+        phrase.notes,
+        {"voice": source},
+        [0],
+        backend=backend,
+        seam_fade_frames=8,
+    )
+    np.testing.assert_array_equal(identity, source)
+    notes = [phrase.notes[i] for i in [2, 0, 1]]
+    actual = render_regions(
+        phrase,
+        notes,
+        {"voice": source},
+        [0],
+        backend=backend,
+        seam_fade_frames=8,
+    )
+    expected = np.concatenate([source[32_000:], source[:32_000]]).copy()
+    fade = np.arange(1, 9, dtype=np.float64) / 8
+    expected[16_000 - 8 : 16_000] *= (1 - fade)[:, None]
+    expected[16_000 : 16_000 + 8] *= (fade - 1 / 8)[:, None]
+    np.testing.assert_array_equal(actual, expected)
+    check_audio(tmp_path / "seam-fade.wav", actual, expected)
+
+
 def test_looped_region_requires_an_explicit_playback_policy() -> None:
     phrase = _phrase()
     note = phrase.notes[0]

@@ -16,9 +16,12 @@ def render_regions(
     audio: dict[str, np.ndarray],
     channels: list[int],
     backend: Literal["numpy", "native"] = "numpy",
+    seam_fade_frames: int = 0,
 ) -> np.ndarray:
-    """Play source-rate regions; adjacent source regions share one cursor run."""
+    """Play source-rate regions, fading only discontinuous source boundaries."""
     rate = phrase.timebase.rate
+    if seam_fade_frames < 0:
+        raise EngineError("seam fade frames must be nonnegative")
     if rate.denominator != 1 or not channels or len(set(channels)) != len(channels):
         raise EngineError(
             "region playback requires an integer rate and selected channels"
@@ -64,7 +67,15 @@ def render_regions(
             np.ones(count, dtype=np.float64),
             backend=backend,
         )
-        chunks.append(rendered[:, channels])
+        chunk = rendered[:, channels]
+        if chunks and seam_fade_frames:
+            if seam_fade_frames > min(len(chunks[-1]), len(chunk)):
+                raise EngineError("seam fade exceeds an adjacent region run")
+            fade = np.arange(1, seam_fade_frames + 1, dtype=np.float64)
+            fade /= seam_fade_frames
+            chunks[-1][-seam_fade_frames:] *= (1 - fade)[:, None]
+            chunk[:seam_fade_frames] *= (fade - 1 / seam_fade_frames)[:, None]
+        chunks.append(chunk)
         if region is not None:
             start = region
             end_frame = region.end_frame

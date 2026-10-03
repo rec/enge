@@ -28,6 +28,13 @@ progress, and `sample_frames()` returns audio plus independent next state.
 It passes the [traversal vectors](conformance/sampler-traversal.json) and longer
 48 kHz WAV regressions for the implemented traversal profile.
 
+`render_regions()` in [sample_regions.py](enge/sample_regions.py) plays ordered
+uFor sample-region notes through this sampler. Adjacent regions of one asset
+share a cursor run, preserving exact source frames. An optional
+`seam_fade_frames` applies a linear fade out and fade in only where the source
+cursor jumps; it keeps the output length unchanged. Looped regions require a
+separate playback policy and are rejected by this adapter.
+
 `OfflineSampler` in [sample_instrument.py](enge/sample_instrument.py) now
 consumes prepared uFor sample actions. It applies held linear envelopes,
 instrument/slot amplitude and tuning controls, static dB gain, resolved pitch/gain
