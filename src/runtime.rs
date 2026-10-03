@@ -103,6 +103,7 @@ struct PatchEventConnection {
     source: usize,
     marker: f64,
     destination: usize,
+    cue: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -1043,28 +1044,42 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn set_patch_events(&mut self, connections: Vec<(usize, f64, usize)>) -> PyResult<()> {
+    fn set_patch_events(
+        &mut self,
+        connections: Vec<(usize, f64, usize, Option<String>)>,
+    ) -> PyResult<()> {
         if self.frame != 0
-            || connections.iter().any(|(source, marker, destination)| {
-                *source >= self.lfo_definitions.len()
-                    || self.lfo_definitions[*source].scope != 3
-                    || self.lfo_definitions[*source].rate.0 == 0
-                    || self.lfo_definitions[*source].beat_clock
-                    || self.lfo_definitions[*source].transport_position
-                    || !marker.is_finite()
-                    || !(0.0..1.0).contains(marker)
-                    || *destination >= self.named_envelopes.len()
-                    || !self.named_envelopes[*destination].event_started
-            })
+            || connections
+                .iter()
+                .any(|(source, marker, destination, cue)| {
+                    *source >= self.lfo_definitions.len()
+                        || self.lfo_definitions[*source].scope != 3
+                        || self.lfo_definitions[*source].rate.0 == 0
+                        || self.lfo_definitions[*source].beat_clock
+                        || self.lfo_definitions[*source].transport_position
+                        || !marker.is_finite()
+                        || !(0.0..1.0).contains(marker)
+                        || if cue.is_some() {
+                            *destination >= self.staged_motions.len()
+                        } else {
+                            *destination >= self.named_envelopes.len()
+                                || !self.named_envelopes[*destination].event_started
+                        }
+                })
         {
             return Err(PyValueError::new_err("Invalid Patch event connections"));
         }
         self.patch_events = connections
             .into_iter()
-            .map(|(source, marker, destination)| PatchEventConnection {
+            .map(|(source, marker, destination, cue)| PatchEventConnection {
                 source: self.lfo_owners[source],
                 marker,
-                destination: self.named_owners[destination],
+                destination: if cue.is_some() {
+                    self.staged_owners[destination]
+                } else {
+                    self.named_owners[destination]
+                },
+                cue,
             })
             .collect();
         Ok(())
@@ -1477,9 +1492,9 @@ impl SynthRuntime {
                 action += 6;
             }
             self.dispatch_staged_events()?;
+            self.advance_patch_events()?;
             self.advance_staged(true)?;
             self.dispatch_staged_events()?;
-            self.advance_patch_events()?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
@@ -2433,7 +2448,23 @@ impl SynthRuntime {
         }
         events.sort_by(|a, b| a.partial_cmp(b).expect("finite Patch event time"));
         for (at, order, voice) in events {
-            let destination = self.patch_events[order].destination;
+            let connection = &self.patch_events[order];
+            let destination = connection.destination;
+            if let Some(cue) = &connection.cue {
+                let definition = &self.staged_motions[destination];
+                let stage_at = self.staged_time(definition, at);
+                let state =
+                    &mut self.staged_states[voice * self.staged_motions.len() + destination];
+                if staged_transition(definition, state, &format!("cue.{cue}"), stage_at) {
+                    self.staged_pending.push_back(StagedEvent {
+                        at,
+                        voice,
+                        source: destination,
+                        port: "done".to_owned(),
+                    });
+                }
+                continue;
+            }
             let definition = &self.named_envelopes[destination];
             let index = voice * self.named_envelopes.len() + destination;
             let previous = &self.named_states[index];
@@ -2447,6 +2478,7 @@ impl SynthRuntime {
             state.start_value = start_value;
             self.named_states[index] = state;
         }
+        self.dispatch_staged_events()?;
         Ok(())
     }
 
