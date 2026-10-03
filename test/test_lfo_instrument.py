@@ -329,9 +329,16 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
     )
 
 
+@pytest.mark.parametrize(
+    ("shared_child", "shared_body"),
+    [(False, "stages"), (True, "stages"), (True, "cycle"), (True, "contour")],
+)
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_patch_named_outputs_match_separate_motions(
-    tmp_path: Path, backend: Literal["numpy", "native"]
+    tmp_path: Path,
+    backend: Literal["numpy", "native"],
+    shared_child: bool,
+    shared_body: str,
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -350,25 +357,56 @@ def test_patch_named_outputs_match_separate_motions(
                 "name": "sustain",
                 "motion": {"kind": "cycle", "rate": "2", "center": 0.8, "depth": 0.2},
             },
+            {
+                "name": "release",
+                "motion": {
+                    "kind": "contour",
+                    "initial": "current",
+                    "segments": [{"duration": "1/4 s", "to": 0}],
+                },
+            },
         ],
         "transitions": [
             {
                 "from": ["attack"],
                 "event": "stage.done",
                 "action": {"kind": "enter", "stage": "sustain"},
-            }
+            },
+            {
+                "from": ["attack", "sustain"],
+                "event": "note_off",
+                "action": {"kind": "enter", "stage": "release"},
+            },
         ],
     }
     vibrato = {"kind": "cycle", "rate": "5"}
-    voice["motions"] = {"amp": {"body": stages}, "vib": {"body": vibrato}}
+    contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
+    child = {"stages": stages, "cycle": vibrato, "contour": contour}[shared_body]
+    voice["motions"] = {"amp": {"body": child}}
+    if not shared_child:
+        voice["motions"]["vib"] = {"body": vibrato}
     voice["bindings"] = [
         {"name": "level", "kind": "motion", "reference": "amp"},
-        {"name": "pitch", "kind": "motion", "reference": "vib"},
+        {
+            "name": "pitch",
+            "kind": "motion",
+            "reference": "amp" if shared_child else "vib",
+        },
     ]
     voice["modulation"] = {
         "sources": [
-            {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1},
-            {"name": "pitch", "scope": "voice", "minimum": -1, "maximum": 1},
+            {
+                "name": "level",
+                "scope": "voice",
+                "minimum": 0 if shared_child and shared_body == "contour" else -1,
+                "maximum": 1,
+            },
+            {
+                "name": "pitch",
+                "scope": "voice",
+                "minimum": 0 if shared_child and shared_body == "contour" else -1,
+                "maximum": 1,
+            },
         ],
         "parameters": [
             {
@@ -395,7 +433,13 @@ def test_patch_named_outputs_match_separate_motions(
                 "target": {"name": "processing", "parameter": "amplitude"},
                 "operation": "multiply",
                 "unit": "ratio",
-                "points": [{"input": -1, "amount": 0}, {"input": 1, "amount": 1}],
+                "points": [
+                    {
+                        "input": 0 if shared_child and shared_body == "contour" else -1,
+                        "amount": 0,
+                    },
+                    {"input": 1, "amount": 1},
+                ],
             },
             {
                 "name": "pitch",
@@ -403,14 +447,23 @@ def test_patch_named_outputs_match_separate_motions(
                 "target": {"name": "processing", "parameter": "tuning_cents"},
                 "operation": "add",
                 "unit": "cents",
-                "points": [{"input": -1, "amount": -50}, {"input": 1, "amount": 50}],
+                "points": [
+                    {
+                        "input": 0 if shared_child and shared_body == "contour" else -1,
+                        "amount": -50,
+                    },
+                    {"input": 1, "amount": 50},
+                ],
             },
         ],
     }
     separate = SynthInstrumentScore.model_validate(raw)
     actions = synth_trace.prepare(
         separate.body,
-        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
         seed=0,
     ).actions
     expected = synth.OfflineSynth(synth.prepare(separate), backend).advance(
@@ -420,8 +473,10 @@ def test_patch_named_outputs_match_separate_motions(
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {"amp": stages, "vib": vibrato},
-                "outputs": {"level": "amp", "pitch": "vib"},
+                "motions": {"amp": child}
+                if shared_child
+                else {"amp": stages, "vib": vibrato},
+                "outputs": {"level": "amp", "pitch": "amp" if shared_child else "vib"},
             }
         }
     }
@@ -431,15 +486,37 @@ def test_patch_named_outputs_match_separate_motions(
     prepared = synth.prepare(patch)
     patch_actions = synth_trace.prepare(
         patch.body,
-        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
         seed=0,
     ).actions
-    actual = synth.OfflineSynth(prepared, backend).advance(patch_actions, 0, 48000)
-    check_audio(tmp_path / f"patch-{backend}.wav", actual, expected)
-    persistent = synth.PersistentSynth(prepared, voices=2).advance(
-        patch_actions, 0, 48000
+    renderer = synth.OfflineSynth(prepared, backend)
+    first_actions = [a for a in patch_actions if a.tick < 24000]
+    second_actions = [a for a in patch_actions if a.tick >= 24000]
+    first = renderer.advance(first_actions, 0, 24000)
+    snapshot = renderer.snapshot()
+    if shared_child and shared_body == "cycle":
+        assert len(snapshot.lfos) == 1
+    else:
+        assert len(snapshot.envelopes) == 1
+    second = renderer.advance(second_actions, 24000, 48000)
+    restored = synth.OfflineSynth(prepared, backend)
+    restored.restore(snapshot)
+    np.testing.assert_array_equal(
+        restored.advance(second_actions, 24000, 48000), second
     )
-    check_audio(tmp_path / "patch-persistent.wav", persistent, expected)
+    actual = np.vstack((first, second))
+    check_audio(tmp_path / f"patch-{backend}.wav", actual, expected)
+    live = synth.PersistentSynth(prepared, voices=2)
+    first = live.advance(first_actions, 0, 24000)
+    snapshot = live.snapshot()
+    second = live.advance(second_actions, 24000, 48000)
+    replay = synth.PersistentSynth(prepared, voices=2)
+    replay.restore(snapshot)
+    np.testing.assert_array_equal(replay.advance(second_actions, 24000, 48000), second)
+    check_audio(tmp_path / "patch-persistent.wav", np.vstack((first, second)), expected)
     command = instrument_trace.MotionObservation(
         tick=12000,
         ordinal=0,
@@ -451,11 +528,15 @@ def test_patch_named_outputs_match_separate_motions(
     )
     with pytest.raises(synth.EngineError, match="Patch-level Motion commands"):
         synth.OfflineSynth(prepared, backend).advance(
-            [*patch_actions, command], 0, 48000
+            sorted([*patch_actions, command], key=lambda a: (a.tick, a.ordinal)),
+            0,
+            48000,
         )
     with pytest.raises(synth.EngineError, match="Patch-level Motion commands"):
         synth.PersistentSynth(prepared, voices=2).advance(
-            [*patch_actions, command], 0, 48000
+            sorted([*patch_actions, command], key=lambda a: (a.tick, a.ordinal)),
+            0,
+            48000,
         )
 
 

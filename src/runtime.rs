@@ -271,11 +271,14 @@ pub struct SynthRuntimeSnapshot {
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
+    lfo_owners: Vec<usize>,
     lfo_event_states: Vec<Option<LfoEventState>>,
     voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
+    named_owners: Vec<usize>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
+    staged_owners: Vec<usize>,
     staged_states: Vec<StagedMotionState>,
     staged_connections: Vec<StagedConnection>,
     staged_pending: VecDeque<StagedEvent>,
@@ -338,11 +341,14 @@ pub struct SynthRuntime {
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
+    lfo_owners: Vec<usize>,
     lfo_event_states: Vec<Option<LfoEventState>>,
     voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
+    named_owners: Vec<usize>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
+    staged_owners: Vec<usize>,
     staged_states: Vec<StagedMotionState>,
     staged_connections: Vec<StagedConnection>,
     staged_pending: VecDeque<StagedEvent>,
@@ -472,11 +478,14 @@ impl SynthRuntime {
             control_definitions,
             control_states,
             lfo_definitions,
+            lfo_owners: (0..lfo_count).collect(),
             lfo_event_states: vec![None; lfo_count],
             voice_lfo_event_states: vec![None; slots * lfo_count],
             named_envelopes: Vec::new(),
+            named_owners: Vec::new(),
             beat_points: Vec::new(),
             staged_motions: Vec::new(),
+            staged_owners: Vec::new(),
             staged_states: Vec::new(),
             staged_connections: Vec::new(),
             staged_pending: VecDeque::new(),
@@ -772,6 +781,7 @@ impl SynthRuntime {
             .collect::<PyResult<_>>()?;
         let states = self.frequencies.len() * count;
         self.named_envelopes = definitions;
+        self.named_owners = (0..count).collect();
         self.named_states = self
             .named_envelopes
             .iter()
@@ -972,6 +982,7 @@ impl SynthRuntime {
             })
             .collect();
         self.staged_motions = definitions;
+        self.staged_owners = (0..self.staged_motions.len()).collect();
         self.staged_connections = connections
             .into_iter()
             .map(|(source, port, destination, cue)| StagedConnection {
@@ -982,6 +993,28 @@ impl SynthRuntime {
             })
             .collect();
         self.staged_pending.clear();
+        Ok(())
+    }
+
+    fn set_motion_state_owners(
+        &mut self,
+        lfos: Vec<usize>,
+        envelopes: Vec<usize>,
+        stages: Vec<usize>,
+    ) -> PyResult<()> {
+        if self.frame != 0
+            || lfos.len() != self.lfo_definitions.len()
+            || envelopes.len() != self.named_envelopes.len()
+            || stages.len() != self.staged_motions.len()
+            || !valid_motion_owners(&lfos)
+            || !valid_motion_owners(&envelopes)
+            || !valid_motion_owners(&stages)
+        {
+            return Err(PyValueError::new_err("Invalid shared Motion state owners"));
+        }
+        self.lfo_owners = lfos;
+        self.named_owners = envelopes;
+        self.staged_owners = stages;
         Ok(())
     }
 
@@ -1117,11 +1150,14 @@ impl SynthRuntime {
             control_definitions: self.control_definitions.clone(),
             control_states: self.control_states.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
+            lfo_owners: self.lfo_owners.clone(),
             lfo_event_states: self.lfo_event_states.clone(),
             voice_lfo_event_states: self.voice_lfo_event_states.clone(),
             named_envelopes: self.named_envelopes.clone(),
+            named_owners: self.named_owners.clone(),
             beat_points: self.beat_points.clone(),
             staged_motions: self.staged_motions.clone(),
+            staged_owners: self.staged_owners.clone(),
             staged_states: self.staged_states.clone(),
             staged_connections: self.staged_connections.clone(),
             staged_pending: self.staged_pending.clone(),
@@ -1182,9 +1218,12 @@ impl SynthRuntime {
             || self.routes != snapshot.routes
             || self.control_definitions != snapshot.control_definitions
             || self.lfo_definitions != snapshot.lfo_definitions
+            || self.lfo_owners != snapshot.lfo_owners
             || self.named_envelopes != snapshot.named_envelopes
+            || self.named_owners != snapshot.named_owners
             || self.beat_points != snapshot.beat_points
             || self.staged_motions != snapshot.staged_motions
+            || self.staged_owners != snapshot.staged_owners
             || self.staged_connections != snapshot.staged_connections
             || self.filter_definitions != snapshot.filter_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
@@ -2103,6 +2142,9 @@ impl SynthRuntime {
                     continue;
                 }
                 for (source, definition) in self.staged_motions.iter().enumerate() {
+                    if self.staged_owners[source] != source {
+                        continue;
+                    }
                     let state = &self.staged_states[voice * self.staged_motions.len() + source];
                     let limit = self.staged_time(definition, self.frame as f64);
                     if let Some((stage_at, order, port)) =
@@ -2325,6 +2367,7 @@ impl SynthRuntime {
             if definition.parameter != parameter {
                 continue;
             }
+            let owner = self.lfo_owners[source];
             let elapsed = match definition.scope {
                 0 => self.frame,
                 1 => {
@@ -2334,9 +2377,9 @@ impl SynthRuntime {
                 _ => self.ages[voice],
             };
             let event_state = if definition.scope == 3 {
-                &self.voice_lfo_event_states[voice * self.lfo_definitions.len() + source]
+                &self.voice_lfo_event_states[voice * self.lfo_definitions.len() + owner]
             } else {
-                &self.lfo_event_states[source]
+                &self.lfo_event_states[owner]
             };
             let (value, weight) = if definition.transport_position {
                 let state = LfoEventState {
@@ -2401,7 +2444,7 @@ impl SynthRuntime {
             }
             let value = named_contour_value(
                 definition,
-                &self.named_states[envelope_base + source],
+                &self.named_states[envelope_base + self.named_owners[source]],
                 self.named_time(definition, self.frame as f64),
                 self.frame as f64,
             );
@@ -2416,7 +2459,8 @@ impl SynthRuntime {
             if definition.parameter != Some(parameter) {
                 continue;
             }
-            let state = &self.staged_states[voice * self.staged_motions.len() + source];
+            let state =
+                &self.staged_states[voice * self.staged_motions.len() + self.staged_owners[source]];
             let value = staged_value(
                 definition,
                 state,
@@ -3448,4 +3492,11 @@ fn advance_ramp(value: &mut f64, step: f64, remaining: &mut usize) {
         *value += step;
         *remaining -= 1;
     }
+}
+
+fn valid_motion_owners(owners: &[usize]) -> bool {
+    owners
+        .iter()
+        .enumerate()
+        .all(|(index, owner)| *owner <= index && owners[*owner] == *owner)
 }

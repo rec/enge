@@ -402,11 +402,15 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if not isinstance(parent.body, Patch):
             continue
         assert binding.output is not None
-        name = f"patch-{binding.name}"
-        if name in motions:
+        child_name = parent.body.outputs[binding.output]
+        name = f"patch-{binding.reference}-{child_name}"
+        if name in voice.motions:
             raise EngineError(f"Patch output Motion name collides: {name}")
-        child = parent.body.motions[parent.body.outputs[binding.output]]
-        motions[name] = MotionUse(scope=parent.scope, clock=parent.clock, body=child)
+        child = parent.body.motions[child_name]
+        if name not in motions:
+            motions[name] = MotionUse(
+                scope=parent.scope, clock=parent.clock, body=child
+            )
         bindings[index] = binding.model_copy(update={"reference": name, "output": None})
         changed = True
     if not changed:
@@ -414,6 +418,15 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
     return SynthVoice.model_validate(
         voice.model_dump() | {"motions": motions, "bindings": bindings}
     )
+
+
+def _patch_child_names(settings: SoundSettings) -> set[str]:
+    return {
+        f"patch-{name}-{child}"
+        for name, motion in settings.motions.items()
+        if isinstance(motion.body, Patch)
+        for child in motion.body.motions
+    }
 
 
 class ControlRenderer:
@@ -442,6 +455,7 @@ class ControlRenderer:
         self.tempo_map = tempo_map.model_copy(deep=True) if tempo_map else None
         self.declarations = declarations
         self.settings = settings
+        self.patch_children = [_patch_child_names(s) for s in settings]
         self.backend = backend
         self.contexts: list[ControlContext] = []
         self.lfos: list[LFOSource] = []
@@ -691,6 +705,20 @@ class ControlRenderer:
                         raise EngineError(
                             "Staged and contour Motions require voice scope"
                         )
+                    existing = None
+                    if binding.reference in self.patch_children[setting]:
+                        existing = next(
+                            (
+                                i
+                                for i, item in enumerate(self.envelopes)
+                                if (item.setting, item.name, item.voice_id)
+                                == (setting, binding.reference, action.voice_id)
+                            ),
+                            None,
+                        )
+                    if existing is not None:
+                        result[source.name] = existing
+                        continue
                     index = len(self.envelopes)
                     initial = initial_motion(
                         motion,
@@ -802,12 +830,16 @@ class ControlRenderer:
             + (renderer.release_frame - renderer.frame_count) / self.sample_rate
         )
         emitted: list[tuple[str, MotionOutputEvent]] = []
+        released: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
                 settings.motions[binding.reference].body, (Contour, Stages)
             ):
                 continue
             index = sources[binding.name]
+            if index in released:
+                continue
+            released.add(index)
             source = self.envelopes[index]
             definition = settings.motions[binding.reference]
             if (
@@ -961,12 +993,18 @@ class ControlRenderer:
     def _staged_values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
     ) -> None:
-        staged = [
-            (b.name, sources[b.name], settings.motions[b.reference])
-            for b in settings.bindings
-            if isinstance(b, processing.GeneratorBinding)
-            and isinstance(settings.motions[b.reference].body, Stages)
-        ]
+        staged: list[tuple[str, int, MotionUse]] = []
+        seen: set[int] = set()
+        for binding in settings.bindings:
+            if not isinstance(binding, processing.GeneratorBinding):
+                continue
+            index = sources[binding.name]
+            if index in seen or not isinstance(
+                settings.motions[binding.reference].body, Stages
+            ):
+                continue
+            seen.add(index)
+            staged.append((binding.name, index, settings.motions[binding.reference]))
         if not staged or all(index in self.cached_envelopes for _, index, _ in staged):
             return
         values = {index: np.empty(frames) for _, index, _ in staged}
@@ -1395,6 +1433,27 @@ class PersistentSynth:
                 ]
             )
         self.runtime.set_staged_motions(staged_motions, event_connections)
+        patch_children = _patch_child_names(template)
+        self.runtime.set_motion_state_owners(
+            _motion_state_owners(
+                len(lfos), patch_children, self.lfo_sources, self.voice_lfo_sources
+            ),
+            _motion_state_owners(
+                len(envelope_initials), patch_children, self.named_motion_sources
+            ),
+            _motion_state_owners(
+                len(staged_motions), patch_children, self.staged_motion_sources
+            ),
+        )
+        for source_map in (
+            self.lfo_sources,
+            self.voice_lfo_sources,
+            self.named_motion_sources,
+            self.staged_motion_sources,
+        ):
+            for name, indices in source_map.items():
+                if name in patch_children:
+                    source_map[name] = indices[:1]
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -2426,6 +2485,18 @@ def _persistent_modulation(
         staged_motion_sources,
         event_connections,
     )
+
+
+def _motion_state_owners(
+    count: int, names: set[str], *source_maps: dict[str, list[int]]
+) -> list[int]:
+    owners = list(range(count))
+    for source_map in source_maps:
+        for name in names:
+            if indices := source_map.get(name):
+                for index in indices[1:]:
+                    owners[index] = indices[0]
+    return owners
 
 
 def _runtime_staged_motion(
