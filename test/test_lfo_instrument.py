@@ -636,23 +636,49 @@ def test_patch_cycle_marker_starts_unexposed_child_contour(
     )
 
 
-@pytest.mark.parametrize(("phase", "first_marker"), [("0", 6000), ("1/7", 2572)])
-def test_patch_cycle_marker_cues_child_stages(
-    tmp_path: Path, phase: str, first_marker: int
+@pytest.mark.parametrize(
+    ("source_kind", "phase", "first_event"),
+    [
+        ("cycle", "0", 6000),
+        ("cycle", "1/7", 2572),
+        ("staged-marker", "0", 6000),
+        ("staged-marker", "1/7", 2572),
+        ("staged-done", "0", 12000),
+    ],
+)
+def test_patch_child_event_cues_child_stages(
+    tmp_path: Path, source_kind: str, phase: str, first_event: int
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
+    clock = {
+        "kind": "cycle",
+        "rate": "2",
+        "phase": phase,
+        "markers": [{"name": "peak", "position": "1/4"}],
+    }
+    if source_kind != "cycle":
+        clock = {
+            "kind": "stages",
+            "initial_stage": "playing",
+            "stages": [
+                {
+                    "name": "playing",
+                    "motion": clock
+                    if source_kind == "staged-marker"
+                    else {
+                        "kind": "contour",
+                        "segments": [{"duration": "1/4 s", "to": 1}],
+                    },
+                }
+            ],
+        }
     voice["motions"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
                 "motions": {
-                    "clock": {
-                        "kind": "cycle",
-                        "rate": "2",
-                        "phase": phase,
-                        "markers": [{"name": "peak", "position": "1/4"}],
-                    },
+                    "clock": clock,
                     "level": {
                         "kind": "stages",
                         "initial_stage": "waiting",
@@ -675,7 +701,9 @@ def test_patch_cycle_marker_cues_child_stages(
                 "outputs": {"value": "level"},
                 "events": [
                     {
-                        "source": "clock.peak",
+                        "source": "clock.stage.done"
+                        if source_kind == "staged-done"
+                        else "clock.peak",
                         "target": "level",
                         "action": "cue",
                         "cue": "brighten",
@@ -701,8 +729,8 @@ def test_patch_cycle_marker_cues_child_stages(
         document.body, [onset(0, pitch=0.1).model_copy(update={"controls": {}})], seed=0
     ).actions
     reference = synth.OfflineSynth(prepared).advance(actions, 0, 48000)
-    assert np.max(np.abs(reference[:first_marker])) == 0
-    assert reference[first_marker, 0] == pytest.approx(1)
+    assert np.max(np.abs(reference[:first_event])) == 0
+    assert reference[first_event, 0] == pytest.approx(1)
     for backend in ("numpy", "native"):
         renderer = synth.OfflineSynth(prepared, backend)
         first = renderer.advance(actions, 0, 16000)
@@ -712,7 +740,8 @@ def test_patch_cycle_marker_cues_child_stages(
         restored.restore(snapshot)
         np.testing.assert_array_equal(restored.advance([], 16000, 48000), second)
         check_audio(
-            tmp_path / f"patch-cue-{backend}-{phase.replace('/', '-')}.wav",
+            tmp_path
+            / f"patch-cue-{source_kind}-{backend}-{phase.replace('/', '-')}.wav",
             np.vstack((first, second)),
             reference,
         )
@@ -724,7 +753,7 @@ def test_patch_cycle_marker_cues_child_stages(
     restored.restore(snapshot)
     np.testing.assert_array_equal(restored.advance([], 16000, 48000), second)
     check_audio(
-        tmp_path / f"patch-cue-persistent-{phase.replace('/', '-')}.wav",
+        tmp_path / f"patch-cue-{source_kind}-persistent-{phase.replace('/', '-')}.wav",
         np.vstack((first, second)),
         reference,
     )
