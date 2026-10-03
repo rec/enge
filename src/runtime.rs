@@ -48,6 +48,7 @@ struct LfoDefinition {
     delay: (u64, u64),
     fade: (u64, u64),
     beat_clock: bool,
+    transport_position: bool,
 }
 
 #[derive(Clone)]
@@ -64,6 +65,7 @@ struct LfoEventState {
 struct BeatPoint {
     frame: f64,
     beat: f64,
+    song_beat: f64,
     rate: f64,
 }
 
@@ -780,13 +782,14 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn set_beat_clock(&mut self, points: Vec<(f64, f64, f64)>) -> PyResult<()> {
+    fn set_beat_clock(&mut self, points: Vec<(f64, f64, f64, f64)>) -> PyResult<()> {
         if self.frame != 0
             || points.is_empty()
             || points[0].0 != 0.0
-            || points.iter().any(|(frame, beat, rate)| {
+            || points.iter().any(|(frame, beat, song_beat, rate)| {
                 !frame.is_finite()
                     || !beat.is_finite()
+                    || !song_beat.is_finite()
                     || !rate.is_finite()
                     || *beat < 0.0
                     || *rate < 0.0
@@ -797,7 +800,12 @@ impl SynthRuntime {
         }
         self.beat_points = points
             .into_iter()
-            .map(|(frame, beat, rate)| BeatPoint { frame, beat, rate })
+            .map(|(frame, beat, song_beat, rate)| BeatPoint {
+                frame,
+                beat,
+                song_beat,
+                rate,
+            })
             .collect();
         Ok(())
     }
@@ -1241,6 +1249,14 @@ impl SynthRuntime {
             .partition_point(|point| point.frame <= frame);
         let point = &self.beat_points[index - 1];
         point.beat + (frame - point.frame) * point.rate
+    }
+
+    fn song_beat_at(&self, frame: f64) -> f64 {
+        let index = self
+            .beat_points
+            .partition_point(|point| point.frame <= frame);
+        let point = &self.beat_points[index - 1];
+        point.song_beat + (frame - point.frame) * point.rate
     }
 
     fn frame_at_local_beat(&self, beat: f64) -> f64 {
@@ -1878,7 +1894,7 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid synth LFO action"));
                 }
                 let definition = &self.lfo_definitions[lfo];
-                if definition.scope != 0 {
+                if definition.scope != 0 || definition.transport_position {
                     return Err(PyValueError::new_err("Invalid synth LFO scope"));
                 }
                 let state = self.lfo_event_states[lfo].clone().unwrap_or(LfoEventState {
@@ -2018,6 +2034,7 @@ impl SynthRuntime {
                     || action[3] != source as f64
                     || source >= self.lfo_definitions.len()
                     || self.lfo_definitions[source].scope != 3
+                    || self.lfo_definitions[source].transport_position
                     || action[4] != command as f64
                     || command > 4
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
@@ -2321,7 +2338,22 @@ impl SynthRuntime {
             } else {
                 &self.lfo_event_states[source]
             };
-            let (value, weight) = if let Some(state) = event_state {
+            let (value, weight) = if definition.transport_position {
+                let state = LfoEventState {
+                    at: 0,
+                    age: 0.0,
+                    phase: definition.phase.0 as f64 / definition.phase.1 as f64,
+                    rate: definition.rate.0 as f64 / definition.rate.1 as f64,
+                    direction: 1.0,
+                    paused: false,
+                };
+                lfo_event_value(
+                    definition,
+                    &state,
+                    self.song_beat_at(self.frame as f64),
+                    1.0,
+                )
+            } else if let Some(state) = event_state {
                 lfo_event_value(
                     definition,
                     state,
@@ -2618,7 +2650,7 @@ fn lfo_definitions(
             || row[2] != parameter as f64
             || row[3] != operation as f64
             || operation > 1
-            || (row[6] != 0.0 && row[6] != 1.0)
+            || ![0.0, 1.0, 2.0].contains(&row[6])
             || exact[0].0 > exact[0].1
             || exact[2].0 >= exact[2].1
         {
@@ -2636,7 +2668,8 @@ fn lfo_definitions(
             phase: exact[2],
             delay: exact[3],
             fade: exact[4],
-            beat_clock: row[6] == 1.0,
+            beat_clock: row[6] != 0.0,
+            transport_position: row[6] == 2.0,
         });
     }
     Ok(definitions)
