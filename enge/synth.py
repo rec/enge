@@ -23,6 +23,7 @@ from ufor.motion import (
     MotionOutputEvent,
     MotionState,
     MotionUse,
+    Patch,
     PlaybackMode,
     Stages,
     StageState,
@@ -83,6 +84,7 @@ class PreparedSynth(Model, frozen=True):
     sample_rate: int
     channels: list[str]
     instrument: SynthInstrument
+    source_instrument: SynthInstrument | None = None
 
 
 class ControlRamp(Model, frozen=True):
@@ -373,15 +375,44 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
     if not isinstance(output, AudioType):
         raise EngineError("Synth output must be sampled audio")
     timebase = next(t for t in score.timebases if t.name == output.timebase)
+    voices: list[SynthVoice] = []
     for voice in score.body.voices:
         if not isinstance(voice, SynthVoice):
             raise EngineError("Oscillator engine requires oscillator voice templates")
+        voice = _expand_patch_outputs(voice)
         _validate_voice(voice)
         filters.parameters(voice.processing.filters, _sample_rate(timebase), 1)
+        voices.append(voice)
     return PreparedSynth(
         sample_rate=_sample_rate(timebase),
         channels=output.channels,
-        instrument=score.body,
+        instrument=score.body.model_copy(update={"voices": voices}),
+        source_instrument=score.body if voices != score.body.voices else None,
+    )
+
+
+def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
+    motions = dict(voice.motions)
+    bindings = list(voice.bindings)
+    changed = False
+    for index, binding in enumerate(bindings):
+        if not isinstance(binding, processing.GeneratorBinding):
+            continue
+        parent = motions[binding.reference]
+        if not isinstance(parent.body, Patch):
+            continue
+        assert binding.output is not None
+        name = f"patch-{binding.name}"
+        if name in motions:
+            raise EngineError(f"Patch output Motion name collides: {name}")
+        child = parent.body.motions[parent.body.outputs[binding.output]]
+        motions[name] = MotionUse(scope=parent.scope, clock=parent.clock, body=child)
+        bindings[index] = binding.model_copy(update={"reference": name, "output": None})
+        changed = True
+    if not changed:
+        return voice
+    return SynthVoice.model_validate(
+        voice.model_dump() | {"motions": motions, "bindings": bindings}
     )
 
 
@@ -535,6 +566,12 @@ class ControlRenderer:
                     }
                 )
         elif isinstance(action, instrument_trace.MotionObservation):
+            if any(
+                (motion := settings.motions.get(action.name)) is not None
+                and isinstance(motion.body, Patch)
+                for settings in self.settings
+            ):
+                raise EngineError("Patch-level Motion commands are not implemented")
             for index, source in enumerate(self.lfos):
                 if (
                     source.name == action.name
@@ -1171,11 +1208,19 @@ class OfflineSynth:
         if action.voice_id in self.voices:
             raise EngineError(f"Duplicate active voice: {action.voice_id}")
         template = self.templates.get(action.template)
+        source_instrument = (
+            self.definition.source_instrument or self.definition.instrument
+        )
+        source = next(
+            (v for v in source_instrument.voices if v.name == action.template),
+            None,
+        )
         if (
             template is None
-            or action.settings != template
-            or action.oscillator != template.oscillator
-            or action.channels != template.channels
+            or not isinstance(source, SynthVoice)
+            or action.settings != source
+            or action.oscillator != source.oscillator
+            or action.channels != source.channels
         ):
             raise EngineError("Voice start must match its prepared synth template")
         sources = self.controls.sources(template, action)
@@ -1493,6 +1538,10 @@ class PersistentSynth:
                     )
                     count += 1
             elif isinstance(action, instrument_trace.MotionObservation):
+                if (
+                    motion := self.template.motions.get(action.name)
+                ) is not None and isinstance(motion.body, Patch):
+                    raise EngineError("Patch-level Motion commands are not implemented")
                 command = ("pause", "resume", "reverse", "seek", "shift").index(
                     action.action
                 )
@@ -1643,11 +1692,16 @@ class PersistentSynth:
             raise EngineError("Synth voice requires positive resolved pitch_hz")
         if action.voice_id in self.voices:
             raise EngineError(f"Duplicate active voice: {action.voice_id}")
+        source_instrument = (
+            self.definition.source_instrument or self.definition.instrument
+        )
+        source = source_instrument.voices[0]
+        assert isinstance(source, SynthVoice)
         if (
             action.template != self.template.name
-            or action.settings != self.template
-            or action.oscillator != self.template.oscillator
-            or action.channels != self.template.channels
+            or action.settings != source
+            or action.oscillator != source.oscillator
+            or action.channels != source.channels
         ):
             raise EngineError("Voice start must match its prepared synth template")
         slot = next((i for i, value in enumerate(active) if not value), None)
@@ -1881,7 +1935,9 @@ def validate_generators(
         raise EngineError("Staged and contour Motions require voice scope")
     if any(
         g.clock != "seconds"
-        and not (allow_beat_motions and isinstance(g.body, (Contour, Cycle, Stages)))
+        and not (
+            allow_beat_motions and isinstance(g.body, (Contour, Cycle, Stages, Patch))
+        )
         for g in settings.motions.values()
     ):
         raise EngineError("Beat-clock Motions require a supported synth renderer")
