@@ -330,6 +330,136 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_patch_named_outputs_match_separate_motions(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    stages = {
+        "kind": "stages",
+        "initial_stage": "attack",
+        "stages": [
+            {
+                "name": "attack",
+                "motion": {
+                    "kind": "contour",
+                    "segments": [{"duration": "1/4 s", "to": 1}],
+                },
+            },
+            {
+                "name": "sustain",
+                "motion": {"kind": "cycle", "rate": "2", "center": 0.8, "depth": 0.2},
+            },
+        ],
+        "transitions": [
+            {
+                "from": ["attack"],
+                "event": "stage.done",
+                "action": {"kind": "enter", "stage": "sustain"},
+            }
+        ],
+    }
+    vibrato = {"kind": "cycle", "rate": "5"}
+    voice["motions"] = {"amp": {"body": stages}, "vib": {"body": vibrato}}
+    voice["bindings"] = [
+        {"name": "level", "kind": "motion", "reference": "amp"},
+        {"name": "pitch", "kind": "motion", "reference": "vib"},
+    ]
+    voice["modulation"] = {
+        "sources": [
+            {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1},
+            {"name": "pitch", "scope": "voice", "minimum": -1, "maximum": 1},
+        ],
+        "parameters": [
+            {
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 1,
+            },
+            {
+                "target": {"name": "processing", "parameter": "tuning_cents"},
+                "unit": "cents",
+                "scope": "voice",
+                "minimum": -100,
+                "maximum": 100,
+                "default": 0,
+            },
+        ],
+        "routes": [
+            {
+                "name": "level",
+                "source": "level",
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "operation": "multiply",
+                "unit": "ratio",
+                "points": [{"input": -1, "amount": 0}, {"input": 1, "amount": 1}],
+            },
+            {
+                "name": "pitch",
+                "source": "pitch",
+                "target": {"name": "processing", "parameter": "tuning_cents"},
+                "operation": "add",
+                "unit": "cents",
+                "points": [{"input": -1, "amount": -50}, {"input": 1, "amount": 50}],
+            },
+        ],
+    }
+    separate = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        separate.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    expected = synth.OfflineSynth(synth.prepare(separate), backend).advance(
+        actions, 0, 48000
+    )
+    voice["motions"] = {
+        "gesture": {
+            "body": {
+                "kind": "patch",
+                "motions": {"amp": stages, "vib": vibrato},
+                "outputs": {"level": "amp", "pitch": "vib"},
+            }
+        }
+    }
+    voice["bindings"][0].update(reference="gesture", output="level")
+    voice["bindings"][1].update(reference="gesture", output="pitch")
+    patch = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(patch)
+    patch_actions = synth_trace.prepare(
+        patch.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    actual = synth.OfflineSynth(prepared, backend).advance(patch_actions, 0, 48000)
+    check_audio(tmp_path / f"patch-{backend}.wav", actual, expected)
+    persistent = synth.PersistentSynth(prepared, voices=2).advance(
+        patch_actions, 0, 48000
+    )
+    check_audio(tmp_path / "patch-persistent.wav", persistent, expected)
+    command = instrument_trace.MotionObservation(
+        tick=12000,
+        ordinal=0,
+        name="gesture",
+        part="main",
+        trigger_id="note",
+        action="seek",
+        position=0.5,
+    )
+    with pytest.raises(synth.EngineError, match="Patch-level Motion commands"):
+        synth.OfflineSynth(prepared, backend).advance(
+            [*patch_actions, command], 0, 48000
+        )
+    with pytest.raises(synth.EngineError, match="Patch-level Motion commands"):
+        synth.PersistentSynth(prepared, voices=2).advance(
+            [*patch_actions, command], 0, 48000
+        )
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
