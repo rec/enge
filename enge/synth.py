@@ -422,6 +422,8 @@ class ControlRenderer:
             return seconds
         if self.tempo_map is None:
             raise EngineError("Beat-clock Motion requires a host tempo map")
+        if motion.position_driver == "transport":
+            return self.tempo_map.beat_at(seconds)
         return self.tempo_map.elapsed_beats(Fraction(0), seconds)
 
     def motion_seconds(self, motion: MotionUse, at: Fraction) -> Fraction:
@@ -1333,6 +1335,7 @@ class PersistentSynth:
                     (
                         float(p.at_seconds * rate),
                         float(tempo_map.elapsed_beats(Fraction(0), p.at_seconds)),
+                        float(p.beat),
                         float(p.bpm / (60 * rate)) if p.running else 0.0,
                     )
                     for p in tempo_map.points
@@ -2286,7 +2289,11 @@ def _persistent_modulation(
                     0 if operation == modulation.Operation.add else 1,
                     intercept,
                     slope,
-                    1.0 if motion.clock == "beats" else 0.0,
+                    2.0
+                    if motion.position_driver == "transport"
+                    else 1.0
+                    if motion.clock == "beats"
+                    else 0.0,
                 ]
             )
             for value in (

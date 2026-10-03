@@ -258,6 +258,78 @@ def test_beat_stages_follow_tempo_and_stop_across_restore(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
+def test_transport_position_cycle_follows_seek_without_crossing_history(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    raw["body"]["voices"][0]["motions"]["motion"] = {
+        "clock": "beats",
+        "position_driver": "transport",
+        "body": {
+            "kind": "cycle",
+            "shape": "triangle",
+            "rate": "1/4",
+            "reset": "transport",
+        },
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    clock = TempoMap.model_validate(
+        {
+            "points": [
+                {"at_seconds": "0", "beat": "0", "bpm": "120"},
+                {"at_seconds": "1/4", "beat": "1/2", "bpm": "60"},
+                {"at_seconds": "1/2", "beat": "3/4", "bpm": "60", "running": False},
+                {"at_seconds": "3/4", "beat": "8", "bpm": "120"},
+            ]
+        }
+    )
+    actions = synth_trace.prepare(
+        document.body,
+        [onset(0, pitch=0.1).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    seconds = np.arange(48000) / 48000
+    song_beats = np.where(
+        seconds < 0.25,
+        2 * seconds,
+        np.where(
+            seconds < 0.5,
+            0.5 + seconds - 0.25,
+            np.where(seconds < 0.75, 0.75, 8 + 2 * (seconds - 0.75)),
+        ),
+    )
+    phase = np.remainder(song_beats / 4, 1)
+    shape = np.where(phase < 0.5, 4 * phase - 1, 3 - 4 * phase)
+    expected = np.zeros((48000, 2))
+    expected[:, 0] = 0.625 + 0.375 * shape
+    definition = synth.prepare(document)
+    renderer = synth.OfflineSynth(definition, backend, tempo_map=clock)
+    first = renderer.advance(actions, 0, 24000)
+    saved = renderer.snapshot()
+    second = renderer.advance([], 24000, 48000)
+    restored = synth.OfflineSynth(definition, backend, tempo_map=clock)
+    restored.restore(saved)
+    np.testing.assert_array_equal(restored.advance([], 24000, 48000), second)
+    check_audio(
+        tmp_path / f"transport-cycle-{backend}.wav",
+        np.vstack((first, second)),
+        expected,
+    )
+    persistent = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
+    first = persistent.advance(actions, 0, 24000)
+    saved = persistent.snapshot()
+    second = persistent.advance([], 24000, 48000)
+    restored = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
+    restored.restore(saved)
+    np.testing.assert_array_equal(restored.advance([], 24000, 48000), second)
+    check_audio(
+        tmp_path / "transport-cycle-persistent.wav",
+        np.vstack((first, second)),
+        expected,
+    )
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
