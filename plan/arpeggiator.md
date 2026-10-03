@@ -1,6 +1,6 @@
 # The expressive arpeggiator
 
-Design proposal, 2026-10-02. This plan covers the shared arpeggiator model,
+Design proposal, updated 2026-10-03. This plan covers the shared arpeggiator model,
 its integration with Motions and instruments, and a standalone MIDI program.
 Names and TOML examples below are proposed syntax, not currently loadable scores.
 This document adds no implementation and does not change the main roadmap.
@@ -60,7 +60,7 @@ Use the established boundaries:
 | Owner | Responsibility |
 | --- | --- |
 | uFor | Portable definitions, exact timing, note/control ownership, library references, validation, and reference semantics. |
-| Shared event runtime | Capture, selection, rhythm, note realization, deterministic scheduling, and snapshots. No audio processing or device ownership. |
+| New arpeggiator project | First-class Python and Rust runtimes in one repository, MIDI adapters, CLI, examples, and shared conformance tests. Runtime cores own capture, selection, rhythm, note realization, deterministic scheduling, and snapshots, without audio processing or device ownership. |
 | Motions | Clocks, control signals, recorded gestures, parameter modulation, and typed events used by the arpeggiator. |
 | enge | Consume generated performance events; realize sample regions and synth voices through existing instruments and renderers. |
 | Host or standalone MIDI shell | MIDI ports, device profiles, clock acquisition, controller decoding, channel allocation, and output scheduling. |
@@ -70,7 +70,8 @@ Motion-compatible signal and event ports. It should not pretend to be a scalar
 LFO. Reuse the Motion clock/event contract and library resolver; do not require
 every note to be represented as a signal crossing a threshold.
 
-Current source anchors, verified for this proposal:
+Source anchors checked for the initial proposal on 2026-10-02; recheck their
+implementation status when beginning development:
 
 - Sibling `ufor/ufor/events.py`: `Trigger`, `Release`, addressed `ControlChange`,
   stable `trigger_id`, ordered events, raw MIDI and UMP storage.
@@ -185,6 +186,18 @@ must state whether overlap denotes legato handoff or two independent notes.
 Default wind behavior follows the newest active note and snapshots current
 breath and bend at each handoff. Keep the original overlap in the capture.
 
+For the WX7 behavior reported by the user, a legato passage contains successive
+nonzero-velocity note-ons with no intervening note-offs, followed by a final
+note-off encoded as a velocity-zero note-on. Its capture profile treats each
+new onset as the end of the preceding note segment and the start of the next,
+without resetting breath or bend. Normalize velocity-zero note-ons as releases
+for interpretation, but preserve their original encoding in the ledger.
+Controllers belong to the current segment; each new segment snapshots the
+inherited state. These inferred boundaries do not insert note-offs into the
+source recording. Do not apply this monophonic rule to ordinary polyphonic
+input. Verify the device profile against a hardware capture before claiming
+WX7 conformance, including the reported absence of breath messages after release.
+
 ## 6. Expression and the information between notes
 
 ### Ownership before transformation
@@ -216,9 +229,27 @@ move cells and their gap lanes, preserve gaps as a separate timeline, or omit
 them from output explicitly. The default recorded-phrase preset carries the
 following gap. “Not emitted” is not “deleted from the capture.”
 
+For a controller genuinely arriving after C's release and before E's onset:
+
+- Keep the event in C's following gap, and update the captured controller state
+  used to determine E's entry state. This storage relationship alone does not
+  make the event expression owned by C.
+- During rearranged playback, emit it as C's tail expression only when the
+  capture profile assigns that meaning and the destination can still address
+  C's release tail independently. Otherwise retain it without emitting it.
+- Never apply it to whichever rearranged note happens to be sounding. E starts
+  with its own captured entry state regardless of the new playback order.
+- Original-phrase playback preserves the event's original timing and scope,
+  including its channel-wide effect, rather than applying the rearrangement rule.
+
+This retained-but-not-emitted rule is the default for unowned gap controllers,
+not permission to discard explicitly owned note expression. Capturing a stream
+as a Motion does not assign note ownership; the capture profile does that.
+
 ### The wind-controller example
 
-Suppose the input contains:
+This is a generic controller example, not a claim about WX7 output. Suppose
+the input contains:
 
 ```text
 0 ms    C note-on, current breath = 0
@@ -246,9 +277,16 @@ controller values and resolution alongside their declared normalized meaning.
 
 ### Timing and transformation
 
-Keep event order and exact relative times. A captured MIDI stream is stepped
-data by default. Converting it to a continuous Motion curve requires an explicit
+Keep event order and exact relative times. Motions need not be continuous.
+Distinguish discrete events, step-valued signals that hold their last value,
+and explicitly interpolated signals. A captured MIDI controller lane retains
+its ordered original events and may expose a step-valued signal for modulation.
+Repeated messages remain in the event view even when their values are equal;
+holding a value does not generate additional MIDI messages. Before a known
+initial value exists, preserve unknown state rather than inventing zero.
+Converting the lane to an interpolated Motion requires an explicit
 interpolation/reduction choice, with an error bound and retained original data.
+Controller state can exist while no note is sounding.
 
 Separate three operations:
 
@@ -270,8 +308,9 @@ a concrete musical fixture requires it.
 With source-timed rhythm, the selected cell's duration determines the next
 onset, including its carried gap. With grid rhythm, the grid determines the
 next onset independently: fitting a gate does not move later grid opportunities.
-Carried gap/tail events can therefore overlap the next occurrence. They retain
-their original occurrence ownership and must obey the destination's overlap
+Carried gap/tail events can therefore overlap the next occurrence. Explicitly
+owned events retain their occurrence ownership; unowned gap events follow the
+retention rule above. Emitted events must obey the destination's overlap
 policy; never send an old gesture into a channel reassigned to a new note.
 A profile that cannot realize the requested overlap must diagnose it or use
 an explicitly selected crop/handoff policy, rather than silently losing data.
@@ -481,7 +520,29 @@ passthrough notes. Bound release-tail channel reservations. Panic is an explicit
 stronger command. Snapshot restore into hardware requires release/reconciliation
 of external state; restoring internal memory cannot rewind a synthesizer.
 
-## 11. Standalone MIDI-only delivery
+## 11. Separate project and standalone MIDI-only delivery
+
+Develop the arpeggiator as a new project, with Python and Rust implementations
+in the same repository. Its name and repository location remain to be chosen.
+uFor owns portable definitions and shared musical/event types; the new project
+owns executable arpeggiator behavior, adapters, and their conformance fixtures.
+enge consumes its output and owns audio realization. Do not introduce an enge
+dependency into either standalone runtime.
+
+Python is a first-class independently runnable implementation, not merely a
+reference for Rust. A contributor can edit a selector and hear it through MIDI
+without compiling Rust. Its core uses ordinary Python collections and exact
+timing arithmetic, with Pydantic accepted for models. Installing, importing,
+and running it must not require NumPy, a Rust extension, or any audio package.
+Live MIDI needs an optional device adapter; event-file processing and core
+tests do not. This is not a standard-library-only requirement.
+
+Both runtimes implement the same built-in semantics and use shared behavioral
+fixtures. Python-only custom algorithms need not execute in Rust; choosing the
+Rust backend for an unsupported algorithm must report that limitation explicitly.
+Keep these extensions outside bounded native/audio callbacks, consistent with
+the provider policy. Measure runtime footprint and scheduling limits rather
+than assuming Python meets the same real-time constraints as Rust.
 
 Make this an acceptance requirement from the first implementation, not packaging
 work deferred until after the audio engine has absorbed everything.
@@ -493,7 +554,7 @@ Protocol/configuration libraries can be included at build time; users should
 not have to install them separately. A physical device still needs whatever
 support the operating system normally requires for that MIDI device.
 
-Recommended implementation boundary: a small portable Rust event-core crate,
+Rust implementation boundary: a small portable event-core crate in the new project,
 shared by the enge native adapter and the standalone executable. It depends on
 time/event/algorithm facilities only. Keep PyO3, audio buffers, DSP, and sample
 decoding in the enge adapter. uFor supplies authoring definitions and reference
@@ -509,14 +570,18 @@ their own MIDI tests. Do not run audio initialization just to obtain a timer.
 
 Expose a concise CLI for ordinary playing and explicit subcommands for listing
 ports, validating a profile, capturing a phrase, and rendering event files.
-No daemon or GUI is required. Existing Python integration CLIs retain the
-repository's CLI conventions; they are not prerequisites for the standalone
+No daemon or GUI is required. Python CLIs follow the project's Tyro/Pydantic
+conventions; they are not prerequisites for the standalone
 executable. Choose its final public name during implementation.
 
 Test the release artifact in an environment without the Python/audio stack.
 Inspect the dependency graph and verify that forbidden libraries are neither
 linked nor loaded. An in-memory/SMF event test must run without an available
 MIDI port; a loopback-port test then verifies device scheduling separately.
+Also test the Python package in an environment with Pydantic and its declared
+non-audio dependencies but without NumPy, enge, or the Rust extension. Exercise
+profile loading and event processing there, and MIDI playing with its optional
+adapter. Both entry points must use the same authored profile semantics.
 
 ## 12. Small authoring examples
 
@@ -619,10 +684,13 @@ offline execution and live execution consume the same decisions and clocks.
 1. **Contracts and executable fixtures.** Specify note/cell/occurrence identity,
    ownership, exact times, default ordering, and the canonical profile schema in
    uFor. Write held-chord, wind-breath, gap, and marked-sample identity fixtures.
-   Establish the event-core/audio dependency boundary before adding features.
+   Establish the new project's Python/Rust and event-core/audio boundaries
+   before adding features.
 2. **Classic arp plus standalone proof.** Implement held/latch banks, familiar
    orders, grid/gate/retrigger, releases, and the minimal MIDI executable. Ship
-   a usable plain keyboard arp and verify installation without the audio stack.
+   usable Python and Rust plain keyboard arps, check their shared fixtures,
+   and verify Python installation without NumPy or compilation and Rust
+   installation without Python or the audio stack.
 3. **Expressive MIDI and monophonic capture.** Add device profiles, controller
    entry state, note-local gestures, history/phrase capture, gap retention,
    recorded/live lane choice, and destination allocation. The wind-controller
@@ -653,14 +721,16 @@ silently fold unrelated unfinished Motion features into an arp change.
 | --- | --- |
 | Common playing | Three held notes produce the exact expected up/down/played-order sequences, with documented single-note, empty-bank, duplicate-pitch, latch, retrigger, and chord-edit behavior. |
 | Monophonic memory | Sequential notes build a bank without requiring overlap; completed gestures become eligible at the declared boundary and playing occurrences survive bank replacement. |
-| Breath and bend | Reordering wind notes carries CC2-derived breath, the correct inherited initial state, later attack, bend offsets, release velocity, and selected tails. No silent default velocity substitution. |
-| Between notes | Prefix, gap, suffix, pedal, and unknown events survive capture; each playback policy has exact emitted and retained-event traces. Original-order replay preserves source semantic ordering. |
+| Breath and bend | Reordering wind notes carries CC2-derived breath, the correct inherited initial state, later attack, bend offsets, release velocity when supplied, and selected tails. Legato onsets without intervening releases form segments under the explicit input profile; velocity-zero releases retain their original encoding. No silent default velocity substitution. |
+| Between notes | Prefix, gap, suffix, pedal, and unknown events survive capture; each playback policy has exact emitted and retained-event traces. Unowned post-release breath updates the next source note's entry state without affecting an unrelated output note. Original-phrase replay preserves source semantic ordering. |
+| Discrete Motions | Repeated equal-valued MIDI messages preserve their timestamps and order; the held-value view creates no extra messages or implicit interpolation and remains independent of note ownership. |
 | MIDI allocation | Independent gestures on overlapping notes never collide silently on one channel; exhaustion, repeated keys, stop, bypass, disconnect, and snapshot reconciliation release exactly the owned notes. |
 | Euclidean/algorithmic | Exact canonical masks and rotations, pulse counts, deterministic random choices, rest/tie/ratchet semantics, and polymetric cycle behavior. |
 | Timing | Tempo changes, fractional divisions, stop/resume, seek cancellation, incoming pulses, and equal-time ordering agree across whole runs, irregular blocks, and restored snapshots. |
 | Samples | Exhaustive marked regions reconstruct the decoded source exactly under identity settings; shuffled/repeated regions and seam policies have listenable regressions. |
 | Motion integration | A Motion can change density or expression and receive a hit event without duplicate clock ownership or unbounded feedback. |
 | Standalone | A shipped MIDI-only executable validates profiles and processes files without Python or audio libraries; loopback tests verify note/control order and scheduling. |
+| Python accessibility | Install and run without NumPy, enge, audio libraries, or a Rust extension. A modified Python selector works without compilation; shared fixtures establish built-in parity with Rust. |
 | Limits | Event storms and dense breath streams obey explicit capacity/quality policies while preserving release obligations. |
 
 Protocol and selection tests use exact event traces; they do not need an audio
@@ -669,6 +739,15 @@ Include an EWI phrase whose note-ons alone produce silence, and compare the
 audible reordered performance with the correct expression attached. Hardware
 checks on the user's wind controller and synth complement automated tests;
 software parity alone cannot establish the receiver's articulation or tail rules.
+
+## Handoff to the new project
+
+Begin a dedicated project chat after choosing the name and creating its
+repository. Use this plan as the handoff, starting with slice 1 and the dependency
+boundaries in section 11. Keep enge/Motions work in its existing project context.
+This documentation update creates neither the repository nor a new chat and
+does not start implementation. Coordinate shared uFor changes explicitly when
+development begins; keep one authoritative plan rather than diverging copies.
 
 ## Additional work beyond the prompt
 
