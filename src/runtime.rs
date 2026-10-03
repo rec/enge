@@ -104,6 +104,23 @@ struct PatchEventConnection {
     marker: f64,
     destination: usize,
     cue: Option<String>,
+    order: usize,
+}
+
+#[derive(Clone, PartialEq)]
+struct PatchStageStartConnection {
+    source: usize,
+    port: String,
+    destination: usize,
+    order: usize,
+}
+
+#[derive(Clone)]
+struct ContourStart {
+    at: f64,
+    order: usize,
+    voice: usize,
+    destination: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -298,6 +315,8 @@ pub struct SynthRuntimeSnapshot {
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
+    patch_stage_starts: Vec<PatchStageStartConnection>,
+    pending_contour_starts: Vec<ContourStart>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_owners: Vec<usize>,
@@ -369,6 +388,8 @@ pub struct SynthRuntime {
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
+    patch_stage_starts: Vec<PatchStageStartConnection>,
+    pending_contour_starts: Vec<ContourStart>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_owners: Vec<usize>,
@@ -507,6 +528,8 @@ impl SynthRuntime {
             named_envelopes: Vec::new(),
             named_owners: Vec::new(),
             patch_events: Vec::new(),
+            patch_stage_starts: Vec::new(),
+            pending_contour_starts: Vec::new(),
             beat_points: Vec::new(),
             staged_motions: Vec::new(),
             staged_owners: Vec::new(),
@@ -1046,12 +1069,12 @@ impl SynthRuntime {
 
     fn set_patch_events(
         &mut self,
-        connections: Vec<(usize, f64, usize, Option<String>)>,
+        connections: Vec<(usize, f64, usize, Option<String>, usize)>,
     ) -> PyResult<()> {
         if self.frame != 0
             || connections
                 .iter()
-                .any(|(source, marker, destination, cue)| {
+                .any(|(source, marker, destination, cue, _)| {
                     *source >= self.lfo_definitions.len()
                         || self.lfo_definitions[*source].scope != 3
                         || self.lfo_definitions[*source].rate.0 == 0
@@ -1071,16 +1094,49 @@ impl SynthRuntime {
         }
         self.patch_events = connections
             .into_iter()
-            .map(|(source, marker, destination, cue)| PatchEventConnection {
-                source: self.lfo_owners[source],
-                marker,
-                destination: if cue.is_some() {
-                    self.staged_owners[destination]
-                } else {
-                    self.named_owners[destination]
+            .map(
+                |(source, marker, destination, cue, order)| PatchEventConnection {
+                    source: self.lfo_owners[source],
+                    marker,
+                    destination: if cue.is_some() {
+                        self.staged_owners[destination]
+                    } else {
+                        self.named_owners[destination]
+                    },
+                    cue,
+                    order,
                 },
-                cue,
+            )
+            .collect();
+        Ok(())
+    }
+
+    fn set_patch_stage_starts(
+        &mut self,
+        connections: Vec<(usize, String, usize, usize)>,
+    ) -> PyResult<()> {
+        if self.frame != 0
+            || connections.iter().any(|(source, port, destination, _)| {
+                *source >= self.staged_motions.len()
+                    || port.is_empty()
+                    || *destination >= self.named_envelopes.len()
+                    || !self.named_envelopes[*destination].event_started
             })
+        {
+            return Err(PyValueError::new_err(
+                "Invalid Patch stage start connections",
+            ));
+        }
+        self.patch_stage_starts = connections
+            .into_iter()
+            .map(
+                |(source, port, destination, order)| PatchStageStartConnection {
+                    source: self.staged_owners[source],
+                    port,
+                    destination: self.named_owners[destination],
+                    order,
+                },
+            )
             .collect();
         Ok(())
     }
@@ -1223,6 +1279,8 @@ impl SynthRuntime {
             named_envelopes: self.named_envelopes.clone(),
             named_owners: self.named_owners.clone(),
             patch_events: self.patch_events.clone(),
+            patch_stage_starts: self.patch_stage_starts.clone(),
+            pending_contour_starts: self.pending_contour_starts.clone(),
             beat_points: self.beat_points.clone(),
             staged_motions: self.staged_motions.clone(),
             staged_owners: self.staged_owners.clone(),
@@ -1290,6 +1348,7 @@ impl SynthRuntime {
             || self.named_envelopes != snapshot.named_envelopes
             || self.named_owners != snapshot.named_owners
             || self.patch_events != snapshot.patch_events
+            || self.patch_stage_starts != snapshot.patch_stage_starts
             || self.beat_points != snapshot.beat_points
             || self.staged_motions != snapshot.staged_motions
             || self.staged_owners != snapshot.staged_owners
@@ -1314,6 +1373,8 @@ impl SynthRuntime {
         self.named_states.clone_from(&snapshot.named_states);
         self.staged_states.clone_from(&snapshot.staged_states);
         self.staged_pending.clone_from(&snapshot.staged_pending);
+        self.pending_contour_starts
+            .clone_from(&snapshot.pending_contour_starts);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
@@ -1495,6 +1556,7 @@ impl SynthRuntime {
             self.advance_patch_events()?;
             self.advance_staged(true)?;
             self.dispatch_staged_events()?;
+            self.flush_contour_starts()?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
@@ -2410,6 +2472,23 @@ impl SynthRuntime {
                 }
                 count += 1;
             }
+            for connection in &self.patch_stage_starts {
+                if connection.source != event.source || connection.port != event.port {
+                    continue;
+                }
+                if count == 4096 {
+                    return Err(PyValueError::new_err(
+                        "Staged Motion event capacity exceeded",
+                    ));
+                }
+                self.pending_contour_starts.push(ContourStart {
+                    at: event.at,
+                    order: connection.order,
+                    voice: event.voice,
+                    destination: connection.destination,
+                });
+                count += 1;
+            }
         }
         Ok(())
     }
@@ -2465,20 +2544,41 @@ impl SynthRuntime {
                 }
                 continue;
             }
-            let definition = &self.named_envelopes[destination];
-            let index = voice * self.named_envelopes.len() + destination;
+            self.pending_contour_starts.push(ContourStart {
+                at,
+                order: connection.order,
+                voice,
+                destination,
+            });
+        }
+        self.dispatch_staged_events()?;
+        Ok(())
+    }
+
+    fn flush_contour_starts(&mut self) -> PyResult<()> {
+        if self.pending_contour_starts.len() > 4096 {
+            return Err(PyValueError::new_err("Patch event capacity exceeded"));
+        }
+        let mut starts = std::mem::take(&mut self.pending_contour_starts);
+        starts.sort_by(|a, b| {
+            a.at.total_cmp(&b.at)
+                .then_with(|| a.order.cmp(&b.order))
+                .then_with(|| a.voice.cmp(&b.voice))
+        });
+        for event in starts {
+            let definition = &self.named_envelopes[event.destination];
+            let index = event.voice * self.named_envelopes.len() + event.destination;
             let previous = &self.named_states[index];
             let start_value = if previous.idle {
                 definition.initial
             } else {
-                named_contour_value(definition, previous, at, at)
+                named_contour_value(definition, previous, event.at, event.at)
             };
-            let mut state = named_contour_initial(definition, at);
+            let mut state = named_contour_initial(definition, event.at);
             state.idle = false;
             state.start_value = start_value;
             self.named_states[index] = state;
         }
-        self.dispatch_staged_events()?;
         Ok(())
     }
 
