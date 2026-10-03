@@ -540,6 +540,102 @@ def test_patch_named_outputs_match_separate_motions(
         )
 
 
+@pytest.mark.parametrize(("phase", "first_marker"), [("0", 6000), ("1/7", 2572)])
+def test_patch_cycle_marker_starts_unexposed_child_contour(
+    tmp_path: Path, phase: str, first_marker: int
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "gesture": {
+            "body": {
+                "kind": "patch",
+                "motions": {
+                    "clock": {
+                        "kind": "cycle",
+                        "rate": "2",
+                        "phase": phase,
+                        "markers": [{"name": "peak", "position": "1/4"}],
+                    },
+                    "accent": {
+                        "kind": "contour",
+                        "start": "event",
+                        "segments": [
+                            {"duration": "1/8 s", "to": 1},
+                            {"duration": "1/8 s", "to": 0},
+                        ],
+                    },
+                },
+                "events": [
+                    {"source": "clock.peak", "target": "accent", "action": "start"}
+                ],
+                "outputs": {"value": "accent"},
+            }
+        }
+    }
+    voice["motions"]["unused"] = voice["motions"]["gesture"]
+    voice["bindings"] = [
+        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+    ]
+    voice["modulation"] = {
+        "sources": [{"name": "level", "scope": "voice", "minimum": 0, "maximum": 1}],
+        "parameters": [
+            {
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 1,
+            }
+        ],
+        "routes": [
+            {
+                "name": "accent",
+                "source": "level",
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "operation": "multiply",
+                "unit": "ratio",
+                "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": 1}],
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body, [onset(0, pitch=0.1).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    offline = synth.OfflineSynth(prepared).advance(actions, 0, 48000)
+    assert np.max(np.abs(offline[:first_marker])) == 0
+    assert np.max(np.abs(offline[first_marker + 6000 : first_marker + 9000])) > 0.1
+    assert np.max(np.abs(offline[first_marker + 23999 : first_marker + 24000])) == 0
+    for backend in ("numpy", "native"):
+        renderer = synth.OfflineSynth(prepared, backend)
+        first = renderer.advance(actions, 0, first_marker)
+        snapshot = renderer.snapshot()
+        second = renderer.advance([], first_marker, 48000)
+        restored = synth.OfflineSynth(prepared, backend)
+        restored.restore(snapshot)
+        np.testing.assert_array_equal(restored.advance([], first_marker, 48000), second)
+        check_audio(
+            tmp_path / f"patch-events-{backend}-{phase.replace('/', '-')}.wav",
+            np.vstack((first, second)),
+            offline,
+        )
+    live = synth.PersistentSynth(prepared, voices=2)
+    first = live.advance(actions, 0, 24000)
+    snapshot = live.snapshot()
+    second = live.advance([], 24000, 48000)
+    restored = synth.PersistentSynth(prepared, voices=2)
+    restored.restore(snapshot)
+    np.testing.assert_array_equal(restored.advance([], 24000, 48000), second)
+    check_audio(
+        tmp_path / f"patch-events-persistent-{phase.replace('/', '-')}.wav",
+        np.vstack((first, second)),
+        offline,
+    )
+
+
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     tmp_path: Path, backend: Literal["numpy", "native"]

@@ -84,6 +84,7 @@ struct NamedEnvelopeDefinition {
     loop_end: f64,
     repeat_count: Option<usize>,
     beat_clock: bool,
+    event_started: bool,
 }
 
 #[derive(Clone)]
@@ -94,6 +95,14 @@ struct NamedContourState {
     pending_release: Option<(f64, f64)>,
     traversals: usize,
     complete_coordinate: Option<f64>,
+    idle: bool,
+}
+
+#[derive(Clone, PartialEq)]
+struct PatchEventConnection {
+    source: usize,
+    marker: f64,
+    destination: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -205,7 +214,18 @@ type StageInput = (
     f64,
     Option<usize>,
 );
-type NamedContourInput = (usize, usize, f64, f64, bool, usize, f64, f64, Option<usize>);
+type NamedContourInput = (
+    usize,
+    usize,
+    f64,
+    f64,
+    bool,
+    usize,
+    f64,
+    f64,
+    Option<usize>,
+    bool,
+);
 type StagedMotionInput = (
     Vec<StageInput>,
     Vec<(usize, String, usize)>,
@@ -276,6 +296,7 @@ pub struct SynthRuntimeSnapshot {
     voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
+    patch_events: Vec<PatchEventConnection>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_owners: Vec<usize>,
@@ -346,6 +367,7 @@ pub struct SynthRuntime {
     voice_lfo_event_states: Vec<Option<LfoEventState>>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
+    patch_events: Vec<PatchEventConnection>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_owners: Vec<usize>,
@@ -483,6 +505,7 @@ impl SynthRuntime {
             voice_lfo_event_states: vec![None; slots * lfo_count],
             named_envelopes: Vec::new(),
             named_owners: Vec::new(),
+            patch_events: Vec::new(),
             beat_points: Vec::new(),
             staged_motions: Vec::new(),
             staged_owners: Vec::new(),
@@ -737,6 +760,7 @@ impl SynthRuntime {
                         loop_start,
                         loop_end,
                         repeat_count,
+                        event_started,
                     ),
                 )| {
                     if !initial.is_finite()
@@ -775,6 +799,7 @@ impl SynthRuntime {
                         loop_end,
                         repeat_count,
                         beat_clock: false,
+                        event_started,
                     })
                 },
             )
@@ -1018,6 +1043,33 @@ impl SynthRuntime {
         Ok(())
     }
 
+    fn set_patch_events(&mut self, connections: Vec<(usize, f64, usize)>) -> PyResult<()> {
+        if self.frame != 0
+            || connections.iter().any(|(source, marker, destination)| {
+                *source >= self.lfo_definitions.len()
+                    || self.lfo_definitions[*source].scope != 3
+                    || self.lfo_definitions[*source].rate.0 == 0
+                    || self.lfo_definitions[*source].beat_clock
+                    || self.lfo_definitions[*source].transport_position
+                    || !marker.is_finite()
+                    || !(0.0..1.0).contains(marker)
+                    || *destination >= self.named_envelopes.len()
+                    || !self.named_envelopes[*destination].event_started
+            })
+        {
+            return Err(PyValueError::new_err("Invalid Patch event connections"));
+        }
+        self.patch_events = connections
+            .into_iter()
+            .map(|(source, marker, destination)| PatchEventConnection {
+                source: self.lfo_owners[source],
+                marker,
+                destination: self.named_owners[destination],
+            })
+            .collect();
+        Ok(())
+    }
+
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     fn noise(
@@ -1155,6 +1207,7 @@ impl SynthRuntime {
             voice_lfo_event_states: self.voice_lfo_event_states.clone(),
             named_envelopes: self.named_envelopes.clone(),
             named_owners: self.named_owners.clone(),
+            patch_events: self.patch_events.clone(),
             beat_points: self.beat_points.clone(),
             staged_motions: self.staged_motions.clone(),
             staged_owners: self.staged_owners.clone(),
@@ -1221,6 +1274,7 @@ impl SynthRuntime {
             || self.lfo_owners != snapshot.lfo_owners
             || self.named_envelopes != snapshot.named_envelopes
             || self.named_owners != snapshot.named_owners
+            || self.patch_events != snapshot.patch_events
             || self.beat_points != snapshot.beat_points
             || self.staged_motions != snapshot.staged_motions
             || self.staged_owners != snapshot.staged_owners
@@ -1425,6 +1479,7 @@ impl SynthRuntime {
             self.dispatch_staged_events()?;
             self.advance_staged(true)?;
             self.dispatch_staged_events()?;
+            self.advance_patch_events()?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
@@ -2344,6 +2399,57 @@ impl SynthRuntime {
         Ok(())
     }
 
+    fn advance_patch_events(&mut self) -> PyResult<()> {
+        if self.patch_events.is_empty() {
+            return Ok(());
+        }
+        let mut events = Vec::new();
+        for voice in 0..self.frequencies.len() {
+            if !self.active[voice] || self.ages[voice] == 0 {
+                continue;
+            }
+            let age = self.ages[voice] as f64;
+            for (order, connection) in self.patch_events.iter().enumerate() {
+                let definition = &self.lfo_definitions[connection.source];
+                let rate = definition.rate.0 as f64 / definition.rate.1 as f64;
+                let phase = definition.phase.0 as f64 / definition.phase.1 as f64;
+                let before = ((phase + rate * (age - 1.0) / self.rate) - connection.marker).floor();
+                let after = ((phase + rate * age / self.rate) - connection.marker + 1e-12).floor();
+                if !before.is_finite()
+                    || !after.is_finite()
+                    || before.abs() >= i64::MAX as f64
+                    || after.abs() >= i64::MAX as f64
+                    || after - before > (4096 - events.len()) as f64
+                {
+                    return Err(PyValueError::new_err("Patch event capacity exceeded"));
+                }
+                let first = before as i64 + 1;
+                let last = after as i64;
+                for turn in first..=last {
+                    let event_age = (turn as f64 + connection.marker - phase) * self.rate / rate;
+                    events.push((self.frame as f64 - (age - event_age), order, voice));
+                }
+            }
+        }
+        events.sort_by(|a, b| a.partial_cmp(b).expect("finite Patch event time"));
+        for (at, order, voice) in events {
+            let destination = self.patch_events[order].destination;
+            let definition = &self.named_envelopes[destination];
+            let index = voice * self.named_envelopes.len() + destination;
+            let previous = &self.named_states[index];
+            let start_value = if previous.idle {
+                definition.initial
+            } else {
+                named_contour_value(definition, previous, at, at)
+            };
+            let mut state = named_contour_initial(definition, at);
+            state.idle = false;
+            state.start_value = start_value;
+            self.named_states[index] = state;
+        }
+        Ok(())
+    }
+
     fn parameter(&self, voice: usize, parameter: usize) -> PyResult<f64> {
         let mut addition = 0.0;
         let mut product = 1.0;
@@ -2932,6 +3038,7 @@ fn named_contour_initial(definition: &NamedEnvelopeDefinition, at: f64) -> Named
         pending_release: None,
         traversals: 0,
         complete_coordinate: None,
+        idle: definition.event_started,
     }
 }
 
@@ -2979,6 +3086,9 @@ fn named_contour_value(
     at: f64,
     frame: f64,
 ) -> f64 {
+    if state.idle {
+        return definition.initial;
+    }
     let settled = named_contour_settled(definition, state, frame);
     let segments = if settled.released {
         &definition.release

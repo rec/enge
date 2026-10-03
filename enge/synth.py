@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import Callable, Collection
 from fractions import Fraction
 from functools import cached_property
-from math import ceil, isfinite
+from math import ceil, floor, isfinite
 from typing import Literal, Self
 
 import numpy as np
@@ -394,6 +394,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
 def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
     motions = dict(voice.motions)
     bindings = list(voice.bindings)
+    sources = list(voice.modulation.sources)
     changed = False
     for index, binding in enumerate(bindings):
         if not isinstance(binding, processing.GeneratorBinding):
@@ -413,10 +414,57 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             )
         bindings[index] = binding.model_copy(update={"reference": name, "output": None})
         changed = True
+    for parent_name, parent in voice.motions.items():
+        if not isinstance(parent.body, Patch):
+            continue
+        if not any(
+            isinstance(binding, processing.GeneratorBinding)
+            and binding.reference == parent_name
+            for binding in voice.bindings
+        ):
+            continue
+        children = {
+            name
+            for connection in parent.body.events
+            for name in (connection.source.partition(".")[0], connection.target)
+        }
+        for child_name in children:
+            name = f"patch-{parent_name}-{child_name}"
+            if name in voice.motions:
+                raise EngineError(f"Patch child Motion name collides: {name}")
+            child = parent.body.motions[child_name]
+            motions.setdefault(
+                name, MotionUse(scope=parent.scope, clock=parent.clock, body=child)
+            )
+            if any(
+                isinstance(binding, processing.GeneratorBinding)
+                and binding.reference == name
+                for binding in bindings
+            ):
+                continue
+            if any(binding.name == name for binding in bindings):
+                raise EngineError(f"Patch child binding name collides: {name}")
+            bindings.append(processing.GeneratorBinding(name=name, reference=name))
+            sources.append(
+                modulation.Source(
+                    name=name,
+                    scope="voice",
+                    minimum=0
+                    if isinstance(child, Contour) and child.polarity == "unipolar"
+                    else -1,
+                    maximum=1,
+                )
+            )
+            changed = True
     if not changed:
         return voice
     return SynthVoice.model_validate(
-        voice.model_dump() | {"motions": motions, "bindings": bindings}
+        voice.model_dump()
+        | {
+            "motions": motions,
+            "bindings": bindings,
+            "modulation": voice.modulation.model_copy(update={"sources": sources}),
+        }
     )
 
 
@@ -581,9 +629,12 @@ class ControlRenderer:
                 )
         elif isinstance(action, instrument_trace.MotionObservation):
             if any(
-                (motion := settings.motions.get(action.name)) is not None
-                and isinstance(motion.body, Patch)
-                for settings in self.settings
+                action.name in self.patch_children[index]
+                or (
+                    (motion := settings.motions.get(action.name)) is not None
+                    and isinstance(motion.body, Patch)
+                )
+                for index, settings in enumerate(self.settings)
             ):
                 raise EngineError("Patch-level Motion commands are not implemented")
             for index, source in enumerate(self.lfos):
@@ -887,6 +938,7 @@ class ControlRenderer:
         key = (id(settings), tuple(sorted(sources.items())))
         if key in self.cached_values:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
+        self._patch_values(settings, sources, start, frames)
         self._staged_values(settings, sources, start, frames)
         signals: dict[str, np.ndarray] = {}
         for binding in settings.bindings:
@@ -989,6 +1041,93 @@ class ControlRenderer:
         output = control.modulation_samples(settings.modulation, signals, frames)
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
+
+    def _patch_values(
+        self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
+    ) -> None:
+        bindings = {
+            b.reference: b.name
+            for b in settings.bindings
+            if isinstance(b, processing.GeneratorBinding)
+        }
+        for parent_name, parent in settings.motions.items():
+            if not isinstance(parent.body, Patch) or not parent.body.events:
+                continue
+            first_target = f"patch-{parent_name}-{parent.body.events[0].target}"
+            if first_target not in settings.motions:
+                continue
+            targets: dict[
+                int, tuple[MotionUse, list[tuple[int, Fraction, Fraction]]]
+            ] = {}
+            for connection in parent.body.events:
+                source_name, _, marker_name = connection.source.partition(".")
+                origin = f"patch-{parent_name}-{source_name}"
+                destination = f"patch-{parent_name}-{connection.target}"
+                source = self.lfos[sources[bindings[origin]]]
+                source_motion = settings.motions[origin]
+                target_motion = settings.motions[destination]
+                assert isinstance(source_motion.body, Cycle)
+                assert isinstance(target_motion.body, Contour)
+                assert isinstance(source.state.runtime, CycleState)
+                marker = next(
+                    m.position
+                    for m in source_motion.body.markers
+                    if m.name == marker_name
+                )
+                target_index = sources[bindings[destination]]
+                targets.setdefault(target_index, (target_motion, []))[1].append(
+                    (
+                        sources[bindings[origin]],
+                        marker,
+                        source.state.runtime.position.at,
+                    )
+                )
+            for target_index, (motion, connections) in targets.items():
+                if target_index in self.cached_envelopes:
+                    continue
+                state = self.envelopes[target_index].state
+                values = np.empty(frames)
+                for i in range(frames):
+                    at = Fraction(start + i, self.sample_rate)
+                    events: list[tuple[Fraction, int]] = []
+                    for order, (source_index, marker, origin) in enumerate(connections):
+                        source = self.lfos[source_index]
+                        source_motion = settings.motions[source.name]
+                        assert isinstance(source_motion.body, Cycle)
+                        assert isinstance(source.state.runtime, CycleState)
+                        position = source.state.runtime.position
+                        previous = max(origin, at - Fraction(1, self.sample_rate))
+                        if at <= previous:
+                            continue
+                        first = position.coordinate + position.rate * (
+                            previous - origin
+                        )
+                        last = position.coordinate + position.rate * (at - origin)
+                        first_turn = floor(first - marker) + 1
+                        last_turn = floor(last - marker)
+                        if last_turn - first_turn + 1 > 4096 - len(events):
+                            raise EngineError("Patch event capacity exceeded")
+                        for turn in range(first_turn, last_turn + 1):
+                            event_at = (
+                                origin
+                                + (turn + marker - position.coordinate) / position.rate
+                            )
+                            events.append((event_at, order))
+                    if len(events) > 4096:
+                        raise EngineError("Patch event capacity exceeded")
+                    for event_at, order in sorted(events):
+                        state = motion_event(
+                            motion,
+                            state,
+                            MotionEvent(at=event_at, ordinal=order, action="start"),
+                        )
+                    values[i] = motion_at(motion, state, at).value
+                self.envelopes[target_index] = self.envelopes[target_index].model_copy(
+                    update={"state": state}
+                )
+                self.cached_envelopes[target_index] = np.column_stack(
+                    (values, np.ones(frames))
+                )
 
     def _staged_values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
@@ -1454,6 +1593,30 @@ class PersistentSynth:
             for name, indices in source_map.items():
                 if name in patch_children:
                     source_map[name] = indices[:1]
+        patch_events: list[tuple[int, float, int]] = []
+        for parent_name, parent in template.motions.items():
+            if not isinstance(parent.body, Patch):
+                continue
+            if parent.body.events and (
+                f"patch-{parent_name}-{parent.body.events[0].target}"
+                not in template.motions
+            ):
+                continue
+            for connection in parent.body.events:
+                child_name, _, port = connection.source.partition(".")
+                child = parent.body.motions[child_name]
+                assert isinstance(child, Cycle)
+                marker = next(m.position for m in child.markers if m.name == port)
+                patch_events.append(
+                    (
+                        self.voice_lfo_sources[f"patch-{parent_name}-{child_name}"][0],
+                        float(marker),
+                        self.named_motion_sources[
+                            f"patch-{parent_name}-{connection.target}"
+                        ][0],
+                    )
+                )
+        self.runtime.set_patch_events(patch_events)
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -1597,9 +1760,10 @@ class PersistentSynth:
                     )
                     count += 1
             elif isinstance(action, instrument_trace.MotionObservation):
-                if (
-                    motion := self.template.motions.get(action.name)
-                ) is not None and isinstance(motion.body, Patch):
+                motion = self.template.motions.get(action.name)
+                if action.name in _patch_child_names(self.template) or (
+                    motion is not None and isinstance(motion.body, Patch)
+                ):
                     raise EngineError("Patch-level Motion commands are not implemented")
                 command = ("pause", "resume", "reverse", "seek", "shift").index(
                     action.action
@@ -2101,7 +2265,7 @@ def _persistent_modulation(
     list[float],
     list[list[tuple[float, float]]],
     list[list[tuple[float, float]]],
-    list[tuple[int, int, float, float, bool, int, float, float, int | None]],
+    list[tuple[int, int, float, float, bool, int, float, float, int | None, bool]],
     dict[str, list[int]],
     set[str],
     np.ndarray,
@@ -2205,6 +2369,19 @@ def _persistent_modulation(
         for connection in template.event_connections
         for name in (connection.source, connection.destination)
     }
+    patch_children = {
+        f"patch-{parent_name}-{child}"
+        for parent_name, parent in template.motions.items()
+        if isinstance(parent.body, Patch)
+        for connection in parent.body.events
+        for child in (connection.source.partition(".")[0], connection.target)
+    }
+    event_sources.update(
+        binding.name
+        for binding in template.bindings
+        if isinstance(binding, processing.GeneratorBinding)
+        and binding.reference in patch_children
+    )
     routed_sources = {route.source for route in routes}
     if (
         len(routed_sources) != len(routes)
@@ -2225,7 +2402,7 @@ def _persistent_modulation(
     envelope_attacks: list[list[tuple[float, float]]] = []
     envelope_releases: list[list[tuple[float, float]]] = []
     envelope_parameters: list[
-        tuple[int, int, float, float, bool, int, float, float, int | None]
+        tuple[int, int, float, float, bool, int, float, float, int | None, bool]
     ] = []
     named_motion_sources: dict[str, list[int]] = {}
     staged_motions: list[StagedRuntimeDefinition] = []
@@ -2369,6 +2546,7 @@ def _persistent_modulation(
                         if generator.loop_end is not None
                         else 1.0,
                         generator.repeat_count,
+                        generator.start == "event",
                     )
                 )
                 continue
@@ -2430,6 +2608,47 @@ def _persistent_modulation(
             continue
         assert isinstance(binding, processing.GeneratorBinding)
         motion = template.motions[binding.reference]
+        if isinstance(motion.body, Cycle):
+            generator = cycle_lfo(motion)
+            voice_lfo_sources.setdefault(binding.reference, []).append(len(lfo_rows))
+            lfo_rows.append(
+                [
+                    3,
+                    [Waveform.sine, Waveform.square, Waveform.triangle].index(
+                        generator.waveform
+                    ),
+                    0,
+                    1,
+                    1,
+                    0,
+                    0,
+                ]
+            )
+            for value in (
+                generator.duty_cycle,
+                generator.rate,
+                generator.phase,
+                generator.delay * definition.sample_rate,
+                generator.fade_in * definition.sample_rate,
+            ):
+                lfo_rationals.append((value.numerator, value.denominator))
+            continue
+        if isinstance(motion.body, Contour):
+            generator = motion.body
+            assert isinstance(generator.initial, float)
+            named_motion_sources.setdefault(binding.reference, []).append(
+                len(envelope_initials)
+            )
+            envelope_initials.append(generator.initial)
+            envelope_attacks.append(
+                [
+                    (float(segment.duration * definition.sample_rate), segment.to)
+                    for segment in generator.segments
+                ]
+            )
+            envelope_releases.append([])
+            envelope_parameters.append((0, 1, 1, 0, False, 0, 0, 1, None, True))
+            continue
         assert isinstance(motion.body, Stages)
         source_scopes.add(motion.scope)
         staged_bindings[binding.name] = len(staged_motions)
