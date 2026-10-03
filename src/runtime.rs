@@ -117,6 +117,7 @@ struct StagedMotionDefinition {
     operation: usize,
     intercept: f64,
     slope: f64,
+    beat_clock: bool,
 }
 
 #[derive(Clone)]
@@ -211,6 +212,7 @@ type StagedMotionInput = (
     usize,
     f64,
     f64,
+    bool,
 );
 
 #[derive(Clone, PartialEq)]
@@ -821,9 +823,20 @@ impl SynthRuntime {
         connections: Vec<(usize, String, usize, String)>,
     ) -> PyResult<()> {
         let mut definitions = Vec::with_capacity(inputs.len());
-        for (stages, transitions, initial_stage, parameter, operation, intercept, slope) in inputs {
+        for (
+            stages,
+            transitions,
+            initial_stage,
+            parameter,
+            operation,
+            intercept,
+            slope,
+            beat_clock,
+        ) in inputs
+        {
             if stages.is_empty()
                 || initial_stage >= stages.len()
+                || (beat_clock && self.beat_points.is_empty())
                 || parameter.is_some_and(|p| p >= self.parameter_definitions.len() / 3)
                 || operation > 1
                 || !intercept.is_finite()
@@ -920,6 +933,7 @@ impl SynthRuntime {
                 operation,
                 intercept,
                 slope,
+                beat_clock,
             });
         }
         if connections.iter().any(|(source, port, destination, cue)| {
@@ -1227,6 +1241,27 @@ impl SynthRuntime {
             .partition_point(|point| point.frame <= frame);
         let point = &self.beat_points[index - 1];
         point.beat + (frame - point.frame) * point.rate
+    }
+
+    fn frame_at_local_beat(&self, beat: f64) -> f64 {
+        for (index, point) in self.beat_points.iter().enumerate() {
+            let next = self.beat_points.get(index + 1);
+            if point.rate > 0.0 && beat >= point.beat {
+                let frame = point.frame + (beat - point.beat) / point.rate;
+                if next.is_none_or(|following| frame <= following.frame) {
+                    return frame;
+                }
+            }
+        }
+        f64::INFINITY
+    }
+
+    fn staged_time(&self, definition: &StagedMotionDefinition, frame: f64) -> f64 {
+        if definition.beat_clock {
+            self.local_beat_at(frame)
+        } else {
+            frame
+        }
     }
 
     fn named_time(&self, definition: &NamedEnvelopeDefinition, frame: f64) -> f64 {
@@ -1615,27 +1650,24 @@ impl SynthRuntime {
                     .fill(None);
                 for (source, definition) in self.staged_motions.iter().enumerate() {
                     let index = voice * self.staged_motions.len() + source;
+                    let at = self.staged_time(definition, self.frame as f64);
                     self.staged_states[index] = StagedMotionState {
                         stage: definition.initial_stage,
                         playback: stage_playback(
                             &definition.stages[definition.initial_stage],
-                            self.frame as f64,
+                            at,
                             false,
                             1.0,
                         ),
                         entry_value: definition.stages[definition.initial_stage].initial,
                         completed: false,
                         complete_value: 0.0,
-                        cursor_at: self.frame as f64,
+                        cursor_at: at,
                         cursor_order: usize::MAX,
                         traversals: 0,
                     };
-                    if staged_transition(
-                        definition,
-                        &mut self.staged_states[index],
-                        "note_on",
-                        self.frame as f64,
-                    ) {
+                    if staged_transition(definition, &mut self.staged_states[index], "note_on", at)
+                    {
                         self.staged_pending.push_back(StagedEvent {
                             at: self.frame as f64,
                             voice,
@@ -1700,11 +1732,12 @@ impl SynthRuntime {
                 if self.active[voice] && self.release_frames[voice].is_none() {
                     for (source, definition) in self.staged_motions.iter().enumerate() {
                         let index = voice * self.staged_motions.len() + source;
+                        let at = self.staged_time(definition, self.frame as f64);
                         if staged_transition(
                             definition,
                             &mut self.staged_states[index],
                             "note_off",
-                            self.frame as f64,
+                            at,
                         ) {
                             self.staged_pending.push_back(StagedEvent {
                                 at: self.frame as f64,
@@ -1961,22 +1994,21 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid staged Motion action"));
                 }
                 let index = voice * self.staged_motions.len() + source;
+                let at = self.staged_time(&self.staged_motions[source], self.frame as f64);
                 let state = &mut self.staged_states[index];
                 if (command == 3 || command == 4)
                     && self.staged_motions[source].stages[state.stage].kind == 0
                 {
                     return Err(PyValueError::new_err("Hold stage cannot change position"));
                 }
-                state
-                    .playback
-                    .command(command, action[5], self.frame as f64);
+                state.playback.command(command, action[5], at);
                 if command == 4
                     && self.staged_motions[source].stages[state.stage].kind == 1
                     && self.staged_motions[source].stages[state.stage].playback == 0
                 {
                     state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
                 }
-                state.cursor_at = self.frame as f64;
+                state.cursor_at = at;
                 state.cursor_order = usize::MAX;
             }
             11 => {
@@ -2055,15 +2087,21 @@ impl SynthRuntime {
                 }
                 for (source, definition) in self.staged_motions.iter().enumerate() {
                     let state = &self.staged_states[voice * self.staged_motions.len() + source];
-                    if let Some((at, order, port)) =
-                        next_staged_event(definition, state, self.frame as f64, inclusive)
+                    let limit = self.staged_time(definition, self.frame as f64);
+                    if let Some((stage_at, order, port)) =
+                        next_staged_event(definition, state, limit, inclusive)
                     {
+                        let at = if definition.beat_clock {
+                            self.frame_at_local_beat(stage_at)
+                        } else {
+                            stage_at
+                        };
                         if next.is_none_or(|current| at < current) {
                             next = Some(at);
                             events.clear();
                         }
                         if next == Some(at) {
-                            events.push((voice, source, order, port));
+                            events.push((voice, source, stage_at, order, port));
                         }
                     }
                 }
@@ -2077,7 +2115,7 @@ impl SynthRuntime {
                 break;
             };
             batch_at = Some(at);
-            for (voice, source, order, port) in events {
+            for (voice, source, stage_at, order, port) in events {
                 if count == 4096 {
                     return Err(PyValueError::new_err(
                         "Staged Motion event capacity exceeded",
@@ -2085,9 +2123,9 @@ impl SynthRuntime {
                 }
                 let definition = &self.staged_motions[source];
                 let state = &mut self.staged_states[voice * self.staged_motions.len() + source];
-                state.cursor_at = at;
+                state.cursor_at = stage_at;
                 state.cursor_order = order;
-                state.playback.advance(at);
+                state.playback.advance(stage_at);
                 let stage_index = state.stage;
                 let stage = &definition.stages[state.stage];
                 if port == "done" {
@@ -2161,7 +2199,8 @@ impl SynthRuntime {
                         .round()
                         .rem_euclid(2.0)
                         == 1.0);
-                let finished = staged_transition(definition, state, &format!("stage.{port}"), at);
+                let finished =
+                    staged_transition(definition, state, &format!("stage.{port}"), stage_at);
                 self.staged_pending.push_back(StagedEvent {
                     at,
                     voice,
@@ -2188,7 +2227,7 @@ impl SynthRuntime {
                         port: "stage.done".to_owned(),
                     });
                     if !finished && state.stage == stage_index {
-                        if staged_transition(definition, state, "stage.done", at) {
+                        if staged_transition(definition, state, "stage.done", stage_at) {
                             self.staged_pending.push_back(StagedEvent {
                                 at,
                                 voice,
@@ -2196,7 +2235,7 @@ impl SynthRuntime {
                                 port: "done".to_owned(),
                             });
                         } else if state.stage == stage_index {
-                            state.complete_value = staged_value(definition, state, at);
+                            state.complete_value = staged_value(definition, state, stage_at);
                             state.completed = true;
                         }
                     }
@@ -2229,14 +2268,10 @@ impl SynthRuntime {
                     ));
                 }
                 let definition = &self.staged_motions[connection.destination];
+                let at = self.staged_time(definition, event.at);
                 let state = &mut self.staged_states
                     [event.voice * self.staged_motions.len() + connection.destination];
-                if staged_transition(
-                    definition,
-                    state,
-                    &format!("cue.{}", connection.cue),
-                    event.at,
-                ) {
+                if staged_transition(definition, state, &format!("cue.{}", connection.cue), at) {
                     self.staged_pending.push_back(StagedEvent {
                         at: event.at,
                         voice: event.voice,
@@ -2350,7 +2385,11 @@ impl SynthRuntime {
                 continue;
             }
             let state = &self.staged_states[voice * self.staged_motions.len() + source];
-            let value = staged_value(definition, state, self.frame as f64);
+            let value = staged_value(
+                definition,
+                state,
+                self.staged_time(definition, self.frame as f64),
+            );
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;
