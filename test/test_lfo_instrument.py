@@ -636,6 +636,100 @@ def test_patch_cycle_marker_starts_unexposed_child_contour(
     )
 
 
+@pytest.mark.parametrize(("phase", "first_marker"), [("0", 6000), ("1/7", 2572)])
+def test_patch_cycle_marker_cues_child_stages(
+    tmp_path: Path, phase: str, first_marker: int
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "gesture": {
+            "body": {
+                "kind": "patch",
+                "motions": {
+                    "clock": {
+                        "kind": "cycle",
+                        "rate": "2",
+                        "phase": phase,
+                        "markers": [{"name": "peak", "position": "1/4"}],
+                    },
+                    "level": {
+                        "kind": "stages",
+                        "initial_stage": "waiting",
+                        "stages": [
+                            {
+                                "name": "waiting",
+                                "motion": {"kind": "hold", "value": -1},
+                            },
+                            {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                        ],
+                        "transitions": [
+                            {
+                                "from": ["waiting"],
+                                "event": "cue.brighten",
+                                "action": {"kind": "enter", "stage": "bright"},
+                            }
+                        ],
+                    },
+                },
+                "outputs": {"value": "level"},
+                "events": [
+                    {
+                        "source": "clock.peak",
+                        "target": "level",
+                        "action": "cue",
+                        "cue": "brighten",
+                    }
+                ],
+            }
+        }
+    }
+    voice["bindings"] = [
+        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1}
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["modulation"]["routes"][0]["points"] = [
+        {"input": -1, "amount": 0},
+        {"input": 1, "amount": 1},
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body, [onset(0, pitch=0.1).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    reference = synth.OfflineSynth(prepared).advance(actions, 0, 48000)
+    assert np.max(np.abs(reference[:first_marker])) == 0
+    assert reference[first_marker, 0] == pytest.approx(1)
+    for backend in ("numpy", "native"):
+        renderer = synth.OfflineSynth(prepared, backend)
+        first = renderer.advance(actions, 0, 16000)
+        snapshot = renderer.snapshot()
+        second = renderer.advance([], 16000, 48000)
+        restored = synth.OfflineSynth(prepared, backend)
+        restored.restore(snapshot)
+        np.testing.assert_array_equal(restored.advance([], 16000, 48000), second)
+        check_audio(
+            tmp_path / f"patch-cue-{backend}-{phase.replace('/', '-')}.wav",
+            np.vstack((first, second)),
+            reference,
+        )
+    live = synth.PersistentSynth(prepared, voices=2)
+    first = live.advance(actions, 0, 16000)
+    snapshot = live.snapshot()
+    second = live.advance([], 16000, 48000)
+    restored = synth.PersistentSynth(prepared, voices=2)
+    restored.restore(snapshot)
+    np.testing.assert_array_equal(restored.advance([], 16000, 48000), second)
+    check_audio(
+        tmp_path / f"patch-cue-persistent-{phase.replace('/', '-')}.wav",
+        np.vstack((first, second)),
+        reference,
+    )
+
+
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     tmp_path: Path, backend: Literal["numpy", "native"]

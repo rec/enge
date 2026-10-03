@@ -477,6 +477,41 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             update={"source": child_binding, "port": port}
         )
         changed = True
+    for parent_name, parent in voice.motions.items():
+        if not isinstance(parent.body, Patch) or not any(
+            isinstance(binding, processing.GeneratorBinding)
+            and binding.reference == parent_name
+            for binding in voice.bindings
+        ):
+            continue
+        for connection in parent.body.events:
+            if connection.action != "cue":
+                continue
+            child_name, _, port = connection.source.partition(".")
+            source_motion = f"patch-{parent_name}-{child_name}"
+            target_motion = f"patch-{parent_name}-{connection.target}"
+            source_binding = next(
+                binding.name
+                for binding in bindings
+                if isinstance(binding, processing.GeneratorBinding)
+                and binding.reference == source_motion
+            )
+            target_binding = next(
+                binding.name
+                for binding in bindings
+                if isinstance(binding, processing.GeneratorBinding)
+                and binding.reference == target_motion
+            )
+            assert connection.cue is not None
+            event_connections.append(
+                processing.MotionEventConnection(
+                    source=source_binding,
+                    port=port,
+                    destination=target_binding,
+                    cue=connection.cue,
+                )
+            )
+            changed = True
     if not changed:
         return voice
     return SynthVoice.model_validate(
@@ -1073,15 +1108,22 @@ class ControlRenderer:
             if isinstance(b, processing.GeneratorBinding)
         }
         for parent_name, parent in settings.motions.items():
-            if not isinstance(parent.body, Patch) or not parent.body.events:
+            if not isinstance(parent.body, Patch):
                 continue
-            first_target = f"patch-{parent_name}-{parent.body.events[0].target}"
+            start_connections = [
+                connection
+                for connection in parent.body.events
+                if connection.action == "start"
+            ]
+            if not start_connections:
+                continue
+            first_target = f"patch-{parent_name}-{start_connections[0].target}"
             if first_target not in settings.motions:
                 continue
             targets: dict[
                 int, tuple[MotionUse, list[tuple[int, Fraction, Fraction]]]
             ] = {}
-            for connection in parent.body.events:
+            for connection in start_connections:
                 source_name, _, marker_name = connection.source.partition(".")
                 origin = f"patch-{parent_name}-{source_name}"
                 destination = f"patch-{parent_name}-{connection.target}"
@@ -1691,6 +1733,8 @@ class PersistentSynth:
             ):
                 continue
             for connection in parent.body.events:
+                if connection.action != "start":
+                    continue
                 child_name, _, port = connection.source.partition(".")
                 child = parent.body.motions[child_name]
                 assert isinstance(child, Cycle)
