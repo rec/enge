@@ -3,13 +3,13 @@ from typing import Literal
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 from test_synth import check_audio
 from ufor.arpeggiator_capture import CapturedPhrase, SourceNote
 from ufor.samples.playback import Loop, Slice
 from ufor.time import Timebase
 
-from enge.sample_regions import render_regions
-from enge.synth import EngineError
+from enge.sample_regions import RegionPlayer, render_regions
 
 
 def _phrase() -> CapturedPhrase:
@@ -25,7 +25,7 @@ def _phrase() -> CapturedPhrase:
                 capture_id="spoken",
                 note_id=name,
                 onset_tick=start,
-                gate_end_tick=end,
+                gate_end_tick=27_000 if name == "b" else end,
                 cell_end_tick=end,
                 selection_key=key,
                 region=Slice(
@@ -103,6 +103,53 @@ def test_seam_fade_applies_only_when_source_regions_jump(
     np.testing.assert_array_equal(actual, expected)
     check_audio(tmp_path / "seam-fade.wav", actual, expected)
 
+    player = RegionPlayer(
+        phrase=phrase,
+        notes=notes,
+        audio={"voice": source},
+        channels=[0],
+        backend=backend,
+        seam_fade_frames=8,
+    )
+    chunks = [player.advance(n) for n in [127, 16_000, 997, 30_876]]
+    np.testing.assert_array_equal(np.concatenate(chunks), actual)
+
+
+def test_gate_policy_crops_the_tail_and_streams_in_irregular_blocks(
+    backend: Literal["numpy", "native"], tmp_path: Path
+) -> None:
+    phrase = _phrase()
+    source = np.arange(48_000, dtype=np.float64)[:, None] / 48_000
+    player = RegionPlayer(
+        phrase=phrase,
+        notes=phrase.notes,
+        audio={"voice": source},
+        channels=[0],
+        backend=backend,
+        tail_policy="gate",
+    )
+    assert player.total_frames == 43_000
+    blocks = [player.advance(n) for n in [127, 12_001, 997, 34_875]]
+    actual = np.concatenate(blocks)
+    expected = np.concatenate(
+        [source[:12_000], source[12_000:27_000], source[32_000:], np.zeros((5_000, 1))]
+    )
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(
+        render_regions(
+            phrase,
+            phrase.notes,
+            {"voice": source},
+            [0],
+            backend=backend,
+            tail_policy="gate",
+        ),
+        expected[:43_000],
+    )
+    check_audio(tmp_path / "gate-tail.wav", actual, expected)
+    player.stop()
+    np.testing.assert_array_equal(player.advance(128), np.zeros((128, 1)))
+
 
 def test_looped_region_requires_an_explicit_playback_policy() -> None:
     phrase = _phrase()
@@ -119,5 +166,5 @@ def test_looped_region_requires_an_explicit_playback_policy() -> None:
         }
     )
     phrase = phrase.model_copy(update={"notes": [looped, *phrase.notes[1:]]})
-    with pytest.raises(EngineError, match="playback policy"):
+    with pytest.raises(ValidationError, match="playback policy"):
         render_regions(phrase, [looped], {}, [0])
