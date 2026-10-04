@@ -898,6 +898,124 @@ def test_patch_child_event_cues_child_stages(
     )
 
 
+@pytest.mark.parametrize("stage_first", [False, True])
+def test_patch_child_cues_follow_event_time_within_one_sample(
+    tmp_path: Path, stage_first: bool
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    stage_position = "1/4" if stage_first else "3/4"
+    cycle_position = "3/192000" if stage_first else "1/192000"
+    voice["motions"] = {
+        "gesture": {
+            "body": {
+                "kind": "patch",
+                "motions": {
+                    "staged": {
+                        "kind": "stages",
+                        "initial_stage": "playing",
+                        "stages": [
+                            {
+                                "name": "playing",
+                                "motion": {
+                                    "kind": "contour",
+                                    "segments": [{"duration": "1/48000 s", "to": 1}],
+                                    "markers": [
+                                        {"name": "mark", "position": stage_position}
+                                    ],
+                                },
+                            }
+                        ],
+                    },
+                    "cycling": {
+                        "kind": "cycle",
+                        "rate": "1",
+                        "markers": [{"name": "mark", "position": cycle_position}],
+                    },
+                    "level": {
+                        "kind": "stages",
+                        "initial_stage": "waiting",
+                        "stages": [
+                            {
+                                "name": "waiting",
+                                "motion": {"kind": "hold", "value": -1},
+                            },
+                            {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                        ],
+                        "transitions": [
+                            {
+                                "from": ["waiting"],
+                                "event": "cue.brighten",
+                                "action": {"kind": "enter", "stage": "bright"},
+                            },
+                            {
+                                "from": ["bright"],
+                                "event": "cue.dim",
+                                "action": {"kind": "enter", "stage": "waiting"},
+                            },
+                        ],
+                    },
+                },
+                "outputs": {"value": "level"},
+                "events": [
+                    {
+                        "source": "staged.mark" if stage_first else "cycling.mark",
+                        "target": "level",
+                        "action": "cue",
+                        "cue": "brighten",
+                    },
+                    {
+                        "source": "cycling.mark" if stage_first else "staged.mark",
+                        "target": "level",
+                        "action": "cue",
+                        "cue": "dim",
+                    },
+                ],
+            }
+        }
+    }
+    voice["bindings"] = [
+        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+    ]
+    voice["modulation"]["sources"] = [
+        {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1}
+    ]
+    voice["modulation"]["routes"][0]["source"] = "level"
+    voice["modulation"]["routes"][0]["points"] = [
+        {"input": -1, "amount": 0},
+        {"input": 1, "amount": 1},
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body, [onset(0, pitch=0.1).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    reference = synth.OfflineSynth(prepared).advance(actions, 0, 48000)
+    assert reference[0, 0] == 0
+    assert reference[1, 0] == 0
+    for backend in ("native", "persistent"):
+        renderer = (
+            synth.OfflineSynth(prepared, "native")
+            if backend == "native"
+            else synth.PersistentSynth(prepared, voices=2)
+        )
+        first = renderer.advance(actions, 0, 1)
+        snapshot = renderer.snapshot()
+        second = renderer.advance([], 1, 48000)
+        restored = (
+            synth.OfflineSynth(prepared, "native")
+            if backend == "native"
+            else synth.PersistentSynth(prepared, voices=2)
+        )
+        restored.restore(snapshot)
+        np.testing.assert_array_equal(restored.advance([], 1, 48000), second)
+        check_audio(
+            tmp_path / f"patch-cue-order-{backend}-{stage_first}.wav",
+            np.vstack((first, second)),
+            reference,
+        )
+
+
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     tmp_path: Path, backend: Literal["numpy", "native"]

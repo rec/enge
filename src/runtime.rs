@@ -1547,14 +1547,15 @@ impl SynthRuntime {
         output.fill(0.0);
         let mut action = 0;
         for frame in 0..frames {
-            self.advance_staged(false)?;
+            self.advance_patch_events(false)?;
+            self.advance_staged(self.frame as f64, false)?;
             while action < actions.len() && actions[action] as usize == frame {
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
             self.dispatch_staged_events()?;
-            self.advance_patch_events()?;
-            self.advance_staged(true)?;
+            self.advance_patch_events(true)?;
+            self.advance_staged(self.frame as f64, true)?;
             self.dispatch_staged_events()?;
             self.flush_contour_starts()?;
             for voice in 0..self.frequencies.len() {
@@ -2263,7 +2264,7 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn advance_staged(&mut self, inclusive: bool) -> PyResult<()> {
+    fn advance_staged(&mut self, limit_frame: f64, inclusive: bool) -> PyResult<()> {
         let mut count = 0;
         let mut batch_at = None;
         loop {
@@ -2278,7 +2279,7 @@ impl SynthRuntime {
                         continue;
                     }
                     let state = &self.staged_states[voice * self.staged_motions.len() + source];
-                    let limit = self.staged_time(definition, self.frame as f64);
+                    let limit = self.staged_time(definition, limit_frame);
                     if let Some((stage_at, order, port)) =
                         next_staged_event(definition, state, limit, inclusive)
                     {
@@ -2493,7 +2494,7 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn advance_patch_events(&mut self) -> PyResult<()> {
+    fn advance_patch_events(&mut self, at_boundary: bool) -> PyResult<()> {
         if self.patch_events.is_empty() {
             return Ok(());
         }
@@ -2526,7 +2527,16 @@ impl SynthRuntime {
             }
         }
         events.sort_by(|a, b| a.partial_cmp(b).expect("finite Patch event time"));
+        let mut previous_at = None;
         for (at, order, voice) in events {
+            if (at >= self.frame as f64) != at_boundary {
+                continue;
+            }
+            if previous_at != Some(at) {
+                self.dispatch_staged_events()?;
+                self.advance_staged(at, true)?;
+                previous_at = Some(at);
+            }
             let connection = &self.patch_events[order];
             let destination = connection.destination;
             if let Some(cue) = &connection.cue {
