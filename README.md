@@ -202,9 +202,10 @@ See the [bindgen build requirements](https://rust-lang.github.io/rust-bindgen/re
 To rebuild without Rubber Band, run `uv sync --frozen --reinstall-package enge`
 without the feature setting.
 
-The [cross-platform workflow](.github/workflows/test.yml) builds and runs the full
-NumPy/native test suite on Linux, Windows, and macOS, both with and without
-Rubber Band. Its feature-enabled jobs require the Rubber Band tests to run
+The [cross-platform workflow](.github/workflows/test.yml) runs only when a GitHub
+release is published. It builds and runs the full NumPy/native test suite on
+Linux, Windows, and macOS, both with and without Rubber Band. Its feature-enabled
+jobs require the Rubber Band tests to run
 rather than skip when the feature is absent.
 
 The [proposed execution contract](plan/engine-execution.md) defines the common
