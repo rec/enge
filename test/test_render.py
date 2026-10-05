@@ -83,14 +83,16 @@ def test_mixed_engine_render_preserves_notes_tails_and_block_boundaries(
     assert np.all(actual[44000:] == 0)
 
 
+@pytest.mark.parametrize("filename", ["audio.flac", "output with spaces/café.flac"])
 def test_flac_round_trips_pcm_and_preserves_destination_on_overload(
     tmp_path: Path,
+    filename: str,
 ) -> None:
     t = np.arange(48000) / 48000
     samples = np.column_stack(
         [0.2 * np.sin(2 * np.pi * 440 * t), 0.3 * np.sin(2 * np.pi * 660 * t)]
     )
-    path = tmp_path / "audio.flac"
+    path = tmp_path / filename
     assert write_flac([samples], path) == pytest.approx(0.3)
     expected = np.rint(samples * (2**23 - 1)) / (2**23 - 1)
     check_audio(tmp_path / "pcm.wav", decode(path), expected)

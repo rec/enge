@@ -170,6 +170,43 @@ available pytest workers and work-stealing to balance long audio cases. Use
 not skipped when compilation is unavailable. `cargo fmt --check` and
 `cargo clippy --locked --all-targets -- -D warnings` check the Rust source.
 
+Linux, Windows, and macOS use the same Python and Rust engine code. Source builds
+need Python 3.13 or newer and Rust/Cargo 1.85 or newer. On Windows, use the Rust
+MSVC toolchain and install Visual Studio Build Tools with the C++ build tools and
+Windows SDK. On macOS, install the Xcode Command Line Tools; on Linux, install
+your distribution's compiler build tools. Hosts own audio devices, so the engine
+does not require a platform-specific audio driver or device library.
+
+FLAC export, listening demos, and their tests require the `flac` executable on
+`PATH`. The demos encode 32-bit PCM, which requires FLAC 1.4 or newer. Install it
+with `apt install flac` on Debian/Ubuntu or `brew install flac` on macOS. On
+Windows, download the command-line binaries from the
+[official FLAC releases](https://downloads.xiph.org/releases/flac/) and add their
+`Win64` directory to `PATH`. Engine rendering into NumPy arrays does not require
+FLAC.
+
+Rubber Band is optional and statically built from the source bundled by
+`rubberband-sys`; a separately installed Rubber Band library is not needed.
+Enabling it adds GPL-licensed code to the native extension. Build it with:
+
+```text
+uv sync --frozen --reinstall-package enge --config-settings-package enge:build-args=--features=rubberband
+uv run --no-sync pytest --require-rubberband
+```
+
+This build also needs a C++ compiler and libclang. Install `libclang-dev` on
+Debian/Ubuntu, or LLVM on macOS and Windows. On macOS with Homebrew, set
+`LIBCLANG_PATH` to `$(brew --prefix llvm)/lib`; in Windows PowerShell, set
+`$env:LIBCLANG_PATH = "$env:ProgramFiles\LLVM\bin"` for a default LLVM installation.
+See the [bindgen build requirements](https://rust-lang.github.io/rust-bindgen/requirements.html).
+To rebuild without Rubber Band, run `uv sync --frozen --reinstall-package enge`
+without the feature setting.
+
+The [cross-platform workflow](.github/workflows/test.yml) builds and runs the full
+NumPy/native test suite on Linux, Windows, and macOS, both with and without
+Rubber Band. Its feature-enabled jobs require the Rubber Band tests to run
+rather than skip when the feature is absent.
+
 The [proposed execution contract](plan/engine-execution.md) defines the common
 timing, dynamic-control, state, and conformance requirements for Python/NumPy
 reference engines and a native implementation. It also records the numerical

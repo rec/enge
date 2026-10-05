@@ -1,0 +1,73 @@
+name: Cross-platform tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.profile }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+        profile: [core, rubberband]
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: "1.85.0"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: "3.13"
+      - name: Install Rust tools
+        run: rustup toolchain install 1.85.0 --profile minimal --component clippy --component rustfmt
+      - name: Install FLAC on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes flac
+      - name: Install FLAC on macOS
+        if: runner.os == 'macOS'
+        run: brew install flac
+      - name: Install FLAC on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://downloads.xiph.org/releases/flac/flac-1.5.0-win.zip -OutFile "$env:RUNNER_TEMP\flac.zip"
+          Expand-Archive "$env:RUNNER_TEMP\flac.zip" -DestinationPath "$env:RUNNER_TEMP\flac"
+          "$env:RUNNER_TEMP\flac\flac-1.5.0-win\Win64" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Install libclang on Linux
+        if: runner.os == 'Linux' && matrix.profile == 'rubberband'
+        run: sudo apt-get install --yes libclang-dev
+      - name: Install libclang on macOS
+        if: runner.os == 'macOS' && matrix.profile == 'rubberband'
+        run: |
+          brew install llvm
+          printf 'LIBCLANG_PATH=%s/lib\n' "$(brew --prefix llvm)" >> "$GITHUB_ENV"
+      - name: Select libclang on Windows
+        if: runner.os == 'Windows' && matrix.profile == 'rubberband'
+        shell: pwsh
+        run: |
+          "LIBCLANG_PATH=$env:ProgramFiles\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build and install
+        run: uv sync --frozen ${{ matrix.profile == 'rubberband' && '--config-settings-package enge:build-args=--features=rubberband' || '' }}
+      - name: Check Rust
+        run: |
+          cargo fmt --check
+          if ! uv run --no-sync cargo clippy --locked --all-targets --message-format=short ${{ matrix.profile == 'rubberband' && '--features rubberband' || '' }} -- -D warnings 2> "$RUNNER_TEMP/clippy.log"; then
+            sed -n '/error/s/^/::error::/p' "$RUNNER_TEMP/clippy.log"
+            exit 1
+          fi
+      - name: Check FLAC availability
+        run: flac --version
+      - name: Test both renderers
+        run: uv run --no-sync pytest -n 2 ${{ matrix.profile == 'rubberband' && '--require-rubberband' || '' }}

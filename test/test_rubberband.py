@@ -10,8 +10,10 @@ from enge.synth import EngineError
 
 
 @pytest.fixture
-def rubberband() -> object:
+def rubberband(request: pytest.FixtureRequest) -> object:
     if not hasattr(_native, "rubberband_stretch"):
+        if request.config.getoption("--require-rubberband"):
+            pytest.fail("Rubber Band tests require the rubberband build feature")
         pytest.skip("build with maturin develop --features rubberband")
     return _native
 

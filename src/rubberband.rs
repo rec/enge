@@ -44,14 +44,13 @@ impl RubberBandRealtimeStretcher {
                 "Invalid real-time Rubber Band settings",
             ));
         }
+        #[allow(
+            clippy::unnecessary_cast,
+            reason = "C enum signedness depends on the target"
+        )]
+        let options = rubberband_sys::RubberBandOption_RubberBandOptionProcessRealTime as i32;
         let state = unsafe {
-            rubberband_sys::rubberband_new(
-                sample_rate,
-                channels as u32,
-                rubberband_sys::RubberBandOption_RubberBandOptionProcessRealTime as i32,
-                ratio,
-                pitch,
-            )
+            rubberband_sys::rubberband_new(sample_rate, channels as u32, options, ratio, pitch)
         };
         if state.is_null() {
             return Err(PyValueError::new_err(
@@ -158,8 +157,8 @@ impl RubberBandRealtimeStretcher {
         let frames = output[0].len();
         let mut interleaved = Vec::with_capacity(frames * self.channels);
         for frame in 0..frames {
-            for channel in 0..self.channels {
-                interleaved.push(output[channel][frame] as f64);
+            for channel in &output {
+                interleaved.push(channel[frame] as f64);
             }
         }
         Ok(
@@ -247,8 +246,8 @@ impl RubberBandLiveShifter {
         };
         let mut interleaved = Vec::with_capacity(self.block_size * self.channels);
         for frame in 0..self.block_size {
-            for channel in 0..self.channels {
-                interleaved.push(output[channel][frame] as f64);
+            for channel in &output {
+                interleaved.push(channel[frame] as f64);
             }
         }
         Ok(
@@ -292,16 +291,14 @@ pub fn rubberband_stretch<'py>(
         })
         .collect();
     let pointers: Vec<*const f32> = planar.iter().map(Vec::as_ptr).collect();
-    let state = unsafe {
-        rubberband_sys::rubberband_new(
-            48_000,
-            channels as u32,
-            (rubberband_sys::RubberBandOption_RubberBandOptionProcessOffline
-                | rubberband_sys::RubberBandOption_RubberBandOptionEngineFiner) as i32,
-            ratio,
-            pitch,
-        )
-    };
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "C enum signedness depends on the target"
+    )]
+    let options = (rubberband_sys::RubberBandOption_RubberBandOptionProcessOffline
+        | rubberband_sys::RubberBandOption_RubberBandOptionEngineFiner) as i32;
+    let state =
+        unsafe { rubberband_sys::rubberband_new(48_000, channels as u32, options, ratio, pitch) };
     if state.is_null() {
         return Err(PyValueError::new_err(
             "Rubber Band could not create a stretcher",
@@ -332,8 +329,8 @@ pub fn rubberband_stretch<'py>(
     let frames = output[0].len();
     let mut interleaved = Vec::with_capacity(frames * channels);
     for frame in 0..frames {
-        for channel in 0..channels {
-            interleaved.push(output[channel][frame] as f64);
+        for channel in &output {
+            interleaved.push(channel[frame] as f64);
         }
     }
     Ok(
