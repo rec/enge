@@ -20,6 +20,7 @@ def render(
     routes: list[list[float]],
     frames: int,
     filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
+    filter_after_amplitude: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return owned audio and next-state buffers without changing the inputs."""
     from . import _native
@@ -36,6 +37,7 @@ def render(
         np.asarray(routes, dtype=np.float64),
         frames,
         filters,
+        filter_after_amplitude,
     )
 
 

@@ -70,7 +70,7 @@ fn envelope_amplitudes(spans: &[f64], count: usize) -> Vec<f64> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (waveform, duty, rate, prepared_gain, frequencies, states, gains, envelope, routes, frames, filters=None))]
+#[pyo3(signature = (waveform, duty, rate, prepared_gain, frequencies, states, gains, envelope, routes, frames, filters=None, filter_after_amplitude=false))]
 #[allow(clippy::too_many_arguments)]
 fn render<'py>(
     py: Python<'py>,
@@ -85,6 +85,7 @@ fn render<'py>(
     routes: PyReadonlyArray2<'py, f64>,
     frames: usize,
     filters: Option<filters::Inputs<'py>>,
+    filter_after_amplitude: bool,
 ) -> PyResult<RenderedBlock<'py>> {
     let count = frequencies.shape()[0];
     let sources = frequencies.shape()[1];
@@ -144,13 +145,23 @@ fn render<'py>(
                 states[[s, 1]] = (total - states[[s, 0]]) - increment;
                 states[[s, 0]] = total.rem_euclid(rate);
             }
+            let gain = (amplitude[i] * prepared_gain) * gains[i];
+            if filter_after_amplitude {
+                for source in &mut waves {
+                    *source *= gain;
+                }
+            }
             filters.process(i, &mut waves)?;
             for c in 0..channels {
                 let mut mixed = 0.0;
                 for s in 0..sources {
                     mixed += waves[s] * routes[s * channels + c];
                 }
-                output[[i, c]] = mixed * ((amplitude[i] * prepared_gain) * gains[i]);
+                output[[i, c]] = if filter_after_amplitude {
+                    mixed
+                } else {
+                    mixed * gain
+                };
             }
         }
         Ok((output, states, filters.states))

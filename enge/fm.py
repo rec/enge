@@ -9,7 +9,7 @@ from ufor import instrument_trace, modulation
 from ufor.base import Model
 from ufor.fm import FM, edge_target_name
 from ufor.oscillator import Waveform
-from ufor.samples.processing import Processing, ResonantFilter
+from ufor.samples.processing import FilterOrder, Processing, ResonantFilter
 from ufor.streams import AudioType
 from ufor.synth import FMVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
@@ -164,6 +164,8 @@ class VoiceRenderer(synth.EnvelopeRenderer):
                 carrier_level,
                 np.array(self.phases),
                 np.array(self.history),
+                not self.definition.filters
+                or self.definition.filter_order == FilterOrder.after_amplitude,
             )
         else:
             audio, phases, history = graph_fm_samples(
@@ -177,9 +179,13 @@ class VoiceRenderer(synth.EnvelopeRenderer):
                 np.array(self.phases),
                 np.array(self.history),
                 rate,
+                not self.definition.filters
+                or self.definition.filter_order == FilterOrder.after_amplitude,
             )
         if not np.all(np.isfinite(audio)):
             raise synth.EngineError("FM produced non-finite output")
+        if self.definition.filter_order == FilterOrder.after_amplitude:
+            audio *= gains[:, None]
         audio, filter_states = filters.filter_samples(
             self.definition.filters,
             self.filter_states,
@@ -187,9 +193,11 @@ class VoiceRenderer(synth.EnvelopeRenderer):
             values,
             rate,
         )
-        output[:count] = synth.route_samples(
-            audio * gains[:, None], self.definition.routes
-        )
+        if self.definition.filter_order == FilterOrder.before_amplitude:
+            if self.definition.filters:
+                audio *= (carrier_level * envelopes[:, carrier])[:, None]
+            audio *= gains[:, None]
+        output[:count] = synth.route_samples(audio, self.definition.routes)
         self.phases = phases.tolist()
         self.history = history.tolist()
         self.filter_states = filter_states
@@ -361,6 +369,7 @@ class OfflineFM:
                     envelope=carrier.envelope,
                     minimum_hold_seconds=template.minimum_hold_seconds,
                     filters=template.processing.filters,
+                    filter_order=template.processing.filter_order,
                     routes=[
                         [
                             sum(r.gain for r in template.channels if r.output == c)
@@ -459,6 +468,7 @@ class PersistentFM(synth.PersistentSynth):
             tuning_cents=template.processing.tuning_cents,
             volume_db=template.processing.volume_db,
             filters=template.processing.filters,
+            filter_order=template.processing.filter_order,
         ):
             raise synth.EngineError(
                 "Persistent FM spatial processing is not implemented"
@@ -648,6 +658,7 @@ class PersistentFM(synth.PersistentSynth):
             runtime_filters,
             parameters,
             context_capacity,
+            template.processing.filter_order == FilterOrder.after_amplitude,
         )
         self.runtime.set_named_envelopes(
             envelope_initials,
@@ -736,6 +747,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedFM:
             tuning_cents=voice.processing.tuning_cents,
             volume_db=voice.processing.volume_db,
             filters=voice.processing.filters,
+            filter_order=voice.processing.filter_order,
         ):
             raise synth.EngineError(
                 "Only FM tuning, volume, and filter processing are implemented"
@@ -799,6 +811,7 @@ def graph_fm_samples(
     phases: np.ndarray,
     history: np.ndarray,
     sample_rate: int,
+    carrier_amplitude: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Evaluate a validated two-through-six operator PM graph."""
     operators = frequencies.shape[1] if frequencies.ndim == 2 else 0
@@ -822,6 +835,7 @@ def graph_fm_samples(
     order = _operator_order(operators, edges)
     for i in range(len(frequencies)):
         outputs = np.zeros(operators)
+        carrier_sample = 0.0
         for operator in order:
             offset = sum(
                 edge_indices[i, edge] * (previous[edge] if delayed else outputs[source])
@@ -831,14 +845,19 @@ def graph_fm_samples(
             angle = 2 * np.pi * position[operator] / sample_rate + offset
             phase = (angle / (2 * np.pi)) % 1
             waveform = waveforms[operator]
-            outputs[operator] = envelopes[i, operator] * (
+            sample = (
                 np.sin(angle)
                 if waveform == 0
                 else (1.0 if phase < 0.5 else -1.0)
                 if waveform == 1
                 else (4 * phase - 1 if phase < 0.5 else 3 - 4 * phase)
             )
-        audio[i] = carrier_level[i] * outputs[carrier]
+            outputs[operator] = envelopes[i, operator] * sample
+            if operator == carrier:
+                carrier_sample = sample
+        audio[i] = (
+            carrier_level[i] * outputs[carrier] if carrier_amplitude else carrier_sample
+        )
         increment = frequencies[i] - error
         total = position + increment
         error = (total - position) - increment

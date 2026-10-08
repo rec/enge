@@ -10,7 +10,7 @@ from test_sample_instrument import sample_score
 from test_synth import check_audio, score
 from ufor import synth_trace
 from ufor.events import Release
-from ufor.samples import instrument, trace
+from ufor.samples import instrument, processing, trace
 from ufor.synth import SynthInstrumentScore
 
 from enge import filters, sample_instrument, synth
@@ -99,12 +99,22 @@ def filter_score(kind: str) -> SynthInstrumentScore | instrument.SampleInstrumen
 
 
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
+@pytest.mark.parametrize("order", list(processing.FilterOrder))
 def test_controls_lfos_independent_voices_and_snapshots_drive_filters(
     kind: str,
+    order: processing.FilterOrder,
     backend: Literal["numpy", "native"],
     tmp_path: Path,
 ) -> None:
-    document = filter_score(kind)
+    raw = filter_score(kind).model_dump()
+    raw["body"]["voices" if kind == "synth" else "slots"][0]["processing"][
+        "filter_order"
+    ] = order
+    if kind == "sampler":
+        raw["body"]["settings"]["processing"]["filter_order"] = order
+    document = (
+        SynthInstrumentScore if kind == "synth" else instrument.SampleInstrumentScore
+    ).model_validate(raw)
     events = [
         onset(pitch=220).model_copy(update={"controls": {"tone": 0}}),
         change(1001, 1, control="tone"),
@@ -167,12 +177,14 @@ def test_controls_lfos_independent_voices_and_snapshots_drive_filters(
         audio = (
             np.sin(2 * np.pi * age * pitch / 48000)[:, None]
             if kind == "synth"
-            else source[: len(age)]
+            else source[: len(age)].copy()
         )
-        filtered = matrix_filter(definitions, audio, values)
         envelope = (
             0.2 * np.minimum(age / 480, 1) * np.clip(1 - (age - held) / 6000, 0, 1)
         )
+        if order == processing.FilterOrder.after_amplitude:
+            audio *= envelope[:, None]
+        filtered = matrix_filter(definitions, audio, values)
         routed = np.column_stack(
             [
                 filtered[:, 0],
@@ -181,9 +193,27 @@ def test_controls_lfos_independent_voices_and_snapshots_drive_filters(
                 else 0.25 * filtered[:, 0] + filtered[:, 1],
             ]
         )
-        expected[start : start + len(age)] += routed * envelope[:, None]
+        if order == processing.FilterOrder.before_amplitude:
+            routed *= envelope[:, None]
+        expected[start : start + len(age)] += routed
     actual = np.concatenate(chunks)
     check_audio(tmp_path / "instrument-filters.wav", actual, expected)
+    if kind == "synth" and backend == "native":
+        persistent = synth.PersistentSynth(prepared, voices=4)
+        blocks: list[np.ndarray] = []
+        for start, end in pairwise(boundaries):
+            blocks.append(
+                persistent.advance(
+                    [a for a in actions if start <= a.tick < end], start, end
+                )
+            )
+            if end == 6123:
+                saved_runtime = persistent.snapshot()
+                persistent = synth.PersistentSynth(prepared, voices=4)
+                persistent.restore(saved_runtime)
+        check_audio(
+            tmp_path / "persistent-filter-order.wav", np.concatenate(blocks), expected
+        )
     assert not np.any(actual[24001:])
     assert renderer.snapshot().voices == []
 

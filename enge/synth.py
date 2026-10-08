@@ -33,6 +33,7 @@ from ufor.motion import (
     Stages,
     StageState,
     Sum,
+    Threshold,
     advance_motion,
     cycle_lfo,
     initial_motion,
@@ -157,6 +158,7 @@ class PreparedEnvelope(Model, frozen=True):
 
     sample_rate: int = Field(gt=0)
     envelope: Envelope
+    filter_order: processing.FilterOrder = processing.FilterOrder.before_amplitude
     minimum_hold_seconds: Fraction = Field(default=Fraction(0), ge=0)
 
     @model_validator(mode="after")
@@ -296,6 +298,7 @@ class VoiceRenderer(EnvelopeRenderer):
                 definition.routes,
                 frames,
                 filters.native_inputs(definition.filters, self.filter_states, values),
+                definition.filter_order == processing.FilterOrder.after_amplitude,
             )
             self.filter_states = filters.restored_states(memory)
             self.oscillators = [
@@ -326,6 +329,8 @@ class VoiceRenderer(EnvelopeRenderer):
             if gains is not None:
                 amplitude *= gains[:count]
             samples = waves[0][:, None] if len(waves) == 1 else np.column_stack(waves)
+            if definition.filter_order == processing.FilterOrder.after_amplitude:
+                samples *= amplitude[:, None]
             if definition.filters:
                 samples, self.filter_states = filters.filter_samples(
                     definition.filters,
@@ -335,7 +340,8 @@ class VoiceRenderer(EnvelopeRenderer):
                     definition.sample_rate,
                 )
             output = route_samples(samples, definition.routes)
-            output *= amplitude[:, None]
+            if definition.filter_order == processing.FilterOrder.before_amplitude:
+                output *= amplitude[:, None]
         else:
             output = np.zeros((0, len(definition.routes[0])))
         if count < frames and len(output) != frames:
@@ -425,7 +431,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if name in voice.motions:
             raise EngineError(f"Patch output Motion name collides: {name}")
         child = parent.body.motions[child_name]
-        if isinstance(child, (Sum, Product, Affine)):
+        if isinstance(child, (Sum, Product, Affine, Threshold)):
             continue
         if name not in motions:
             motions[name] = MotionUse(
@@ -1779,6 +1785,7 @@ class OfflineSynth:
                     frequencies=[action.pitch_hz],
                     gain=template.oscillator.gain(action.key),
                     filters=template.processing.filters,
+                    filter_order=template.processing.filter_order,
                     minimum_hold_seconds=template.minimum_hold_seconds,
                     routes=[
                         [
@@ -1851,6 +1858,7 @@ class PersistentSynth:
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             filters=template.processing.filters,
+            filter_order=template.processing.filter_order,
         ):
             raise EngineError(
                 "Persistent synth gain and spatial processing are not implemented"
@@ -1911,6 +1919,7 @@ class PersistentSynth:
             runtime_filters,
             parameters,
             context_capacity,
+            template.processing.filter_order == processing.FilterOrder.after_amplitude,
         )
         self.runtime.set_named_envelopes(
             envelope_initials,
@@ -2682,7 +2691,9 @@ def _sample_rate(timebase: Timebase) -> int:
 def _validate_voice(voice: SynthVoice) -> None:
     validate_envelope(voice.envelope)
     if voice.processing != Processing(
-        tuning_cents=voice.processing.tuning_cents, filters=voice.processing.filters
+        tuning_cents=voice.processing.tuning_cents,
+        filters=voice.processing.filters,
+        filter_order=voice.processing.filter_order,
     ):
         raise EngineError("Only tuning and filter processing are implemented")
     validate_generators(voice, allow_beat_motions=True)

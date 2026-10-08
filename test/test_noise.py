@@ -11,7 +11,7 @@ from ufor import synth_trace
 from ufor.envelope import Envelope
 from ufor.events import ControlChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
-from ufor.samples.processing import ResonantFilter
+from ufor.samples.processing import FilterOrder, ResonantFilter
 from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 
@@ -137,12 +137,14 @@ def test_noise_partitions_and_json_restore(
     assert split.snapshot() == whole.snapshot()
 
 
+@pytest.mark.parametrize("order", ["before_amplitude", "after_amplitude"])
 def test_noise_dynamic_filter_and_minimum_hold_match_oracle(
-    tmp_path: Path, backend: Literal["numpy", "native"]
+    tmp_path: Path, backend: Literal["numpy", "native"], order: str
 ) -> None:
     prepared = definition().model_copy(
         update={
             "minimum_hold_seconds": 0.5,
+            "filter_order": FilterOrder(order),
             "filters": [
                 ResonantFilter(name="tone", response="lowpass", cutoff_hz=1200, q=0.7)
             ],
@@ -160,9 +162,14 @@ def test_noise_dynamic_filter_and_minimum_hold_match_oracle(
     gains[:1000] = 0
     actual = renderer.render(48000, gains, values)
     expected = np.zeros_like(actual)
-    filtered = matrix_filter(prepared.filters, scalar_noise(42, 0, count), values)
+    audio = scalar_noise(42, 0, count)
     envelope = np.minimum(1, 1 - (np.arange(count) - 24000) / 4800)
-    expected[:count] = filtered * (envelope * gains)[:, None] * [[1, 0.5]]
+    if order == "after_amplitude":
+        audio *= (envelope * gains)[:, None]
+    filtered = matrix_filter(prepared.filters, audio, values)
+    if order == "before_amplitude":
+        filtered *= (envelope * gains)[:, None]
+    expected[:count] = filtered * [[1, 0.5]]
     check_audio(tmp_path / "noise-filter-release.wav", actual, expected)
     assert renderer.complete
     assert renderer.frame_count == count
@@ -170,10 +177,14 @@ def test_noise_dynamic_filter_and_minimum_hold_match_oracle(
     assert renderer.frame_count == count
 
 
+@pytest.mark.parametrize("order", ["before_amplitude", "after_amplitude"])
 def test_persistent_noise_matches_native_across_blocks_and_restore(
     tmp_path: Path,
+    order: str,
 ) -> None:
-    document = score()
+    raw = score().model_dump()
+    raw["body"]["voices"][0]["processing"]["filter_order"] = order
+    document = SynthInstrumentScore.model_validate(raw)
     events = [
         trigger(),
         change(12001, 1),

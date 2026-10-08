@@ -6,7 +6,7 @@ import numpy as np
 from pydantic import ConfigDict, Field, model_validator
 from ufor import instrument_trace, modulation
 from ufor.base import Model
-from ufor.samples.processing import Processing, ResonantFilter
+from ufor.samples.processing import FilterOrder, Processing, ResonantFilter
 from ufor.streams import AudioType
 from ufor.synth import NoiseVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
@@ -91,10 +91,23 @@ class VoiceRenderer(synth.EnvelopeRenderer):
                 ),
                 np.array(definition.routes[0]),
                 filters.native_inputs(definition.filters, self.filter_states, values),
+                definition.filter_order == FilterOrder.after_amplitude,
             )
             states = filters.restored_states(memory)
         else:
             audio = noise_samples(self.stream_key, self.frame_count, count)
+            amplitudes = (
+                synth.envelope_samples(
+                    definition.envelope,
+                    self.frame_count,
+                    count,
+                    definition.sample_rate,
+                    self.release_frame,
+                )
+                * gains
+            )
+            if definition.filter_order == FilterOrder.after_amplitude:
+                audio *= amplitudes[:, None]
             audio, states = filters.filter_samples(
                 definition.filters,
                 self.filter_states,
@@ -102,16 +115,9 @@ class VoiceRenderer(synth.EnvelopeRenderer):
                 values,
                 definition.sample_rate,
             )
-            amplitudes = synth.envelope_samples(
-                definition.envelope,
-                self.frame_count,
-                count,
-                definition.sample_rate,
-                self.release_frame,
-            )
-            audio = synth.route_samples(
-                audio * (amplitudes * gains)[:, None], definition.routes
-            )
+            if definition.filter_order == FilterOrder.before_amplitude:
+                audio *= amplitudes[:, None]
+            audio = synth.route_samples(audio, definition.routes)
         if not np.all(np.isfinite(audio)):
             raise synth.EngineError("Non-finite noise output")
         output[:count] = audio
@@ -279,6 +285,7 @@ class OfflineNoise:
                     envelope=template.envelope,
                     minimum_hold_seconds=template.minimum_hold_seconds,
                     filters=template.processing.filters,
+                    filter_order=template.processing.filter_order,
                     routes=[
                         [
                             sum(r.gain for r in template.channels if r.output == c)
@@ -343,6 +350,7 @@ class PersistentNoise(synth.PersistentSynth):
         if template.processing != Processing(
             volume_db=template.processing.volume_db,
             filters=template.processing.filters,
+            filter_order=template.processing.filter_order,
         ):
             raise synth.EngineError(
                 "Persistent noise spatial processing is not implemented"
@@ -414,6 +422,7 @@ class PersistentNoise(synth.PersistentSynth):
             runtime_filters,
             parameters,
             context_capacity,
+            template.processing.filter_order == FilterOrder.after_amplitude,
         )
         self.runtime.set_named_envelopes(
             envelope_initials,
@@ -506,6 +515,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedNoise:
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
             filters=voice.processing.filters,
+            filter_order=voice.processing.filter_order,
         ):
             raise synth.EngineError(
                 "Only noise volume and filter processing are implemented"

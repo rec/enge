@@ -219,7 +219,7 @@ impl Cursor {
 }
 
 #[pyfunction]
-#[pyo3(signature = (buffer, selection, state, frame, rate, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None))]
+#[pyo3(signature = (buffer, selection, state, frame, rate, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None, filter_after_amplitude=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn render_sample<'py>(
     py: Python<'py>,
@@ -236,6 +236,7 @@ pub fn render_sample<'py>(
     routes: PyReadonlyArray2<'py, f64>,
     frames: usize,
     filters: Option<super::filters::Inputs<'py>>,
+    filter_after_amplitude: bool,
 ) -> PyResult<RenderedSample<'py>> {
     let count = steps.len();
     let channels = routes.shape()[1];
@@ -356,13 +357,23 @@ pub fn render_sample<'py>(
                     first + (cursor.position / rate) * (last - first)
                 };
             }
+            let gain = (amplitude[i] * prepared_gain) * gains[i];
+            if filter_after_amplitude {
+                for source in &mut sources {
+                    *source *= gain;
+                }
+            }
             filters.process(i, &mut sources)?;
             for c in 0..channels {
                 let mut mixed = 0.0;
                 for (s, source) in sources.iter().enumerate() {
                     mixed += source * routes[s * channels + c];
                 }
-                output[[i, c]] = mixed * ((amplitude[i] * prepared_gain) * gains[i]);
+                output[[i, c]] = if filter_after_amplitude {
+                    mixed
+                } else {
+                    mixed * gain
+                };
             }
             if let Some((_, _, before, after)) = split.filter(|r| r.1) {
                 cursor.advance(before, current + 1);

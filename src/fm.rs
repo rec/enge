@@ -110,6 +110,7 @@ pub fn render_fm<'py>(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (rate, frequencies, envelopes, waveforms, indices, edges, carrier, levels, phases, history, carrier_amplitude=true))]
 pub fn render_graph_fm<'py>(
     py: Python<'py>,
     rate: f64,
@@ -122,6 +123,7 @@ pub fn render_graph_fm<'py>(
     levels: PyReadonlyArray1<'py, f64>,
     phases: PyReadonlyArray2<'py, f64>,
     history: PyReadonlyArray1<'py, f64>,
+    carrier_amplitude: bool,
 ) -> PyResult<RenderedGraphFM<'py>> {
     let count = frequencies.shape()[0];
     let operators = frequencies.shape()[1];
@@ -204,6 +206,7 @@ pub fn render_graph_fm<'py>(
         let mut audio = Array2::zeros((count, 1));
         for i in 0..count {
             let mut output = vec![0.0; operators];
+            let mut carrier_sample = 0.0;
             for operator in &order {
                 let mut offset = 0.0;
                 for (edge_index, edge) in edges.rows().into_iter().enumerate() {
@@ -237,8 +240,15 @@ pub fn render_graph_fm<'py>(
                     _ => unreachable!(),
                 };
                 output[*operator] = envelopes[[i, *operator]] * sample;
+                if *operator == carrier {
+                    carrier_sample = sample;
+                }
             }
-            audio[[i, 0]] = levels[i] * output[carrier];
+            audio[[i, 0]] = if carrier_amplitude {
+                levels[i] * output[carrier]
+            } else {
+                carrier_sample
+            };
             for operator in 0..operators {
                 let increment = frequencies[[i, operator]] - phases[[operator, 1]];
                 let total = phases[[operator, 0]] + increment;

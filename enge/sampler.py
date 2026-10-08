@@ -10,7 +10,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from ufor.base import Model
 from ufor.samples.enums import Direction, LoopMode, PlaybackMode
 from ufor.samples.playback import Playback, Slice
-from ufor.samples.processing import ResonantFilter
+from ufor.samples.processing import FilterOrder, ResonantFilter
 
 from . import filters, synth
 from .synth import EngineError
@@ -226,6 +226,7 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
                 filters.native_inputs(
                     self.definition.filters, self.filter_states, values
                 ),
+                self.definition.filter_order == FilterOrder.after_amplitude,
             )
             self.filter_states = filters.restored_states(memory)
             self.frame_count += frames
@@ -240,6 +241,20 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
                 else pitch_ratios[:count],
                 self.release_frame,
             )
+            amplitude = (
+                synth.envelope_samples(
+                    self.definition.envelope,
+                    self.frame_count,
+                    count,
+                    self.definition.sample_rate,
+                    self.release_frame,
+                )
+                * self.definition.gain
+            )
+            if gains is not None:
+                amplitude *= gains[:count]
+            if self.definition.filter_order == FilterOrder.after_amplitude:
+                audio *= amplitude[:, None]
             if self.definition.filters:
                 active = (
                     count
@@ -255,21 +270,9 @@ class SampleVoiceRenderer(synth.EnvelopeRenderer):
                     values[:active],
                     self.definition.sample_rate,
                 )
-            amplitude = (
-                synth.envelope_samples(
-                    self.definition.envelope,
-                    self.frame_count,
-                    count,
-                    self.definition.sample_rate,
-                    self.release_frame,
-                )
-                * self.definition.gain
-            )
-            if gains is not None:
-                amplitude *= gains[:count]
-            output[:count] = (
-                synth.route_samples(audio, self.definition.routes) * amplitude[:, None]
-            )
+            output[:count] = synth.route_samples(audio, self.definition.routes)
+            if self.definition.filter_order == FilterOrder.before_amplitude:
+                output[:count] *= amplitude[:, None]
         self.frame_count += frames
         return output
 

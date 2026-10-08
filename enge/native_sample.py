@@ -19,6 +19,7 @@ def render(
     routes: np.ndarray,
     frames: int,
     filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
+    filter_after_amplitude: bool = False,
 ) -> tuple[np.ndarray, sampler.SampleState, np.ndarray]:
     from . import _native
 
@@ -73,6 +74,7 @@ def render(
         np.ascontiguousarray(routes, dtype=np.float64),
         frames,
         filters,
+        filter_after_amplitude,
     )
     index, position, error, direction, looping, overlap, released, exhaustion = values
     return (

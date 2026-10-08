@@ -419,6 +419,7 @@ pub struct SynthRuntime {
     motion_transform_routes: Vec<MotionTransformRoute>,
     motion_transform_values: Vec<f64>,
     rate: f64,
+    filter_after_amplitude: bool,
     waveform: u8,
     source_kind: u8,
     duty: f64,
@@ -496,6 +497,7 @@ pub struct SynthRuntime {
 impl SynthRuntime {
     #[new]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (rate, waveform, duty, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameters, context_capacity, filter_after_amplitude=false))]
     fn new(
         rate: f64,
         waveform: u8,
@@ -512,6 +514,7 @@ impl SynthRuntime {
         filters: PyReadonlyArray2<'_, f64>,
         parameters: Vec<f64>,
         context_capacity: usize,
+        filter_after_amplitude: bool,
     ) -> PyResult<Self> {
         let attack = segments(attack)?;
         let release = segments(release)?;
@@ -568,6 +571,7 @@ impl SynthRuntime {
             rate,
             waveform,
             source_kind: 0,
+            filter_after_amplitude,
             duty,
             mod_initial: 0.0,
             mod_attack: Vec::new(),
@@ -642,6 +646,7 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, mod_initial, mod_attack, mod_release, phase_offsets, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameters, context_capacity, filter_after_amplitude=false))]
     fn fm(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
@@ -660,6 +665,7 @@ impl SynthRuntime {
         filters: PyReadonlyArray2<'_, f64>,
         parameters: Vec<f64>,
         context_capacity: usize,
+        filter_after_amplitude: bool,
     ) -> PyResult<Self> {
         if phase_offsets.len() != 2
             || phase_offsets.iter().any(|v| !v.is_finite())
@@ -685,6 +691,7 @@ impl SynthRuntime {
             filters,
             parameters,
             context_capacity,
+            filter_after_amplitude,
         )?;
         runtime.source_kind = 1;
         runtime.mod_initial = mod_initial;
@@ -696,6 +703,7 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, waveforms, initials, attacks, releases, phase_offsets, parameters, edges, order, carrier, carrier_parameter, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameter_definitions, context_capacity, filter_after_amplitude=false))]
     fn fm_graph(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
@@ -720,6 +728,7 @@ impl SynthRuntime {
         filters: PyReadonlyArray2<'_, f64>,
         parameter_definitions: Vec<f64>,
         context_capacity: usize,
+        filter_after_amplitude: bool,
     ) -> PyResult<Self> {
         let operators = waveforms.len();
         if !(2..=6).contains(&operators)
@@ -817,6 +826,7 @@ impl SynthRuntime {
             filters,
             parameter_definitions,
             context_capacity,
+            filter_after_amplitude,
         )?;
         let slots = runtime.frequencies.len();
         runtime.source_kind = 3;
@@ -1336,6 +1346,7 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (rate, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameters, context_capacity, filter_after_amplitude=false))]
     fn noise(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
@@ -1350,6 +1361,7 @@ impl SynthRuntime {
         filters: PyReadonlyArray2<'_, f64>,
         parameters: Vec<f64>,
         context_capacity: usize,
+        filter_after_amplitude: bool,
     ) -> PyResult<Self> {
         let mut runtime = Self::new(
             rate,
@@ -1367,6 +1379,7 @@ impl SynthRuntime {
             filters,
             parameters,
             context_capacity,
+            filter_after_amplitude,
         )?;
         runtime.source_kind = 2;
         Ok(runtime)
@@ -1833,11 +1846,16 @@ impl SynthRuntime {
                     continue;
                 }
                 self.evaluate_motion_transforms(voice)?;
-                let amplitude = self.parameter(voice, 0)?;
+                let amplitude = self.parameter(voice, 0)?
+                    * if self.source_kind == 3 {
+                        self.parameter(voice, self.graph_carrier_parameter)?
+                    } else if self.source_kind == 1 {
+                        self.parameter(voice, 8)?
+                    } else {
+                        1.0
+                    };
                 let age = self.ages[voice] as f64;
-                let level = if self.source_kind == 3 {
-                    1.0
-                } else if let Some(release_frame) = self.release_frames[voice] {
+                let level = if let Some(release_frame) = self.release_frames[voice] {
                     let end = release_frame + total_frames(&self.release);
                     if age >= end.ceil() {
                         self.active[voice] = false;
@@ -1901,10 +1919,9 @@ impl SynthRuntime {
                         * (TAU * self.mod_phases[voice] / self.rate
                             + self.parameter(voice, 7)? * self.previous_modulators[voice])
                             .sin();
-                    let carrier = self.parameter(voice, 8)?
-                        * (TAU * self.phases[voice] / self.rate
-                            + self.parameter(voice, 6)? * modulator)
-                            .sin();
+                    let carrier = (TAU * self.phases[voice] / self.rate
+                        + self.parameter(voice, 6)? * modulator)
+                        .sin();
                     self.previous_modulators[voice] = modulator;
                     let increment = mod_frequency - self.mod_errors[voice];
                     let total = self.mod_phases[voice] + increment;
@@ -1919,6 +1936,7 @@ impl SynthRuntime {
                     let operators = self.graph_operators.len();
                     let edges = self.graph_edges.len();
                     let operator_base = voice * operators;
+                    let mut carrier_sample = 0.0;
                     let edge_base = voice * edges;
                     let process_tuning = self.parameter(voice, 1)?;
                     for operator in &self.graph_order {
@@ -1971,6 +1989,9 @@ impl SynthRuntime {
                             }
                         };
                         self.graph_outputs[operator_base + *operator] = level * value;
+                        if *operator == self.graph_carrier {
+                            carrier_sample = value;
+                        }
                     }
                     if let Some(release_frame) = self.release_frames[voice] {
                         let carrier = &self.graph_operators[self.graph_carrier];
@@ -1980,8 +2001,7 @@ impl SynthRuntime {
                             continue;
                         }
                     }
-                    let carrier = self.parameter(voice, self.graph_carrier_parameter)?
-                        * self.graph_outputs[operator_base + self.graph_carrier];
+                    let carrier = carrier_sample;
                     for (index, edge) in self.graph_edges.iter().enumerate() {
                         self.graph_history[edge_base + index] =
                             self.graph_outputs[operator_base + edge.source];
@@ -2014,8 +2034,11 @@ impl SynthRuntime {
                     })?;
                     2.0 * ((word >> 11) as f64 / 9007199254740992.0) - 1.0
                 };
-                let wave = self.filter_voice(voice, wave)?;
-                let sample = wave * self.gains[voice] * level * amplitude;
+                let sample = if self.filter_after_amplitude {
+                    self.filter_voice(voice, wave * self.gains[voice] * level * amplitude)?
+                } else {
+                    self.filter_voice(voice, wave)? * self.gains[voice] * level * amplitude
+                };
                 if self.source_kind == 0 {
                     let tuning = 2_f64.powf(self.parameter(voice, 1)? / 1200.0);
                     let increment = self.frequencies[voice] * tuning - self.errors[voice];

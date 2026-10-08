@@ -615,9 +615,16 @@ def test_fm_minimum_hold_and_duplicate_release_preserve_carrier_lifetime(
     assert engine.snapshot().voices == []
 
 
-def test_persistent_fm_matches_native_across_blocks_and_restore(tmp_path: Path) -> None:
+@pytest.mark.parametrize("order", ["before_amplitude", "after_amplitude"])
+def test_persistent_fm_matches_native_across_blocks_and_restore(
+    tmp_path: Path, order: str
+) -> None:
     raw = score().model_dump()
     raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 0.7
+    raw["body"]["voices"][0]["processing"].update(
+        filter_order=order,
+        filters=[{"name": "tone", "response": "lowpass", "cutoff_hz": 1800}],
+    )
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         trigger(),
@@ -776,8 +783,10 @@ def test_fm_live_targets_preserve_phase_and_use_declared_units(
     check_audio(tmp_path / "fm-live-target.wav", actual, expected)
 
 
+@pytest.mark.parametrize("order", ["before_amplitude", "after_amplitude"])
 def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
     tmp_path: Path,
+    order: str,
     backend: Literal["numpy", "native"],
 ) -> None:
     from test_filters import matrix_filter
@@ -792,7 +801,45 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
         {"input": -1, "amount": -1},
         {"input": 1, "amount": 1},
     ]
-    voice["bindings"] = [{"name": "color", "kind": "motion", "reference": "color"}]
+    voice["motions"]["level"] = voice["motions"]["color"]
+    voice["modulation"]["sources"].append(
+        {
+            "name": "level",
+            "scope": "voice",
+            "minimum": -1,
+            "maximum": 1,
+        }
+    )
+    voice["modulation"]["parameters"].append(
+        {
+            "target": {"name": "fm", "parameter": "carrier_level"},
+            "unit": "ratio",
+            "scope": "voice",
+            "minimum": 0.09,
+            "maximum": 0.31,
+            "default": 0.2,
+        }
+    )
+    voice["modulation"]["routes"].append(
+        {
+            "name": "level",
+            "source": "level",
+            "target": {"name": "fm", "parameter": "carrier_level"},
+            "operation": "add",
+            "unit": "ratio",
+            "points": [{"input": -1, "amount": -0.1}, {"input": 1, "amount": 0.1}],
+        }
+    )
+    voice["bindings"] = [
+        {"name": "color", "kind": "motion", "reference": "color"},
+        {"name": "level", "kind": "motion", "reference": "level"},
+    ]
+    voice["processing"]["filter_order"] = order
+    carrier = next(
+        o for o in voice["fm"]["operators"] if o["name"] == voice["fm"]["carrier"]
+    )
+    carrier["envelope"]["initial"] = 0
+    carrier["envelope"]["segments"] = [{"duration": "1/4 s", "to": 1}]
     voice["processing"]["filters"] = [
         {"name": "tone", "response": "lowpass", "cutoff_hz": 1800, "q": 0.7}
     ]
@@ -811,12 +858,25 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
     actual = engine.advance(actions, 0, 48000)
     t = np.arange(36000) / 48000
     index = 2 + np.sin(2 * np.pi * 2 * t)
-    audio = 0.2 * np.sin(2 * np.pi * 220 * t + index * np.sin(2 * np.pi * 440 * t))
+    audio = np.sin(2 * np.pi * 220 * t + index * np.sin(2 * np.pi * 440 * t))
     definitions = document.body.voices[0].processing.filters
     values = np.tile([[[1800, 0.7]]], (36000, 1, 1))
     expected = np.zeros_like(actual)
-    expected[:36000] = matrix_filter(definitions, audio[:, None], values) * [[1, 0.5]]
+    amplitude = (0.2 + 0.1 * np.sin(2 * np.pi * 2 * t)) * np.minimum(t * 4, 1)
+    if order == "after_amplitude":
+        audio *= amplitude
+    filtered = matrix_filter(definitions, audio[:, None], values)
+    if order == "before_amplitude":
+        filtered *= amplitude[:, None]
+    expected[:36000] = filtered * [[1, 0.5]]
     check_audio(tmp_path / "fm-lfo-filter.wav", actual, expected)
+    if backend == "native":
+        persistent = fm.PersistentFM(fm.prepare(document), voices=4)
+        check_audio(
+            tmp_path / "fm-persistent-filter-order.wav",
+            persistent.advance(actions, 0, 48000),
+            expected,
+        )
     assert engine.snapshot().voices == []
 
 

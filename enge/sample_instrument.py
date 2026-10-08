@@ -313,6 +313,9 @@ class OfflineSampler:
                 slice=sample.slice,
                 envelope=envelope,
                 filters=[*settings.processing.filters, *common.processing.filters],
+                filter_order=settings.processing.filter_order
+                if settings.processing.filters
+                else common.processing.filter_order,
                 pitch_ratio=playback.pitch_ratio(
                     slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
                 ),
@@ -656,6 +659,7 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
         volume_db=settings.processing.volume_db,
         tuning_cents=settings.processing.tuning_cents,
         filters=settings.processing.filters,
+        filter_order=settings.processing.filter_order,
     ):
         raise synth.EngineError(
             "Only sample volume, tuning, and filter processing are implemented"

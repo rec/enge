@@ -103,6 +103,7 @@ class SynthRuntime:
         filters: np.ndarray,
         parameters: list[float],
         context_capacity: int,
+        filter_after_amplitude: bool = False,
     ) -> None: ...
     @staticmethod
     def fm(
@@ -123,6 +124,7 @@ class SynthRuntime:
         filters: np.ndarray,
         parameters: list[float],
         context_capacity: int,
+        filter_after_amplitude: bool = False,
     ) -> SynthRuntime: ...
     @staticmethod
     def fm_graph(
@@ -149,6 +151,7 @@ class SynthRuntime:
         filters: np.ndarray,
         parameter_definitions: list[float],
         context_capacity: int,
+        filter_after_amplitude: bool = False,
     ) -> SynthRuntime: ...
     @staticmethod
     def noise(
@@ -165,6 +168,7 @@ class SynthRuntime:
         filters: np.ndarray,
         parameters: list[float],
         context_capacity: int,
+        filter_after_amplitude: bool = False,
     ) -> SynthRuntime: ...
     def process(
         self, frames: int, cutoff_hz: float, q: float, gain_db: float
@@ -311,6 +315,7 @@ def render(
     routes: np.ndarray,
     frames: int,
     filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
+    filter_after_amplitude: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
 
 class SampleBuffer:
@@ -334,6 +339,7 @@ def render_sample(
     routes: np.ndarray,
     frames: int,
     filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
+    filter_after_amplitude: bool = False,
 ) -> tuple[np.ndarray, SampleState, np.ndarray]: ...
 def render_fm(
     rate: float,
@@ -358,6 +364,7 @@ def render_graph_fm(
     levels: np.ndarray,
     phases: np.ndarray,
     history: np.ndarray,
+    carrier_amplitude: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
 def render_noise(
     key: int,
@@ -367,4 +374,5 @@ def render_noise(
     envelope: np.ndarray,
     routes: np.ndarray,
     filter_inputs: tuple[list[int], np.ndarray, np.ndarray],
+    filter_after_amplitude: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]: ...

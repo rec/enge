@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 type RenderedNoise<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray3<f64>>);
 
 #[pyfunction]
+#[pyo3(signature = (key, start, rate, gains, envelope, routes, filter_inputs, filter_after_amplitude=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn render_noise<'py>(
     py: Python<'py>,
@@ -21,6 +22,7 @@ pub fn render_noise<'py>(
     envelope: PyReadonlyArray2<'py, f64>,
     routes: PyReadonlyArray1<'py, f64>,
     filter_inputs: filters::Inputs<'py>,
+    filter_after_amplitude: bool,
 ) -> PyResult<RenderedNoise<'py>> {
     let count = gains.len();
     let limit = 1_u128 << 64;
@@ -48,9 +50,17 @@ pub fn render_noise<'py>(
             word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
             word ^= word >> 31;
             let mut source = [2.0 * ((word >> 11) as f64 / 9007199254740992.0) - 1.0];
+            let gain = amplitudes[i] * gains[i];
+            if filter_after_amplitude {
+                source[0] *= gain;
+            }
             bank.process(i, &mut source)?;
             for (j, route) in routes.iter().enumerate() {
-                audio[[i, j]] = (source[0] * (amplitudes[i] * gains[i])) * route;
+                audio[[i, j]] = (if filter_after_amplitude {
+                    source[0]
+                } else {
+                    source[0] * gain
+                }) * route;
             }
         }
         if audio.iter().any(|v| !v.is_finite()) {

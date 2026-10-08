@@ -87,7 +87,9 @@ See [control evaluation and measurements](plan/engine-execution.md#vectorized-co
 Both backends render ordered lowpass, highpass, bandpass, and notch filters with
 one or two stages. Cutoff and Q follow per-sample control/LFO routes. Each source
 channel owns trapezoidal integrator state, preserved through parameter changes
-and snapshots. Filters run before the amplitude envelope and routing; sampler
+and snapshots. The complete filter chain can run before or after amplitude (envelope, velocity,
+volume, and changing amplitude controls), then pan/channel routing runs. The
+default remains before amplitude; sampler
 slot/group filters precede instrument filters. Voice completion discards their
 state without adding a tail. See the revised [uFor filter contract](../ufor/doc/instrument-format.md#resonant-filters)
 and [enge's realization](plan/engine-execution.md#dynamic-filters).
