@@ -300,6 +300,14 @@ signal output, not the timestamps or traversal meaning of marker events.
 
 ## 7. Signals, event outputs, and connections
 
+Implemented stateless Patch `quantize` nodes: positive finite `step`, finite
+`origin` defaulting to zero, and nearest-grid rounding with halfway values
+choosing the higher point, including negative inputs. Output is not clipped;
+range inference quantizes both endpoints. Python and native graphs share these
+semantics for voice, part, and instrument scopes. One-second 48 kHz regressions
+cover shifted grids, exact ties, wider outputs, shared consumers, partitions,
+and snapshot continuation.
+
 Implemented voice-owned Patch `slew` nodes with independent rise/fall limits in
 signal units per second. Activation starts at the input's value unless an
 explicit initial value requests a ramp; movement begins on the next sample and

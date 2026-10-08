@@ -1208,13 +1208,14 @@ impl SynthRuntime {
                 .iter()
                 .enumerate()
                 .any(|(node, (kind, inputs, scale, offset, initial))| {
-                    *kind > 4
+                    *kind > 5
                         || !scale.is_finite()
                         || !offset.is_finite()
                         || inputs.len() < if *kind >= 2 { 1 } else { 2 }
                         || (*kind >= 2 && inputs.len() != 1)
                         || (*kind == 3 && scale >= offset)
                         || (*kind == 4 && (*scale < 0.0 || *offset < 0.0))
+                        || (*kind == 5 && *scale <= 0.0)
                         || initial.is_some_and(|value| *kind != 4 || !value.is_finite())
                         || inputs.iter().any(|(kind, index, offset, scale)| {
                             !offset.is_finite()
@@ -3234,7 +3235,12 @@ impl SynthRuntime {
                     output += value;
                 }
             }
-            self.motion_transform_values[base + node] = if *kind == 4 {
+            self.motion_transform_values[base + node] = if *kind == 5 {
+                let position = (output - offset) / scale;
+                let lower = position.floor();
+                let nearest = lower + if position - lower >= 0.5 { 1.0 } else { 0.0 };
+                offset + nearest * scale
+            } else if *kind == 4 {
                 let value = match self.motion_transform_states[base + node] {
                     None => initial.unwrap_or(output),
                     Some(previous) if output >= previous => output.min(previous + scale),

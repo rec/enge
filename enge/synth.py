@@ -28,6 +28,7 @@ from ufor.motion import (
     Patch,
     PlaybackMode,
     Product,
+    Quantize,
     SampleHold,
     SampleHoldState,
     Slew,
@@ -441,7 +442,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if name in voice.motions:
             raise EngineError(f"Patch output Motion name collides: {name}")
         child = parent.body.motions[child_name]
-        if isinstance(child, (Sum, Product, Affine, Threshold, Slew)) or any(
+        if isinstance(child, (Sum, Product, Affine, Quantize, Threshold, Slew)) or any(
             isinstance(b, (Threshold, Slew)) for b in parent.body.motions.values()
         ):
             continue
@@ -483,7 +484,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             child = parent.body.motions[child_name]
             if isinstance(child, (Sum, Product)):
                 pending.extend(child.inputs)
-            elif isinstance(child, (Affine, Threshold, Slew)):
+            elif isinstance(child, (Affine, Quantize, Threshold, Slew)):
                 pending.append(child.input)
             else:
                 children.add(child_name)
@@ -1305,6 +1306,14 @@ class ControlRenderer:
                 elif isinstance(body, Affine):
                     if body.input in children:
                         children[name] = body.offset + body.scale * children[body.input]
+                elif isinstance(body, Quantize):
+                    if body.input in children:
+                        position = (children[body.input] - body.origin) / body.step
+                        lower = np.floor(position)
+                        children[name] = (
+                            body.origin
+                            + (lower + (position - lower >= 0.5)) * body.step
+                        )
                 elif isinstance(body, Threshold):
                     if body.input not in children:
                         continue
@@ -2963,10 +2972,10 @@ def _configure_patch_transforms(
                 children[name] = (1, contours[reference][0], 0.0, 1.0)
             elif isinstance(body, Stages) and reference in stages:
                 children[name] = (2, stages[reference][0], 0.0, 1.0)
-            elif isinstance(body, (Sum, Product, Affine, Threshold, Slew)):
+            elif isinstance(body, (Sum, Product, Affine, Quantize, Threshold, Slew)):
                 inputs = (
                     [body.input]
-                    if isinstance(body, (Affine, Threshold, Slew))
+                    if isinstance(body, (Affine, Quantize, Threshold, Slew))
                     else body.inputs
                 )
                 if any(n not in children for n in inputs):
@@ -2976,7 +2985,9 @@ def _configure_patch_transforms(
                     detectors[parent_name, name] = len(nodes)
                 nodes.append(
                     (
-                        4
+                        5
+                        if isinstance(body, Quantize)
+                        else 4
                         if isinstance(body, Slew)
                         else 3
                         if isinstance(body, Threshold)
@@ -2986,14 +2997,18 @@ def _configure_patch_transforms(
                         if isinstance(body, Sum)
                         else 1,
                         [children[n] for n in inputs],
-                        body.rise * float(Fraction(1, rate))
+                        body.step
+                        if isinstance(body, Quantize)
+                        else body.rise * float(Fraction(1, rate))
                         if isinstance(body, Slew)
                         else body.lower
                         if isinstance(body, Threshold)
                         else body.scale
                         if isinstance(body, Affine)
                         else 1.0,
-                        body.fall * float(Fraction(1, rate))
+                        body.origin
+                        if isinstance(body, Quantize)
+                        else body.fall * float(Fraction(1, rate))
                         if isinstance(body, Slew)
                         else body.upper
                         if isinstance(body, Threshold)
