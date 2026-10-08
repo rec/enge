@@ -159,6 +159,15 @@ mutating its inputs. It contains no Python callbacks or `unsafe` code. Copying
 inputs and allocating output still happen per call, so this is not an
 allocation-free device callback API.
 
+The native `LiveRuntime` silences output and latches failure when processing
+raises an error. A failed block may already have advanced some sources. Recovery
+requires `restore()` with a known-good snapshot or a fresh runtime; there is no
+reset-only recovery. Restore validates every source and effect before changing
+state, rejects failed snapshots, and discards queued source/effect actions and
+partially consumed batches from the abandoned timeline. Rejected restoration
+leaves both state and queued actions untouched. Hosts must resubmit any events
+they want to apply after restoration.
+
 Build with `uv sync`; Rust/Cargo 1.85 or newer is required. Python packaging uses
 [maturin](https://www.maturin.rs/project_layout.html),
 [PyO3](https://pyo3.rs/v0.29.0/), and

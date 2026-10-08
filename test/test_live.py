@@ -299,8 +299,66 @@ def test_rejected_live_restore_preserves_all_source_state(
     incompatible = make_runtime(True)
     incompatible.submit(0, np.array([[0, 0, 0, 220, 0.2, 0]], dtype=float))
     incompatible.process_into(np.empty((64, 2)))
+    queued = np.array([[0, 3, 0, 660, 0.2, 0]], dtype=float)
+    runtime.submit(0, queued)
     with pytest.raises(ValueError, match="different"):
         runtime.restore(incompatible.snapshot())
+
+    reference = make_runtime()
+    reference.restore(saved)
+    reference.submit(0, queued)
+    expected = np.empty((48000, 2))
+    actual = np.empty_like(expected)
+    reference.process_into(expected)
+    runtime.process_into(actual)
+    check_audio(tmp_path / "rejected-restore.wav", actual, expected)
+
+
+@pytest.mark.parametrize("failure", ["source", "effects"])
+def test_live_restore_recovers_partial_render_and_discards_abandoned_actions(
+    tmp_path: Path, failure: str
+) -> None:
+    def make_runtime() -> _native.LiveRuntime:
+        runtime = _native.LiveRuntime(
+            [native_oscillator_runtime() for _ in range(3)], 48000, 64, 2
+        )
+        runtime.set_effect_graph(
+            [0],
+            np.array([[0, -1]], dtype=np.int64),
+            np.array([[0, 1, 1]], dtype=float),
+            1,
+            np.empty((0, 4)),
+            np.empty((0, 4), dtype=np.int64),
+            np.empty((0, 2), dtype=np.int64),
+            np.empty((0, 5)),
+            2,
+        )
+        return runtime
+
+    runtime = make_runtime()
+    runtime.submit(0, np.array([[0, 0, 0, 440, 0.2, 0]], dtype=float))
+    runtime.process_into(np.empty((64, 2)))
+    saved = runtime.snapshot()
+    runtime.submit(0, np.array([[0, 3, 0, 880, 0.2, 0]], dtype=float))
+    runtime.submit(2, np.array([[0, 0, 0, 660, 0.2, 0]], dtype=float))
+    if failure == "source":
+        runtime.submit(1, np.array([[64, 0, 0, 220, 0.2, 0]], dtype=float))
+    else:
+        runtime.submit_effects(np.array([[64, 0, 0, 0, -6, 0]], dtype=float))
+    output = np.ones((64, 2))
+    with pytest.raises(ValueError, match="block"):
+        runtime.process_into(output)
+    assert runtime.failed()
+    assert not np.any(output)
+
+    runtime.submit(0, np.array([[0, 3, 0, 220, 0.2, 0]], dtype=float))
+    runtime.submit_effects(np.array([[0, 0, 0, 0, -60, 0]], dtype=float))
+    output.fill(1)
+    runtime.process_into(output)
+    assert not np.any(output)
+    runtime.restore(saved)
+    assert not runtime.failed()
+    runtime.snapshot()
 
     reference = make_runtime()
     reference.restore(saved)
@@ -308,7 +366,23 @@ def test_rejected_live_restore_preserves_all_source_state(
     actual = np.empty_like(expected)
     reference.process_into(expected)
     runtime.process_into(actual)
-    check_audio(tmp_path / "rejected-restore.wav", actual, expected)
+    check_audio(tmp_path / "recovered-live.wav", actual, expected)
+
+
+def test_live_restore_rejects_a_failed_snapshot() -> None:
+    runtime = _native.LiveRuntime(
+        [native_oscillator_runtime(), native_oscillator_runtime()], 64, 64, 2
+    )
+    saved = runtime.snapshot()
+    for source in range(2):
+        runtime.submit(source, np.array([[0, 0, 0, 12000, 1e308, 0]], dtype=float))
+    with pytest.raises(ValueError, match="Non-finite live runtime output"):
+        runtime.process_into(np.ones((64, 2)))
+    with pytest.raises(ValueError, match="failed live snapshot"):
+        runtime.restore(runtime.snapshot())
+    assert runtime.failed()
+    runtime.restore(saved)
+    assert not runtime.failed()
 
 
 def test_native_live_runtime_batches_prepared_actions() -> None:

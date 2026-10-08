@@ -423,6 +423,11 @@ impl LiveRuntime {
     }
 
     fn restore(&mut self, snapshot: &LiveRuntimeSnapshot) -> PyResult<()> {
+        if snapshot.failed {
+            return Err(PyValueError::new_err(
+                "Cannot restore a failed live snapshot",
+            ));
+        }
         if snapshot.sources.len() != self.sources.len() {
             return Err(PyValueError::new_err(
                 "Snapshot belongs to a different live runtime",
@@ -441,21 +446,21 @@ impl LiveRuntime {
         }
         for (source, state) in self.sources.iter_mut().zip(&snapshot.sources) {
             source.runtime.restore(state)?;
+            while source.consumer.pop().is_ok() {}
+            source.action_count = 0;
         }
         if let (Some(effects), Some(state)) = (&mut self.effects, &snapshot.effects) {
             effects.restore(state)?;
+            while effects.consumer.pop().is_ok() {}
+            effects.action_count = 0;
         }
         self.frame = snapshot.frame;
-        self.failed = snapshot.failed;
+        self.failed = false;
         Ok(())
     }
 
     fn failed(&self) -> bool {
         self.failed
-    }
-
-    fn reset_failure(&mut self) {
-        self.failed = false;
     }
 }
 

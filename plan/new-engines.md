@@ -161,29 +161,22 @@ these are concrete validation gaps, not evidence of memory unsafety.
 
 ### D. Error recovery can leave partially advanced state
 
-**Partially resolved, 2026-10-08:** live snapshot restoration preflights every
-source and the effect graph before changing any state. Regressions verify that
-an incompatible later source or effect graph leaves audio continuation unchanged.
-Processing-error recovery and the reset-only policy still need a decision.
+**Resolved recovery policy, 2026-10-08:** processing errors silence output and
+latch failure. Because a failed block may have partially advanced its sources,
+recovery requires a known-good snapshot or a new runtime, not clearing a flag.
+Failed snapshots cannot be restored.
 
-**Priority: high for live operation. Observed ordering; recovery risk inferred.**
+Live snapshot restoration preflights every source and the effect graph before
+changing state. Successful restoration discards queued and partially consumed
+source/effect actions; rejected restoration leaves state and queues untouched.
+Hosts resubmit events for the restored timeline explicitly.
 
-[runtime.rs](../src/runtime.rs) validates and applies actions while rendering.
-An invalid later action can follow already applied actions and audio-state
-updates. In [live.rs](../src/live.rs), sources process sequentially, and
-process_into silences output and latches failure on an error. reset_failure only
-clears that flag. It does not roll back earlier source advancement or consumed
-batches. LiveRuntime.restore likewise restores sources sequentially before
-validating every later source/effect snapshot.
-
-Silencing a bad block is useful, but “clear the error” must not imply that all
-source clocks and states are synchronized again.
-
-**Next verification:** inject an invalid second source action after a valid first
-source block; inspect state before and after recovery. Try an incompatible later
-snapshot in a multi-source restore. Preflight configuration/action structure
-before mutation where possible. For runtime numerical failures, require an
-explicit restore/restart policy rather than a costly per-callback full snapshot.
+Regressions cover an invalid second source after an earlier source advances,
+effect failure after source rendering, stale action queues, failed snapshots,
+and incompatible later sources/effects. Audio continuation agrees with a fresh
+runtime restored from the same known-good snapshot. No per-callback rollback or
+full-state copying was added; validation of actions before mutation remains a
+separate possible improvement.
 
 ### E. FM does repeated allocation and preparation in its hot path
 
