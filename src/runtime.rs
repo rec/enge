@@ -1334,43 +1334,7 @@ impl SynthRuntime {
     }
 
     pub(crate) fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
-        if self.rate != snapshot.rate
-            || self.waveform != snapshot.waveform
-            || self.source_kind != snapshot.source_kind
-            || self.duty != snapshot.duty
-            || self.mod_initial != snapshot.mod_initial
-            || self.mod_attack != snapshot.mod_attack
-            || self.mod_release != snapshot.mod_release
-            || self.fm_phase_offsets != snapshot.fm_phase_offsets
-            || self.graph_operators != snapshot.graph_operators
-            || self.graph_edges != snapshot.graph_edges
-            || self.graph_order != snapshot.graph_order
-            || self.graph_carrier != snapshot.graph_carrier
-            || self.graph_carrier_parameter != snapshot.graph_carrier_parameter
-            || self.initial != snapshot.initial
-            || self.attack != snapshot.attack
-            || self.release != snapshot.release
-            || self.minimum_hold_frames != snapshot.minimum_hold_frames
-            || self.routes != snapshot.routes
-            || self.control_definitions != snapshot.control_definitions
-            || self.lfo_definitions != snapshot.lfo_definitions
-            || self.lfo_owners != snapshot.lfo_owners
-            || self.named_envelopes != snapshot.named_envelopes
-            || self.named_owners != snapshot.named_owners
-            || self.patch_events != snapshot.patch_events
-            || self.patch_stage_starts != snapshot.patch_stage_starts
-            || self.beat_points != snapshot.beat_points
-            || self.staged_motions != snapshot.staged_motions
-            || self.staged_owners != snapshot.staged_owners
-            || self.staged_connections != snapshot.staged_connections
-            || self.filter_definitions != snapshot.filter_definitions
-            || self.parameter_definitions != snapshot.parameter_definitions
-            || self.context_kinds.len() != snapshot.context_kinds.len()
-        {
-            return Err(PyValueError::new_err(
-                "Snapshot belongs to a different synth runtime",
-            ));
-        }
+        self.validate_snapshot(snapshot)?;
         self.frequencies.clone_from(&snapshot.frequencies);
         self.phases.clone_from(&snapshot.phases);
         self.errors.clone_from(&snapshot.errors);
@@ -1422,6 +1386,47 @@ impl SynthRuntime {
 }
 
 impl SynthRuntime {
+    pub(crate) fn validate_snapshot(&self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
+        if self.rate != snapshot.rate
+            || self.waveform != snapshot.waveform
+            || self.source_kind != snapshot.source_kind
+            || self.duty != snapshot.duty
+            || self.mod_initial != snapshot.mod_initial
+            || self.mod_attack != snapshot.mod_attack
+            || self.mod_release != snapshot.mod_release
+            || self.fm_phase_offsets != snapshot.fm_phase_offsets
+            || self.graph_operators != snapshot.graph_operators
+            || self.graph_edges != snapshot.graph_edges
+            || self.graph_order != snapshot.graph_order
+            || self.graph_carrier != snapshot.graph_carrier
+            || self.graph_carrier_parameter != snapshot.graph_carrier_parameter
+            || self.initial != snapshot.initial
+            || self.attack != snapshot.attack
+            || self.release != snapshot.release
+            || self.minimum_hold_frames != snapshot.minimum_hold_frames
+            || self.routes != snapshot.routes
+            || self.control_definitions != snapshot.control_definitions
+            || self.lfo_definitions != snapshot.lfo_definitions
+            || self.lfo_owners != snapshot.lfo_owners
+            || self.named_envelopes != snapshot.named_envelopes
+            || self.named_owners != snapshot.named_owners
+            || self.patch_events != snapshot.patch_events
+            || self.patch_stage_starts != snapshot.patch_stage_starts
+            || self.beat_points != snapshot.beat_points
+            || self.staged_motions != snapshot.staged_motions
+            || self.staged_owners != snapshot.staged_owners
+            || self.staged_connections != snapshot.staged_connections
+            || self.filter_definitions != snapshot.filter_definitions
+            || self.parameter_definitions != snapshot.parameter_definitions
+            || self.context_kinds.len() != snapshot.context_kinds.len()
+        {
+            return Err(PyValueError::new_err(
+                "Snapshot belongs to a different synth runtime",
+            ));
+        }
+        Ok(())
+    }
+
     fn local_beat_at(&self, frame: f64) -> f64 {
         let index = self
             .beat_points

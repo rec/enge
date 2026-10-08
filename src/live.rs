@@ -433,6 +433,12 @@ impl LiveRuntime {
                 "Snapshot belongs to a different live effect graph",
             ));
         }
+        for (source, state) in self.sources.iter().zip(&snapshot.sources) {
+            source.runtime.validate_snapshot(state)?;
+        }
+        if let (Some(effects), Some(state)) = (&self.effects, &snapshot.effects) {
+            effects.validate_snapshot(state)?;
+        }
         for (source, state) in self.sources.iter_mut().zip(&snapshot.sources) {
             source.runtime.restore(state)?;
         }
@@ -1028,7 +1034,7 @@ impl EffectRuntime {
         }
     }
 
-    fn restore(&mut self, snapshot: &EffectSnapshot) -> PyResult<()> {
+    fn validate_snapshot(&self, snapshot: &EffectSnapshot) -> PyResult<()> {
         if self.kinds != snapshot.kinds
             || self.sources != snapshot.sources
             || self.output_source != snapshot.output_source
@@ -1074,6 +1080,11 @@ impl EffectRuntime {
                 "Snapshot belongs to a different live effect graph",
             ));
         }
+        Ok(())
+    }
+
+    fn restore(&mut self, snapshot: &EffectSnapshot) -> PyResult<()> {
+        self.validate_snapshot(snapshot)?;
         self.parameters.assign(&snapshot.parameters);
         self.targets.assign(&snapshot.targets);
         self.steps.assign(&snapshot.steps);
@@ -1350,9 +1361,11 @@ impl SourceRuntime {
         }
     }
 
-    fn restore(&mut self, snapshot: &SourceSnapshot) -> PyResult<()> {
+    fn validate_snapshot(&self, snapshot: &SourceSnapshot) -> PyResult<()> {
         match (self, snapshot) {
-            (Self::Generated(runtime), SourceSnapshot::Generated(state)) => runtime.restore(state),
+            (Self::Generated(runtime), SourceSnapshot::Generated(state)) => {
+                runtime.validate_snapshot(state)
+            }
             (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
                 if runtime.routes != state.routes
                     || runtime.initial != state.initial
@@ -1366,12 +1379,23 @@ impl SourceRuntime {
                         "Snapshot belongs to a different live sample source",
                     ));
                 }
-                runtime.clone_from(state);
                 Ok(())
             }
             _ => Err(PyValueError::new_err(
                 "Snapshot belongs to a different live source kind",
             )),
+        }
+    }
+
+    fn restore(&mut self, snapshot: &SourceSnapshot) -> PyResult<()> {
+        self.validate_snapshot(snapshot)?;
+        match (self, snapshot) {
+            (Self::Generated(runtime), SourceSnapshot::Generated(state)) => runtime.restore(state),
+            (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
+                runtime.clone_from(state);
+                Ok(())
+            }
+            _ => unreachable!("validated source kind"),
         }
     }
 }

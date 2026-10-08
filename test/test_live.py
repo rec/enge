@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from test_effects import gain_graph, graph_input
 from test_noise import score as noise_score
 from test_noise import trigger as noise_trigger
@@ -262,6 +263,52 @@ def test_native_live_runtime_latches_failure_and_zeros_later_blocks() -> None:
     output.fill(1)
     runtime.process_into(output)
     np.testing.assert_array_equal(output, np.zeros_like(output))
+
+
+@pytest.mark.parametrize("mismatch", ["source", "effects"])
+def test_rejected_live_restore_preserves_all_source_state(
+    tmp_path: Path, mismatch: str
+) -> None:
+    def make_runtime(incompatible: bool = False) -> _native.LiveRuntime:
+        second = (
+            native_noise_runtime()
+            if incompatible and mismatch == "source"
+            else native_oscillator_runtime()
+        )
+        runtime = _native.LiveRuntime(
+            [native_oscillator_runtime(), second], 48000, 64, 2
+        )
+        if mismatch == "effects":
+            runtime.set_effect_graph(
+                [0],
+                np.array([[0, -1]], dtype=np.int64),
+                np.array([[0, 1, 1]], dtype=float),
+                0 if incompatible else 1,
+                np.empty((0, 4)),
+                np.empty((0, 4), dtype=np.int64),
+                np.empty((0, 2), dtype=np.int64),
+                np.empty((0, 5)),
+                2,
+            )
+        return runtime
+
+    runtime = make_runtime()
+    runtime.submit(0, np.array([[0, 0, 0, 440, 0.2, 0]], dtype=float))
+    runtime.process_into(np.empty((64, 2)))
+    saved = runtime.snapshot()
+    incompatible = make_runtime(True)
+    incompatible.submit(0, np.array([[0, 0, 0, 220, 0.2, 0]], dtype=float))
+    incompatible.process_into(np.empty((64, 2)))
+    with pytest.raises(ValueError, match="different"):
+        runtime.restore(incompatible.snapshot())
+
+    reference = make_runtime()
+    reference.restore(saved)
+    expected = np.empty((48000, 2))
+    actual = np.empty_like(expected)
+    reference.process_into(expected)
+    runtime.process_into(actual)
+    check_audio(tmp_path / "rejected-restore.wav", actual, expected)
 
 
 def test_native_live_runtime_batches_prepared_actions() -> None:

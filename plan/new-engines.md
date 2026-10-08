@@ -161,6 +161,11 @@ these are concrete validation gaps, not evidence of memory unsafety.
 
 ### D. Error recovery can leave partially advanced state
 
+**Partially resolved, 2026-10-08:** live snapshot restoration preflights every
+source and the effect graph before changing any state. Regressions verify that
+an incompatible later source or effect graph leaves audio continuation unchanged.
+Processing-error recovery and the reset-only policy still need a decision.
+
 **Priority: high for live operation. Observed ordering; recovery risk inferred.**
 
 [runtime.rs](../src/runtime.rs) validates and applies actions while rendering.
