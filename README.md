@@ -181,6 +181,10 @@ available pytest workers and work-stealing to balance long audio cases. Use
 not skipped when compilation is unavailable. `cargo fmt --check` and
 `cargo clippy --locked --all-targets -- -D warnings` check the Rust source.
 
+Run one full suite at a time on a shared development machine, including when
+verifying uFor or safaz. Prepare the native extension once, then use
+`uv run --no-sync pytest` for repeated verification of unchanged Rust code.
+
 Linux, Windows, and macOS use the same Python and Rust engine code. Source builds
 need Python 3.13 or newer and Rust/Cargo 1.85 or newer. On Windows, use the Rust
 MSVC toolchain and install Visual Studio Build Tools with the C++ build tools and
@@ -219,6 +223,8 @@ NumPy/native test suite on Linux, Windows, and macOS, both with and without Rubb
 Band. Its feature-enabled
 jobs require the Rubber Band tests to run
 rather than skip when the feature is absent.
+CI uses the project's worker setting and allows 45 minutes for compilation and
+the full audio suite; Windows exceeded the previous 25-minute budget.
 
 The [proposed execution contract](plan/engine-execution.md) defines the common
 timing, dynamic-control, state, and conformance requirements for Python/NumPy
