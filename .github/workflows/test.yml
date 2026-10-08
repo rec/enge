@@ -1,6 +1,7 @@
 name: Cross-platform tests
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
@@ -11,7 +12,7 @@ jobs:
   test:
     name: ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -69,4 +70,4 @@ jobs:
       - name: Check FLAC availability
         run: flac --version
       - name: Test both renderers
-        run: uv run --no-sync pytest -n 2 ${{ matrix.profile == 'rubberband' && '--require-rubberband' || '' }}
+        run: uv run --no-sync pytest ${{ matrix.profile == 'rubberband' && '--require-rubberband' || '' }}
