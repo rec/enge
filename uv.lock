@@ -464,7 +464,7 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.1.0"
-source = { git = "https://github.com/rec/ufor.git?branch=main#f0077e5ebb92b272e1c0398dbf42f8b41e38bfff" }
+source = { git = "https://github.com/rec/ufor.git?branch=main#5c08e74b72d0daeef5a0ec34faf7baf90b988eac" }
 dependencies = [
     { name = "pydantic" },
     { name = "tomlkit" },
