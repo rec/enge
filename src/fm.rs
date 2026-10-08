@@ -150,11 +150,27 @@ pub fn render_graph_fm<'py>(
     let levels: Vec<f64> = levels.as_array().iter().copied().collect();
     let mut phases = phases.as_array().to_owned();
     let mut history: Vec<f64> = history.as_array().iter().copied().collect();
+    if frequencies
+        .iter()
+        .chain(envelopes.iter())
+        .chain(indices.iter())
+        .chain(levels.iter())
+        .chain(phases.iter())
+        .chain(history.iter())
+        .any(|value| !value.is_finite())
+    {
+        return Err(PyValueError::new_err(
+            "Invalid graph FM parameters or state",
+        ));
+    }
     let (audio, phases, history) = py.detach(move || -> PyResult<_> {
         let mut order = Vec::new();
         let mut pending = vec![0usize; operators];
         for edge in edges.rows() {
-            if edge[0] < 0.0
+            if edge
+                .iter()
+                .any(|value| !value.is_finite() || value.fract() != 0.0)
+                || edge[0] < 0.0
                 || edge[0] >= operators as f64
                 || edge[1] < 0.0
                 || edge[1] >= operators as f64
@@ -234,6 +250,14 @@ pub fn render_graph_fm<'py>(
                 .into_iter()
                 .map(|edge| output[edge[0] as usize])
                 .collect();
+        }
+        if audio
+            .iter()
+            .chain(phases.iter())
+            .chain(history.iter())
+            .any(|value| !value.is_finite())
+        {
+            return Err(PyValueError::new_err("Non-finite graph FM output or state"));
         }
         Ok((audio, phases, history))
     })?;

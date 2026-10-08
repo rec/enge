@@ -11,7 +11,106 @@ from ufor.events import ControlChange, LFOChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
 from ufor.synth import SynthInstrumentScore
 
-from enge import fm, synth
+from enge import _native, fm, synth
+
+
+@pytest.mark.parametrize(
+    "field", ["frequencies", "envelopes", "indices", "levels", "phases", "history"]
+)
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_native_graph_fm_rejects_nonfinite_inputs(field: str, value: float) -> None:
+    arrays = {
+        "frequencies": np.ones((1, 2)),
+        "envelopes": np.ones((1, 2)),
+        "indices": np.ones((1, 1)),
+        "levels": np.ones(1),
+        "phases": np.zeros((2, 2)),
+        "history": np.zeros(1),
+    }
+    arrays[field].flat[0] = value
+    with pytest.raises(ValueError, match="Invalid graph FM parameters or state"):
+        _native.render_graph_fm(
+            48000,
+            arrays["frequencies"],
+            arrays["envelopes"],
+            np.zeros(2, dtype=np.uint8),
+            arrays["indices"],
+            np.array([[0, 1, 0]], dtype=float),
+            1,
+            arrays["levels"],
+            arrays["phases"],
+            arrays["history"],
+        )
+
+
+@pytest.mark.parametrize("column", [0, 1, 2])
+@pytest.mark.parametrize("value", [0.5, np.nan, np.inf, -1.0, 2.0])
+def test_native_graph_fm_rejects_invalid_edges(column: int, value: float) -> None:
+    edges = np.array([[0, 1, 0]], dtype=float)
+    edges[0, column] = value
+    with pytest.raises(ValueError, match="Invalid FM edge"):
+        _native.render_graph_fm(
+            48000,
+            np.ones((1, 2)),
+            np.ones((1, 2)),
+            np.zeros(2, dtype=np.uint8),
+            np.ones((1, 1)),
+            edges,
+            1,
+            np.ones(1),
+            np.zeros((2, 2)),
+            np.zeros(1),
+        )
+
+
+@pytest.mark.parametrize("order", [[0, 0], [1, 0]])
+def test_native_graph_runtime_rejects_invalid_execution_order(order: list[int]) -> None:
+    with pytest.raises(ValueError, match="Invalid graph FM execution order"):
+        _native.SynthRuntime.fm_graph(
+            48000,
+            np.ones((1, 1)),
+            1,
+            np.array([[0, 1]], dtype=float),
+            np.array([[0, 0]], dtype=float),
+            [0, 0],
+            [1, 1],
+            [[], []],
+            [[], []],
+            [0, 0],
+            [(0, 1), (0, 1)],
+            [(0, 1, False, 0)],
+            order,
+            1,
+            0,
+            0,
+            np.empty((0, 8)),
+            [],
+            np.empty((0, 7)),
+            [],
+            np.empty((0, 7)),
+            [1, 0, 1e300, 0, -120000, 120000],
+            1,
+        )
+
+
+def test_native_graph_fm_rejects_overflow_without_mutating_inputs() -> None:
+    phases = np.zeros((2, 2))
+    history = np.zeros(1)
+    with pytest.raises(ValueError, match="Non-finite graph FM output or state"):
+        _native.render_graph_fm(
+            48000,
+            np.ones((1, 2)),
+            np.full((1, 2), 1e308),
+            np.ones(2, dtype=np.uint8),
+            np.zeros((1, 1)),
+            np.array([[0, 1, 0]], dtype=float),
+            1,
+            np.full(1, 1e308),
+            phases,
+            history,
+        )
+    assert not np.any(phases)
+    assert not np.any(history)
 
 
 @pytest.mark.parametrize("operators", [2, 3, 4, 5, 6])

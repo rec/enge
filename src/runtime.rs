@@ -672,6 +672,13 @@ impl SynthRuntime {
         {
             return Err(PyValueError::new_err("Invalid graph FM runtime definition"));
         }
+        let mut positions = vec![usize::MAX; operators];
+        for (position, operator) in order.iter().enumerate() {
+            if positions[*operator] != usize::MAX {
+                return Err(PyValueError::new_err("Invalid graph FM execution order"));
+            }
+            positions[*operator] = position;
+        }
         let graph_operators: Vec<GraphOperator> = waveforms
             .into_iter()
             .zip(initials)
@@ -714,6 +721,9 @@ impl SynthRuntime {
                     || parameter >= parameter_definitions.len() / 3
                 {
                     return Err(PyValueError::new_err("Invalid graph FM edge"));
+                }
+                if !delayed && positions[source] >= positions[destination] {
+                    return Err(PyValueError::new_err("Invalid graph FM execution order"));
                 }
                 Ok(GraphEdge {
                     source,

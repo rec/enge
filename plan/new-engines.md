@@ -131,6 +131,12 @@ agree when minimum hold has elapsed, and immediate stop cancels pending work.
 
 ### C. Low-level graph FM validation is weaker than its callers
 
+**Resolved, 2026-10-08:** native graph rendering now rejects non-finite inputs,
+fractional/non-finite edges, and non-finite output/state. Persistent graph
+preparation requires a permutation ordered before every current-sample edge.
+Direct native regressions cover these failures and overflow without input mutation.
+The original review findings follow for context.
+
 **Priority: high for native-boundary correctness. Observed.**
 
 [fm.rs](../src/fm.rs), render_graph_fm, validates layout but does not comprehensively
