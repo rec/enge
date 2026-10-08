@@ -512,6 +512,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                     destination=target_binding,
                     cue=connection.cue,
                     every=connection.every,
+                    offset=connection.offset,
                 )
             )
             changed = True
@@ -539,13 +540,13 @@ def _patch_child_names(settings: SoundSettings) -> set[str]:
 
 def _patch_start_connections(
     settings: SoundSettings, sources: dict[str, int]
-) -> list[tuple[str, str, int, int, int]]:
+) -> list[tuple[str, str, int, int, int, int]]:
     bindings = {
         binding.reference: binding.name
         for binding in settings.bindings
         if isinstance(binding, processing.GeneratorBinding)
     }
-    connections: list[tuple[str, str, int, int, int]] = []
+    connections: list[tuple[str, str, int, int, int, int]] = []
     for parent_name, parent in settings.motions.items():
         if not isinstance(parent.body, Patch):
             continue
@@ -567,6 +568,7 @@ def _patch_start_connections(
                     sources[bindings[target_name]],
                     order,
                     connection.every,
+                    connection.offset,
                 )
             )
     return connections
@@ -1152,7 +1154,7 @@ class ControlRenderer:
             seen.add(index)
             staged.append((binding.name, index, settings.motions[binding.reference]))
         patch_starts = _patch_start_connections(settings, sources)
-        contour_targets = {target for _, _, target, _, _ in patch_starts}
+        contour_targets = {target for _, _, target, _, _, _ in patch_starts}
         motion_indices = {index for _, index, _ in staged} | contour_targets
         if not motion_indices or all(
             index in self.cached_envelopes for index in motion_indices
@@ -1173,7 +1175,7 @@ class ControlRenderer:
                 ]
                 + [
                     (source, port)
-                    for source, port, _, _, _ in patch_starts
+                    for source, port, _, _, _, _ in patch_starts
                     if isinstance(
                         (binding := bindings[source]),
                         processing.GeneratorBinding,
@@ -1324,9 +1326,11 @@ class ControlRenderer:
             assert isinstance(source_binding, processing.GeneratorBinding)
             source_motion = settings.motions[source_binding.reference]
             seconds = self.motion_seconds(source_motion, event.at)
-            for source_name, port, target_index, order, every in patch_starts:
+            for source_name, port, target_index, order, every, offset in patch_starts:
                 if source_name == name and port == event.port:
-                    if not self._forward_event(target_index, f"start-{order}", every):
+                    if not self._forward_event(
+                        target_index, f"start-{order}", every, offset
+                    ):
                         continue
                     pending_starts.append((seconds, order, target_index))
                     delivered += 1
@@ -1337,7 +1341,7 @@ class ControlRenderer:
                     continue
                 target_index = sources[connection.destination]
                 if not self._forward_event(
-                    target_index, f"cue-{order}", connection.every
+                    target_index, f"cue-{order}", connection.every, connection.offset
                 ):
                     continue
                 binding = bindings[connection.destination]
@@ -1367,12 +1371,15 @@ class ControlRenderer:
         if starts is None:
             self._start_patch_contours(settings, pending_starts)
 
-    def _forward_event(self, index: int, connection: str, every: int) -> bool:
+    def _forward_event(
+        self, index: int, connection: str, every: int, offset: int
+    ) -> bool:
         source = self.envelopes[index]
-        count = source.event_counts.get(connection, 0)
+        count = source.event_counts.get(connection, offset)
         self.envelopes[index] = source.model_copy(
             update={
-                "event_counts": source.event_counts | {connection: (count + 1) % every}
+                "event_counts": source.event_counts
+                | {connection: every - 1 if count == 0 else count - 1}
             }
         )
         return count == 0
@@ -1744,8 +1751,8 @@ class PersistentSynth:
             for name, indices in source_map.items():
                 if name in patch_children:
                     source_map[name] = indices[:1]
-        patch_events: list[tuple[int, float, int, str | None, int, int]] = []
-        patch_stage_starts: list[tuple[int, str, int, int, int]] = []
+        patch_events: list[tuple[int, float, int, str | None, int, int, int]] = []
+        patch_stage_starts: list[tuple[int, str, int, int, int, int]] = []
         for parent_name, parent in template.motions.items():
             if not isinstance(parent.body, Patch):
                 continue
@@ -1774,6 +1781,7 @@ class PersistentSynth:
                             None,
                             order,
                             connection.every,
+                            connection.offset,
                         )
                     )
                 else:
@@ -1787,6 +1795,7 @@ class PersistentSynth:
                             destination,
                             order,
                             connection.every,
+                            connection.offset,
                         )
                     )
         bindings = {binding.name: binding for binding in template.bindings}
@@ -1811,6 +1820,7 @@ class PersistentSynth:
                     connection.cue,
                     len(patch_events),
                     connection.every,
+                    connection.offset,
                 )
             )
         self.runtime.set_patch_events(patch_events)
@@ -2471,7 +2481,7 @@ def _persistent_modulation(
     np.ndarray,
     list[StagedRuntimeDefinition],
     dict[str, list[int]],
-    list[tuple[int, str, int, str, int]],
+    list[tuple[int, str, int, str, int, int]],
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
@@ -2888,6 +2898,7 @@ def _persistent_modulation(
             staged_bindings[c.destination],
             c.cue,
             c.every,
+            c.offset,
         )
         for c in template.event_connections
         if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)

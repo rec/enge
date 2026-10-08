@@ -312,7 +312,11 @@ inside the document.
 
 Event connections support `every`, a positive integer defaulting to 1. Division
 is first-aligned: `every = 3` forwards matching events 1, 4, 7, and so on. Each
-connection counts independently for each voice, resets on voice activation, and
+connection also accepts `offset`, a nonnegative integer defaulting to 0, which
+skips that many matching events initially before forwarding every nth event.
+Offsets 1 and 2 with `every = 3` forward 2, 5, 8 and 3, 6, 9. Offsets can exceed
+the divisor: offset 4 starts at event 5, not event 2. Each connection counts
+independently for each voice, resets on voice activation, and
 retains its count through child restarts, stage transitions, render partitions,
 and snapshot restoration. Division filters delivery, not source emission or
 named event outputs. This applies to Patch starts and cues and to instrument

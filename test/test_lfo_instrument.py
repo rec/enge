@@ -689,8 +689,14 @@ def test_patch_child_event_starts_unexposed_contour(
 @pytest.mark.parametrize("command", ["start", "cue"])
 @pytest.mark.parametrize("divisors", [[3], [2, 3]])
 @pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("offset", [0, 1, 2, 4])
 def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
-    tmp_path: Path, source_kind: str, command: str, divisors: list[int], restart: bool
+    tmp_path: Path,
+    source_kind: str,
+    command: str,
+    divisors: list[int],
+    restart: bool,
+    offset: int,
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -746,6 +752,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                         "target": "accent",
                         "action": command,
                         "every": d,
+                        "offset": offset,
                         **({"cue": "hit"} if command == "cue" else {}),
                     }
                     for d in divisors
@@ -791,7 +798,11 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     for activation, stop in [(0, 10001), (10002, 48000)] if restart else [(0, 48000)]:
         for event in range(8):
             start = activation + 1500 + event * 6000
-            if start < stop and any(event % d == 0 for d in divisors):
+            if (
+                start < stop
+                and event >= offset
+                and any((event - offset) % d == 0 for d in divisors)
+            ):
                 length = min(1500, stop - start)
                 expected[start : start + length, 0] += pulse[:length] * (
                     0.5 if command == "cue" else 1
