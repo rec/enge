@@ -685,6 +685,29 @@ def test_patch_child_event_starts_unexposed_contour(
     )
 
 
+@pytest.mark.parametrize("backend", ["numpy", "native", "persistent"])
+def test_synth_rejects_keyless_voice_starts_before_admission(backend: str) -> None:
+    document = SynthInstrumentScore.model_validate(lfo_score("synth").model_dump())
+    actions = synth_trace.prepare(
+        document.body, [onset(0).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    actions = [
+        a.model_copy(update={"key": None})
+        if isinstance(a, synth_trace.VoiceStart)
+        else a
+        for a in actions
+    ]
+    prepared = synth.prepare(document)
+    renderer = (
+        synth.PersistentSynth(prepared, voices=1)
+        if backend == "persistent"
+        else synth.OfflineSynth(prepared, backend)
+    )
+    with pytest.raises(synth.EngineError, match="require a key"):
+        renderer.advance(actions, 0, 1)
+    assert not renderer.voices
+
+
 @pytest.mark.parametrize("reverse_connections", [False, True])
 def test_patch_child_starts_follow_event_time_within_one_sample(
     tmp_path: Path, reverse_connections: bool

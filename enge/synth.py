@@ -1525,6 +1525,8 @@ class OfflineSynth:
             or action.channels != source.channels
         ):
             raise EngineError("Voice start must match its prepared synth template")
+        if action.key is None:
+            raise EngineError("Synth voice starts require a key for oscillator gain")
         sources = self.controls.sources(template, action)
         self.voices[action.voice_id] = VoiceSnapshot(
             voice_id=action.voice_id,
@@ -2096,6 +2098,8 @@ class PersistentSynth:
             or action.channels != source.channels
         ):
             raise EngineError("Voice start must match its prepared synth template")
+        if action.key is None:
+            raise EngineError("Synth voice starts require a key for oscillator gain")
         slot = next((i for i, value in enumerate(active) if not value), None)
         if slot is None:
             raise EngineError("Persistent synth voice capacity exceeded")
