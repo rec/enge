@@ -229,16 +229,17 @@ class SynthRuntime:
                 bool,
             ]
         ],
-        connections: list[tuple[int, str, int, str, int, int]],
+        connections: list[tuple[int, str, int, str, int, int, int, int]],
     ) -> None: ...
     def set_motion_state_owners(
         self, lfos: list[int], envelopes: list[int], stages: list[int]
     ) -> None: ...
     def set_patch_events(
-        self, connections: list[tuple[int, float, int, str | None, int, int, int]]
+        self,
+        connections: list[tuple[int, float, int, str | None, int, int, int, int, int]],
     ) -> None: ...
     def set_patch_stage_starts(
-        self, connections: list[tuple[int, str, int, int, int, int]]
+        self, connections: list[tuple[int, str, int, int, int, int, int, int]]
     ) -> None: ...
     def active_slots(self) -> list[bool]: ...
     def active_contexts(self) -> list[bool]: ...

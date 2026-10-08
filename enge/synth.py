@@ -5,11 +5,11 @@ from collections.abc import Callable, Collection
 from fractions import Fraction
 from functools import cached_property
 from math import ceil, floor, isfinite
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import instrument_trace, lfo, modulation
+from ufor import instrument_trace, lfo, modulation, motion_random
 from ufor.base import Model
 from ufor.control import TempoMap
 from ufor.envelope import Envelope
@@ -119,6 +119,8 @@ class EnvelopeSource(Model, frozen=True):
     state: MotionState
     pending_release: Fraction | None = None
     event_counts: dict[str, int] = Field(default_factory=dict)
+    motion_key: int = 0
+    event_random: dict[str, int] = Field(default_factory=dict)
 
 
 class OscillatorState(Model, frozen=True):
@@ -513,6 +515,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                     cue=connection.cue,
                     every=connection.every,
                     offset=connection.offset,
+                    probability=connection.probability,
                 )
             )
             changed = True
@@ -540,13 +543,13 @@ def _patch_child_names(settings: SoundSettings) -> set[str]:
 
 def _patch_start_connections(
     settings: SoundSettings, sources: dict[str, int]
-) -> list[tuple[str, str, int, int, int, int]]:
+) -> list[tuple[str, str, int, int, int, int, float]]:
     bindings = {
         binding.reference: binding.name
         for binding in settings.bindings
         if isinstance(binding, processing.GeneratorBinding)
     }
-    connections: list[tuple[str, str, int, int, int, int]] = []
+    connections: list[tuple[str, str, int, int, int, int, float]] = []
     for parent_name, parent in settings.motions.items():
         if not isinstance(parent.body, Patch):
             continue
@@ -569,6 +572,7 @@ def _patch_start_connections(
                     order,
                     connection.every,
                     connection.offset,
+                    connection.probability,
                 )
             )
     return connections
@@ -912,6 +916,7 @@ class ControlRenderer:
                             trigger_id=action.trigger_id,
                             voice_id=action.voice_id,
                             state=initial,
+                            motion_key=action.motion_key,
                         )
                     )
                     result[source.name] = index
@@ -1154,7 +1159,7 @@ class ControlRenderer:
             seen.add(index)
             staged.append((binding.name, index, settings.motions[binding.reference]))
         patch_starts = _patch_start_connections(settings, sources)
-        contour_targets = {target for _, _, target, _, _, _ in patch_starts}
+        contour_targets = {target for _, _, target, _, _, _, _ in patch_starts}
         motion_indices = {index for _, index, _ in staged} | contour_targets
         if not motion_indices or all(
             index in self.cached_envelopes for index in motion_indices
@@ -1175,7 +1180,7 @@ class ControlRenderer:
                 ]
                 + [
                     (source, port)
-                    for source, port, _, _, _, _ in patch_starts
+                    for source, port, _, _, _, _, _ in patch_starts
                     if isinstance(
                         (binding := bindings[source]),
                         processing.GeneratorBinding,
@@ -1326,10 +1331,18 @@ class ControlRenderer:
             assert isinstance(source_binding, processing.GeneratorBinding)
             source_motion = settings.motions[source_binding.reference]
             seconds = self.motion_seconds(source_motion, event.at)
-            for source_name, port, target_index, order, every, offset in patch_starts:
+            for (
+                source_name,
+                port,
+                target_index,
+                order,
+                every,
+                offset,
+                probability,
+            ) in patch_starts:
                 if source_name == name and port == event.port:
                     if not self._forward_event(
-                        target_index, f"start-{order}", every, offset
+                        target_index, f"start-{order}", every, offset, probability
                     ):
                         continue
                     pending_starts.append((seconds, order, target_index))
@@ -1341,7 +1354,11 @@ class ControlRenderer:
                     continue
                 target_index = sources[connection.destination]
                 if not self._forward_event(
-                    target_index, f"cue-{order}", connection.every, connection.offset
+                    target_index,
+                    f"cue-{order}",
+                    connection.every,
+                    connection.offset,
+                    connection.probability,
                 ):
                     continue
                 binding = bindings[connection.destination]
@@ -1372,17 +1389,31 @@ class ControlRenderer:
             self._start_patch_contours(settings, pending_starts)
 
     def _forward_event(
-        self, index: int, connection: str, every: int, offset: int
+        self, index: int, connection: str, every: int, offset: int, probability: float
     ) -> bool:
         source = self.envelopes[index]
         count = source.event_counts.get(connection, offset)
+        threshold = int(probability * 2**53)
         self.envelopes[index] = source.model_copy(
             update={
                 "event_counts": source.event_counts
                 | {connection: every - 1 if count == 0 else count - 1}
             }
         )
-        return count == 0
+        if count != 0 or threshold == 0:
+            return False
+        if threshold == 2**53:
+            return True
+        source = self.envelopes[index]
+        if (state := source.event_random.get(connection)) is None:
+            state = source.motion_key ^ motion_random.stream_key(
+                0, f"{source.name}:{connection}"
+            )
+        state, word = motion_random.random_word(state)
+        self.envelopes[index] = source.model_copy(
+            update={"event_random": source.event_random | {connection: state}}
+        )
+        return word >> 11 < threshold
 
     def _start_patch_contours(
         self, settings: SoundSettings, starts: list[tuple[Fraction, int, int]]
@@ -1751,8 +1782,10 @@ class PersistentSynth:
             for name, indices in source_map.items():
                 if name in patch_children:
                     source_map[name] = indices[:1]
-        patch_events: list[tuple[int, float, int, str | None, int, int, int]] = []
-        patch_stage_starts: list[tuple[int, str, int, int, int, int]] = []
+        patch_events: list[
+            tuple[int, float, int, str | None, int, int, int, int, int]
+        ] = []
+        patch_stage_starts: list[tuple[int, str, int, int, int, int, int, int]] = []
         for parent_name, parent in template.motions.items():
             if not isinstance(parent.body, Patch):
                 continue
@@ -1782,6 +1815,11 @@ class PersistentSynth:
                             order,
                             connection.every,
                             connection.offset,
+                            int(connection.probability * 2**53),
+                            motion_random.stream_key(
+                                0,
+                                f"patch-{parent_name}-{connection.target}:start-{order}",
+                            ),
                         )
                     )
                 else:
@@ -1796,10 +1834,15 @@ class PersistentSynth:
                             order,
                             connection.every,
                             connection.offset,
+                            int(connection.probability * 2**53),
+                            motion_random.stream_key(
+                                0,
+                                f"patch-{parent_name}-{connection.target}:start-{order}",
+                            ),
                         )
                     )
         bindings = {binding.name: binding for binding in template.bindings}
-        for connection in template.event_connections:
+        for order, connection in enumerate(template.event_connections):
             source_binding = bindings[connection.source]
             assert isinstance(source_binding, processing.GeneratorBinding)
             source_motion = template.motions[source_binding.reference]
@@ -1821,6 +1864,10 @@ class PersistentSynth:
                     len(patch_events),
                     connection.every,
                     connection.offset,
+                    int(connection.probability * 2**53),
+                    motion_random.stream_key(
+                        0, f"{target_binding.reference}:cue-{order}"
+                    ),
                 )
             )
         self.runtime.set_patch_events(patch_events)
@@ -2020,6 +2067,17 @@ class PersistentSynth:
                     ):
                         raise EngineError("Voice start is missing its trigger context")
                 slot, frequency_hz, gain, phase = self._start(action, active)
+                if self.probabilistic_events:
+                    self._encode_action(
+                        count,
+                        offset,
+                        12,
+                        slot,
+                        action.motion_key & 0xFFFF_FFFF,
+                        action.motion_key >> 32,
+                        0,
+                    )
+                    count += 1
                 self._encode_action(count, offset, 0, slot, frequency_hz, gain, phase)
                 count += 1
                 if part_context >= 0 or trigger_context >= 0:
@@ -2050,6 +2108,16 @@ class PersistentSynth:
                     f"{type(action).__name__}"
                 )
         return self._action_buffer[:count]
+
+    @cached_property
+    def probabilistic_events(self) -> bool:
+        return any(
+            0 < c.probability < 1 for c in self.template.event_connections
+        ) or any(
+            isinstance(m.body, Patch)
+            and any(0 < c.probability < 1 for c in m.body.events)
+            for m in self.template.motions.values()
+        )
 
     def finish_native_live_block(
         self, end: int, active: list[bool], contexts: list[bool]
@@ -2481,7 +2549,7 @@ def _persistent_modulation(
     np.ndarray,
     list[StagedRuntimeDefinition],
     dict[str, list[int]],
-    list[tuple[int, str, int, str, int, int]],
+    list[tuple[int, str, int, str, int, int, int, int]],
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
@@ -2899,8 +2967,14 @@ def _persistent_modulation(
             c.cue,
             c.every,
             c.offset,
+            int(c.probability * 2**53),
+            motion_random.stream_key(
+                0,
+                cast(processing.GeneratorBinding, bindings[c.destination]).reference
+                + f":cue-{order}",
+            ),
         )
-        for c in template.event_connections
+        for order, c in enumerate(template.event_connections)
         if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)
         if isinstance(template.motions[binding.reference].body, Stages)
     ]

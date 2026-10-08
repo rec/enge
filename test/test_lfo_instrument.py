@@ -8,7 +8,7 @@ import pytest
 from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio, score
-from ufor import instrument_trace, synth_trace
+from ufor import instrument_trace, motion_random, synth_trace
 from ufor.control import TempoMap
 from ufor.events import LFOChange, MotionChange, Release
 from ufor.library import Entry, Library
@@ -23,7 +23,7 @@ from ufor.motion import (
 from ufor.samples import instrument, processing, trace
 from ufor.synth import SynthInstrumentScore
 
-from enge import sample_instrument, synth
+from enge import live, sample_instrument, synth
 
 
 def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
@@ -689,7 +689,10 @@ def test_patch_child_event_starts_unexposed_contour(
 @pytest.mark.parametrize("command", ["start", "cue"])
 @pytest.mark.parametrize("divisors", [[3], [2, 3]])
 @pytest.mark.parametrize("restart", [False, True])
-@pytest.mark.parametrize("offset", [0, 1, 2, 4])
+@pytest.mark.parametrize(
+    ("offset", "probability", "seed"),
+    [(0, 1, 0), (1, 1, 0), (2, 1, 0), (4, 1, 0), (1, 0, 0), (1, 0.5, 0), (1, 0.5, 1)],
+)
 def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     tmp_path: Path,
     source_kind: str,
@@ -697,6 +700,8 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     divisors: list[int],
     restart: bool,
     offset: int,
+    probability: float,
+    seed: int,
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -753,6 +758,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                         "action": command,
                         "every": d,
                         "offset": offset,
+                        "probability": probability,
                         **({"cue": "hit"} if command == "cue" else {}),
                     }
                     for d in divisors
@@ -779,6 +785,13 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     document = SynthInstrumentScore.model_validate(raw)
     prepared = synth.prepare(document)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
+    overlap = not restart and probability == 0.5
+    if overlap:
+        events.append(
+            onset(0, trigger_id="second", pitch=0.1).model_copy(
+                update={"controls": {}, "ordinal": 1}
+            )
+        )
     if restart:
         events.extend(
             [
@@ -788,28 +801,48 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                 ),
             ]
         )
-    actions = synth_trace.prepare(document.body, events, seed=0).actions
+    actions = synth_trace.prepare(document.body, events, seed=seed).actions
+    starts = [a for a in actions if isinstance(a, synth_trace.VoiceStart)]
+    assert all(
+        a.motion_key == motion_random.stream_key(seed, a.voice_id) for a in starts
+    )
     expected = np.zeros((48000, 2))
     if command == "cue":
-        expected[:, 0] = 0.5
+        expected[:, 0] = 1 if overlap else 0.5
         if restart:
             expected[10001, 0] = 0
     pulse = np.r_[np.arange(750) / 750, 1 - np.arange(750) / 750]
-    for activation, stop in [(0, 10001), (10002, 48000)] if restart else [(0, 48000)]:
+    for voice in starts:
+        activation = voice.tick
+        stop = 10001 if restart and activation == 0 else 48000
+        voice_id = voice.voice_id
+        states = [
+            motion_random.stream_key(seed, voice_id)
+            ^ motion_random.stream_key(
+                0,
+                f"patch-gesture-accent:{'start' if command == 'start' else 'cue'}-{i}",
+            )
+            for i in range(len(divisors))
+        ]
         for event in range(8):
             start = activation + 1500 + event * 6000
-            if (
-                start < stop
-                and event >= offset
-                and any((event - offset) % d == 0 for d in divisors)
-            ):
+            forward = False
+            for i, divisor in enumerate(divisors):
+                if event < offset or (event - offset) % divisor:
+                    continue
+                if probability in (0, 1):
+                    forward |= probability == 1
+                else:
+                    states[i], word = motion_random.random_word(states[i])
+                    forward |= word >> 11 < int(probability * 2**53)
+            if start < stop and forward:
                 length = min(1500, stop - start)
                 expected[start : start + length, 0] += pulse[:length] * (
                     0.5 if command == "cue" else 1
                 )
     for backend in ("numpy", "native", "persistent"):
         renderer = (
-            synth.PersistentSynth(prepared, voices=1)
+            synth.PersistentSynth(prepared, voices=2 if overlap else 1)
             if backend == "persistent"
             else synth.OfflineSynth(prepared, backend)
         )
@@ -834,6 +867,23 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
             tmp_path / f"divided-{source_kind}-{command}-{backend}.wav",
             np.vstack((first, second)),
             expected,
+        )
+    if overlap:
+        callback = live.NativeLiveEngine(
+            {"synth": synth.PersistentSynth(prepared, voices=2)},
+            maximum_block_frames=48000,
+        )
+        actual = np.empty((48000, 2))
+        callback.advance_into({"synth": actions}, [], 0, 10001, actual[:10001])
+        snapshot = callback.snapshot()
+        for start, end in [(10001, 17777), (17777, 48000)]:
+            callback.advance_into({"synth": []}, [], start, end, actual[start:end])
+        callback.restore(snapshot)
+        replay = np.empty((48000 - 10001, 2))
+        callback.advance_into({"synth": []}, [], 10001, 48000, replay)
+        np.testing.assert_array_equal(replay, actual[10001:])
+        check_audio(
+            tmp_path / f"gated-callback-{source_kind}-{command}.wav", actual, expected
         )
 
 

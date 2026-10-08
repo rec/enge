@@ -322,6 +322,18 @@ and snapshot restoration. Division filters delivery, not source emission or
 named event outputs. This applies to Patch starts and cues and to instrument
 Motion cue connections in both reference and native rendering.
 
+Connections also accept `probability` in [0, 1], defaulting to 1. Apply it after
+division: each selected event draws independently per connection and voice;
+rejection does not shift the divider. Probabilities use 53-bit integer cutoffs;
+cutoffs zero and 2**53 consume no random words. Prepared voice starts carry a
+Motion key derived from the trace seed and voice identity. Connection identity
+selects an independent SplitMix64
+stream; snapshots preserve its state and voice activation initializes it. Child
+restarts do not initialize it. Matching score seed, voice IDs, and authored
+connection order reproduces results across partitions and Python/native
+renderers. Native preparation encodes the 64-bit key as two exact 32-bit halves
+before voice start, using one additional action row for probabilistic voices.
+
 For example, within a proposed compound `patch` body:
 
 ```toml
