@@ -300,6 +300,13 @@ signal output, not the timestamps or traversal meaning of marker events.
 
 ## 7. Signals, event outputs, and connections
 
+Implemented voice-owned Patch `threshold` nodes with lower/upper hysteresis,
+a [0, 1] gate, and named `rising`/`falling` events. Activation is silent;
+subsequent jumps can fire. Detectors observe the sample-frame grid, not estimated
+between-sample crossings. Commands arrive on the following frame plus their
+seconds delay, using existing division/probability gates and bounded queues.
+Python and native snapshots retain detector state and pending commands.
+
 Implemented Patch signal transforms: named `sum`, `product`, and `affine`
 children form a preparation-checked dependency DAG. Python and persistent
 native synth evaluate shared child state in dependency order without clipping.

@@ -39,6 +39,7 @@ from ufor.motion import (
     initial_motion,
     motion_at,
     motion_event,
+    threshold_value,
 )
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
@@ -151,6 +152,12 @@ class OscillatorState(Model, frozen=True):
         return cls(
             position=float((Fraction(frame) * Fraction(frequency_hz)) % sample_rate)
         )
+
+
+class PatchState(Model, frozen=True):
+    voice_id: str
+    name: str
+    values: dict[str, float] = Field(default_factory=dict)
 
 
 class PreparedEnvelope(Model, frozen=True):
@@ -369,6 +376,7 @@ class SynthSnapshot(Model, frozen=True):
     contexts: list[ControlContext]
     lfos: list[LFOSource]
     envelopes: list[EnvelopeSource]
+    patches: list[PatchState] = Field(default_factory=list)
     tempo_map: TempoMap | None = None
 
 
@@ -431,7 +439,9 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if name in voice.motions:
             raise EngineError(f"Patch output Motion name collides: {name}")
         child = parent.body.motions[child_name]
-        if isinstance(child, (Sum, Product, Affine, Threshold)):
+        if isinstance(child, (Sum, Product, Affine, Threshold)) or any(
+            isinstance(b, Threshold) for b in parent.body.motions.values()
+        ):
             continue
         if name not in motions:
             motions[name] = MotionUse(
@@ -459,11 +469,9 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             if isinstance(b, processing.GeneratorBinding)
             and b.reference == parent_name
             and b.output is not None
-            and isinstance(
-                parent.body.motions[parent.body.outputs[b.output]],
-                (Sum, Product, Affine),
-            )
         ]
+        pending.extend(children)
+        children = set()
         visited: set[str] = set()
         while pending:
             child_name = pending.pop()
@@ -473,7 +481,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             child = parent.body.motions[child_name]
             if isinstance(child, (Sum, Product)):
                 pending.extend(child.inputs)
-            elif isinstance(child, Affine):
+            elif isinstance(child, (Affine, Threshold)):
                 pending.append(child.input)
             else:
                 children.add(child_name)
@@ -498,7 +506,23 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                 continue
             if any(binding.name == name for binding in bindings):
                 raise EngineError(f"Patch child binding name collides: {name}")
-            bindings.append(processing.GeneratorBinding(name=name, reference=name))
+            bindings.append(
+                processing.GeneratorBinding(
+                    name=name,
+                    reference=name,
+                    release_timing=next(
+                        (
+                            b.release_timing
+                            for b in voice.bindings
+                            if isinstance(b, processing.GeneratorBinding)
+                            and b.reference == parent_name
+                            and b.output is not None
+                            and parent.body.outputs[b.output] == child_name
+                        ),
+                        ReleaseTiming.event,
+                    ),
+                )
+            )
             sources.append(
                 modulation.Source(
                     name=name,
@@ -520,6 +544,8 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if not isinstance(parent.body, Patch):
             continue
         child_name, _, port = parent.body.event_outputs[connection.port].partition(".")
+        if isinstance(parent.body.motions[child_name], Threshold):
+            continue
         child_motion = f"patch-{source_binding.reference}-{child_name}"
         child_binding = next(
             binding.name
@@ -542,6 +568,8 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             if connection.action != "cue":
                 continue
             child_name, _, port = connection.source.partition(".")
+            if isinstance(parent.body.motions[child_name], Threshold):
+                continue
             source_motion = f"patch-{parent_name}-{child_name}"
             target_motion = f"patch-{parent_name}-{connection.target}"
             source_binding = next(
@@ -661,6 +689,7 @@ class ControlRenderer:
         self.contexts: list[ControlContext] = []
         self.lfos: list[LFOSource] = []
         self.envelopes: list[EnvelopeSource] = []
+        self.patches: list[PatchState] = []
         self.new_context("instrument", None, None, 0, {})
 
     def motion_time(self, motion: MotionUse, seconds: Fraction) -> Fraction:
@@ -917,7 +946,21 @@ class ControlRenderer:
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
                 motion = settings.motions[binding.reference]
                 if isinstance(motion.body, Patch):
-                    result[source.name] = -1
+                    index = next(
+                        (
+                            i
+                            for i, p in enumerate(self.patches)
+                            if (p.voice_id, p.name)
+                            == (action.voice_id, binding.reference)
+                        ),
+                        None,
+                    )
+                    if index is None:
+                        index = len(self.patches)
+                        self.patches.append(
+                            PatchState(voice_id=action.voice_id, name=binding.reference)
+                        )
+                    result[source.name] = -1 - index
                     continue
                 if isinstance(motion.body, (Contour, Stages, SampleHold)):
                     if motion.scope != "voice":
@@ -1106,6 +1149,11 @@ class ControlRenderer:
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
     ) -> dict[tuple[str, str], np.ndarray]:
         """Resolve every declared target once, independently of its DSP consumer."""
+        if frames == 0:
+            return {
+                (p.target.name, p.target.parameter): np.empty(0)
+                for p in settings.modulation.parameters
+            }
         span = (start, frames)
         if self.cached_span != span:
             self.clear_cache()
@@ -1113,6 +1161,17 @@ class ControlRenderer:
         key = (id(settings), tuple(sorted(sources.items())))
         if key in self.cached_values:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
+        if frames > 1 and any(
+            isinstance(m.body, Patch)
+            and any(isinstance(b, Threshold) for b in m.body.motions.values())
+            for m in settings.motions.values()
+        ):
+            rows = [self.values(settings, sources, start + i, 1) for i in range(frames)]
+            output = {n: np.concatenate([r[n] for r in rows]) for n in rows[0]}
+            self.clear_cache()
+            self.cached_span = span
+            self.cached_values[key] = output
+            return {n: v.copy() for n, v in output.items()}
         self._motion_event_values(settings, sources, start, frames)
         signals: dict[str, np.ndarray] = {}
         for binding in settings.bindings:
@@ -1226,6 +1285,9 @@ class ControlRenderer:
             if not selected:
                 continue
             children: dict[str, np.ndarray] = {}
+            patch_index = -1 - sources[selected[0].name]
+            state = self.patches[patch_index]
+            retained = dict(state.values)
             for name in parent.body.signal_order:
                 body = parent.body.motions[name]
                 if isinstance(body, (Sum, Product)):
@@ -1241,6 +1303,23 @@ class ControlRenderer:
                 elif isinstance(body, Affine):
                     if body.input in children:
                         children[name] = body.offset + body.scale * children[body.input]
+                elif isinstance(body, Threshold):
+                    if body.input not in children:
+                        continue
+                    value, port = threshold_value(
+                        body, float(children[body.input][0]), retained.get(name)
+                    )
+                    retained[name] = value
+                    children[name] = np.full(frames, value)
+                    if port is not None:
+                        self._threshold_event(
+                            settings,
+                            sources,
+                            parent_name,
+                            name,
+                            port,
+                            Fraction(start + 1, self.sample_rate),
+                        )
                 else:
                     binding = next(
                         (
@@ -1259,6 +1338,7 @@ class ControlRenderer:
                 signals[binding.name] = np.column_stack(
                     (children[parent.body.outputs[binding.output]], np.ones(frames))
                 )
+            self.patches[patch_index] = state.model_copy(update={"values": retained})
         output = control.modulation_samples(settings.modulation, signals, frames)
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
@@ -1280,6 +1360,24 @@ class ControlRenderer:
             staged.append((binding.name, index, settings.motions[binding.reference]))
         patch_starts = _patch_start_connections(settings, sources)
         contour_targets = {target for _, _, target, _, _, _, _, _ in patch_starts}
+        for parent_name, parent in settings.motions.items():
+            if not isinstance(parent.body, Patch):
+                continue
+            for connection in parent.body.events:
+                if (
+                    isinstance(
+                        parent.body.motions[connection.source.partition(".")[0]],
+                        Threshold,
+                    )
+                    and connection.action != "cue"
+                ):
+                    target = f"patch-{parent_name}-{connection.target}"
+                    contour_targets.update(
+                        sources[b.name]
+                        for b in settings.bindings
+                        if isinstance(b, processing.GeneratorBinding)
+                        and b.reference == target
+                    )
         motion_indices = {index for _, index, _ in staged} | contour_targets
         if not motion_indices or all(
             index in self.cached_envelopes for index in motion_indices
@@ -1470,6 +1568,53 @@ class ControlRenderer:
                 ).value
         for index, samples in values.items():
             self.cached_envelopes[index] = np.column_stack((samples, np.ones(frames)))
+
+    def _threshold_event(
+        self,
+        settings: SoundSettings,
+        sources: dict[str, int],
+        parent_name: str,
+        child: str,
+        port: str,
+        at: Fraction,
+    ) -> None:
+        parent = settings.motions[parent_name]
+        assert isinstance(parent.body, Patch)
+        bindings = {
+            b.reference: b.name
+            for b in settings.bindings
+            if isinstance(b, processing.GeneratorBinding)
+            and not isinstance(settings.motions[b.reference].body, Patch)
+        }
+        for order, connection in enumerate(parent.body.events):
+            if connection.source != f"{child}.{port}":
+                continue
+            target = sources[bindings[f"patch-{parent_name}-{connection.target}"]]
+            if self._forward_event(
+                target,
+                f"cue-{order}" if connection.action == "cue" else f"start-{order}",
+                connection.every,
+                connection.offset,
+                connection.probability,
+            ):
+                self._delay_event(target, at + connection.delay, order, connection.cue)
+        for order, connection in enumerate(settings.event_connections):
+            binding = next(b for b in settings.bindings if b.name == connection.source)
+            if (
+                not isinstance(binding, processing.GeneratorBinding)
+                or binding.reference != parent_name
+                or parent.body.event_outputs.get(connection.port) != f"{child}.{port}"
+            ):
+                continue
+            target = sources[connection.destination]
+            if self._forward_event(
+                target,
+                f"cue-{order}",
+                connection.every,
+                connection.offset,
+                connection.probability,
+            ):
+                self._delay_event(target, at + connection.delay, order, connection.cue)
 
     def _dispatch_staged_events(
         self,
@@ -1700,6 +1845,7 @@ class OfflineSynth:
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
             envelopes=self.controls.envelopes,
+            patches=self.controls.patches,
             tempo_map=self.controls.tempo_map,
         ).model_copy(deep=True)
 
@@ -1719,6 +1865,7 @@ class OfflineSynth:
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
         self.controls.envelopes = snapshot.envelopes
+        self.controls.patches = snapshot.patches
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if self.controls.apply(action, self.voices):
@@ -1975,7 +2122,7 @@ class PersistentSynth:
         patch_events: list[
             tuple[int, float, int, str | None, int, int, int, int, int, float]
         ] = []
-        _configure_patch_transforms(
+        self.transform_nodes = _configure_patch_transforms(
             self.runtime,
             template,
             self.lfo_sources | self.voice_lfo_sources,
@@ -1998,6 +2145,8 @@ class PersistentSynth:
                     continue
                 child_name, _, port = connection.source.partition(".")
                 child = parent.body.motions[child_name]
+                if isinstance(child, Threshold):
+                    continue
                 destination = self.named_motion_sources[
                     f"patch-{parent_name}-{connection.target}"
                 ][0]
@@ -2078,6 +2227,15 @@ class PersistentSynth:
             )
         self.runtime.set_patch_events(patch_events)
         self.runtime.set_patch_stage_starts(patch_stage_starts)
+        self.runtime.set_threshold_events(
+            _threshold_runtime_connections(
+                template,
+                self.named_motion_sources,
+                self.staged_motion_sources,
+                self.transform_nodes,
+                self.definition.sample_rate,
+            )
+        )
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -2771,9 +2929,10 @@ def _configure_patch_transforms(
     lfos: dict[str, list[int]],
     contours: dict[str, list[int]],
     stages: dict[str, list[int]],
-) -> None:
+) -> dict[tuple[str, str], int]:
     nodes: list[tuple[int, list[tuple[int, int, float, float]], float, float]] = []
     outputs: dict[tuple[str, str], int] = {}
+    detectors: dict[tuple[str, str], int] = {}
     for parent_name, parent in template.motions.items():
         if not isinstance(parent.body, Patch):
             continue
@@ -2787,24 +2946,47 @@ def _configure_patch_transforms(
                 children[name] = (1, contours[reference][0], 0.0, 1.0)
             elif isinstance(body, Stages) and reference in stages:
                 children[name] = (2, stages[reference][0], 0.0, 1.0)
-            elif isinstance(body, (Sum, Product, Affine)):
-                inputs = [body.input] if isinstance(body, Affine) else body.inputs
+            elif isinstance(body, (Sum, Product, Affine, Threshold)):
+                inputs = (
+                    [body.input]
+                    if isinstance(body, (Affine, Threshold))
+                    else body.inputs
+                )
                 if any(n not in children for n in inputs):
                     continue
                 children[name] = (3, len(nodes), 0.0, 1.0)
+                if isinstance(body, Threshold):
+                    detectors[parent_name, name] = len(nodes)
                 nodes.append(
                     (
-                        2
+                        3
+                        if isinstance(body, Threshold)
+                        else 2
                         if isinstance(body, Affine)
                         else 0
                         if isinstance(body, Sum)
                         else 1,
                         [children[n] for n in inputs],
-                        body.scale if isinstance(body, Affine) else 1.0,
-                        body.offset if isinstance(body, Affine) else 0.0,
+                        body.lower
+                        if isinstance(body, Threshold)
+                        else body.scale
+                        if isinstance(body, Affine)
+                        else 1.0,
+                        body.upper
+                        if isinstance(body, Threshold)
+                        else body.offset
+                        if isinstance(body, Affine)
+                        else 0.0,
                     )
                 )
         for output, name in parent.body.outputs.items():
+            if (
+                name in children
+                and children[name][0] != 3
+                and any(isinstance(b, Threshold) for b in parent.body.motions.values())
+            ):
+                nodes.append((2, [children[name]], 1.0, 0.0))
+                outputs[parent_name, output] = len(nodes) - 1
             if name in children and children[name][0] == 3:
                 outputs[parent_name, output] = children[name][1]
     parameters = {("processing", "amplitude"): 0, ("processing", "tuning_cents"): 1}
@@ -2835,6 +3017,73 @@ def _configure_patch_transforms(
             )
         )
     runtime.set_motion_transforms(nodes, routes)
+    return detectors
+
+
+def _threshold_runtime_connections(
+    template: SoundSettings,
+    contours: dict[str, list[int]],
+    stages: dict[str, list[int]],
+    nodes: dict[tuple[str, str], int],
+    rate: int,
+) -> list[tuple[int, float, int, str | None, int, int, int, int, int, float]]:
+    result: list[
+        tuple[int, float, int, str | None, int, int, int, int, int, float]
+    ] = []
+    bindings = {b.name: b for b in template.bindings}
+    for (parent_name, child), node in nodes.items():
+        parent = template.motions[parent_name]
+        assert isinstance(parent.body, Patch)
+        for order, connection in enumerate(parent.body.events):
+            origin, _, port = connection.source.partition(".")
+            if origin != child:
+                continue
+            target = f"patch-{parent_name}-{connection.target}"
+            cue = connection.cue
+            result.append(
+                (
+                    node,
+                    float(port == "rising"),
+                    (stages if cue is not None else contours)[target][0],
+                    cue,
+                    order,
+                    connection.every,
+                    connection.offset,
+                    int(connection.probability * 2**53),
+                    motion_random.stream_key(
+                        0, f"{target}:{'cue' if cue is not None else 'start'}-{order}"
+                    ),
+                    1.0 + _runtime_event_delay(connection.delay, rate),
+                )
+            )
+        for order, connection in enumerate(template.event_connections):
+            binding = bindings[connection.source]
+            if (
+                not isinstance(binding, processing.GeneratorBinding)
+                or binding.reference != parent_name
+            ):
+                continue
+            origin, _, port = parent.body.event_outputs[connection.port].partition(".")
+            if origin != child:
+                continue
+            target_binding = bindings[connection.destination]
+            assert isinstance(target_binding, processing.GeneratorBinding)
+            target = target_binding.reference
+            result.append(
+                (
+                    node,
+                    float(port == "rising"),
+                    stages[target][0],
+                    connection.cue,
+                    order,
+                    connection.every,
+                    connection.offset,
+                    int(connection.probability * 2**53),
+                    motion_random.stream_key(0, f"{target}:cue-{order}"),
+                    1.0 + _runtime_event_delay(connection.delay, rate),
+                )
+            )
+    return result
 
 
 def _persistent_modulation(
@@ -3241,6 +3490,8 @@ def _persistent_modulation(
             continue
         assert isinstance(binding, processing.GeneratorBinding)
         motion = template.motions[binding.reference]
+        if isinstance(motion.body, Patch):
+            continue
         if isinstance(motion.body, SampleHold):
             named_motion_sources.setdefault(binding.reference, []).append(
                 len(envelope_initials)

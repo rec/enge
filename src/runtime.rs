@@ -102,6 +102,7 @@ struct NamedContourState {
 
 #[derive(Clone, PartialEq)]
 struct PatchEventConnection {
+    threshold: bool,
     source: usize,
     marker: f64,
     destination: usize,
@@ -336,6 +337,7 @@ struct GraphEdge {
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
+    motion_transform_states: Vec<Option<f64>>,
     motion_transforms: Vec<MotionTransformInput>,
     motion_transform_routes: Vec<MotionTransformRoute>,
     rate: f64,
@@ -418,6 +420,7 @@ pub struct SynthRuntime {
     motion_transforms: Vec<MotionTransformInput>,
     motion_transform_routes: Vec<MotionTransformRoute>,
     motion_transform_values: Vec<f64>,
+    motion_transform_states: Vec<Option<f64>>,
     rate: f64,
     filter_after_amplitude: bool,
     waveform: u8,
@@ -568,6 +571,7 @@ impl SynthRuntime {
             motion_transforms: Vec::new(),
             motion_transform_routes: Vec::new(),
             motion_transform_values: Vec::new(),
+            motion_transform_states: Vec::new(),
             rate,
             waveform,
             source_kind: 0,
@@ -1204,11 +1208,12 @@ impl SynthRuntime {
                 .iter()
                 .enumerate()
                 .any(|(node, (kind, inputs, scale, offset))| {
-                    *kind > 2
+                    *kind > 3
                         || !scale.is_finite()
                         || !offset.is_finite()
-                        || inputs.len() < if *kind == 2 { 1 } else { 2 }
-                        || (*kind == 2 && inputs.len() != 1)
+                        || inputs.len() < if *kind >= 2 { 1 } else { 2 }
+                        || (*kind >= 2 && inputs.len() != 1)
+                        || (*kind == 3 && scale >= offset)
                         || inputs.iter().any(|(kind, index, offset, scale)| {
                             !offset.is_finite()
                                 || !scale.is_finite()
@@ -1234,6 +1239,7 @@ impl SynthRuntime {
             return Err(PyValueError::new_err("Invalid Motion transform graph"));
         }
         self.motion_transform_values = vec![0.0; self.frequencies.len() * nodes.len()];
+        self.motion_transform_states = vec![None; self.motion_transform_values.len()];
         self.motion_transforms = nodes;
         self.motion_transform_routes = routes;
         Ok(())
@@ -1281,6 +1287,7 @@ impl SynthRuntime {
                     delay,
                 )| {
                     PatchEventConnection {
+                        threshold: false,
                         source: self.lfo_owners[source],
                         marker,
                         destination: if cue.is_some() {
@@ -1340,6 +1347,53 @@ impl SynthRuntime {
                 },
             )
             .collect();
+        self.reset_event_counts();
+        Ok(())
+    }
+
+    fn set_threshold_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
+        if self.frame != 0
+            || connections.iter().any(
+                |(source, marker, destination, cue, _, every, _, probability, _, delay)| {
+                    *source >= self.motion_transforms.len()
+                        || self.motion_transforms[*source].0 != 3
+                        || (*marker != 0.0 && *marker != 1.0)
+                        || *every == 0
+                        || *probability > (1 << 53)
+                        || !delay.is_finite()
+                        || *delay < 1.0
+                        || if cue.is_some() {
+                            *destination >= self.staged_motions.len()
+                        } else {
+                            *destination >= self.named_envelopes.len()
+                                || !self.named_envelopes[*destination].event_started
+                        }
+                },
+            )
+        {
+            return Err(PyValueError::new_err("Invalid threshold event connections"));
+        }
+        self.patch_events.extend(connections.into_iter().map(
+            |(source, marker, destination, cue, order, every, offset, probability, key, delay)| {
+                PatchEventConnection {
+                    threshold: true,
+                    source,
+                    marker,
+                    destination: if cue.is_some() {
+                        self.staged_owners[destination]
+                    } else {
+                        self.named_owners[destination]
+                    },
+                    cue,
+                    order,
+                    every,
+                    offset,
+                    probability,
+                    key,
+                    delay,
+                }
+            },
+        ));
         self.reset_event_counts();
         Ok(())
     }
@@ -1458,6 +1512,7 @@ impl SynthRuntime {
 
     pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
+            motion_transform_states: self.motion_transform_states.clone(),
             motion_transforms: self.motion_transforms.clone(),
             motion_transform_routes: self.motion_transform_routes.clone(),
             rate: self.rate,
@@ -1537,6 +1592,8 @@ impl SynthRuntime {
 
     pub(crate) fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         self.validate_snapshot(snapshot)?;
+        self.motion_transform_states
+            .clone_from(&snapshot.motion_transform_states);
         self.frequencies.clone_from(&snapshot.frequencies);
         self.phases.clone_from(&snapshot.phases);
         self.errors.clone_from(&snapshot.errors);
@@ -1623,6 +1680,8 @@ impl SynthRuntime {
     }
 
     fn reset_voice_event_counts(&mut self, voice: usize) {
+        let nodes = self.motion_transforms.len();
+        self.motion_transform_states[voice * nodes..(voice + 1) * nodes].fill(None);
         self.delayed_events[voice].clear();
         let connections =
             self.staged_connections.len() + self.patch_events.len() + self.patch_stage_starts.len();
@@ -2898,6 +2957,9 @@ impl SynthRuntime {
             }
             let age = self.ages[voice] as f64;
             for (order, connection) in self.patch_events.iter().enumerate() {
+                if connection.threshold {
+                    continue;
+                }
                 let definition = &self.lfo_definitions[connection.source];
                 let rate = definition.rate.0 as f64 / definition.rate.1 as f64;
                 let phase = definition.phase.0 as f64 / definition.phase.1 as f64;
@@ -3168,7 +3230,50 @@ impl SynthRuntime {
                     output += value;
                 }
             }
-            self.motion_transform_values[base + node] = if *kind == 2 {
+            self.motion_transform_values[base + node] = if *kind == 3 {
+                let previous = self.motion_transform_states[base + node];
+                let value = match previous {
+                    None => {
+                        if output >= *offset {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    Some(0.0) if output >= *offset => 1.0,
+                    Some(1.0) if output <= *scale => 0.0,
+                    Some(value) => value,
+                };
+                self.motion_transform_states[base + node] = Some(value);
+                if previous.is_some_and(|old| old != value) {
+                    let connections = self.staged_connections.len()
+                        + self.patch_events.len()
+                        + self.patch_stage_starts.len();
+                    for (order, connection) in self.patch_events.iter().enumerate() {
+                        if !connection.threshold
+                            || connection.source != node
+                            || connection.marker != value
+                        {
+                            continue;
+                        }
+                        let index = voice * connections + self.staged_connections.len() + order;
+                        if forward_event(
+                            &mut self.event_counts[index],
+                            &mut self.event_random[index],
+                            connection.every,
+                            connection.probability,
+                        ) {
+                            queue_delayed_event(
+                                &mut self.delayed_events[voice],
+                                self.frame as f64,
+                                connection.delay,
+                                DelayedConnection::PatchEvent(order),
+                            )?;
+                        }
+                    }
+                }
+                value
+            } else if *kind == 2 {
                 offset + scale * output
             } else {
                 output
