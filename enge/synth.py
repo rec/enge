@@ -109,6 +109,13 @@ class LFOSource(Model, frozen=True):
     state: MotionState
 
 
+class DelayedMotionEvent(Model, frozen=True):
+    at: Fraction
+    target: int
+    order: int
+    cue: str | None
+
+
 class EnvelopeSource(Model, frozen=True):
     setting: int
     name: str
@@ -121,6 +128,7 @@ class EnvelopeSource(Model, frozen=True):
     event_counts: dict[str, int] = Field(default_factory=dict)
     motion_key: int = 0
     event_random: dict[str, int] = Field(default_factory=dict)
+    pending_events: list[DelayedMotionEvent] = Field(default_factory=list)
 
 
 class OscillatorState(Model, frozen=True):
@@ -516,6 +524,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                     every=connection.every,
                     offset=connection.offset,
                     probability=connection.probability,
+                    delay=connection.delay,
                 )
             )
             changed = True
@@ -543,13 +552,13 @@ def _patch_child_names(settings: SoundSettings) -> set[str]:
 
 def _patch_start_connections(
     settings: SoundSettings, sources: dict[str, int]
-) -> list[tuple[str, str, int, int, int, int, float]]:
+) -> list[tuple[str, str, int, int, int, int, float, Fraction]]:
     bindings = {
         binding.reference: binding.name
         for binding in settings.bindings
         if isinstance(binding, processing.GeneratorBinding)
     }
-    connections: list[tuple[str, str, int, int, int, int, float]] = []
+    connections: list[tuple[str, str, int, int, int, int, float, Fraction]] = []
     for parent_name, parent in settings.motions.items():
         if not isinstance(parent.body, Patch):
             continue
@@ -573,6 +582,7 @@ def _patch_start_connections(
                     connection.every,
                     connection.offset,
                     connection.probability,
+                    connection.delay,
                 )
             )
     return connections
@@ -1023,8 +1033,8 @@ class ControlRenderer:
     def stop(self, voice_id: str) -> None:
         self.clear_cache()
         self.envelopes = [
-            s.model_copy(update={"pending_release": None})
-            if s.voice_id == voice_id and s.pending_release is not None
+            s.model_copy(update={"pending_release": None, "pending_events": []})
+            if s.voice_id == voice_id
             else s
             for s in self.envelopes
         ]
@@ -1159,7 +1169,7 @@ class ControlRenderer:
             seen.add(index)
             staged.append((binding.name, index, settings.motions[binding.reference]))
         patch_starts = _patch_start_connections(settings, sources)
-        contour_targets = {target for _, _, target, _, _, _, _ in patch_starts}
+        contour_targets = {target for _, _, target, _, _, _, _, _ in patch_starts}
         motion_indices = {index for _, index, _ in staged} | contour_targets
         if not motion_indices or all(
             index in self.cached_envelopes for index in motion_indices
@@ -1180,7 +1190,7 @@ class ControlRenderer:
                 ]
                 + [
                     (source, port)
-                    for source, port, _, _, _, _, _ in patch_starts
+                    for source, port, _, _, _, _, _, _ in patch_starts
                     if isinstance(
                         (binding := bindings[source]),
                         processing.GeneratorBinding,
@@ -1188,6 +1198,10 @@ class ControlRenderer:
                     and isinstance(settings.motions[binding.reference].body, Cycle)
                 ]
             )
+        )
+        voice_id = self.envelopes[min(motion_indices)].voice_id
+        queue_index = next(
+            i for i, s in enumerate(self.envelopes) if s.voice_id == voice_id
         )
         for i in range(frames):
             boundary = Fraction(start + i, self.sample_rate)
@@ -1253,7 +1267,18 @@ class ControlRenderer:
                 next_event = min(
                     (
                         at
-                        for at in (next_staged_event, next_cycle_event)
+                        for at in (
+                            next_staged_event,
+                            next_cycle_event,
+                            min(
+                                (
+                                    e.at
+                                    for e in self.envelopes[queue_index].pending_events
+                                    if e.at <= boundary
+                                ),
+                                default=None,
+                            ),
+                        )
                         if at is not None
                     ),
                     default=None,
@@ -1300,6 +1325,29 @@ class ControlRenderer:
                     self._dispatch_staged_events(
                         settings, sources, emitted, pending_starts
                     )
+                queue = self.envelopes[queue_index]
+                due = [e for e in queue.pending_events if e.at == next_event]
+                for event in due:
+                    queue = self.envelopes[queue_index]
+                    position = queue.pending_events.index(event)
+                    self.envelopes[queue_index] = queue.model_copy(
+                        update={
+                            "pending_events": queue.pending_events[:position]
+                            + queue.pending_events[position + 1 :]
+                        }
+                    )
+                    if event.cue is None:
+                        pending_starts.append((event.at, event.order, event.target))
+                    else:
+                        emitted = self._deliver_cue(
+                            settings, event.target, event.cue, event.at
+                        )
+                        self._dispatch_staged_events(
+                            settings, sources, emitted, pending_starts
+                        )
+                events_seen += len(due)
+                if events_seen > 4096:
+                    raise EngineError("Motion event capacity exceeded")
             self._start_patch_contours(settings, pending_starts)
             for _, index, _ in staged:
                 values[index][i] = sample_values[index]
@@ -1339,13 +1387,17 @@ class ControlRenderer:
                 every,
                 offset,
                 probability,
+                delay,
             ) in patch_starts:
                 if source_name == name and port == event.port:
                     if not self._forward_event(
                         target_index, f"start-{order}", every, offset, probability
                     ):
                         continue
-                    pending_starts.append((seconds, order, target_index))
+                    if delay:
+                        self._delay_event(target_index, seconds + delay, order, None)
+                    else:
+                        pending_starts.append((seconds, order, target_index))
                     delivered += 1
                     if delivered > 4096:
                         raise EngineError("Motion event connection capacity exceeded")
@@ -1361,32 +1413,53 @@ class ControlRenderer:
                     connection.probability,
                 ):
                     continue
-                binding = bindings[connection.destination]
-                assert isinstance(binding, processing.GeneratorBinding)
-                target_motion = settings.motions[binding.reference]
-                at = self.motion_time(target_motion, seconds)
-                state = self.envelopes[target_index].state
-                assert isinstance(state.runtime, StageState)
-                result = advance_motion(
-                    target_motion,
-                    state,
-                    at,
-                    MotionEvent(
-                        at=at,
-                        ordinal=state.runtime.ordinal + 1,
-                        action="cue",
-                        cue=connection.cue,
-                    ),
-                )
-                self.envelopes[target_index] = self.envelopes[target_index].model_copy(
-                    update={"state": result.state}
-                )
-                pending.extend((connection.destination, e) for e in result.events)
+                if connection.delay:
+                    self._delay_event(
+                        target_index, seconds + connection.delay, order, connection.cue
+                    )
+                else:
+                    pending.extend(
+                        self._deliver_cue(
+                            settings, target_index, connection.cue, seconds
+                        )
+                    )
                 delivered += 1
                 if delivered > 4096:
                     raise EngineError("Motion event connection capacity exceeded")
         if starts is None:
             self._start_patch_contours(settings, pending_starts)
+
+    def _delay_event(
+        self, target: int, at: Fraction, order: int, cue: str | None
+    ) -> None:
+        voice_id = self.envelopes[target].voice_id
+        # Carry one queue per voice in its first envelope so snapshots retain it.
+        index = next(i for i, s in enumerate(self.envelopes) if s.voice_id == voice_id)
+        source = self.envelopes[index]
+        if len(source.pending_events) == 4096:
+            raise EngineError("Delayed Motion event capacity exceeded")
+        event = DelayedMotionEvent(at=at, target=target, order=order, cue=cue)
+        self.envelopes[index] = source.model_copy(
+            update={"pending_events": [*source.pending_events, event]}
+        )
+
+    def _deliver_cue(
+        self, settings: SoundSettings, index: int, cue: str, seconds: Fraction
+    ) -> list[tuple[str, MotionOutputEvent]]:
+        source = self.envelopes[index]
+        motion = settings.motions[source.name]
+        at = self.motion_time(motion, seconds)
+        assert isinstance(source.state.runtime, StageState)
+        result = advance_motion(
+            motion,
+            source.state,
+            at,
+            MotionEvent(
+                at=at, ordinal=source.state.runtime.ordinal + 1, action="cue", cue=cue
+            ),
+        )
+        self.envelopes[index] = source.model_copy(update={"state": result.state})
+        return [(source.binding_name, e) for e in result.events]
 
     def _forward_event(
         self, index: int, connection: str, every: int, offset: int, probability: float
@@ -1643,6 +1716,7 @@ class OfflineSynth:
             )
             if voice.renderer.complete:
                 del self.voices[voice.voice_id]
+                self.controls.stop(voice.voice_id)
         return output
 
 
@@ -1783,9 +1857,11 @@ class PersistentSynth:
                 if name in patch_children:
                     source_map[name] = indices[:1]
         patch_events: list[
-            tuple[int, float, int, str | None, int, int, int, int, int]
+            tuple[int, float, int, str | None, int, int, int, int, int, float]
         ] = []
-        patch_stage_starts: list[tuple[int, str, int, int, int, int, int, int]] = []
+        patch_stage_starts: list[
+            tuple[int, str, int, int, int, int, int, int, float]
+        ] = []
         for parent_name, parent in template.motions.items():
             if not isinstance(parent.body, Patch):
                 continue
@@ -1820,6 +1896,9 @@ class PersistentSynth:
                                 0,
                                 f"patch-{parent_name}-{connection.target}:start-{order}",
                             ),
+                            _runtime_event_delay(
+                                connection.delay, self.definition.sample_rate
+                            ),
                         )
                     )
                 else:
@@ -1838,6 +1917,9 @@ class PersistentSynth:
                             motion_random.stream_key(
                                 0,
                                 f"patch-{parent_name}-{connection.target}:start-{order}",
+                            ),
+                            _runtime_event_delay(
+                                connection.delay, self.definition.sample_rate
                             ),
                         )
                     )
@@ -1868,6 +1950,7 @@ class PersistentSynth:
                     motion_random.stream_key(
                         0, f"{target_binding.reference}:cue-{order}"
                     ),
+                    _runtime_event_delay(connection.delay, self.definition.sample_rate),
                 )
             )
         self.runtime.set_patch_events(patch_events)
@@ -2522,6 +2605,16 @@ def _runtime_segments(segments: list[Segment], sample_rate: int) -> np.ndarray:
     )
 
 
+def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> float:
+    try:
+        frames = float(seconds * sample_rate)
+    except OverflowError:
+        raise EngineError("Delayed Motion event time is not representable") from None
+    if not isfinite(frames) or (seconds and frames == 0):
+        raise EngineError("Delayed Motion event time is not representable")
+    return frames
+
+
 def _persistent_modulation(
     definition: PreparedSynth,
     template: SoundSettings,
@@ -2549,7 +2642,7 @@ def _persistent_modulation(
     np.ndarray,
     list[StagedRuntimeDefinition],
     dict[str, list[int]],
-    list[tuple[int, str, int, str, int, int, int, int]],
+    list[tuple[int, str, int, str, int, int, int, int, float]],
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
@@ -2973,6 +3066,7 @@ def _persistent_modulation(
                 cast(processing.GeneratorBinding, bindings[c.destination]).reference
                 + f":cue-{order}",
             ),
+            _runtime_event_delay(c.delay, definition.sample_rate),
         )
         for order, c in enumerate(template.event_connections)
         if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)

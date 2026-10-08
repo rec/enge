@@ -312,6 +312,7 @@ class OfflineNoise:
             )
             if renderer.complete:
                 del self.voices[voice.voice_id]
+                self.controls.stop(voice.voice_id)
         return output
 
 

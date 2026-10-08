@@ -1,5 +1,6 @@
 from fractions import Fraction
 from itertools import pairwise
+from math import ceil
 from pathlib import Path
 from typing import Literal
 
@@ -690,8 +691,19 @@ def test_patch_child_event_starts_unexposed_contour(
 @pytest.mark.parametrize("divisors", [[3], [2, 3]])
 @pytest.mark.parametrize("restart", [False, True])
 @pytest.mark.parametrize(
-    ("offset", "probability", "seed"),
-    [(0, 1, 0), (1, 1, 0), (2, 1, 0), (4, 1, 0), (1, 0, 0), (1, 0.5, 0), (1, 0.5, 1)],
+    ("offset", "probability", "seed", "delay", "release_frames"),
+    [
+        (0, 1, 0, "0", 0),
+        (1, 1, 0, "0", 0),
+        (2, 1, 0, "0", 0),
+        (4, 1, 0, "0", 0),
+        (1, 0, 0, "0", 0),
+        (1, 0.5, 0, "0", 0),
+        (1, 0.5, 1, "0", 0),
+        (0, 1, 0, "1/4", 0),
+        (1, 0.5, 1, "1/19200", 0),
+        (0, 1, 0, "1/4", 12000),
+    ],
 )
 def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     tmp_path: Path,
@@ -702,6 +714,8 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     offset: int,
     probability: float,
     seed: int,
+    delay: str,
+    release_frames: int,
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -759,6 +773,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                         "every": d,
                         "offset": offset,
                         "probability": probability,
+                        "delay": delay,
                         **({"cue": "hit"} if command == "cue" else {}),
                     }
                     for d in divisors
@@ -781,7 +796,9 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     route["source"] = "level"
     minimum = -1 if command == "cue" else 0
     route["points"] = [{"input": minimum, "amount": 0}, {"input": 1, "amount": 1}]
-    voice["envelope"]["release"] = [{"duration": "0 s", "to": 0}]
+    voice["envelope"]["release"] = [
+        {"duration": f"{Fraction(release_frames, 48000)} s", "to": 0}
+    ]
     document = SynthInstrumentScore.model_validate(raw)
     prepared = synth.prepare(document)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
@@ -807,14 +824,14 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
         a.motion_key == motion_random.stream_key(seed, a.voice_id) for a in starts
     )
     expected = np.zeros((48000, 2))
-    if command == "cue":
-        expected[:, 0] = 1 if overlap else 0.5
-        if restart:
-            expected[10001, 0] = 0
-    pulse = np.r_[np.arange(750) / 750, 1 - np.arange(750) / 750]
     for voice in starts:
         activation = voice.tick
-        stop = 10001 if restart and activation == 0 else 48000
+        stop = 10001 + release_frames if restart and activation == 0 else 48000
+        levels = np.ones(stop - activation)
+        if stop < 48000 and release_frames:
+            levels[-release_frames:] = 1 - np.arange(release_frames) / release_frames
+        if command == "cue":
+            expected[activation:stop, 0] += 0.5 * levels
         voice_id = voice.voice_id
         states = [
             motion_random.stream_key(seed, voice_id)
@@ -825,7 +842,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
             for i in range(len(divisors))
         ]
         for event in range(8):
-            start = activation + 1500 + event * 6000
+            start = activation + 1500 + event * 6000 + Fraction(delay) * 48000
             forward = False
             for i, divisor in enumerate(divisors):
                 if event < offset or (event - offset) % divisor:
@@ -836,13 +853,20 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                     states[i], word = motion_random.random_word(states[i])
                     forward |= word >> 11 < int(probability * 2**53)
             if start < stop and forward:
-                length = min(1500, stop - start)
-                expected[start : start + length, 0] += pulse[:length] * (
-                    0.5 if command == "cue" else 1
+                begin = ceil(start)
+                end = min(ceil(start + 1500), stop)
+                position = (np.arange(begin, end) - float(start)) / 750
+                pulse = np.minimum(position, 2 - position)
+                expected[begin:end, 0] += (
+                    pulse
+                    * (0.5 if command == "cue" else 1)
+                    * levels[begin - activation : end - activation]
                 )
     for backend in ("numpy", "native", "persistent"):
         renderer = (
-            synth.PersistentSynth(prepared, voices=2 if overlap else 1)
+            synth.PersistentSynth(
+                prepared, voices=2 if overlap or release_frames else 1
+            )
             if backend == "persistent"
             else synth.OfflineSynth(prepared, backend)
         )
@@ -868,7 +892,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
             np.vstack((first, second)),
             expected,
         )
-    if overlap:
+    if overlap or (delay == "1/4" and not restart and release_frames == 0):
         callback = live.NativeLiveEngine(
             {"synth": synth.PersistentSynth(prepared, voices=2)},
             maximum_block_frames=48000,
@@ -885,6 +909,89 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
         check_audio(
             tmp_path / f"gated-callback-{source_kind}-{command}.wav", actual, expected
         )
+
+
+@pytest.mark.parametrize(
+    ("backend", "delay", "error", "burst"),
+    [
+        ("numpy", "1", "Delayed Motion event capacity exceeded", False),
+        ("native", "1", "Delayed Motion event capacity exceeded", False),
+        ("persistent", "1", "Delayed Motion event capacity exceeded", False),
+        ("persistent", "1/" + str(10**400), "time is not representable", False),
+        ("persistent", str(10**400), "time is not representable", False),
+        ("numpy", "1/192000", "Motion event capacity exceeded", True),
+        ("native", "1/192000", "Motion event capacity exceeded", True),
+        ("persistent", "1/192000", "Motion event capacity exceeded", True),
+    ],
+)
+def test_delayed_motion_events_report_queue_and_clock_limits(
+    backend: str, delay: str, error: str, burst: bool
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "clock": {
+            "body": {
+                "kind": "cycle",
+                "rate": "48000",
+                "markers": [{"name": "pulse", "position": "1/4"}],
+            }
+        },
+        "target": {
+            "body": {
+                "kind": "stages",
+                "initial_stage": "waiting",
+                "stages": [{"name": "waiting", "motion": {"kind": "hold", "value": 0}}],
+                "transitions": [
+                    {
+                        "from": ["waiting"],
+                        "event": "cue.hit",
+                        "action": {"kind": "enter", "stage": "waiting"},
+                    }
+                ],
+            }
+        },
+    }
+    voice["bindings"] = [
+        {"name": n, "kind": "motion", "reference": n} for n in ("clock", "target")
+    ]
+    voice["modulation"] = {
+        "sources": [
+            {"name": n, "scope": "voice", "minimum": -1, "maximum": 1}
+            for n in ("clock", "target")
+        ]
+    }
+    voice["event_connections"] = [
+        {
+            "source": "clock",
+            "port": "pulse",
+            "destination": "target",
+            "cue": "hit",
+            "delay": delay,
+        }
+    ]
+    if burst:
+        cycle = voice["motions"]["clock"]["body"]
+        cycle["markers"].append({"name": "tick", "position": "1/2"})
+        voice["motions"]["clock"]["body"] = {
+            "kind": "stages",
+            "initial_stage": "running",
+            "stages": [{"name": "running", "motion": cycle}],
+        }
+        voice["event_connections"][0]["every"] = 100
+        voice["event_connections"] *= 4096
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body, [onset(0).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    with pytest.raises(ValueError, match=error):
+        renderer = (
+            synth.PersistentSynth(prepared, voices=1)
+            if backend == "persistent"
+            else synth.OfflineSynth(prepared, backend)
+        )
+        renderer.advance(actions, 0, 48000)
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native", "persistent"])
@@ -911,14 +1018,15 @@ def test_synth_rejects_keyless_voice_starts_before_admission(backend: str) -> No
 
 
 @pytest.mark.parametrize("reverse_connections", [False, True])
+@pytest.mark.parametrize("delay", ["0", "1/96000", "1/64000"])
 def test_patch_child_starts_follow_event_time_within_one_sample(
-    tmp_path: Path, reverse_connections: bool
+    tmp_path: Path, reverse_connections: bool, delay: str
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     connections = [
         {"source": "late.mark", "target": "accent", "action": "start"},
-        {"source": "early.mark", "target": "accent", "action": "start"},
+        {"source": "early.mark", "target": "accent", "action": "start", "delay": delay},
     ]
     if reverse_connections:
         connections.reverse()
@@ -975,7 +1083,11 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
     ).actions
     reference = synth.OfflineSynth(prepared).advance(actions, 0, 48000)
     assert reference[0, 0] == 0
-    expected = Fraction(1, 96) + (1 - Fraction(1, 96)) * Fraction(1, 192)
+    expected = (
+        (Fraction(1, 96) + (1 - Fraction(1, 96)) * Fraction(1, 192))
+        if delay == "0"
+        else Fraction(1, 192)
+    )
     assert reference[1, 0] == pytest.approx(float(expected))
     for backend in ("native", "persistent"):
         renderer = (

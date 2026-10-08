@@ -109,6 +109,7 @@ struct PatchEventConnection {
     offset: usize,
     probability: u64,
     key: u64,
+    delay: f64,
 }
 
 #[derive(Clone, PartialEq)]
@@ -121,6 +122,7 @@ struct PatchStageStartConnection {
     offset: usize,
     probability: u64,
     key: u64,
+    delay: f64,
 }
 
 #[derive(Clone)]
@@ -222,6 +224,7 @@ struct StagedConnection {
     offset: usize,
     probability: u64,
     key: u64,
+    delay: f64,
 }
 
 #[derive(Clone)]
@@ -230,6 +233,19 @@ struct StagedEvent {
     voice: usize,
     source: usize,
     port: String,
+}
+
+#[derive(Clone, Copy)]
+enum DelayedConnection {
+    StagedCue(usize),
+    PatchEvent(usize),
+    StageStart(usize),
+}
+
+#[derive(Clone)]
+struct DelayedEvent {
+    at: f64,
+    connection: DelayedConnection,
 }
 
 type PatchEventInput = (
@@ -242,9 +258,10 @@ type PatchEventInput = (
     usize,
     u64,
     u64,
+    f64,
 );
-type StageConnectionInput = (usize, String, usize, String, usize, usize, u64, u64);
-type StageStartInput = (usize, String, usize, usize, usize, usize, u64, u64);
+type StageConnectionInput = (usize, String, usize, String, usize, usize, u64, u64, f64);
+type StageStartInput = (usize, String, usize, usize, usize, usize, u64, u64, f64);
 
 type StageInput = (
     u8,
@@ -343,6 +360,7 @@ pub struct SynthRuntimeSnapshot {
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
     pending_contour_starts: Vec<ContourStart>,
+    delayed_events: Vec<Vec<DelayedEvent>>,
     event_counts: Vec<usize>,
     motion_keys: Vec<u64>,
     event_random: Vec<u64>,
@@ -419,6 +437,7 @@ pub struct SynthRuntime {
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
     pending_contour_starts: Vec<ContourStart>,
+    delayed_events: Vec<Vec<DelayedEvent>>,
     event_counts: Vec<usize>,
     motion_keys: Vec<u64>,
     event_random: Vec<u64>,
@@ -562,6 +581,7 @@ impl SynthRuntime {
             patch_events: Vec::new(),
             patch_stage_starts: Vec::new(),
             pending_contour_starts: Vec::new(),
+            delayed_events: (0..slots).map(|_| Vec::new()).collect(),
             event_counts: Vec::new(),
             motion_keys: vec![0; slots],
             event_random: Vec::new(),
@@ -1049,13 +1069,15 @@ impl SynthRuntime {
             });
         }
         if connections.iter().any(
-            |(source, port, destination, cue, every, _, probability, _)| {
+            |(source, port, destination, cue, every, _, probability, _, delay)| {
                 *source >= definitions.len()
                     || *destination >= definitions.len()
                     || port.is_empty()
                     || cue.is_empty()
                     || *every == 0
                     || *probability > (1 << 53)
+                    || !delay.is_finite()
+                    || *delay < 0.0
             },
         ) {
             return Err(PyValueError::new_err("Invalid staged Motion connection"));
@@ -1084,7 +1106,7 @@ impl SynthRuntime {
         self.staged_connections = connections
             .into_iter()
             .map(
-                |(source, port, destination, cue, every, offset, probability, key)| {
+                |(source, port, destination, cue, every, offset, probability, key, delay)| {
                     StagedConnection {
                         source,
                         port,
@@ -1094,6 +1116,7 @@ impl SynthRuntime {
                         offset,
                         probability,
                         key,
+                        delay,
                     }
                 },
             )
@@ -1128,9 +1151,11 @@ impl SynthRuntime {
     fn set_patch_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
         if self.frame != 0
             || connections.iter().any(
-                |(source, marker, destination, cue, _, every, _, probability, _)| {
+                |(source, marker, destination, cue, _, every, _, probability, _, delay)| {
                     *every == 0
                         || *probability > (1 << 53)
+                        || !delay.is_finite()
+                        || *delay < 0.0
                         || *source >= self.lfo_definitions.len()
                         || self.lfo_definitions[*source].scope != 3
                         || self.lfo_definitions[*source].rate.0 == 0
@@ -1152,7 +1177,18 @@ impl SynthRuntime {
         self.patch_events = connections
             .into_iter()
             .map(
-                |(source, marker, destination, cue, order, every, offset, probability, key)| {
+                |(
+                    source,
+                    marker,
+                    destination,
+                    cue,
+                    order,
+                    every,
+                    offset,
+                    probability,
+                    key,
+                    delay,
+                )| {
                     PatchEventConnection {
                         source: self.lfo_owners[source],
                         marker,
@@ -1167,6 +1203,7 @@ impl SynthRuntime {
                         offset,
                         probability,
                         key,
+                        delay,
                     }
                 },
             )
@@ -1177,16 +1214,18 @@ impl SynthRuntime {
 
     fn set_patch_stage_starts(&mut self, connections: Vec<StageStartInput>) -> PyResult<()> {
         if self.frame != 0
-            || connections
-                .iter()
-                .any(|(source, port, destination, _, every, _, probability, _)| {
+            || connections.iter().any(
+                |(source, port, destination, _, every, _, probability, _, delay)| {
                     *source >= self.staged_motions.len()
                         || *every == 0
                         || *probability > (1 << 53)
+                        || !delay.is_finite()
+                        || *delay < 0.0
                         || port.is_empty()
                         || *destination >= self.named_envelopes.len()
                         || !self.named_envelopes[*destination].event_started
-                })
+                },
+            )
         {
             return Err(PyValueError::new_err(
                 "Invalid Patch stage start connections",
@@ -1195,7 +1234,7 @@ impl SynthRuntime {
         self.patch_stage_starts = connections
             .into_iter()
             .map(
-                |(source, port, destination, order, every, offset, probability, key)| {
+                |(source, port, destination, order, every, offset, probability, key, delay)| {
                     PatchStageStartConnection {
                         source: self.staged_owners[source],
                         port,
@@ -1205,6 +1244,7 @@ impl SynthRuntime {
                         offset,
                         probability,
                         key,
+                        delay,
                     }
                 },
             )
@@ -1353,6 +1393,7 @@ impl SynthRuntime {
             patch_events: self.patch_events.clone(),
             patch_stage_starts: self.patch_stage_starts.clone(),
             pending_contour_starts: self.pending_contour_starts.clone(),
+            delayed_events: self.delayed_events.clone(),
             event_counts: self.event_counts.clone(),
             motion_keys: self.motion_keys.clone(),
             event_random: self.event_random.clone(),
@@ -1414,6 +1455,9 @@ impl SynthRuntime {
         self.staged_pending.clone_from(&snapshot.staged_pending);
         self.pending_contour_starts
             .clone_from(&snapshot.pending_contour_starts);
+        for (queue, saved) in self.delayed_events.iter_mut().zip(&snapshot.delayed_events) {
+            queue.clone_from(saved);
+        }
         self.event_counts.clone_from(&snapshot.event_counts);
         self.motion_keys.clone_from(&snapshot.motion_keys);
         self.event_random.clone_from(&snapshot.event_random);
@@ -1455,6 +1499,20 @@ impl SynthRuntime {
 
 impl SynthRuntime {
     fn reset_event_counts(&mut self) {
+        let delayed = self
+            .staged_connections
+            .iter()
+            .map(|c| c.delay)
+            .chain(self.patch_events.iter().map(|c| c.delay))
+            .chain(self.patch_stage_starts.iter().map(|c| c.delay))
+            .any(|delay| delay > 0.0);
+        if delayed {
+            for queue in &mut self.delayed_events {
+                if queue.capacity() < 4096 {
+                    queue.reserve_exact(4096 - queue.len());
+                }
+            }
+        }
         self.event_counts = vec![
             0;
             self.frequencies.len()
@@ -1469,6 +1527,7 @@ impl SynthRuntime {
     }
 
     fn reset_voice_event_counts(&mut self, voice: usize) {
+        self.delayed_events[voice].clear();
         let connections =
             self.staged_connections.len() + self.patch_events.len() + self.patch_stage_starts.len();
         let offsets = self
@@ -1674,14 +1733,14 @@ impl SynthRuntime {
         let mut action = 0;
         for frame in 0..frames {
             self.advance_patch_events(false)?;
-            self.advance_staged(self.frame as f64, false)?;
+            self.advance_staged(self.frame as f64, false, true)?;
             while action < actions.len() && actions[action] as usize == frame {
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
             self.dispatch_staged_events()?;
             self.advance_patch_events(true)?;
-            self.advance_staged(self.frame as f64, true)?;
+            self.advance_staged(self.frame as f64, true, true)?;
             self.dispatch_staged_events()?;
             self.flush_contour_starts()?;
             for voice in 0..self.frequencies.len() {
@@ -1696,6 +1755,7 @@ impl SynthRuntime {
                     let end = release_frame + total_frames(&self.release);
                     if age >= end.ceil() {
                         self.active[voice] = false;
+                        self.delayed_events[voice].clear();
                         continue;
                     }
                     if age >= release_frame.ceil() {
@@ -1830,6 +1890,7 @@ impl SynthRuntime {
                         let carrier = &self.graph_operators[self.graph_carrier];
                         if age >= (release_frame + total_frames(&carrier.release)).ceil() {
                             self.active[voice] = false;
+                            self.delayed_events[voice].clear();
                             continue;
                         }
                     }
@@ -2106,6 +2167,7 @@ impl SynthRuntime {
             }
             2 => {
                 self.active[voice] = false;
+                self.delayed_events[voice].clear();
                 let base = voice * self.named_envelopes.len();
                 for state in &mut self.named_states[base..base + self.named_envelopes.len()] {
                     state.pending_release = None;
@@ -2400,7 +2462,12 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn advance_staged(&mut self, limit_frame: f64, inclusive: bool) -> PyResult<()> {
+    fn advance_staged(
+        &mut self,
+        limit_frame: f64,
+        inclusive: bool,
+        delayed_inclusive: bool,
+    ) -> PyResult<()> {
         let mut count = 0;
         let mut batch_at = None;
         loop {
@@ -2434,6 +2501,22 @@ impl SynthRuntime {
                     }
                 }
             }
+            let delayed_at = self
+                .delayed_events
+                .iter()
+                .flatten()
+                .filter(|event| {
+                    event.at < limit_frame
+                        || (inclusive && delayed_inclusive && event.at == limit_frame)
+                })
+                .map(|event| event.at)
+                .min_by(f64::total_cmp);
+            if let Some(at) = delayed_at {
+                if next.is_none_or(|current| at < current) {
+                    next = Some(at);
+                    events.clear();
+                }
+            }
             if batch_at.is_some() && batch_at != next {
                 self.dispatch_staged_events()?;
                 batch_at = None;
@@ -2443,6 +2526,18 @@ impl SynthRuntime {
                 break;
             };
             batch_at = Some(at);
+            if events.is_empty() {
+                self.dispatch_staged_events()?;
+                count += self.deliver_delayed_events(at)?;
+                self.dispatch_staged_events()?;
+                batch_at = None;
+                if count > 4096 {
+                    return Err(PyValueError::new_err(
+                        "Delayed Motion event capacity exceeded",
+                    ));
+                }
+                continue;
+            }
             for (voice, source, stage_at, order, port) in events {
                 if count == 4096 {
                     return Err(PyValueError::new_err(
@@ -2606,6 +2701,16 @@ impl SynthRuntime {
                         "Staged Motion event capacity exceeded",
                     ));
                 }
+                if connection.delay > 0.0 {
+                    queue_delayed_event(
+                        &mut self.delayed_events[event.voice],
+                        event.at,
+                        connection.delay,
+                        DelayedConnection::StagedCue(index),
+                    )?;
+                    count += 1;
+                    continue;
+                }
                 let definition = &self.staged_motions[connection.destination];
                 let at = self.staged_time(definition, event.at);
                 let state = &mut self.staged_states
@@ -2642,6 +2747,16 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err(
                         "Staged Motion event capacity exceeded",
                     ));
+                }
+                if connection.delay > 0.0 {
+                    queue_delayed_event(
+                        &mut self.delayed_events[event.voice],
+                        event.at,
+                        connection.delay,
+                        DelayedConnection::StageStart(index),
+                    )?;
+                    count += 1;
+                    continue;
                 }
                 self.pending_contour_starts.push(ContourStart {
                     at: event.at,
@@ -2695,7 +2810,7 @@ impl SynthRuntime {
             }
             if previous_at != Some(at) {
                 self.dispatch_staged_events()?;
-                self.advance_staged(at, true)?;
+                self.advance_staged(at, true, false)?;
                 previous_at = Some(at);
             }
             let connection = &self.patch_events[order];
@@ -2711,6 +2826,15 @@ impl SynthRuntime {
                 continue;
             }
             let destination = connection.destination;
+            if connection.delay > 0.0 {
+                queue_delayed_event(
+                    &mut self.delayed_events[voice],
+                    at,
+                    connection.delay,
+                    DelayedConnection::PatchEvent(order),
+                )?;
+                continue;
+            }
             if let Some(cue) = &connection.cue {
                 let definition = &self.staged_motions[destination];
                 let stage_at = self.staged_time(definition, at);
@@ -2735,6 +2859,60 @@ impl SynthRuntime {
         }
         self.dispatch_staged_events()?;
         Ok(())
+    }
+
+    fn deliver_delayed_events(&mut self, at: f64) -> PyResult<usize> {
+        let mut count = 0;
+        for voice in 0..self.delayed_events.len() {
+            while let Some(index) = self.delayed_events[voice]
+                .iter()
+                .position(|event| event.at == at)
+            {
+                let event = self.delayed_events[voice].remove(index);
+                count += 1;
+                let (destination, cue, order) = match event.connection {
+                    DelayedConnection::StagedCue(index) => {
+                        let connection = &self.staged_connections[index];
+                        (connection.destination, Some(&connection.cue), index)
+                    }
+                    DelayedConnection::PatchEvent(index) => {
+                        let connection = &self.patch_events[index];
+                        (
+                            connection.destination,
+                            connection.cue.as_ref(),
+                            connection.order,
+                        )
+                    }
+                    DelayedConnection::StageStart(index) => {
+                        let connection = &self.patch_stage_starts[index];
+                        (connection.destination, None, connection.order)
+                    }
+                };
+                if let Some(cue) = cue {
+                    let definition = &self.staged_motions[destination];
+                    let stage_at = self.staged_time(definition, at);
+                    let state =
+                        &mut self.staged_states[voice * self.staged_motions.len() + destination];
+                    if staged_transition(definition, state, &format!("cue.{cue}"), stage_at) {
+                        self.staged_pending.push_back(StagedEvent {
+                            at,
+                            voice,
+                            source: destination,
+                            port: "done".to_owned(),
+                        });
+                    }
+                } else {
+                    self.pending_contour_starts.push(ContourStart {
+                        at,
+                        voice,
+                        destination,
+                        order,
+                    });
+                }
+                self.dispatch_staged_events()?;
+            }
+        }
+        Ok(count)
     }
 
     fn flush_contour_starts(&mut self) -> PyResult<()> {
@@ -3923,6 +4101,30 @@ fn valid_motion_owners(owners: &[usize]) -> bool {
         .iter()
         .enumerate()
         .all(|(index, owner)| *owner <= index && owners[*owner] == *owner)
+}
+
+fn queue_delayed_event(
+    queue: &mut Vec<DelayedEvent>,
+    at: f64,
+    delay: f64,
+    connection: DelayedConnection,
+) -> PyResult<()> {
+    if queue.len() == 4096 {
+        return Err(PyValueError::new_err(
+            "Delayed Motion event capacity exceeded",
+        ));
+    }
+    let due = at + delay;
+    if !due.is_finite() || due <= at {
+        return Err(PyValueError::new_err(
+            "Delayed Motion event time is not representable",
+        ));
+    }
+    queue.push(DelayedEvent {
+        at: due,
+        connection,
+    });
+    Ok(())
 }
 
 fn forward_event(count: &mut usize, state: &mut u64, every: usize, probability: u64) -> bool {

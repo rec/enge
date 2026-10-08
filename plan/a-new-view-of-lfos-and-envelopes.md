@@ -334,6 +334,19 @@ connection order reproduces results across partitions and Python/native
 renderers. Native preparation encodes the 64-bit key as two exact 32-bit halves
 before voice start, using one additional action row for probabilistic voices.
 
+Connections accept `delay`, a nonnegative rational number of seconds defaulting
+to zero. Division and probability gates run at source emission; accepted commands
+are delivered once at emission time plus delay. Pending commands survive render
+partitions and snapshots, remain active through the voice's release tail, and are
+discarded when that voice stops or retires. Both renderers cap pending delayed
+commands at 4096 per voice and report overflow. Native preparation reserves this
+queue only for voices with delayed connections; enqueueing does not grow it.
+At a shared instant, natural source events precede delayed commands. Delayed cues
+with the same deadline retain enqueue order; Contour starts retain their existing
+time/connection ordering. Zero delay keeps immediate
+delivery. A native deadline that cannot advance or remain finite at its floating
+frame coordinate is an error, not an immediate delivery.
+
 For example, within a proposed compound `patch` body:
 
 ```toml
