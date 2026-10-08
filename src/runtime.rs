@@ -263,6 +263,9 @@ type PatchEventInput = (
 type StageConnectionInput = (usize, String, usize, String, usize, usize, u64, u64, f64);
 type StageStartInput = (usize, String, usize, usize, usize, usize, u64, u64, f64);
 
+type MotionTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64);
+type MotionTransformRoute = (usize, usize, usize, f64, f64);
+
 type StageInput = (
     u8,
     f64,
@@ -331,6 +334,8 @@ struct GraphEdge {
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
+    motion_transforms: Vec<MotionTransformInput>,
+    motion_transform_routes: Vec<MotionTransformRoute>,
     rate: f64,
     waveform: u8,
     source_kind: u8,
@@ -408,6 +413,9 @@ pub struct SynthRuntimeSnapshot {
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntime {
+    motion_transforms: Vec<MotionTransformInput>,
+    motion_transform_routes: Vec<MotionTransformRoute>,
+    motion_transform_values: Vec<f64>,
     rate: f64,
     waveform: u8,
     source_kind: u8,
@@ -552,6 +560,9 @@ impl SynthRuntime {
             .flat_map(|_| control_states.clone())
             .collect();
         Ok(Self {
+            motion_transforms: Vec::new(),
+            motion_transform_routes: Vec::new(),
+            motion_transform_values: Vec::new(),
             rate,
             waveform,
             source_kind: 0,
@@ -1148,6 +1159,51 @@ impl SynthRuntime {
         Ok(())
     }
 
+    fn set_motion_transforms(
+        &mut self,
+        nodes: Vec<MotionTransformInput>,
+        routes: Vec<MotionTransformRoute>,
+    ) -> PyResult<()> {
+        if self.frame != 0
+            || nodes
+                .iter()
+                .enumerate()
+                .any(|(node, (kind, inputs, scale, offset))| {
+                    *kind > 2
+                        || !scale.is_finite()
+                        || !offset.is_finite()
+                        || inputs.len() < if *kind == 2 { 1 } else { 2 }
+                        || (*kind == 2 && inputs.len() != 1)
+                        || inputs.iter().any(|(kind, index, offset, scale)| {
+                            !offset.is_finite()
+                                || !scale.is_finite()
+                                || match kind {
+                                    0 => *index >= self.lfo_definitions.len(),
+                                    1 => *index >= self.named_envelopes.len(),
+                                    2 => *index >= self.staged_motions.len(),
+                                    3 => *index >= node,
+                                    _ => true,
+                                }
+                        })
+                })
+            || routes
+                .iter()
+                .any(|(node, parameter, operation, intercept, slope)| {
+                    *node >= nodes.len()
+                        || *parameter >= self.parameter_definitions.len() / 3
+                        || *operation > 1
+                        || !intercept.is_finite()
+                        || !slope.is_finite()
+                })
+        {
+            return Err(PyValueError::new_err("Invalid Motion transform graph"));
+        }
+        self.motion_transform_values = vec![0.0; self.frequencies.len() * nodes.len()];
+        self.motion_transforms = nodes;
+        self.motion_transform_routes = routes;
+        Ok(())
+    }
+
     fn set_patch_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
         if self.frame != 0
             || connections.iter().any(
@@ -1364,6 +1420,8 @@ impl SynthRuntime {
 
     pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
+            motion_transforms: self.motion_transforms.clone(),
+            motion_transform_routes: self.motion_transform_routes.clone(),
             rate: self.rate,
             waveform: self.waveform,
             source_kind: self.source_kind,
@@ -1580,6 +1638,8 @@ impl SynthRuntime {
             || self.lfo_owners != snapshot.lfo_owners
             || self.named_envelopes != snapshot.named_envelopes
             || self.named_owners != snapshot.named_owners
+            || self.motion_transforms != snapshot.motion_transforms
+            || self.motion_transform_routes != snapshot.motion_transform_routes
             || self.patch_events != snapshot.patch_events
             || self.patch_stage_starts != snapshot.patch_stage_starts
             || self.beat_points != snapshot.beat_points
@@ -1747,6 +1807,7 @@ impl SynthRuntime {
                 if !self.active[voice] {
                     continue;
                 }
+                self.evaluate_motion_transforms(voice)?;
                 let amplitude = self.parameter(voice, 0)?;
                 let age = self.ages[voice] as f64;
                 let level = if self.source_kind == 3 {
@@ -2942,6 +3003,120 @@ impl SynthRuntime {
         Ok(())
     }
 
+    fn lfo_signal(&self, voice: usize, source: usize) -> PyResult<(f64, f64)> {
+        let definition = &self.lfo_definitions[source];
+        let owner = self.lfo_owners[source];
+        let elapsed = match definition.scope {
+            0 => self.frame,
+            1 => {
+                self.context_kind(self.voice_part_contexts[voice], 1)?;
+                self.frame
+            }
+            _ => self.ages[voice],
+        };
+        let event_state = if definition.scope == 3 {
+            &self.voice_lfo_event_states[voice * self.lfo_definitions.len() + owner]
+        } else {
+            &self.lfo_event_states[owner]
+        };
+        let (value, weight) = if definition.transport_position {
+            let state = LfoEventState {
+                at: 0,
+                age: 0.0,
+                phase: definition.phase.0 as f64 / definition.phase.1 as f64,
+                rate: definition.rate.0 as f64 / definition.rate.1 as f64,
+                direction: 1.0,
+                paused: false,
+            };
+            lfo_event_value(
+                definition,
+                &state,
+                self.song_beat_at(self.frame as f64),
+                1.0,
+            )
+        } else if let Some(state) = event_state {
+            lfo_event_value(
+                definition,
+                state,
+                if state.paused {
+                    0.0
+                } else {
+                    self.lfo_elapsed(definition, state.at, self.frame)
+                },
+                self.lfo_divisor(definition),
+            )
+        } else if definition.beat_clock {
+            let start = if definition.scope == 3 {
+                self.frame - self.ages[voice]
+            } else {
+                0
+            };
+            let state = LfoEventState {
+                at: start,
+                age: 0.0,
+                phase: definition.phase.0 as f64 / definition.phase.1 as f64,
+                rate: definition.rate.0 as f64 / definition.rate.1 as f64,
+                direction: 1.0,
+                paused: false,
+            };
+            lfo_event_value(
+                definition,
+                &state,
+                self.lfo_elapsed(definition, start, self.frame),
+                1.0,
+            )
+        } else {
+            lfo_value(definition, elapsed, self.rate as u64)?
+        };
+        Ok((value, weight))
+    }
+
+    fn evaluate_motion_transforms(&mut self, voice: usize) -> PyResult<()> {
+        let base = voice * self.motion_transforms.len();
+        for (node, (kind, inputs, scale, offset)) in self.motion_transforms.iter().enumerate() {
+            let mut output = if *kind == 1 { 1.0 } else { 0.0 };
+            for (source_kind, source, center, depth) in inputs {
+                let value = match source_kind {
+                    0 => {
+                        let (value, weight) = self.lfo_signal(voice, *source)?;
+                        (center + depth * value) * weight
+                    }
+                    1 => {
+                        let definition = &self.named_envelopes[*source];
+                        named_contour_value(
+                            definition,
+                            &self.named_states
+                                [voice * self.named_envelopes.len() + self.named_owners[*source]],
+                            self.named_time(definition, self.frame as f64),
+                            self.frame as f64,
+                        )
+                    }
+                    2 => {
+                        let definition = &self.staged_motions[*source];
+                        staged_value(
+                            definition,
+                            &self.staged_states
+                                [voice * self.staged_motions.len() + self.staged_owners[*source]],
+                            self.staged_time(definition, self.frame as f64),
+                        )
+                    }
+                    _ => self.motion_transform_values[base + source],
+                };
+                if *kind == 1 {
+                    output *= value;
+                } else {
+                    output += value;
+                }
+            }
+            self.motion_transform_values[base + node] = if *kind == 2 {
+                offset + scale * output
+            } else {
+                output
+            };
+        }
+        Ok(())
+    }
+
     fn parameter(&self, voice: usize, parameter: usize) -> PyResult<f64> {
         let mut addition = 0.0;
         let mut product = 1.0;
@@ -2965,69 +3140,7 @@ impl SynthRuntime {
             if definition.parameter != parameter {
                 continue;
             }
-            let owner = self.lfo_owners[source];
-            let elapsed = match definition.scope {
-                0 => self.frame,
-                1 => {
-                    self.context_kind(self.voice_part_contexts[voice], 1)?;
-                    self.frame
-                }
-                _ => self.ages[voice],
-            };
-            let event_state = if definition.scope == 3 {
-                &self.voice_lfo_event_states[voice * self.lfo_definitions.len() + owner]
-            } else {
-                &self.lfo_event_states[owner]
-            };
-            let (value, weight) = if definition.transport_position {
-                let state = LfoEventState {
-                    at: 0,
-                    age: 0.0,
-                    phase: definition.phase.0 as f64 / definition.phase.1 as f64,
-                    rate: definition.rate.0 as f64 / definition.rate.1 as f64,
-                    direction: 1.0,
-                    paused: false,
-                };
-                lfo_event_value(
-                    definition,
-                    &state,
-                    self.song_beat_at(self.frame as f64),
-                    1.0,
-                )
-            } else if let Some(state) = event_state {
-                lfo_event_value(
-                    definition,
-                    state,
-                    if state.paused {
-                        0.0
-                    } else {
-                        self.lfo_elapsed(definition, state.at, self.frame)
-                    },
-                    self.lfo_divisor(definition),
-                )
-            } else if definition.beat_clock {
-                let start = if definition.scope == 3 {
-                    self.frame - self.ages[voice]
-                } else {
-                    0
-                };
-                let state = LfoEventState {
-                    at: start,
-                    age: 0.0,
-                    phase: definition.phase.0 as f64 / definition.phase.1 as f64,
-                    rate: definition.rate.0 as f64 / definition.rate.1 as f64,
-                    direction: 1.0,
-                    paused: false,
-                };
-                lfo_event_value(
-                    definition,
-                    &state,
-                    self.lfo_elapsed(definition, start, self.frame),
-                    1.0,
-                )
-            } else {
-                lfo_value(definition, elapsed, self.rate as u64)?
-            };
+            let (value, weight) = self.lfo_signal(voice, source)?;
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += weight * amount;
@@ -3066,6 +3179,19 @@ impl SynthRuntime {
             );
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
+                addition += amount;
+            } else {
+                product *= amount;
+            }
+        }
+        for (source, target, operation, intercept, slope) in &self.motion_transform_routes {
+            if *target != parameter {
+                continue;
+            }
+            let amount = intercept
+                + slope
+                    * self.motion_transform_values[voice * self.motion_transforms.len() + source];
+            if *operation == 0 {
                 addition += amount;
             } else {
                 product *= amount;

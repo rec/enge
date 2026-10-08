@@ -300,6 +300,16 @@ signal output, not the timestamps or traversal meaning of marker events.
 
 ## 7. Signals, event outputs, and connections
 
+Implemented Patch signal transforms: named `sum`, `product`, and `affine`
+children form a preparation-checked dependency DAG. Python and persistent
+native synth evaluate shared child state in dependency order without clipping.
+Output source domains must cover conservative inferred ranges. Cycle onset
+weights scale transform inputs toward zero; the transformed output has weight
+one. Regression coverage includes envelope-shaped vibrato, seconds and beat
+clocks, tempo changes, release, partitioning, and exact snapshot replay.
+Contour input bindings retain explicit voice-timed release even when they have
+no direct parameter route; unbound input contours default to immediate release.
+
 Reuse existing typed modulation routes for signal-to-parameter connections.
 A motion's rate, depth, phase offset, curve, and other declared inputs are
 ordinary parameter targets. Multiple additive/multiplicative contributions

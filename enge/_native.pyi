@@ -234,6 +234,11 @@ class SynthRuntime:
     def set_motion_state_owners(
         self, lfos: list[int], envelopes: list[int], stages: list[int]
     ) -> None: ...
+    def set_motion_transforms(
+        self,
+        nodes: list[tuple[int, list[tuple[int, int, float, float]], float, float]],
+        routes: list[tuple[int, int, int, float, float]],
+    ) -> None: ...
     def set_patch_events(
         self,
         connections: list[

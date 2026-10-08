@@ -14,6 +14,7 @@ from ufor.base import Model
 from ufor.control import TempoMap
 from ufor.envelope import Envelope
 from ufor.motion import (
+    Affine,
     Contour,
     ContourState,
     Cycle,
@@ -26,8 +27,10 @@ from ufor.motion import (
     MotionUse,
     Patch,
     PlaybackMode,
+    Product,
     Stages,
     StageState,
+    Sum,
     advance_motion,
     cycle_lfo,
     initial_motion,
@@ -420,6 +423,8 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if name in voice.motions:
             raise EngineError(f"Patch output Motion name collides: {name}")
         child = parent.body.motions[child_name]
+        if isinstance(child, (Sum, Product, Affine)):
+            continue
         if name not in motions:
             motions[name] = MotionUse(
                 scope=parent.scope, clock=parent.clock, body=child
@@ -440,13 +445,42 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             for connection in parent.body.events
             for name in (connection.source.partition(".")[0], connection.target)
         } | {source.partition(".")[0] for source in parent.body.event_outputs.values()}
+        pending = [
+            parent.body.outputs[b.output]
+            for b in voice.bindings
+            if isinstance(b, processing.GeneratorBinding)
+            and b.reference == parent_name
+            and b.output is not None
+            and isinstance(
+                parent.body.motions[parent.body.outputs[b.output]],
+                (Sum, Product, Affine),
+            )
+        ]
+        visited: set[str] = set()
+        while pending:
+            child_name = pending.pop()
+            if child_name in visited:
+                continue
+            visited.add(child_name)
+            child = parent.body.motions[child_name]
+            if isinstance(child, (Sum, Product)):
+                pending.extend(child.inputs)
+            elif isinstance(child, Affine):
+                pending.append(child.input)
+            else:
+                children.add(child_name)
         for child_name in children:
             name = f"patch-{parent_name}-{child_name}"
             if name in voice.motions:
                 raise EngineError(f"Patch child Motion name collides: {name}")
             child = parent.body.motions[child_name]
             motions.setdefault(
-                name, MotionUse(scope=parent.scope, clock=parent.clock, body=child)
+                name,
+                MotionUse(
+                    scope=parent.scope,
+                    clock=parent.clock,
+                    body=cast(Cycle | Contour | Stages, child),
+                ),
             )
             if any(
                 isinstance(binding, processing.GeneratorBinding)
@@ -460,7 +494,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             sources.append(
                 modulation.Source(
                     name=name,
-                    scope="voice",
+                    scope=parent.scope.value,
                     minimum=0
                     if isinstance(child, Contour) and child.polarity == "unipolar"
                     else -1,
@@ -862,6 +896,9 @@ class ControlRenderer:
             if isinstance(binding, processing.GeneratorBinding):
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
                 motion = settings.motions[binding.reference]
+                if isinstance(motion.body, Patch):
+                    result[source.name] = -1
+                    continue
                 if isinstance(motion.body, (Contour, Stages)):
                     if motion.scope != "voice":
                         raise EngineError(
@@ -1056,6 +1093,8 @@ class ControlRenderer:
             if isinstance(binding, processing.GeneratorBinding):
                 index = sources[binding.name]
                 motion = settings.motions[binding.reference]
+                if isinstance(motion.body, Patch):
+                    continue
                 if isinstance(motion.body, (Contour, Stages)):
                     if index not in self.cached_envelopes:
                         source = self.envelopes[index]
@@ -1149,6 +1188,51 @@ class ControlRenderer:
                     )
                 )
             signals[binding.name] = self.cached_controls[source_key]
+        for parent_name, parent in settings.motions.items():
+            if not isinstance(parent.body, Patch):
+                continue
+            selected = [
+                b
+                for b in settings.bindings
+                if isinstance(b, processing.GeneratorBinding)
+                and b.reference == parent_name
+            ]
+            if not selected:
+                continue
+            children: dict[str, np.ndarray] = {}
+            for name in parent.body.signal_order:
+                body = parent.body.motions[name]
+                if isinstance(body, (Sum, Product)):
+                    if any(n not in children for n in body.inputs):
+                        continue
+                    value = np.full(frames, 0.0 if isinstance(body, Sum) else 1.0)
+                    for child in body.inputs:
+                        if isinstance(body, Sum):
+                            value += children[child]
+                        else:
+                            value *= children[child]
+                    children[name] = value
+                elif isinstance(body, Affine):
+                    if body.input in children:
+                        children[name] = body.offset + body.scale * children[body.input]
+                else:
+                    binding = next(
+                        (
+                            b
+                            for b in settings.bindings
+                            if isinstance(b, processing.GeneratorBinding)
+                            and b.reference == f"patch-{parent_name}-{name}"
+                        ),
+                        None,
+                    )
+                    if binding is not None:
+                        signal = signals[binding.name]
+                        children[name] = signal[:, 0] * signal[:, 1]
+            for binding in selected:
+                assert binding.output is not None
+                signals[binding.name] = np.column_stack(
+                    (children[parent.body.outputs[binding.output]], np.ones(frames))
+                )
         output = control.modulation_samples(settings.modulation, signals, frames)
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
@@ -1859,6 +1943,13 @@ class PersistentSynth:
         patch_events: list[
             tuple[int, float, int, str | None, int, int, int, int, int, float]
         ] = []
+        _configure_patch_transforms(
+            self.runtime,
+            template,
+            self.lfo_sources | self.voice_lfo_sources,
+            self.named_motion_sources,
+            self.staged_motion_sources,
+        )
         patch_stage_starts: list[
             tuple[int, str, int, int, int, int, int, int, float]
         ] = []
@@ -2615,6 +2706,78 @@ def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> float:
     return frames
 
 
+def _configure_patch_transforms(
+    runtime: _native.SynthRuntime,
+    template: SoundSettings,
+    lfos: dict[str, list[int]],
+    contours: dict[str, list[int]],
+    stages: dict[str, list[int]],
+) -> None:
+    nodes: list[tuple[int, list[tuple[int, int, float, float]], float, float]] = []
+    outputs: dict[tuple[str, str], int] = {}
+    for parent_name, parent in template.motions.items():
+        if not isinstance(parent.body, Patch):
+            continue
+        children: dict[str, tuple[int, int, float, float]] = {}
+        for name in parent.body.signal_order:
+            body = parent.body.motions[name]
+            reference = f"patch-{parent_name}-{name}"
+            if isinstance(body, Cycle) and reference in lfos:
+                children[name] = (0, lfos[reference][0], body.center, body.depth)
+            elif isinstance(body, Contour) and reference in contours:
+                children[name] = (1, contours[reference][0], 0.0, 1.0)
+            elif isinstance(body, Stages) and reference in stages:
+                children[name] = (2, stages[reference][0], 0.0, 1.0)
+            elif isinstance(body, (Sum, Product, Affine)):
+                inputs = [body.input] if isinstance(body, Affine) else body.inputs
+                if any(n not in children for n in inputs):
+                    continue
+                children[name] = (3, len(nodes), 0.0, 1.0)
+                nodes.append(
+                    (
+                        2
+                        if isinstance(body, Affine)
+                        else 0
+                        if isinstance(body, Sum)
+                        else 1,
+                        [children[n] for n in inputs],
+                        body.scale if isinstance(body, Affine) else 1.0,
+                        body.offset if isinstance(body, Affine) else 0.0,
+                    )
+                )
+        for output, name in parent.body.outputs.items():
+            if name in children and children[name][0] == 3:
+                outputs[parent_name, output] = children[name][1]
+    parameters = {("processing", "amplitude"): 0, ("processing", "tuning_cents"): 1}
+    for i, body in enumerate(template.processing.filters):
+        parameters[f"filter-{body.name}", "cutoff_hz"] = 2 + 2 * i
+        parameters[f"filter-{body.name}", "q"] = 3 + 2 * i
+    routes: list[tuple[int, int, int, float, float]] = []
+    bindings = {b.name: b for b in template.bindings}
+    sources = {s.name: s for s in template.modulation.sources}
+    for route in sorted(template.modulation.routes, key=lambda r: (r.source, r.name)):
+        binding = bindings[route.source]
+        if (
+            not isinstance(binding, processing.GeneratorBinding)
+            or binding.output is None
+        ):
+            continue
+        source = sources[route.source]
+        slope = (route.points[1].amount - route.points[0].amount) / (
+            source.maximum - source.minimum
+        )
+        routes.append(
+            (
+                outputs[binding.reference, binding.output],
+                parameters[route.target.name, route.target.parameter],
+                0 if route.operation == modulation.Operation.add else 1,
+                route.points[0].amount - slope * source.minimum,
+                slope,
+            )
+        )
+    runtime.set_motion_transforms(nodes, routes)
+
+
 def _persistent_modulation(
     definition: PreparedSynth,
     template: SoundSettings,
@@ -2762,6 +2925,7 @@ def _persistent_modulation(
         if isinstance(parent.body, Patch) and parent.body.event_outputs
         for child in parent.body.outputs.values()
     }
+    patch_children.update(_patch_child_names(template))
     event_sources.update(
         binding.name
         for binding in template.bindings
@@ -2830,7 +2994,7 @@ def _persistent_modulation(
         target_parameter = parameters[target]
         mapped = [
             intercept + slope * input_minimum,
-            intercept + slope,
+            intercept + slope * (1 if declaration is not None else source.maximum),
         ]
         outcomes = (
             [target_parameter.default + v for v in mapped]
@@ -2872,6 +3036,8 @@ def _persistent_modulation(
         else:
             assert isinstance(binding, processing.GeneratorBinding)
             motion = template.motions[binding.reference]
+            if isinstance(motion.body, Patch):
+                continue
             if isinstance(motion.body, Contour):
                 generator = motion.body
                 assert isinstance(generator.initial, float)
@@ -2996,10 +3162,16 @@ def _persistent_modulation(
         motion = template.motions[binding.reference]
         if isinstance(motion.body, Cycle):
             generator = cycle_lfo(motion)
-            voice_lfo_sources.setdefault(binding.reference, []).append(len(lfo_rows))
+            source_scopes.add(motion.scope)
+            if motion.scope != "voice":
+                lfo_sources.setdefault(binding.reference, []).append(len(lfo_rows))
+            else:
+                voice_lfo_sources.setdefault(binding.reference, []).append(
+                    len(lfo_rows)
+                )
             lfo_rows.append(
                 [
-                    3,
+                    ["instrument", "part", "trigger", "voice"].index(motion.scope),
                     [Waveform.sine, Waveform.square, Waveform.triangle].index(
                         generator.waveform
                     ),
@@ -3007,33 +3179,73 @@ def _persistent_modulation(
                     1,
                     1,
                     0,
-                    0,
+                    1 if motion.clock == "beats" else 0,
                 ]
             )
             for value in (
                 generator.duty_cycle,
                 generator.rate,
                 generator.phase,
-                generator.delay * definition.sample_rate,
-                generator.fade_in * definition.sample_rate,
+                generator.delay
+                * (1 if motion.clock == "beats" else definition.sample_rate),
+                generator.fade_in
+                * (1 if motion.clock == "beats" else definition.sample_rate),
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
             continue
         if isinstance(motion.body, Contour):
             generator = motion.body
             assert isinstance(generator.initial, float)
+            if motion.scope != "voice" or any(
+                s.curve != 0 for s in [*generator.segments, *generator.release]
+            ):
+                raise EngineError(
+                    "Persistent named envelopes require linear voice segments"
+                )
+            duration_scale = 1 if motion.clock == "beats" else definition.sample_rate
             named_motion_sources.setdefault(binding.reference, []).append(
                 len(envelope_initials)
             )
             envelope_initials.append(generator.initial)
             envelope_attacks.append(
                 [
-                    (float(segment.duration * definition.sample_rate), segment.to)
+                    (float(segment.duration * duration_scale), segment.to)
                     for segment in generator.segments
                 ]
             )
-            envelope_releases.append([])
-            envelope_parameters.append((0, 1, 1, 0, False, 0, 0, 1, None, True))
+            envelope_releases.append(
+                [(float(s.duration * duration_scale), s.to) for s in generator.release]
+            )
+            envelope_parameters.append(
+                (
+                    0,
+                    1,
+                    1,
+                    0,
+                    binding.release_timing == ReleaseTiming.voice,
+                    list(PlaybackMode).index(generator.playback),
+                    float(
+                        next(
+                            m.position
+                            for m in generator.markers
+                            if m.name == generator.loop_start
+                        )
+                    )
+                    if generator.loop_start is not None
+                    else 0.0,
+                    float(
+                        next(
+                            m.position
+                            for m in generator.markers
+                            if m.name == generator.loop_end
+                        )
+                    )
+                    if generator.loop_end is not None
+                    else 1.0,
+                    generator.repeat_count,
+                    generator.start == "event",
+                )
+            )
             continue
         assert isinstance(motion.body, Stages)
         source_scopes.add(motion.scope)

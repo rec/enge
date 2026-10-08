@@ -75,6 +75,231 @@ def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
     )
 
 
+@pytest.mark.parametrize("clock", ["seconds", "beats"])
+@pytest.mark.parametrize("release_timing", ["immediate", "voice"])
+def test_patch_transforms_share_children_and_match_native_runtime(
+    tmp_path: Path, clock: str, release_timing: str
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"] = {
+        "gesture": {
+            "clock": clock,
+            "body": {
+                "kind": "patch",
+                "motions": {
+                    "output": {
+                        "kind": "affine",
+                        "input": "sum",
+                        "scale": 0.25,
+                        "offset": 0.5,
+                    },
+                    "sum": {"kind": "sum", "inputs": ["shaped", "vib"]},
+                    "shaped": {"kind": "product", "inputs": ["vib", "env"]},
+                    "vib": {
+                        "kind": "cycle",
+                        "shape": "triangle",
+                        "rate": "2",
+                        "phase": "1/4",
+                        "delay": "1/8",
+                        "fade_in": "1/8",
+                    },
+                    "env": {
+                        "kind": "contour",
+                        "segments": [
+                            {
+                                "duration": "1/2 s"
+                                if clock == "seconds"
+                                else "1/2 beats",
+                                "to": 1,
+                            }
+                        ],
+                        "release": [
+                            {
+                                "duration": "1/4 s"
+                                if clock == "seconds"
+                                else "1/4 beats",
+                                "to": 0,
+                            }
+                        ],
+                    },
+                },
+                "outputs": {"level": "output", "same": "output"},
+            },
+        }
+    }
+    voice["bindings"][0].update(reference="gesture", output="level")
+    if release_timing == "voice":
+        voice["minimum_hold_seconds"] = "1"
+        voice["motions"]["gesture"]["body"]["outputs"]["envelope"] = "env"
+        voice["bindings"].append(
+            {
+                "name": "envelope",
+                "kind": "motion",
+                "reference": "gesture",
+                "output": "envelope",
+                "release_timing": "voice",
+            }
+        )
+        voice["modulation"]["sources"].append(
+            {"name": "envelope", "scope": "voice", "minimum": 0, "maximum": 1}
+        )
+    voice["modulation"]["sources"][0]["minimum"] = 0
+    voice["modulation"]["routes"][0]["points"] = [
+        {"input": 0, "amount": 0},
+        {"input": 1, "amount": 1},
+    ]
+    voice["bindings"].append(
+        {"name": "pitch", "kind": "motion", "reference": "gesture", "output": "same"}
+    )
+    voice["modulation"]["sources"].append(
+        {"name": "pitch", "scope": "voice", "minimum": 0, "maximum": 1}
+    )
+    voice["modulation"]["parameters"].append(
+        {
+            "target": {"name": "processing", "parameter": "tuning_cents"},
+            "unit": "cents",
+            "scope": "voice",
+            "minimum": -100,
+            "maximum": 100,
+            "default": 0,
+        }
+    )
+    voice["modulation"]["routes"].append(
+        {
+            "name": "pitch",
+            "source": "pitch",
+            "target": {"name": "processing", "parameter": "tuning_cents"},
+            "unit": "cents",
+            "operation": "add",
+            "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": 0}],
+        }
+    )
+    document = SynthInstrumentScore.model_validate(raw)
+    definition = synth.prepare(document)
+    tempo = (
+        TempoMap.model_validate(
+            {
+                "points": [
+                    {"at_seconds": "0", "bpm": "120", "beat": "0"},
+                    {"at_seconds": "1/2", "bpm": "90", "beat": "1"},
+                ]
+            }
+        )
+        if clock == "beats"
+        else None
+    )
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=7,
+    ).actions
+    seconds = np.arange(48000) / 48000
+    position = (
+        seconds
+        if clock == "seconds"
+        else np.where(seconds < 0.5, 2 * seconds, 1 + 1.5 * (seconds - 0.5))
+    )
+    vib = (1 - 4 * np.abs(((0.25 + 2 * position) % 1) - 0.5)) * np.clip(
+        (position - 0.125) / 0.125, 0, 1
+    )
+    env = np.minimum(position / 0.5, 1)
+    release_position = 0.75 if clock == "seconds" else 1.375
+    if release_timing == "immediate":
+        env = np.where(
+            seconds < 0.75, env, np.maximum(1 - (position - release_position) / 0.25, 0)
+        )
+    signal = 0.5 + 0.25 * (vib * env + vib)
+    baseline_raw = document.model_dump(mode="json")
+    baseline_voice = baseline_raw["body"]["voices"][0]
+    baseline_voice.update(motions={}, bindings=[], modulation={})
+    baseline = SynthInstrumentScore.model_validate(baseline_raw)
+    baseline_actions = synth_trace.prepare(
+        baseline.body,
+        [
+            onset(0, pitch=0.1).model_copy(update={"controls": {}}),
+            Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=7,
+    ).actions
+    expected = (
+        synth.OfflineSynth(synth.prepare(baseline)).advance(baseline_actions, 0, 48000)
+        * signal[:, None]
+    )
+    for renderer_kind in ("numpy", "native", "persistent"):
+        renderer = (
+            synth.PersistentSynth(definition, voices=2, tempo_map=tempo)
+            if renderer_kind == "persistent"
+            else synth.OfflineSynth(definition, renderer_kind, tempo_map=tempo)
+        )
+        first = renderer.advance([a for a in actions if a.tick < 24000], 0, 24000)
+        snapshot = renderer.snapshot()
+        if renderer_kind != "persistent":
+            assert len(snapshot.lfos) == len(snapshot.envelopes) == 1
+        second = renderer.advance([a for a in actions if a.tick >= 24000], 24000, 48000)
+        renderer.restore(snapshot)
+        np.testing.assert_array_equal(
+            renderer.advance([a for a in actions if a.tick >= 24000], 24000, 48000),
+            second,
+        )
+        check_audio(
+            tmp_path / f"transforms-{clock}-{renderer_kind}.wav",
+            np.vstack((first, second)),
+            expected,
+        )
+
+
+@pytest.mark.parametrize("scope", ["part", "instrument"])
+def test_patch_cycle_transforms_use_shared_absolute_clocks(
+    tmp_path: Path, scope: str
+) -> None:
+    raw = lfo_score("synth", scope).model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    voice["motions"]["motion"]["body"] = {
+        "kind": "patch",
+        "motions": {
+            "cycle": {"kind": "cycle", "rate": "4", "phase": "1/4"},
+            "sum": {"kind": "sum", "inputs": ["cycle", "cycle"]},
+            "output": {"kind": "affine", "input": "sum", "scale": 0.25, "offset": 1},
+        },
+        "outputs": {"level": "output"},
+    }
+    voice["bindings"][0]["output"] = "level"
+    voice["modulation"]["sources"][0].update(minimum=0.5, maximum=1.5)
+    voice["modulation"]["parameters"][0]["maximum"] = 1.5
+    voice["modulation"]["routes"][0]["points"] = [
+        {"input": 0.5, "amount": 0.5},
+        {"input": 1.5, "amount": 1.5},
+    ]
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [onset(6000, pitch=0.1).model_copy(update={"controls": {}})]
+    actions = synth_trace.prepare(document.body, events, seed=0).actions
+    baseline_raw = document.model_dump(mode="json")
+    baseline_raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
+    baseline = SynthInstrumentScore.model_validate(baseline_raw)
+    baseline_actions = synth_trace.prepare(baseline.body, events, seed=0).actions
+    signal = 1 + 0.5 * np.sin(2 * np.pi * (0.25 + 4 * np.arange(48000) / 48000))
+    expected = (
+        synth.OfflineSynth(synth.prepare(baseline)).advance(baseline_actions, 0, 48000)
+        * signal[:, None]
+    )
+    definition = synth.prepare(document)
+    for backend in ("numpy", "native", "persistent"):
+        renderer = (
+            synth.PersistentSynth(definition, voices=1)
+            if backend == "persistent"
+            else synth.OfflineSynth(definition, backend)
+        )
+        check_audio(
+            tmp_path / f"transform-{scope}-{backend}.wav",
+            renderer.advance(actions, 0, 48000),
+            expected,
+        )
+
+
 def lfo_score(
     kind: str, scope: str = "voice"
 ) -> SynthInstrumentScore | instrument.SampleInstrumentScore:
