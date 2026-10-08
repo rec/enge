@@ -685,6 +685,147 @@ def test_patch_child_event_starts_unexposed_contour(
     )
 
 
+@pytest.mark.parametrize("source_kind", ["cycle", "stages"])
+@pytest.mark.parametrize("command", ["start", "cue"])
+@pytest.mark.parametrize("divisors", [[3], [2, 3]])
+@pytest.mark.parametrize("restart", [False, True])
+def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
+    tmp_path: Path, source_kind: str, command: str, divisors: list[int], restart: bool
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    clock = {
+        "kind": "cycle",
+        "rate": "8",
+        "markers": [{"name": "pulse", "position": "1/4"}],
+    }
+    if source_kind == "stages":
+        clock = {
+            "kind": "stages",
+            "initial_stage": "clock",
+            "stages": [{"name": "clock", "motion": clock}],
+        }
+    contour = {
+        "kind": "contour",
+        "segments": [
+            {"duration": "1/64 s", "to": 1},
+            {"duration": "1/64 s", "to": 0},
+        ],
+    }
+    target = contour | {"start": "event"}
+    if command == "cue":
+        target = {
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [
+                {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
+                {"name": "accent", "motion": contour},
+            ],
+            "transitions": [
+                {
+                    "from": ["waiting", "accent"],
+                    "event": "cue.hit",
+                    "action": {"kind": "enter", "stage": "accent"},
+                },
+                {
+                    "from": ["accent"],
+                    "event": "stage.done",
+                    "action": {"kind": "enter", "stage": "waiting"},
+                },
+            ],
+        }
+    voice["motions"] = {
+        "gesture": {
+            "body": {
+                "kind": "patch",
+                "motions": {"clock": clock, "accent": target},
+                "outputs": {"value": "accent"},
+                "events": [
+                    {
+                        "source": "clock.pulse",
+                        "target": "accent",
+                        "action": command,
+                        "every": d,
+                        **({"cue": "hit"} if command == "cue" else {}),
+                    }
+                    for d in divisors
+                ],
+            }
+        }
+    }
+    voice["bindings"] = [
+        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+    ]
+    voice["modulation"]["sources"] = [
+        {
+            "name": "level",
+            "scope": "voice",
+            "minimum": -1 if command == "cue" else 0,
+            "maximum": 1,
+        }
+    ]
+    route = voice["modulation"]["routes"][0]
+    route["source"] = "level"
+    minimum = -1 if command == "cue" else 0
+    route["points"] = [{"input": minimum, "amount": 0}, {"input": 1, "amount": 1}]
+    voice["envelope"]["release"] = [{"duration": "0 s", "to": 0}]
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
+    if restart:
+        events.extend(
+            [
+                Release(tick=10001, ordinal=0, part="main", trigger_id="note"),
+                onset(10002, trigger_id="second", pitch=0.1).model_copy(
+                    update={"controls": {}}
+                ),
+            ]
+        )
+    actions = synth_trace.prepare(document.body, events, seed=0).actions
+    expected = np.zeros((48000, 2))
+    if command == "cue":
+        expected[:, 0] = 0.5
+        if restart:
+            expected[10001, 0] = 0
+    pulse = np.r_[np.arange(750) / 750, 1 - np.arange(750) / 750]
+    for activation, stop in [(0, 10001), (10002, 48000)] if restart else [(0, 48000)]:
+        for event in range(8):
+            start = activation + 1500 + event * 6000
+            if start < stop and any(event % d == 0 for d in divisors):
+                length = min(1500, stop - start)
+                expected[start : start + length, 0] += pulse[:length] * (
+                    0.5 if command == "cue" else 1
+                )
+    for backend in ("numpy", "native", "persistent"):
+        renderer = (
+            synth.PersistentSynth(prepared, voices=1)
+            if backend == "persistent"
+            else synth.OfflineSynth(prepared, backend)
+        )
+        first = renderer.advance([a for a in actions if a.tick < 10001], 0, 10001)
+        snapshot = renderer.snapshot()
+        partitions = [(10001, 10002), (10002, 17777), (17777, 48000)]
+        second = np.vstack(
+            [
+                renderer.advance([a for a in actions if s <= a.tick < e], s, e)
+                for s, e in partitions
+            ]
+        )
+        renderer.restore(snapshot)
+        replay = np.vstack(
+            [
+                renderer.advance([a for a in actions if s <= a.tick < e], s, e)
+                for s, e in partitions
+            ]
+        )
+        np.testing.assert_array_equal(replay, second)
+        check_audio(
+            tmp_path / f"divided-{source_kind}-{command}-{backend}.wav",
+            np.vstack((first, second)),
+            expected,
+        )
+
+
 @pytest.mark.parametrize("backend", ["numpy", "native", "persistent"])
 def test_synth_rejects_keyless_voice_starts_before_admission(backend: str) -> None:
     document = SynthInstrumentScore.model_validate(lfo_score("synth").model_dump())

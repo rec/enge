@@ -105,6 +105,7 @@ struct PatchEventConnection {
     destination: usize,
     cue: Option<String>,
     order: usize,
+    every: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -113,6 +114,7 @@ struct PatchStageStartConnection {
     port: String,
     destination: usize,
     order: usize,
+    every: usize,
 }
 
 #[derive(Clone)]
@@ -210,6 +212,7 @@ struct StagedConnection {
     port: String,
     destination: usize,
     cue: String,
+    every: usize,
 }
 
 #[derive(Clone)]
@@ -317,6 +320,7 @@ pub struct SynthRuntimeSnapshot {
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
     pending_contour_starts: Vec<ContourStart>,
+    event_counts: Vec<usize>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_owners: Vec<usize>,
@@ -390,6 +394,7 @@ pub struct SynthRuntime {
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
     pending_contour_starts: Vec<ContourStart>,
+    event_counts: Vec<usize>,
     beat_points: Vec<BeatPoint>,
     staged_motions: Vec<StagedMotionDefinition>,
     staged_owners: Vec<usize>,
@@ -530,6 +535,7 @@ impl SynthRuntime {
             patch_events: Vec::new(),
             patch_stage_starts: Vec::new(),
             pending_contour_starts: Vec::new(),
+            event_counts: Vec::new(),
             beat_points: Vec::new(),
             staged_motions: Vec::new(),
             staged_owners: Vec::new(),
@@ -897,7 +903,7 @@ impl SynthRuntime {
     fn set_staged_motions(
         &mut self,
         inputs: Vec<StagedMotionInput>,
-        connections: Vec<(usize, String, usize, String)>,
+        connections: Vec<(usize, String, usize, String, usize)>,
     ) -> PyResult<()> {
         let mut definitions = Vec::with_capacity(inputs.len());
         for (
@@ -1013,12 +1019,16 @@ impl SynthRuntime {
                 beat_clock,
             });
         }
-        if connections.iter().any(|(source, port, destination, cue)| {
-            *source >= definitions.len()
-                || *destination >= definitions.len()
-                || port.is_empty()
-                || cue.is_empty()
-        }) {
+        if connections
+            .iter()
+            .any(|(source, port, destination, cue, every)| {
+                *source >= definitions.len()
+                    || *destination >= definitions.len()
+                    || port.is_empty()
+                    || cue.is_empty()
+                    || *every == 0
+            })
+        {
             return Err(PyValueError::new_err("Invalid staged Motion connection"));
         }
         self.staged_states = (0..self.frequencies.len())
@@ -1044,14 +1054,16 @@ impl SynthRuntime {
         self.staged_owners = (0..self.staged_motions.len()).collect();
         self.staged_connections = connections
             .into_iter()
-            .map(|(source, port, destination, cue)| StagedConnection {
+            .map(|(source, port, destination, cue, every)| StagedConnection {
                 source,
                 port,
                 destination,
                 cue,
+                every,
             })
             .collect();
         self.staged_pending.clear();
+        self.reset_event_counts();
         Ok(())
     }
 
@@ -1079,13 +1091,14 @@ impl SynthRuntime {
 
     fn set_patch_events(
         &mut self,
-        connections: Vec<(usize, f64, usize, Option<String>, usize)>,
+        connections: Vec<(usize, f64, usize, Option<String>, usize, usize)>,
     ) -> PyResult<()> {
         if self.frame != 0
             || connections
                 .iter()
-                .any(|(source, marker, destination, cue, _)| {
-                    *source >= self.lfo_definitions.len()
+                .any(|(source, marker, destination, cue, _, every)| {
+                    *every == 0
+                        || *source >= self.lfo_definitions.len()
                         || self.lfo_definitions[*source].scope != 3
                         || self.lfo_definitions[*source].rate.0 == 0
                         || self.lfo_definitions[*source].beat_clock
@@ -1105,7 +1118,7 @@ impl SynthRuntime {
         self.patch_events = connections
             .into_iter()
             .map(
-                |(source, marker, destination, cue, order)| PatchEventConnection {
+                |(source, marker, destination, cue, order, every)| PatchEventConnection {
                     source: self.lfo_owners[source],
                     marker,
                     destination: if cue.is_some() {
@@ -1115,23 +1128,28 @@ impl SynthRuntime {
                     },
                     cue,
                     order,
+                    every,
                 },
             )
             .collect();
+        self.reset_event_counts();
         Ok(())
     }
 
     fn set_patch_stage_starts(
         &mut self,
-        connections: Vec<(usize, String, usize, usize)>,
+        connections: Vec<(usize, String, usize, usize, usize)>,
     ) -> PyResult<()> {
         if self.frame != 0
-            || connections.iter().any(|(source, port, destination, _)| {
-                *source >= self.staged_motions.len()
-                    || port.is_empty()
-                    || *destination >= self.named_envelopes.len()
-                    || !self.named_envelopes[*destination].event_started
-            })
+            || connections
+                .iter()
+                .any(|(source, port, destination, _, every)| {
+                    *source >= self.staged_motions.len()
+                        || *every == 0
+                        || port.is_empty()
+                        || *destination >= self.named_envelopes.len()
+                        || !self.named_envelopes[*destination].event_started
+                })
         {
             return Err(PyValueError::new_err(
                 "Invalid Patch stage start connections",
@@ -1140,14 +1158,16 @@ impl SynthRuntime {
         self.patch_stage_starts = connections
             .into_iter()
             .map(
-                |(source, port, destination, order)| PatchStageStartConnection {
+                |(source, port, destination, order, every)| PatchStageStartConnection {
                     source: self.staged_owners[source],
                     port,
                     destination: self.named_owners[destination],
                     order,
+                    every,
                 },
             )
             .collect();
+        self.reset_event_counts();
         Ok(())
     }
 
@@ -1291,6 +1311,7 @@ impl SynthRuntime {
             patch_events: self.patch_events.clone(),
             patch_stage_starts: self.patch_stage_starts.clone(),
             pending_contour_starts: self.pending_contour_starts.clone(),
+            event_counts: self.event_counts.clone(),
             beat_points: self.beat_points.clone(),
             staged_motions: self.staged_motions.clone(),
             staged_owners: self.staged_owners.clone(),
@@ -1349,6 +1370,7 @@ impl SynthRuntime {
         self.staged_pending.clone_from(&snapshot.staged_pending);
         self.pending_contour_starts
             .clone_from(&snapshot.pending_contour_starts);
+        self.event_counts.clone_from(&snapshot.event_counts);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
@@ -1386,6 +1408,16 @@ impl SynthRuntime {
 }
 
 impl SynthRuntime {
+    fn reset_event_counts(&mut self) {
+        self.event_counts = vec![
+            0;
+            self.frequencies.len()
+                * (self.staged_connections.len()
+                    + self.patch_events.len()
+                    + self.patch_stage_starts.len())
+        ];
+    }
+
     pub(crate) fn validate_snapshot(&self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         if self.rate != snapshot.rate
             || self.waveform != snapshot.waveform
@@ -1848,6 +1880,10 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid voice start"));
                 }
                 self.active[voice] = true;
+                let connections = self.staged_connections.len()
+                    + self.patch_events.len()
+                    + self.patch_stage_starts.len();
+                self.event_counts[voice * connections..(voice + 1) * connections].fill(0);
                 let lfo_base = voice * self.lfo_definitions.len();
                 self.voice_lfo_event_states[lfo_base..lfo_base + self.lfo_definitions.len()]
                     .fill(None);
@@ -2465,8 +2501,17 @@ impl SynthRuntime {
     fn dispatch_staged_events(&mut self) -> PyResult<()> {
         let mut count = 0;
         while let Some(event) = self.staged_pending.pop_front() {
-            for connection in &self.staged_connections {
+            let connections = self.staged_connections.len()
+                + self.patch_events.len()
+                + self.patch_stage_starts.len();
+            for (index, connection) in self.staged_connections.iter().enumerate() {
                 if connection.source != event.source || connection.port != event.port {
+                    continue;
+                }
+                if !forward_event(
+                    &mut self.event_counts[event.voice * connections + index],
+                    connection.every,
+                ) {
                     continue;
                 }
                 if count == 4096 {
@@ -2488,8 +2533,17 @@ impl SynthRuntime {
                 }
                 count += 1;
             }
-            for connection in &self.patch_stage_starts {
+            for (index, connection) in self.patch_stage_starts.iter().enumerate() {
                 if connection.source != event.source || connection.port != event.port {
+                    continue;
+                }
+                if !forward_event(
+                    &mut self.event_counts[event.voice * connections
+                        + self.staged_connections.len()
+                        + self.patch_events.len()
+                        + index],
+                    connection.every,
+                ) {
                     continue;
                 }
                 if count == 4096 {
@@ -2553,6 +2607,15 @@ impl SynthRuntime {
                 previous_at = Some(at);
             }
             let connection = &self.patch_events[order];
+            let connections = self.staged_connections.len()
+                + self.patch_events.len()
+                + self.patch_stage_starts.len();
+            if !forward_event(
+                &mut self.event_counts[voice * connections + self.staged_connections.len() + order],
+                connection.every,
+            ) {
+                continue;
+            }
             let destination = connection.destination;
             if let Some(cue) = &connection.cue {
                 let definition = &self.staged_motions[destination];
@@ -3766,4 +3829,10 @@ fn valid_motion_owners(owners: &[usize]) -> bool {
         .iter()
         .enumerate()
         .all(|(index, owner)| *owner <= index && owners[*owner] == *owner)
+}
+
+fn forward_event(count: &mut usize, every: usize) -> bool {
+    let forward = *count == 0;
+    *count = if *count + 1 == every { 0 } else { *count + 1 };
+    forward
 }

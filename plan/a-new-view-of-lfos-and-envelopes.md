@@ -310,6 +310,14 @@ source event port, destination instance, and command, optionally mapping named
 payload fields into typed command arguments. Do not place executable strings
 inside the document.
 
+Event connections support `every`, a positive integer defaulting to 1. Division
+is first-aligned: `every = 3` forwards matching events 1, 4, 7, and so on. Each
+connection counts independently for each voice, resets on voice activation, and
+retains its count through child restarts, stage transitions, render partitions,
+and snapshot restoration. Division filters delivery, not source emission or
+named event outputs. This applies to Patch starts and cues and to instrument
+Motion cue connections in both reference and native rendering.
+
 For example, within a proposed compound `patch` body:
 
 ```toml
