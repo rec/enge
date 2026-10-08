@@ -28,6 +28,8 @@ from ufor.motion import (
     Patch,
     PlaybackMode,
     Product,
+    SampleHold,
+    SampleHoldState,
     Stages,
     StageState,
     Sum,
@@ -479,7 +481,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                 MotionUse(
                     scope=parent.scope,
                     clock=parent.clock,
-                    body=cast(Cycle | Contour | Stages, child),
+                    body=cast(Cycle | Contour | Stages | SampleHold, child),
                 ),
             )
             if any(
@@ -597,7 +599,7 @@ def _patch_start_connections(
         if not isinstance(parent.body, Patch):
             continue
         for order, connection in enumerate(parent.body.events):
-            if connection.action != "start":
+            if connection.action not in ("start", "sample"):
                 continue
             child_name, _, port = connection.source.partition(".")
             source_name = f"patch-{parent_name}-{child_name}"
@@ -811,6 +813,18 @@ class ControlRenderer:
                 settings = self.settings[source.setting]
                 definition = settings.motions[source.name]
                 event = self._motion_observation(action, definition)
+                if (
+                    isinstance(source.state.runtime, SampleHoldState)
+                    and event.at == source.state.runtime.at
+                ):
+                    # Stopped beats can collapse distinct host frames onto one time.
+                    event = event.model_copy(
+                        update={
+                            "ordinal": max(
+                                event.ordinal, source.state.runtime.ordinal + 1
+                            )
+                        }
+                    )
                 if isinstance(definition.body, Stages):
                     result = advance_motion(definition, source.state, event.at, event)
                     state = result.state
@@ -899,7 +913,7 @@ class ControlRenderer:
                 if isinstance(motion.body, Patch):
                     result[source.name] = -1
                     continue
-                if isinstance(motion.body, (Contour, Stages)):
+                if isinstance(motion.body, (Contour, Stages, SampleHold)):
                     if motion.scope != "voice":
                         raise EngineError(
                             "Staged and contour Motions require voice scope"
@@ -924,6 +938,12 @@ class ControlRenderer:
                         self.motion_time(
                             motion, Fraction(action.tick, self.sample_rate)
                         ),
+                        seed=action.motion_key
+                        ^ motion_random.stream_key(
+                            0, binding.reference + ":sample-hold"
+                        )
+                        if isinstance(motion.body, SampleHold)
+                        else 0,
                     )
                     if isinstance(motion.body, Stages):
                         advanced = advance_motion(
@@ -942,7 +962,7 @@ class ControlRenderer:
                         )
                         initial = advanced.state
                         emitted.extend((binding.name, e) for e in advanced.events)
-                    elif motion.body.release:
+                    elif isinstance(motion.body, Contour) and motion.body.release:
                         initial = motion_event(
                             motion,
                             initial,
@@ -1095,11 +1115,11 @@ class ControlRenderer:
                 motion = settings.motions[binding.reference]
                 if isinstance(motion.body, Patch):
                     continue
-                if isinstance(motion.body, (Contour, Stages)):
+                if isinstance(motion.body, (Contour, Stages, SampleHold)):
                     if index not in self.cached_envelopes:
                         source = self.envelopes[index]
                         state = source.state
-                        assert isinstance(motion.body, Contour)
+                        assert isinstance(motion.body, (Contour, SampleHold))
                         values = np.empty(frames)
                         for i in range(frames):
                             at = Fraction(start + i, self.sample_rate)
@@ -1581,14 +1601,14 @@ class ControlRenderer:
             source = self.envelopes[index]
             motion = settings.motions[source.name]
             at = self.motion_time(motion, seconds)
-            assert isinstance(source.state.runtime, ContourState)
+            assert isinstance(source.state.runtime, (ContourState, SampleHoldState))
             state = motion_event(
                 motion,
                 source.state,
                 MotionEvent(
                     at=at,
                     ordinal=source.state.runtime.ordinal + 1,
-                    action="start",
+                    action="sample" if isinstance(motion.body, SampleHold) else "start",
                 ),
             )
             self.envelopes[index] = source.model_copy(update={"state": state})
@@ -1898,6 +1918,9 @@ class PersistentSynth:
             envelope_releases,
             envelope_parameters,
         )
+        _configure_sample_hold_motions(
+            self.runtime, template, self.named_motion_sources
+        )
         if tempo_map is not None:
             self.runtime.set_beat_clock(
                 [
@@ -1962,7 +1985,7 @@ class PersistentSynth:
             ):
                 continue
             for order, connection in enumerate(parent.body.events):
-                if connection.action != "start":
+                if connection.action not in ("start", "sample"):
                     continue
                 child_name, _, port = connection.source.partition(".")
                 child = parent.body.motions[child_name]
@@ -2285,12 +2308,17 @@ class PersistentSynth:
 
     @cached_property
     def probabilistic_events(self) -> bool:
-        return any(
-            0 < c.probability < 1 for c in self.template.event_connections
-        ) or any(
-            isinstance(m.body, Patch)
-            and any(0 < c.probability < 1 for c in m.body.events)
-            for m in self.template.motions.values()
+        return (
+            any(0 < c.probability < 1 for c in self.template.event_connections)
+            or any(
+                isinstance(m.body, Patch)
+                and any(0 < c.probability < 1 for c in m.body.events)
+                for m in self.template.motions.values()
+            )
+            or any(
+                isinstance(self.template.motions[n].body, SampleHold)
+                for n in self.named_motion_sources
+            )
         )
 
     def finish_native_live_block(
@@ -2605,13 +2633,14 @@ def validate_generators(
     if any(
         g.scope != "voice"
         for g in settings.motions.values()
-        if isinstance(g.body, (Contour, Stages))
+        if isinstance(g.body, (Contour, Stages, SampleHold))
     ):
         raise EngineError("Staged and contour Motions require voice scope")
     if any(
         g.clock != "seconds"
         and not (
-            allow_beat_motions and isinstance(g.body, (Contour, Cycle, Stages, Patch))
+            allow_beat_motions
+            and isinstance(g.body, (Contour, Cycle, Stages, SampleHold, Patch))
         )
         for g in settings.motions.values()
     ):
@@ -2706,6 +2735,25 @@ def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> float:
     return frames
 
 
+def _configure_sample_hold_motions(
+    runtime: _native.SynthRuntime,
+    settings: SoundSettings,
+    sources: dict[str, list[int]],
+) -> None:
+    definitions = [
+        (
+            i,
+            motion_random.stream_key(0, name + ":sample-hold"),
+            body.minimum,
+            body.maximum,
+        )
+        for name, indices in sources.items()
+        if isinstance(body := settings.motions[name].body, SampleHold)
+        for i in indices
+    ]
+    runtime.set_sample_hold_motions(definitions)
+
+
 def _configure_patch_transforms(
     runtime: _native.SynthRuntime,
     template: SoundSettings,
@@ -2724,7 +2772,7 @@ def _configure_patch_transforms(
             reference = f"patch-{parent_name}-{name}"
             if isinstance(body, Cycle) and reference in lfos:
                 children[name] = (0, lfos[reference][0], body.center, body.depth)
-            elif isinstance(body, Contour) and reference in contours:
+            elif isinstance(body, (Contour, SampleHold)) and reference in contours:
                 children[name] = (1, contours[reference][0], 0.0, 1.0)
             elif isinstance(body, Stages) and reference in stages:
                 children[name] = (2, stages[reference][0], 0.0, 1.0)
@@ -3038,6 +3086,28 @@ def _persistent_modulation(
             motion = template.motions[binding.reference]
             if isinstance(motion.body, Patch):
                 continue
+            if isinstance(motion.body, SampleHold):
+                named_motion_sources.setdefault(binding.reference, []).append(
+                    len(envelope_initials)
+                )
+                envelope_initials.append(0.0)
+                envelope_attacks.append([])
+                envelope_releases.append([])
+                envelope_parameters.append(
+                    (
+                        parameter,
+                        0 if operation == modulation.Operation.add else 1,
+                        intercept,
+                        slope,
+                        False,
+                        0,
+                        0,
+                        1,
+                        None,
+                        True,
+                    )
+                )
+                continue
             if isinstance(motion.body, Contour):
                 generator = motion.body
                 assert isinstance(generator.initial, float)
@@ -3160,6 +3230,15 @@ def _persistent_modulation(
             continue
         assert isinstance(binding, processing.GeneratorBinding)
         motion = template.motions[binding.reference]
+        if isinstance(motion.body, SampleHold):
+            named_motion_sources.setdefault(binding.reference, []).append(
+                len(envelope_initials)
+            )
+            envelope_initials.append(0.0)
+            envelope_attacks.append([])
+            envelope_releases.append([])
+            envelope_parameters.append((0, 1, 1, 0, False, 0, 0, 1, None, True))
+            continue
         if isinstance(motion.body, Cycle):
             generator = cycle_lfo(motion)
             source_scopes.add(motion.scope)

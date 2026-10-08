@@ -71,6 +71,7 @@ struct BeatPoint {
 
 #[derive(Clone, PartialEq)]
 struct NamedEnvelopeDefinition {
+    sample_hold: Option<(u64, f64, f64)>,
     initial: f64,
     attack: Vec<Segment>,
     release: Vec<Segment>,
@@ -89,6 +90,7 @@ struct NamedEnvelopeDefinition {
 
 #[derive(Clone)]
 struct NamedContourState {
+    random_state: u64,
     playback: PlaybackState,
     start_value: f64,
     released: bool,
@@ -880,6 +882,7 @@ impl SynthRuntime {
                         return Err(PyValueError::new_err("Invalid named envelope definition"));
                     }
                     Ok(NamedEnvelopeDefinition {
+                        sample_hold: None,
                         initial,
                         attack: attack
                             .into_iter()
@@ -1134,6 +1137,28 @@ impl SynthRuntime {
             .collect();
         self.staged_pending.clear();
         self.reset_event_counts();
+        Ok(())
+    }
+
+    fn set_sample_hold_motions(
+        &mut self,
+        definitions: Vec<(usize, u64, f64, f64)>,
+    ) -> PyResult<()> {
+        if self.frame != 0
+            || definitions.iter().any(|(source, _, minimum, maximum)| {
+                *source >= self.named_envelopes.len()
+                    || !minimum.is_finite()
+                    || !maximum.is_finite()
+                    || !(-1.0..=1.0).contains(minimum)
+                    || !(-1.0..=1.0).contains(maximum)
+                    || minimum > maximum
+            })
+        {
+            return Err(PyValueError::new_err("Invalid sample-and-hold definition"));
+        }
+        for (source, key, minimum, maximum) in definitions {
+            self.named_envelopes[source].sample_hold = Some((key, minimum, maximum));
+        }
         Ok(())
     }
 
@@ -2153,6 +2178,11 @@ impl SynthRuntime {
                         definition,
                         self.named_time(definition, self.frame as f64),
                     );
+                    if let Some((key, _, _)) = definition.sample_hold {
+                        let state = &mut self.named_states[envelope_base + index];
+                        state.random_state = self.motion_keys[voice] ^ key;
+                        sample_hold_draw(definition, state);
+                    }
                 }
                 if self.source_kind == 2 {
                     self.noise_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
@@ -2394,6 +2424,9 @@ impl SynthRuntime {
                 }
                 let index = voice * self.named_envelopes.len() + source;
                 let definition = &self.named_envelopes[source];
+                if definition.sample_hold.is_some() {
+                    return Ok(());
+                }
                 let at = self.named_time(definition, self.frame as f64);
                 let mut state =
                     named_contour_settled(definition, &self.named_states[index], self.frame as f64);
@@ -2989,6 +3022,10 @@ impl SynthRuntime {
         for event in starts {
             let definition = &self.named_envelopes[event.destination];
             let index = event.voice * self.named_envelopes.len() + event.destination;
+            if definition.sample_hold.is_some() {
+                sample_hold_draw(definition, &mut self.named_states[index]);
+                continue;
+            }
             let previous = &self.named_states[index];
             let start_value = if previous.idle {
                 definition.initial
@@ -3643,6 +3680,7 @@ pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -
 fn named_contour_initial(definition: &NamedEnvelopeDefinition, at: f64) -> NamedContourState {
     let duration = total_frames(&definition.attack);
     NamedContourState {
+        random_state: 0,
         playback: PlaybackState {
             at,
             coordinate: if duration == 0.0 { 1.0 } else { 0.0 },
@@ -3704,6 +3742,9 @@ fn named_contour_value(
     at: f64,
     frame: f64,
 ) -> f64 {
+    if definition.sample_hold.is_some() {
+        return state.start_value;
+    }
     if state.idle {
         return definition.initial;
     }
@@ -4262,9 +4303,20 @@ fn forward_event(count: &mut usize, state: &mut u64, every: usize, probability: 
     if probability == (1 << 53) {
         return true;
     }
+    motion_random_word(state) >> 11 < probability
+}
+
+fn sample_hold_draw(definition: &NamedEnvelopeDefinition, state: &mut NamedContourState) {
+    let (_, minimum, maximum) = definition.sample_hold.unwrap();
+    let word = motion_random_word(&mut state.random_state);
+    state.start_value =
+        minimum + (maximum - minimum) * ((word >> 11) as f64 / (1_u64 << 53) as f64);
+}
+
+fn motion_random_word(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e3779b97f4a7c15);
     let mut word = (*state ^ (*state >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
     word ^= word >> 31;
-    word >> 11 < probability
+    word
 }

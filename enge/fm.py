@@ -655,6 +655,9 @@ class PersistentFM(synth.PersistentSynth):
             envelope_releases,
             envelope_parameters,
         )
+        synth._configure_sample_hold_motions(
+            self.runtime, template, self.named_motion_sources
+        )
         self.runtime.set_staged_motions(staged_motions, event_connections)
 
     def snapshot(self) -> PersistentFMSnapshot:  # ty: ignore[invalid-method-override]

@@ -480,6 +480,16 @@ in the first release.
 
 Distinguish independent voices from intentionally correlated variation. A random
 seed can derive from the score seed, motion identity, and stable instance key.
+Implemented the first variation primitive: voice-owned `sample_hold` draws on
+activation and on connected Patch `sample` commands. Cycle markers and Stages
+ports use the existing division, probability, and seconds-delay rules. Each
+named child owns an independent stream; signal transforms can consume held
+values without drawing again. Seeks, reversals, pause/resume, and note-off do
+not rewind or redraw. Python and persistent native synth retain the value,
+stream, and pending deliveries in snapshots, including across voice-slot reuse.
+Direct bindings also use the shared native setup in FM and noise. WAV
+regressions cover those paths and both event-source types at 48 kHz.
+
 For reversible random shapes, derive each value from seed plus coordinate/index;
 reverse revisits the same values. Stateful random walks and physical models
 instead need recorded history or replay to revisit their past.

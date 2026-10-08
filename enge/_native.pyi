@@ -231,6 +231,9 @@ class SynthRuntime:
         ],
         connections: list[tuple[int, str, int, str, int, int, int, int, float]],
     ) -> None: ...
+    def set_sample_hold_motions(
+        self, definitions: list[tuple[int, int, float, float]]
+    ) -> None: ...
     def set_motion_state_owners(
         self, lfos: list[int], envelopes: list[int], stages: list[int]
     ) -> None: ...
