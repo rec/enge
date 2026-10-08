@@ -30,6 +30,7 @@ from ufor.motion import (
     Product,
     SampleHold,
     SampleHoldState,
+    Slew,
     Stages,
     StageState,
     Sum,
@@ -39,6 +40,7 @@ from ufor.motion import (
     initial_motion,
     motion_at,
     motion_event,
+    slew_value,
     threshold_value,
 )
 from ufor.oscillator import Oscillator, Waveform
@@ -439,8 +441,8 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if name in voice.motions:
             raise EngineError(f"Patch output Motion name collides: {name}")
         child = parent.body.motions[child_name]
-        if isinstance(child, (Sum, Product, Affine, Threshold)) or any(
-            isinstance(b, Threshold) for b in parent.body.motions.values()
+        if isinstance(child, (Sum, Product, Affine, Threshold, Slew)) or any(
+            isinstance(b, (Threshold, Slew)) for b in parent.body.motions.values()
         ):
             continue
         if name not in motions:
@@ -481,7 +483,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             child = parent.body.motions[child_name]
             if isinstance(child, (Sum, Product)):
                 pending.extend(child.inputs)
-            elif isinstance(child, (Affine, Threshold)):
+            elif isinstance(child, (Affine, Threshold, Slew)):
                 pending.append(child.input)
             else:
                 children.add(child_name)
@@ -1163,7 +1165,7 @@ class ControlRenderer:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
         if frames > 1 and any(
             isinstance(m.body, Patch)
-            and any(isinstance(b, Threshold) for b in m.body.motions.values())
+            and any(isinstance(b, (Threshold, Slew)) for b in m.body.motions.values())
             for m in settings.motions.values()
         ):
             rows = [self.values(settings, sources, start + i, 1) for i in range(frames)]
@@ -1320,6 +1322,17 @@ class ControlRenderer:
                             port,
                             Fraction(start + 1, self.sample_rate),
                         )
+                elif isinstance(body, Slew):
+                    if body.input not in children:
+                        continue
+                    value = slew_value(
+                        body,
+                        float(children[body.input][0]),
+                        retained.get(name),
+                        Fraction(1, self.sample_rate),
+                    )
+                    retained[name] = value
+                    children[name] = np.full(frames, value)
                 else:
                     binding = next(
                         (
@@ -2128,6 +2141,7 @@ class PersistentSynth:
             self.lfo_sources | self.voice_lfo_sources,
             self.named_motion_sources,
             self.staged_motion_sources,
+            self.definition.sample_rate,
         )
         patch_stage_starts: list[
             tuple[int, str, int, int, int, int, int, int, float]
@@ -2929,8 +2943,11 @@ def _configure_patch_transforms(
     lfos: dict[str, list[int]],
     contours: dict[str, list[int]],
     stages: dict[str, list[int]],
+    rate: int,
 ) -> dict[tuple[str, str], int]:
-    nodes: list[tuple[int, list[tuple[int, int, float, float]], float, float]] = []
+    nodes: list[
+        tuple[int, list[tuple[int, int, float, float]], float, float, float | None]
+    ] = []
     outputs: dict[tuple[str, str], int] = {}
     detectors: dict[tuple[str, str], int] = {}
     for parent_name, parent in template.motions.items():
@@ -2946,10 +2963,10 @@ def _configure_patch_transforms(
                 children[name] = (1, contours[reference][0], 0.0, 1.0)
             elif isinstance(body, Stages) and reference in stages:
                 children[name] = (2, stages[reference][0], 0.0, 1.0)
-            elif isinstance(body, (Sum, Product, Affine, Threshold)):
+            elif isinstance(body, (Sum, Product, Affine, Threshold, Slew)):
                 inputs = (
                     [body.input]
-                    if isinstance(body, (Affine, Threshold))
+                    if isinstance(body, (Affine, Threshold, Slew))
                     else body.inputs
                 )
                 if any(n not in children for n in inputs):
@@ -2959,7 +2976,9 @@ def _configure_patch_transforms(
                     detectors[parent_name, name] = len(nodes)
                 nodes.append(
                     (
-                        3
+                        4
+                        if isinstance(body, Slew)
+                        else 3
                         if isinstance(body, Threshold)
                         else 2
                         if isinstance(body, Affine)
@@ -2967,25 +2986,33 @@ def _configure_patch_transforms(
                         if isinstance(body, Sum)
                         else 1,
                         [children[n] for n in inputs],
-                        body.lower
+                        body.rise * float(Fraction(1, rate))
+                        if isinstance(body, Slew)
+                        else body.lower
                         if isinstance(body, Threshold)
                         else body.scale
                         if isinstance(body, Affine)
                         else 1.0,
-                        body.upper
+                        body.fall * float(Fraction(1, rate))
+                        if isinstance(body, Slew)
+                        else body.upper
                         if isinstance(body, Threshold)
                         else body.offset
                         if isinstance(body, Affine)
                         else 0.0,
+                        body.initial if isinstance(body, Slew) else None,
                     )
                 )
         for output, name in parent.body.outputs.items():
             if (
                 name in children
                 and children[name][0] != 3
-                and any(isinstance(b, Threshold) for b in parent.body.motions.values())
+                and any(
+                    isinstance(b, (Threshold, Slew))
+                    for b in parent.body.motions.values()
+                )
             ):
-                nodes.append((2, [children[name]], 1.0, 0.0))
+                nodes.append((2, [children[name]], 1.0, 0.0, None))
                 outputs[parent_name, output] = len(nodes) - 1
             if name in children and children[name][0] == 3:
                 outputs[parent_name, output] = children[name][1]

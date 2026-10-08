@@ -300,6 +300,15 @@ signal output, not the timestamps or traversal meaning of marker events.
 
 ## 7. Signals, event outputs, and connections
 
+Implemented voice-owned Patch `slew` nodes with independent rise/fall limits in
+signal units per second. Activation starts at the input's value unless an
+explicit initial value requests a ramp; movement begins on the next sample and
+does not overshoot. Zero prevents movement in that direction. Slew continues in
+seconds even when a beat-clock input stops. Shared consumers read one state,
+and Python/native snapshots retain the previous output. One-second 48 kHz
+regressions cover startup, asymmetric and zero rates, interrupted ramps, output
+ranges, stopped clocks, partitioning, snapshots, and voice-slot reuse.
+
 Implemented voice-owned Patch `threshold` nodes with lower/upper hysteresis,
 a [0, 1] gate, and named `rising`/`falling` events. Activation is silent;
 subsequent jumps can fire. Detectors observe the sample-frame grid, not estimated

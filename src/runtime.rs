@@ -266,7 +266,7 @@ type PatchEventInput = (
 type StageConnectionInput = (usize, String, usize, String, usize, usize, u64, u64, f64);
 type StageStartInput = (usize, String, usize, usize, usize, usize, u64, u64, f64);
 
-type MotionTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64);
+type MotionTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64, Option<f64>);
 type MotionTransformRoute = (usize, usize, usize, f64, f64);
 
 type StageInput = (
@@ -1207,13 +1207,15 @@ impl SynthRuntime {
             || nodes
                 .iter()
                 .enumerate()
-                .any(|(node, (kind, inputs, scale, offset))| {
-                    *kind > 3
+                .any(|(node, (kind, inputs, scale, offset, initial))| {
+                    *kind > 4
                         || !scale.is_finite()
                         || !offset.is_finite()
                         || inputs.len() < if *kind >= 2 { 1 } else { 2 }
                         || (*kind >= 2 && inputs.len() != 1)
                         || (*kind == 3 && scale >= offset)
+                        || (*kind == 4 && (*scale < 0.0 || *offset < 0.0))
+                        || initial.is_some_and(|value| *kind != 4 || !value.is_finite())
                         || inputs.iter().any(|(kind, index, offset, scale)| {
                             !offset.is_finite()
                                 || !scale.is_finite()
@@ -3195,7 +3197,9 @@ impl SynthRuntime {
 
     fn evaluate_motion_transforms(&mut self, voice: usize) -> PyResult<()> {
         let base = voice * self.motion_transforms.len();
-        for (node, (kind, inputs, scale, offset)) in self.motion_transforms.iter().enumerate() {
+        for (node, (kind, inputs, scale, offset, initial)) in
+            self.motion_transforms.iter().enumerate()
+        {
             let mut output = if *kind == 1 { 1.0 } else { 0.0 };
             for (source_kind, source, center, depth) in inputs {
                 let value = match source_kind {
@@ -3230,7 +3234,15 @@ impl SynthRuntime {
                     output += value;
                 }
             }
-            self.motion_transform_values[base + node] = if *kind == 3 {
+            self.motion_transform_values[base + node] = if *kind == 4 {
+                let value = match self.motion_transform_states[base + node] {
+                    None => initial.unwrap_or(output),
+                    Some(previous) if output >= previous => output.min(previous + scale),
+                    Some(previous) => output.max(previous - offset),
+                };
+                self.motion_transform_states[base + node] = Some(value);
+                value
+            } else if *kind == 3 {
                 let previous = self.motion_transform_states[base + node];
                 let value = match previous {
                     None => {
