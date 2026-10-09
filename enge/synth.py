@@ -2971,7 +2971,8 @@ def validate_envelope(envelope: Envelope) -> None:
     if envelope.clock != "seconds" or envelope.scope != "voice":
         raise EngineError("Envelopes must use the voice seconds clock")
     if not envelope.hold or any(
-        s.curve != 0 for s in [*envelope.segments, *envelope.release]
+        s.duration != 0 and s.curve != 0
+        for s in [*envelope.segments, *envelope.release]
     ):
         raise EngineError("Only held linear envelopes are implemented")
 

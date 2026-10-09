@@ -97,7 +97,10 @@ slot/group filters precede instrument filters. Voice completion discards their
 state without adding a tail. See the revised [uFor filter contract](../ufor/doc/instrument-format.md#resonant-filters)
 and [enge's realization](plan/engine-execution.md#dynamic-filters).
 
-Decoding remains with the caller. Curved envelopes, equalizers,
+Zero-duration amplitude-envelope phases jump immediately to their endpoints;
+their curve values do not affect playback. Nonzero-duration phases remain linear.
+Decoding remains with the caller. Curved envelope phases with nonzero duration,
+equalizers,
 layer crossfades, delayed or offset sample starts, event bindings, other
 modulation targets, and fade
 retirements fail explicitly.

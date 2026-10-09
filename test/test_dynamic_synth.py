@@ -423,6 +423,7 @@ def test_preparation_rejects_unsupported_features(feature: str) -> None:
             }
         }
     elif feature == "curve":
+        voice["envelope"]["segments"][0]["duration"] = "1/10 s"
         voice["envelope"]["segments"][0]["curve"] = 5
     else:
         voice["choke_group"] = "self"

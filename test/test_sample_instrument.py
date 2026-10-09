@@ -59,6 +59,82 @@ def sample_score(
     return instrument.SampleInstrumentScore.model_validate(raw)
 
 
+@pytest.mark.parametrize("release_seconds", [Fraction(0), Fraction(1, 4)])
+def test_zero_duration_curves_jump_between_linear_phases(
+    backend: Literal["numpy", "native"], tmp_path: Path, release_seconds: Fraction
+) -> None:
+    raw = sample_score(frames=48000).model_dump(mode="json")
+    raw["body"]["settings"]["envelope"] = Envelope(
+        initial=0.1,
+        segments=[
+            Segment(duration=0, to=0.25, curve=-5),
+            Segment(duration=Fraction(1, 4), to=0.75),
+            Segment(duration=0, to=0.5, curve=5),
+            Segment(duration=Fraction(1, 4), to=1),
+            Segment(duration=0, to=0.8, curve=-5),
+        ],
+        release=[
+            Segment(duration=0, to=0.6, curve=5),
+            Segment(duration=release_seconds, to=0.2),
+            Segment(duration=0, to=0, curve=-5),
+        ],
+    ).model_dump(mode="json")
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    audio = np.tile([0.25, 0.125], (48000, 1))
+    prepared = sample_instrument.prepare(document, {"asset": audio})
+    actions = trace.prepare(
+        document.body,
+        [
+            onset(pitch=440).model_copy(update={"controls": {}}),
+            Release(tick=30000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
+    boundaries = [
+        0,
+        1,
+        11999,
+        12000,
+        12001,
+        24000,
+        24001,
+        29999,
+        30000,
+        30001,
+        41999,
+        42000,
+        48000,
+    ]
+    chunks = [
+        renderer.advance([a for a in actions if s <= a.tick < e], s, e)
+        for s, e in pairwise(boundaries)
+    ]
+    amplitude = np.zeros(48000)
+    amplitude[:12000] = 0.25 + np.arange(12000) / 12000 * 0.5
+    amplitude[12000:24000] = 0.5 + np.arange(12000) / 12000 * 0.5
+    amplitude[24000:30000] = 0.8
+    if release_seconds:
+        amplitude[30000:42000] = 0.6 - np.arange(12000) / 12000 * 0.4
+    expected = amplitude[:, None] * [0.25, 0.1875]
+    check_audio(tmp_path / "zero-duration-curves.wav", np.concatenate(chunks), expected)
+    assert renderer.snapshot().voices == []
+
+
+@pytest.mark.parametrize("phase", ["segments", "release"])
+def test_nonzero_duration_curves_remain_unsupported(phase: str) -> None:
+    raw = sample_score(frames=48000).model_dump(mode="json")
+    definition = Envelope(
+        segments=[Segment(duration=Fraction(1, 4), to=1)],
+        release=[Segment(duration=Fraction(1, 4), to=0)],
+    ).model_dump(mode="json")
+    definition[phase][0]["curve"] = -5
+    raw["body"]["settings"]["envelope"] = definition
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    with pytest.raises(EngineError, match="Only held linear envelopes are implemented"):
+        sample_instrument.prepare(document, {"asset": np.ones((48000, 2))})
+
+
 @pytest.mark.parametrize("block", [64, 997, 1024])
 def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
     backend: Literal["numpy", "native"], tmp_path: Path, block: int
