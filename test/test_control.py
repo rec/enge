@@ -448,3 +448,51 @@ def test_step_route_changes_on_the_same_sample_across_partitions() -> None:
     np.testing.assert_array_equal(
         np.concatenate(pieces), (np.arange(48000) >= 2400).astype(float)
     )
+
+
+@pytest.mark.parametrize("amounts", [[0.25, 1, 4], [4, 1, 0.25], [2]])
+def test_exponential_arrays_match_scalar_mapping_and_activation(
+    amounts: list[float],
+) -> None:
+    target = modulation.Target(name="voice", parameter="frequency")
+    definition = modulation.Modulation(
+        sources=[
+            modulation.Source(name="velocity", scope="voice", minimum=0, maximum=1)
+        ],
+        parameters=[
+            modulation.Parameter(
+                target=target,
+                unit=modulation.Unit.hz,
+                scope="voice",
+                minimum=100,
+                maximum=1600,
+                default=400,
+            )
+        ],
+        routes=[
+            modulation.Route(
+                name="velocity-frequency",
+                source="velocity",
+                target=target,
+                operation=modulation.Operation.multiply,
+                unit=modulation.Unit.ratio,
+                interpolation=modulation.Interpolation.exponential,
+                points=[
+                    modulation.Point(input=0.25 + i * 0.25, amount=a)
+                    for i, a in enumerate(amounts)
+                ],
+            )
+        ],
+    )
+    values = np.linspace(0, 1, 101)
+    weights = np.linspace(1, 0, 101)
+    actual = control.modulation_samples(
+        definition, {"velocity": np.column_stack((values, weights))}, 101
+    )["voice", "frequency"]
+    expected = [
+        modulation.evaluate(
+            definition, {"velocity": modulation.SourceValue(value=v, weight=w)}
+        )[0].value
+        for v, w in zip(values, weights, strict=True)
+    ]
+    np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=1e-14)

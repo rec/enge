@@ -57,10 +57,20 @@ def modulation_samples(
             np.searchsorted(knots, signal[:, 0], side="right") - 1, 0, len(knots) - 1
         )
         mapped = amounts[index]
-        if route.interpolation == modulation.Interpolation.linear and len(knots) > 1:
+        if route.interpolation != modulation.Interpolation.step and len(knots) > 1:
             lower = np.minimum(index, len(knots) - 2)
-            progress = (signal[:, 0] - knots[lower]) / (knots[lower + 1] - knots[lower])
-            mapped = amounts[lower] + progress * (amounts[lower + 1] - amounts[lower])
+            progress = np.clip(
+                (signal[:, 0] - knots[lower]) / (knots[lower + 1] - knots[lower]), 0, 1
+            )
+            if route.interpolation == modulation.Interpolation.exponential:
+                mapped = np.exp(
+                    (1 - progress) * np.log(amounts[lower])
+                    + progress * np.log(amounts[lower + 1])
+                )
+            else:
+                mapped = amounts[lower] + progress * (
+                    amounts[lower + 1] - amounts[lower]
+                )
             mapped = np.where(signal[:, 0] <= knots[0], amounts[0], mapped)
             mapped = np.where(signal[:, 0] >= knots[-1], amounts[-1], mapped)
         if route.operation == modulation.Operation.add:
