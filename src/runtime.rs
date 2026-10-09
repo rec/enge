@@ -103,6 +103,7 @@ struct NamedContourState {
 #[derive(Clone, PartialEq)]
 struct PatchEventConnection {
     threshold: bool,
+    capture: bool,
     source: usize,
     marker: f64,
     destination: usize,
@@ -117,6 +118,7 @@ struct PatchEventConnection {
 
 #[derive(Clone, PartialEq)]
 struct PatchStageStartConnection {
+    capture: bool,
     source: usize,
     port: String,
     destination: usize,
@@ -262,9 +264,21 @@ type PatchEventInput = (
     u64,
     u64,
     f64,
+    bool,
 );
 type StageConnectionInput = (usize, String, usize, String, usize, usize, u64, u64, f64);
-type StageStartInput = (usize, String, usize, usize, usize, usize, u64, u64, f64);
+type StageStartInput = (
+    usize,
+    String,
+    usize,
+    usize,
+    usize,
+    usize,
+    u64,
+    u64,
+    f64,
+    bool,
+);
 
 type MotionTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64, Option<f64>);
 type MotionTransformRoute = (usize, usize, usize, f64, f64);
@@ -1208,7 +1222,7 @@ impl SynthRuntime {
                 .iter()
                 .enumerate()
                 .any(|(node, (kind, inputs, scale, offset, initial))| {
-                    *kind > 5
+                    *kind > 6
                         || !scale.is_finite()
                         || !offset.is_finite()
                         || inputs.len() < if *kind >= 2 { 1 } else { 2 }
@@ -1251,7 +1265,19 @@ impl SynthRuntime {
     fn set_patch_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
         if self.frame != 0
             || connections.iter().any(
-                |(source, marker, destination, cue, _, every, _, probability, _, delay)| {
+                |(
+                    source,
+                    marker,
+                    destination,
+                    cue,
+                    _,
+                    every,
+                    _,
+                    probability,
+                    _,
+                    delay,
+                    capture,
+                )| {
                     *every == 0
                         || *probability > (1 << 53)
                         || !delay.is_finite()
@@ -1263,7 +1289,11 @@ impl SynthRuntime {
                         || self.lfo_definitions[*source].transport_position
                         || !marker.is_finite()
                         || !(0.0..1.0).contains(marker)
-                        || if cue.is_some() {
+                        || if *capture {
+                            cue.is_some()
+                                || *destination >= self.motion_transforms.len()
+                                || self.motion_transforms[*destination].0 != 6
+                        } else if cue.is_some() {
                             *destination >= self.staged_motions.len()
                         } else {
                             *destination >= self.named_envelopes.len()
@@ -1288,12 +1318,16 @@ impl SynthRuntime {
                     probability,
                     key,
                     delay,
+                    capture,
                 )| {
                     PatchEventConnection {
                         threshold: false,
+                        capture,
                         source: self.lfo_owners[source],
                         marker,
-                        destination: if cue.is_some() {
+                        destination: if capture {
+                            destination
+                        } else if cue.is_some() {
                             self.staged_owners[destination]
                         } else {
                             self.named_owners[destination]
@@ -1316,15 +1350,20 @@ impl SynthRuntime {
     fn set_patch_stage_starts(&mut self, connections: Vec<StageStartInput>) -> PyResult<()> {
         if self.frame != 0
             || connections.iter().any(
-                |(source, port, destination, _, every, _, probability, _, delay)| {
+                |(source, port, destination, _, every, _, probability, _, delay, capture)| {
                     *source >= self.staged_motions.len()
                         || *every == 0
                         || *probability > (1 << 53)
                         || !delay.is_finite()
                         || *delay < 0.0
                         || port.is_empty()
-                        || *destination >= self.named_envelopes.len()
-                        || !self.named_envelopes[*destination].event_started
+                        || if *capture {
+                            *destination >= self.motion_transforms.len()
+                                || self.motion_transforms[*destination].0 != 6
+                        } else {
+                            *destination >= self.named_envelopes.len()
+                                || !self.named_envelopes[*destination].event_started
+                        }
                 },
             )
         {
@@ -1335,11 +1374,27 @@ impl SynthRuntime {
         self.patch_stage_starts = connections
             .into_iter()
             .map(
-                |(source, port, destination, order, every, offset, probability, key, delay)| {
+                |(
+                    source,
+                    port,
+                    destination,
+                    order,
+                    every,
+                    offset,
+                    probability,
+                    key,
+                    delay,
+                    capture,
+                )| {
                     PatchStageStartConnection {
+                        capture,
                         source: self.staged_owners[source],
                         port,
-                        destination: self.named_owners[destination],
+                        destination: if capture {
+                            destination
+                        } else {
+                            self.named_owners[destination]
+                        },
                         order,
                         every,
                         offset,
@@ -1357,7 +1412,19 @@ impl SynthRuntime {
     fn set_threshold_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
         if self.frame != 0
             || connections.iter().any(
-                |(source, marker, destination, cue, _, every, _, probability, _, delay)| {
+                |(
+                    source,
+                    marker,
+                    destination,
+                    cue,
+                    _,
+                    every,
+                    _,
+                    probability,
+                    _,
+                    delay,
+                    capture,
+                )| {
                     *source >= self.motion_transforms.len()
                         || self.motion_transforms[*source].0 != 3
                         || (*marker != 0.0 && *marker != 1.0)
@@ -1365,7 +1432,11 @@ impl SynthRuntime {
                         || *probability > (1 << 53)
                         || !delay.is_finite()
                         || *delay < 1.0
-                        || if cue.is_some() {
+                        || if *capture {
+                            cue.is_some()
+                                || *destination >= self.motion_transforms.len()
+                                || self.motion_transforms[*destination].0 != 6
+                        } else if cue.is_some() {
                             *destination >= self.staged_motions.len()
                         } else {
                             *destination >= self.named_envelopes.len()
@@ -1377,12 +1448,27 @@ impl SynthRuntime {
             return Err(PyValueError::new_err("Invalid threshold event connections"));
         }
         self.patch_events.extend(connections.into_iter().map(
-            |(source, marker, destination, cue, order, every, offset, probability, key, delay)| {
+            |(
+                source,
+                marker,
+                destination,
+                cue,
+                order,
+                every,
+                offset,
+                probability,
+                key,
+                delay,
+                capture,
+            )| {
                 PatchEventConnection {
                     threshold: true,
+                    capture,
                     source,
                     marker,
-                    destination: if cue.is_some() {
+                    destination: if capture {
+                        destination
+                    } else if cue.is_some() {
                         self.staged_owners[destination]
                     } else {
                         self.named_owners[destination]
@@ -2937,6 +3023,13 @@ impl SynthRuntime {
                     count += 1;
                     continue;
                 }
+                if connection.capture {
+                    self.motion_transform_states
+                        [event.voice * self.motion_transforms.len() + connection.destination] =
+                        None;
+                    count += 1;
+                    continue;
+                }
                 self.pending_contour_starts.push(ContourStart {
                     at: event.at,
                     order: connection.order,
@@ -3017,6 +3110,11 @@ impl SynthRuntime {
                 )?;
                 continue;
             }
+            if connection.capture {
+                self.motion_transform_states[voice * self.motion_transforms.len() + destination] =
+                    None;
+                continue;
+            }
             if let Some(cue) = &connection.cue {
                 let definition = &self.staged_motions[destination];
                 let stage_at = self.staged_time(definition, at);
@@ -3052,10 +3150,10 @@ impl SynthRuntime {
             {
                 let event = self.delayed_events[voice].remove(index);
                 count += 1;
-                let (destination, cue, order) = match event.connection {
+                let (destination, cue, order, capture) = match event.connection {
                     DelayedConnection::StagedCue(index) => {
                         let connection = &self.staged_connections[index];
-                        (connection.destination, Some(&connection.cue), index)
+                        (connection.destination, Some(&connection.cue), index, false)
                     }
                     DelayedConnection::PatchEvent(index) => {
                         let connection = &self.patch_events[index];
@@ -3063,14 +3161,23 @@ impl SynthRuntime {
                             connection.destination,
                             connection.cue.as_ref(),
                             connection.order,
+                            connection.capture,
                         )
                     }
                     DelayedConnection::StageStart(index) => {
                         let connection = &self.patch_stage_starts[index];
-                        (connection.destination, None, connection.order)
+                        (
+                            connection.destination,
+                            None,
+                            connection.order,
+                            connection.capture,
+                        )
                     }
                 };
-                if let Some(cue) = cue {
+                if capture {
+                    self.motion_transform_states
+                        [voice * self.motion_transforms.len() + destination] = None;
+                } else if let Some(cue) = cue {
                     let definition = &self.staged_motions[destination];
                     let stage_at = self.staged_time(definition, at);
                     let state =
@@ -3235,7 +3342,11 @@ impl SynthRuntime {
                     output += value;
                 }
             }
-            self.motion_transform_values[base + node] = if *kind == 5 {
+            self.motion_transform_values[base + node] = if *kind == 6 {
+                let value = self.motion_transform_states[base + node].unwrap_or(output);
+                self.motion_transform_states[base + node] = Some(value);
+                value
+            } else if *kind == 5 {
                 let position = (output - offset) / scale;
                 let lower = position.floor();
                 let nearest = lower + if position - lower >= 0.5 { 1.0 } else { 0.0 };

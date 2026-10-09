@@ -300,6 +300,16 @@ signal output, not the timestamps or traversal meaning of marker events.
 
 ## 7. Signals, event outputs, and connections
 
+Implemented voice-owned Patch `latch` nodes: capture a named input on activation,
+then hold until an event connection delivers `capture`. Observation occurs on
+the first sample frame at or after delivery, including connection delay; several
+commands on one frame observe the same final input. Existing Cycle, Stages, and
+threshold event sources retain division, probability, delay, and capacity rules.
+Python and native snapshots preserve held values and queued captures; stopping
+invalidates pending commands and voice-slot reuse initializes fresh state.
+One-second 48 kHz regressions cover startup, independent gates, fractional-frame
+and zero delay, shared inputs, partitions, snapshots, and voice-slot reuse.
+
 Implemented stateless Patch `quantize` nodes: positive finite `step`, finite
 `origin` defaulting to zero, and nearest-grid rounding with halfway values
 choosing the higher point, including negative inputs. Output is not clipped;

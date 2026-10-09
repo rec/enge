@@ -21,6 +21,7 @@ from ufor.motion import (
     CycleState,
     EnterStage,
     Hold,
+    Latch,
     MotionEvent,
     MotionOutputEvent,
     MotionState,
@@ -39,6 +40,7 @@ from ufor.motion import (
     advance_motion,
     cycle_lfo,
     initial_motion,
+    latch_value,
     motion_at,
     motion_event,
     slew_value,
@@ -124,6 +126,7 @@ class DelayedMotionEvent(Model, frozen=True):
     target: int
     order: int
     cue: str | None
+    capture: str | None = None
 
 
 class EnvelopeSource(Model, frozen=True):
@@ -161,6 +164,10 @@ class PatchState(Model, frozen=True):
     voice_id: str
     name: str
     values: dict[str, float] = Field(default_factory=dict)
+    event_counts: dict[str, int] = Field(default_factory=dict)
+    motion_key: int = 0
+    event_random: dict[str, int] = Field(default_factory=dict)
+    pending_events: list[DelayedMotionEvent] = Field(default_factory=list)
 
 
 class PreparedEnvelope(Model, frozen=True):
@@ -442,8 +449,11 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if name in voice.motions:
             raise EngineError(f"Patch output Motion name collides: {name}")
         child = parent.body.motions[child_name]
-        if isinstance(child, (Sum, Product, Affine, Quantize, Threshold, Slew)) or any(
-            isinstance(b, (Threshold, Slew)) for b in parent.body.motions.values()
+        if isinstance(
+            child, (Sum, Product, Affine, Quantize, Latch, Threshold, Slew)
+        ) or any(
+            isinstance(b, (Latch, Threshold, Slew))
+            for b in parent.body.motions.values()
         ):
             continue
         if name not in motions:
@@ -484,7 +494,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             child = parent.body.motions[child_name]
             if isinstance(child, (Sum, Product)):
                 pending.extend(child.inputs)
-            elif isinstance(child, (Affine, Quantize, Threshold, Slew)):
+            elif isinstance(child, (Affine, Quantize, Latch, Threshold, Slew)):
                 pending.append(child.input)
             else:
                 children.add(child_name)
@@ -625,37 +635,45 @@ def _patch_child_names(settings: SoundSettings) -> set[str]:
 
 def _patch_start_connections(
     settings: SoundSettings, sources: dict[str, int]
-) -> list[tuple[str, str, int, int, int, int, float, Fraction]]:
+) -> list[tuple[str, str, int, int, int, int, float, Fraction, str | None]]:
     bindings = {
         binding.reference: binding.name
         for binding in settings.bindings
         if isinstance(binding, processing.GeneratorBinding)
     }
-    connections: list[tuple[str, str, int, int, int, int, float, Fraction]] = []
+    connections: list[
+        tuple[str, str, int, int, int, int, float, Fraction, str | None]
+    ] = []
     for parent_name, parent in settings.motions.items():
         if not isinstance(parent.body, Patch):
             continue
         for order, connection in enumerate(parent.body.events):
-            if connection.action not in ("start", "sample"):
+            if connection.action not in ("start", "sample", "capture"):
                 continue
             child_name, _, port = connection.source.partition(".")
             source_name = f"patch-{parent_name}-{child_name}"
             target_name = f"patch-{parent_name}-{connection.target}"
-            if (
-                source_name not in settings.motions
-                or target_name not in settings.motions
+            if source_name not in settings.motions or (
+                connection.action != "capture" and target_name not in settings.motions
             ):
                 continue
             connections.append(
                 (
                     bindings[source_name],
                     port,
-                    sources[bindings[target_name]],
+                    sources[
+                        bindings[
+                            parent_name
+                            if connection.action == "capture"
+                            else target_name
+                        ]
+                    ],
                     order,
                     connection.every,
                     connection.offset,
                     connection.probability,
                     connection.delay,
+                    connection.target if connection.action == "capture" else None,
                 )
             )
     return connections
@@ -961,7 +979,11 @@ class ControlRenderer:
                     if index is None:
                         index = len(self.patches)
                         self.patches.append(
-                            PatchState(voice_id=action.voice_id, name=binding.reference)
+                            PatchState(
+                                voice_id=action.voice_id,
+                                name=binding.reference,
+                                motion_key=action.motion_key,
+                            )
                         )
                     result[source.name] = -1 - index
                     continue
@@ -1147,6 +1169,10 @@ class ControlRenderer:
             else s
             for s in self.envelopes
         ]
+        self.patches = [
+            s.model_copy(update={"pending_events": []}) if s.voice_id == voice_id else s
+            for s in self.patches
+        ]
 
     def values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
@@ -1166,7 +1192,9 @@ class ControlRenderer:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
         if frames > 1 and any(
             isinstance(m.body, Patch)
-            and any(isinstance(b, (Threshold, Slew)) for b in m.body.motions.values())
+            and any(
+                isinstance(b, (Latch, Threshold, Slew)) for b in m.body.motions.values()
+            )
             for m in settings.motions.values()
         ):
             rows = [self.values(settings, sources, start + i, 1) for i in range(frames)]
@@ -1314,6 +1342,13 @@ class ControlRenderer:
                             body.origin
                             + (lower + (position - lower >= 0.5)) * body.step
                         )
+                elif isinstance(body, Latch):
+                    if body.input in children:
+                        value = latch_value(
+                            float(children[body.input][0]), retained.get(name)
+                        )
+                        retained[name] = value
+                        children[name] = np.full(frames, value)
                 elif isinstance(body, Threshold):
                     if body.input not in children:
                         continue
@@ -1360,7 +1395,9 @@ class ControlRenderer:
                 signals[binding.name] = np.column_stack(
                     (children[parent.body.outputs[binding.output]], np.ones(frames))
                 )
-            self.patches[patch_index] = state.model_copy(update={"values": retained})
+            self.patches[patch_index] = self.patches[patch_index].model_copy(
+                update={"values": retained}
+            )
         output = control.modulation_samples(settings.modulation, signals, frames)
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
@@ -1381,7 +1418,16 @@ class ControlRenderer:
             seen.add(index)
             staged.append((binding.name, index, settings.motions[binding.reference]))
         patch_starts = _patch_start_connections(settings, sources)
-        contour_targets = {target for _, _, target, _, _, _, _, _ in patch_starts}
+        contour_targets = {
+            target
+            for _, _, target, _, _, _, _, _, capture in patch_starts
+            if capture is None
+        }
+        latch_targets = {
+            target
+            for _, _, target, _, _, _, _, _, capture in patch_starts
+            if capture is not None
+        }
         for parent_name, parent in settings.motions.items():
             if not isinstance(parent.body, Patch):
                 continue
@@ -1393,6 +1439,14 @@ class ControlRenderer:
                     )
                     and connection.action != "cue"
                 ):
+                    if connection.action == "capture":
+                        latch_targets.update(
+                            sources[b.name]
+                            for b in settings.bindings
+                            if isinstance(b, processing.GeneratorBinding)
+                            and b.reference == parent_name
+                        )
+                        continue
                     target = f"patch-{parent_name}-{connection.target}"
                     contour_targets.update(
                         sources[b.name]
@@ -1401,8 +1455,9 @@ class ControlRenderer:
                         and b.reference == target
                     )
         motion_indices = {index for _, index, _ in staged} | contour_targets
-        if not motion_indices or all(
-            index in self.cached_envelopes for index in motion_indices
+        if (not motion_indices and not latch_targets) or (
+            not latch_targets
+            and all(index in self.cached_envelopes for index in motion_indices)
         ):
             return
         values = {index: np.empty(frames) for index in motion_indices}
@@ -1420,7 +1475,7 @@ class ControlRenderer:
                 ]
                 + [
                     (source, port)
-                    for source, port, _, _, _, _, _, _ in patch_starts
+                    for source, port, _, _, _, _, _, _, _ in patch_starts
                     if isinstance(
                         (binding := bindings[source]),
                         processing.GeneratorBinding,
@@ -1429,15 +1484,17 @@ class ControlRenderer:
                 ]
             )
         )
-        voice_id = self.envelopes[min(motion_indices)].voice_id
-        queue_index = next(
-            i for i, s in enumerate(self.envelopes) if s.voice_id == voice_id
-        )
+        voice_id = (
+            self.envelopes[min(motion_indices)]
+            if motion_indices
+            else self.patches[-1 - min(latch_targets)]
+        ).voice_id
+        queue_index, _ = self._event_queue(voice_id)
         for i in range(frames):
             boundary = Fraction(start + i, self.sample_rate)
             events_seen = 0
             sample_values: dict[int, float] = {}
-            pending_starts: list[tuple[Fraction, int, int]] = []
+            pending_starts: list[tuple[Fraction, int, int, str | None]] = []
             cycle_events: list[tuple[Fraction, int, str, str]] = []
             for order, (source_name, port) in enumerate(cycle_ports):
                 binding = bindings[source_name]
@@ -1503,7 +1560,11 @@ class ControlRenderer:
                             min(
                                 (
                                     e.at
-                                    for e in self.envelopes[queue_index].pending_events
+                                    for e in (
+                                        self.envelopes[queue_index]
+                                        if queue_index >= 0
+                                        else self.patches[-1 - queue_index]
+                                    ).pending_events
                                     if e.at <= boundary
                                 ),
                                 default=None,
@@ -1555,19 +1616,35 @@ class ControlRenderer:
                     self._dispatch_staged_events(
                         settings, sources, emitted, pending_starts
                     )
-                queue = self.envelopes[queue_index]
+                queue = (
+                    self.envelopes[queue_index]
+                    if queue_index >= 0
+                    else self.patches[-1 - queue_index]
+                )
                 due = [e for e in queue.pending_events if e.at == next_event]
                 for event in due:
-                    queue = self.envelopes[queue_index]
+                    queue = (
+                        self.envelopes[queue_index]
+                        if queue_index >= 0
+                        else self.patches[-1 - queue_index]
+                    )
                     position = queue.pending_events.index(event)
-                    self.envelopes[queue_index] = queue.model_copy(
+                    updated = queue.model_copy(
                         update={
                             "pending_events": queue.pending_events[:position]
                             + queue.pending_events[position + 1 :]
                         }
                     )
+                    if queue_index >= 0:
+                        assert isinstance(updated, EnvelopeSource)
+                        self.envelopes[queue_index] = updated
+                    else:
+                        assert isinstance(updated, PatchState)
+                        self.patches[-1 - queue_index] = updated
                     if event.cue is None:
-                        pending_starts.append((event.at, event.order, event.target))
+                        pending_starts.append(
+                            (event.at, event.order, event.target, event.capture)
+                        )
                     else:
                         emitted = self._deliver_cue(
                             settings, event.target, event.cue, event.at
@@ -1611,15 +1688,31 @@ class ControlRenderer:
         for order, connection in enumerate(parent.body.events):
             if connection.source != f"{child}.{port}":
                 continue
-            target = sources[bindings[f"patch-{parent_name}-{connection.target}"]]
+            capture = connection.target if connection.action == "capture" else None
+            target = (
+                next(
+                    sources[b.name]
+                    for b in settings.bindings
+                    if isinstance(b, processing.GeneratorBinding)
+                    and b.reference == parent_name
+                )
+                if capture is not None
+                else sources[bindings[f"patch-{parent_name}-{connection.target}"]]
+            )
             if self._forward_event(
                 target,
-                f"cue-{order}" if connection.action == "cue" else f"start-{order}",
+                f"capture-{capture}-{order}"
+                if capture is not None
+                else f"cue-{order}"
+                if connection.action == "cue"
+                else f"start-{order}",
                 connection.every,
                 connection.offset,
                 connection.probability,
             ):
-                self._delay_event(target, at + connection.delay, order, connection.cue)
+                self._delay_event(
+                    target, at + connection.delay, order, connection.cue, capture
+                )
         for order, connection in enumerate(settings.event_connections):
             binding = next(b for b in settings.bindings if b.name == connection.source)
             if (
@@ -1643,7 +1736,7 @@ class ControlRenderer:
         settings: SoundSettings,
         sources: dict[str, int],
         emitted: list[tuple[str, MotionOutputEvent]],
-        starts: list[tuple[Fraction, int, int]] | None = None,
+        starts: list[tuple[Fraction, int, int, str | None]] | None = None,
     ) -> None:
         pending = deque(emitted)
         delivered = 0
@@ -1665,16 +1758,25 @@ class ControlRenderer:
                 offset,
                 probability,
                 delay,
+                capture,
             ) in patch_starts:
                 if source_name == name and port == event.port:
                     if not self._forward_event(
-                        target_index, f"start-{order}", every, offset, probability
+                        target_index,
+                        f"capture-{capture}-{order}"
+                        if capture is not None
+                        else f"start-{order}",
+                        every,
+                        offset,
+                        probability,
                     ):
                         continue
                     if delay:
-                        self._delay_event(target_index, seconds + delay, order, None)
+                        self._delay_event(
+                            target_index, seconds + delay, order, None, capture
+                        )
                     else:
-                        pending_starts.append((seconds, order, target_index))
+                        pending_starts.append((seconds, order, target_index, capture))
                     delivered += 1
                     if delivered > 4096:
                         raise EngineError("Motion event connection capacity exceeded")
@@ -1706,19 +1808,42 @@ class ControlRenderer:
         if starts is None:
             self._start_patch_contours(settings, pending_starts)
 
+    def _event_queue(self, voice_id: str) -> tuple[int, EnvelopeSource | PatchState]:
+        # Keep one bounded queue per voice, including graphs without envelopes.
+        for i, source in enumerate(self.envelopes):
+            if source.voice_id == voice_id:
+                return i, source
+        for i, patch in enumerate(self.patches):
+            if patch.voice_id == voice_id:
+                return -1 - i, patch
+        raise EngineError("Motion event voice has no state owner")
+
     def _delay_event(
-        self, target: int, at: Fraction, order: int, cue: str | None
+        self,
+        target: int,
+        at: Fraction,
+        order: int,
+        cue: str | None,
+        capture: str | None = None,
     ) -> None:
-        voice_id = self.envelopes[target].voice_id
-        # Carry one queue per voice in its first envelope so snapshots retain it.
-        index = next(i for i, s in enumerate(self.envelopes) if s.voice_id == voice_id)
-        source = self.envelopes[index]
+        voice_id = (
+            self.envelopes[target] if target >= 0 else self.patches[-1 - target]
+        ).voice_id
+        index, source = self._event_queue(voice_id)
         if len(source.pending_events) == 4096:
             raise EngineError("Delayed Motion event capacity exceeded")
-        event = DelayedMotionEvent(at=at, target=target, order=order, cue=cue)
-        self.envelopes[index] = source.model_copy(
+        event = DelayedMotionEvent(
+            at=at, target=target, order=order, cue=cue, capture=capture
+        )
+        updated = source.model_copy(
             update={"pending_events": [*source.pending_events, event]}
         )
+        if index >= 0:
+            assert isinstance(updated, EnvelopeSource)
+            self.envelopes[index] = updated
+        else:
+            assert isinstance(updated, PatchState)
+            self.patches[-1 - index] = updated
 
     def _deliver_cue(
         self, settings: SoundSettings, index: int, cue: str, seconds: Fraction
@@ -1741,36 +1866,59 @@ class ControlRenderer:
     def _forward_event(
         self, index: int, connection: str, every: int, offset: int, probability: float
     ) -> bool:
-        source = self.envelopes[index]
+        source = self.envelopes[index] if index >= 0 else self.patches[-1 - index]
         count = source.event_counts.get(connection, offset)
         threshold = int(probability * 2**53)
-        self.envelopes[index] = source.model_copy(
+        source = source.model_copy(
             update={
                 "event_counts": source.event_counts
                 | {connection: every - 1 if count == 0 else count - 1}
             }
         )
+        if index >= 0:
+            assert isinstance(source, EnvelopeSource)
+            self.envelopes[index] = source
+        else:
+            assert isinstance(source, PatchState)
+            self.patches[-1 - index] = source
         if count != 0 or threshold == 0:
             return False
         if threshold == 2**53:
             return True
-        source = self.envelopes[index]
         if (state := source.event_random.get(connection)) is None:
             state = source.motion_key ^ motion_random.stream_key(
                 0, f"{source.name}:{connection}"
             )
         state, word = motion_random.random_word(state)
-        self.envelopes[index] = source.model_copy(
+        source = source.model_copy(
             update={"event_random": source.event_random | {connection: state}}
         )
+        if index >= 0:
+            assert isinstance(source, EnvelopeSource)
+            self.envelopes[index] = source
+        else:
+            assert isinstance(source, PatchState)
+            self.patches[-1 - index] = source
         return word >> 11 < threshold
 
     def _start_patch_contours(
-        self, settings: SoundSettings, starts: list[tuple[Fraction, int, int]]
+        self,
+        settings: SoundSettings,
+        starts: list[tuple[Fraction, int, int, str | None]],
     ) -> None:
         if len(starts) > 4096:
             raise EngineError("Patch event capacity exceeded")
-        for seconds, _, index in sorted(starts):
+        for seconds, _, index, capture in sorted(starts):
+            if capture is not None:
+                patch = self.patches[-1 - index]
+                self.patches[-1 - index] = patch.model_copy(
+                    update={
+                        "values": {
+                            n: v for n, v in patch.values.items() if n != capture
+                        }
+                    }
+                )
+                continue
             source = self.envelopes[index]
             motion = settings.motions[source.name]
             at = self.motion_time(motion, seconds)
@@ -2142,7 +2290,7 @@ class PersistentSynth:
                 if name in patch_children:
                     source_map[name] = indices[:1]
         patch_events: list[
-            tuple[int, float, int, str | None, int, int, int, int, int, float]
+            tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
         ] = []
         self.transform_nodes = _configure_patch_transforms(
             self.runtime,
@@ -2153,26 +2301,43 @@ class PersistentSynth:
             self.definition.sample_rate,
         )
         patch_stage_starts: list[
-            tuple[int, str, int, int, int, int, int, int, float]
+            tuple[int, str, int, int, int, int, int, int, float, bool]
         ] = []
         for parent_name, parent in template.motions.items():
             if not isinstance(parent.body, Patch):
                 continue
-            if parent.body.events and (
-                f"patch-{parent_name}-{parent.body.events[0].target}"
+            if (
+                parent.body.events
+                and f"patch-{parent_name}-{parent.body.events[0].target}"
                 not in template.motions
+                and not any(
+                    isinstance(b, processing.GeneratorBinding)
+                    and b.reference == parent_name
+                    for b in template.bindings
+                )
             ):
                 continue
             for order, connection in enumerate(parent.body.events):
-                if connection.action not in ("start", "sample"):
+                if connection.action not in ("start", "sample", "capture"):
                     continue
                 child_name, _, port = connection.source.partition(".")
                 child = parent.body.motions[child_name]
                 if isinstance(child, Threshold):
                     continue
-                destination = self.named_motion_sources[
-                    f"patch-{parent_name}-{connection.target}"
-                ][0]
+                capture = connection.action == "capture"
+                destination = (
+                    self.transform_nodes[parent_name, connection.target]
+                    if capture
+                    else self.named_motion_sources[
+                        f"patch-{parent_name}-{connection.target}"
+                    ][0]
+                )
+                key = motion_random.stream_key(
+                    0,
+                    f"{parent_name}:capture-{connection.target}-{order}"
+                    if capture
+                    else f"patch-{parent_name}-{connection.target}:start-{order}",
+                )
                 if isinstance(child, Cycle):
                     marker = next(m.position for m in child.markers if m.name == port)
                     patch_events.append(
@@ -2187,13 +2352,11 @@ class PersistentSynth:
                             connection.every,
                             connection.offset,
                             int(connection.probability * 2**53),
-                            motion_random.stream_key(
-                                0,
-                                f"patch-{parent_name}-{connection.target}:start-{order}",
-                            ),
+                            key,
                             _runtime_event_delay(
                                 connection.delay, self.definition.sample_rate
                             ),
+                            capture,
                         )
                     )
                 else:
@@ -2209,13 +2372,11 @@ class PersistentSynth:
                             connection.every,
                             connection.offset,
                             int(connection.probability * 2**53),
-                            motion_random.stream_key(
-                                0,
-                                f"patch-{parent_name}-{connection.target}:start-{order}",
-                            ),
+                            key,
                             _runtime_event_delay(
                                 connection.delay, self.definition.sample_rate
                             ),
+                            capture,
                         )
                     )
         bindings = {binding.name: binding for binding in template.bindings}
@@ -2246,6 +2407,7 @@ class PersistentSynth:
                         0, f"{target_binding.reference}:cue-{order}"
                     ),
                     _runtime_event_delay(connection.delay, self.definition.sample_rate),
+                    False,
                 )
             )
         self.runtime.set_patch_events(patch_events)
@@ -2972,20 +3134,24 @@ def _configure_patch_transforms(
                 children[name] = (1, contours[reference][0], 0.0, 1.0)
             elif isinstance(body, Stages) and reference in stages:
                 children[name] = (2, stages[reference][0], 0.0, 1.0)
-            elif isinstance(body, (Sum, Product, Affine, Quantize, Threshold, Slew)):
+            elif isinstance(
+                body, (Sum, Product, Affine, Quantize, Latch, Threshold, Slew)
+            ):
                 inputs = (
                     [body.input]
-                    if isinstance(body, (Affine, Quantize, Threshold, Slew))
+                    if isinstance(body, (Affine, Quantize, Latch, Threshold, Slew))
                     else body.inputs
                 )
                 if any(n not in children for n in inputs):
                     continue
                 children[name] = (3, len(nodes), 0.0, 1.0)
-                if isinstance(body, Threshold):
+                if isinstance(body, (Threshold, Latch)):
                     detectors[parent_name, name] = len(nodes)
                 nodes.append(
                     (
-                        5
+                        6
+                        if isinstance(body, Latch)
+                        else 5
                         if isinstance(body, Quantize)
                         else 4
                         if isinstance(body, Slew)
@@ -3023,7 +3189,7 @@ def _configure_patch_transforms(
                 name in children
                 and children[name][0] != 3
                 and any(
-                    isinstance(b, (Threshold, Slew))
+                    isinstance(b, (Latch, Threshold, Slew))
                     for b in parent.body.motions.values()
                 )
             ):
@@ -3068,34 +3234,44 @@ def _threshold_runtime_connections(
     stages: dict[str, list[int]],
     nodes: dict[tuple[str, str], int],
     rate: int,
-) -> list[tuple[int, float, int, str | None, int, int, int, int, int, float]]:
+) -> list[tuple[int, float, int, str | None, int, int, int, int, int, float, bool]]:
     result: list[
-        tuple[int, float, int, str | None, int, int, int, int, int, float]
+        tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
     ] = []
     bindings = {b.name: b for b in template.bindings}
     for (parent_name, child), node in nodes.items():
         parent = template.motions[parent_name]
         assert isinstance(parent.body, Patch)
+        if not isinstance(parent.body.motions[child], Threshold):
+            continue
         for order, connection in enumerate(parent.body.events):
             origin, _, port = connection.source.partition(".")
             if origin != child:
                 continue
             target = f"patch-{parent_name}-{connection.target}"
             cue = connection.cue
+            capture = connection.action == "capture"
             result.append(
                 (
                     node,
                     float(port == "rising"),
-                    (stages if cue is not None else contours)[target][0],
+                    nodes[parent_name, connection.target]
+                    if capture
+                    else (stages if cue is not None else contours)[target][0],
                     cue,
                     order,
                     connection.every,
                     connection.offset,
                     int(connection.probability * 2**53),
                     motion_random.stream_key(
-                        0, f"{target}:{'cue' if cue is not None else 'start'}-{order}"
+                        0,
+                        f"{parent_name}:capture-{connection.target}-{order}"
+                        if capture
+                        else f"{target}:"
+                        f"{'cue' if cue is not None else 'start'}-{order}",
                     ),
                     1.0 + _runtime_event_delay(connection.delay, rate),
+                    capture,
                 )
             )
         for order, connection in enumerate(template.event_connections):
@@ -3123,6 +3299,7 @@ def _threshold_runtime_connections(
                     int(connection.probability * 2**53),
                     motion_random.stream_key(0, f"{target}:cue-{order}"),
                     1.0 + _runtime_event_delay(connection.delay, rate),
+                    False,
                 )
             )
     return result

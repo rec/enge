@@ -251,16 +251,17 @@ class SynthRuntime:
     def set_patch_events(
         self,
         connections: list[
-            tuple[int, float, int, str | None, int, int, int, int, int, float]
+            tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
         ],
     ) -> None: ...
     def set_patch_stage_starts(
-        self, connections: list[tuple[int, str, int, int, int, int, int, int, float]]
+        self,
+        connections: list[tuple[int, str, int, int, int, int, int, int, float, bool]],
     ) -> None: ...
     def set_threshold_events(
         self,
         connections: list[
-            tuple[int, float, int, str | None, int, int, int, int, int, float]
+            tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
         ],
     ) -> None: ...
     def active_slots(self) -> list[bool]: ...
