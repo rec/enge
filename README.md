@@ -5,6 +5,15 @@ prepared Ufor actions, advance the engine at exact output-frame boundaries, and
 own transport, device I/O, MIDI/OSC, GUI, output files, and encoding. Sample
 decoding and preparation can belong to the engine's sampler preparation.
 
+Authored uFor quantities accept Pint unit strings through reccy's shared parser,
+for example `"48 kHz"` for an output rate, `"20 ms"` for a duration,
+`"1 semitone"` for a cents offset, and `"-6 dB"` for effect gain. Bare numbers
+retain their documented canonical units. Exact Motion timing stays rational;
+beats, seconds, frames, and ticks are not implicitly interchangeable. See
+[uFor's unit contract](../ufor/doc/units.md). Preparation and native rendering
+continue to use numerical values, not Pint Quantity objects. Unit strings do
+not enable processing features that an engine otherwise rejects.
+
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,
 smooths controls in their declared scopes, preserves phase through pitch changes,

@@ -10,11 +10,48 @@ Musicians should be able to write `"20 ms"`, `"440 Hz"`, `"-6 dB"`, or
 `"1/3 beat"` without knowing the renderer's internal representation. Preparation
 must still produce the same bounded, numerical Python and native runtime data.
 
-This document is a plan, not authorization to implement the migration or change
-dependencies. It covers enge, its uFor document models, and the shared parsing
-boundary used by their consumers. It does not propose a general repository cleanup.
+This plan covers enge, its uFor document models, and the shared parsing boundary
+used by their consumers. Implementation was requested after the plan was written.
+It does not propose a general repository cleanup.
 
-## Current position
+## Implementation status, 2026-10-10
+
+The shared ownership decision is resolved: uFor now depends on reccy and uses
+`reccy.configuration.units`. Do not move that core into uFor or introduce a
+second registry implementation. The baseline observations below describe the
+code before that migration, not the current implementation.
+
+uFor commit `2e90e3e` migrated unit-bearing document definitions and added
+conformance examples, schemas, and `doc/units.md`. Its shared validators cover
+physical and musical quantities, contextual parameter declarations, exact
+fractions, and strict integer conversions. Standalone clock-relative events
+remain canonical coordinates when their owning clock is not available.
+
+enge now pins that uFor implementation and reccy's quantity-copy fix. The latter
+is necessary because enge deep-copies prepared definitions; unit provenance must
+survive that operation. New 48 kHz, one-second regressions compare unit-authored
+documents with canonical numerical documents for synth, FM, sampler, effects,
+fractional delayed Motion events, and persistent/native execution. Effect tests
+also check amplitude dB semantics directly.
+
+This does not establish every acceptance item below. Remaining review points:
+
+- The shared parser still intentionally separates a rational/decimal magnitude
+  from the unit expression. Segment and rhythmic-step validators use that shared
+  syntax to require an explicit unit. Audit broader Pint expression support and
+  musical-unit aliases before claiming arbitrary Pint syntax is accepted.
+- Pint dimensional compatibility alone does not enforce every dimensionless
+  semantic distinction. Review angular, logarithmic, ratio, and normalized input
+  families beyond the declared port compatibility checks.
+- Patch signal magnitudes without a declared physical unit remain numbers.
+  Supporting physical quantities there requires a clear signal-unit contract;
+  do not guess it from the consuming target.
+- Plain rendering arguments and snapshots remain canonical numerical runtime
+  interfaces. Review any additional host-facing authoring boundaries separately.
+
+The proposed signal-delay node is not implemented by this units integration.
+
+## Baseline before migration
 
 - uFor's base types generally declare implicit units around strict numerical
   magnitudes, such as seconds and frequency.
@@ -101,7 +138,7 @@ string suffix branches. Registry construction must be deterministic and must not
 silently override conflicting definitions.
 [Pint unit definitions](https://pint.readthedocs.io/en/stable/advanced/defining.html)
 
-Before implementation, decide ownership by inspecting reccy's dependency graph:
+The original ownership decision was to inspect reccy's dependency graph:
 
 - Reuse its generic unit machinery if uFor can depend on it without pulling in
   unrelated host, audio, device, or service dependencies.
@@ -244,5 +281,5 @@ data, and no alternate bespoke unit parser may remain for migrated values.
 
 ## Additional work beyond the prompt
 
-None. This change only records the plan; implementation, dependency changes,
-shared ownership changes, and sibling-project migrations remain future work.
+None. The authorized work implements this units plan; no general cleanup or
+unrelated Motion feature is included.
