@@ -34,20 +34,53 @@ documents with canonical numerical documents for synth, FM, sampler, effects,
 fractional delayed Motion events, and persistent/native execution. Effect tests
 also check amplitude dB semantics directly.
 
-This does not establish every acceptance item below. Remaining review points:
+The authorized migration is complete. reccy's shared parser now delegates unit
+expressions to Pint, using exact Fraction magnitudes. Segment durations, rhythmic
+steps, and tuning frequencies inspect Pint's base-unit metadata instead of a
+quantity regex; that superseded regex has been removed. Prefixes, plurals,
+parentheses, unit-only values, and compound arithmetic are covered by parser and
+portable conformance tests. Inexact expressions cannot populate exact fields.
 
-- The shared parser still intentionally separates a rational/decimal magnitude
-  from the unit expression. Segment and rhythmic-step validators use that shared
-  syntax to require an explicit unit. Audit broader Pint expression support and
-  musical-unit aliases before claiming arbitrary Pint syntax is accepted.
-- Pint dimensional compatibility alone does not enforce every dimensionless
-  semantic distinction. Review angular, logarithmic, ratio, and normalized input
-  families beyond the declared port compatibility checks.
-- Patch signal magnitudes without a declared physical unit remain numbers.
-  Supporting physical quantities there requires a clear signal-unit contract;
-  do not guess it from the consuming target.
-- Plain rendering arguments and snapshots remain canonical numerical runtime
-  interfaces. Review any additional host-facing authoring boundaries separately.
+Registry definitions explicitly distinguish angles, gain coordinates, pitch
+intervals, information sizes, beats, frames, and ticks. They are loaded once,
+without silently ignoring conflicting definitions. dB remains an authored gain
+coordinate, octave means 1200 cents, and DSP amplitude/pitch conversion is
+unchanged. Logical, ratio, and normalized ports retain their existing declared
+compatibility rules.
+
+The user explicitly chose to keep Patch signals dimensionless. Physical-unit
+Patch propagation is deferred, not an incomplete migration item. Patch arithmetic
+and thresholds remain numbers; Slew rates are dimensionless change per second.
+Plain rendering arguments and snapshots likewise remain canonical numerical
+runtime interfaces, not additional authoring syntaxes.
+
+### Completed boundary inventory
+
+| Authoring boundary | Normalization and retained contract |
+| --- | --- |
+| Audio effects and automation | Fixed seconds/Hz/dB/frame fields; parameter actions normalize against the processor parameter; no DSP changes |
+| Synth and sample instruments | Mapping frequency, tuning cents, processing gain, filters, holds, fades, variation, region frames and metadata use shared validators |
+| Assets and timebases | Exact byte/frame/tick counts and integer rate numerator; channel counts and rate denominator remain counts |
+| Motions and LFOs | Owning clock selects exact seconds/beats and inverse rate; phase uses turns; segments preserve their explicit clock on export |
+| Modulation, parameters and presets | Defaults, limits, route amounts and nested automation points normalize against their declaration; unresolved overrides wait for resolution |
+| Arpeggiation and tuning | Beat steps and unitful frequency expressions use Pint; pitch-ratio expressions and protocol readers remain mathematical/protocol parsing |
+| Lights, fixtures and slides | Layout coordinates, angular values, fixture units, spatial/temporal rates and slideshow ticks use their existing declared units |
+| enge public inputs | uFor model validation is the authoring boundary; rendering, MIDI acquisition, prepared data, snapshots and native calls remain numerical |
+
+IDs, protocol/register values, seeds, channels, counters, selectors, probabilities,
+dimensionless Patch values, and collection sizes are not physical quantities.
+Standalone clock-relative changes cannot infer seconds versus beats without an
+owning clock, so their canonical numerical contract remains unchanged. Exact
+ratio parsing, Scala/SysEx/MIDI decoding, and shared configuration clock notation
+are not alternate unit suffix parsers.
+
+Verification includes the complete reccy and uFor test suites, checked-in schema
+agreement, and uFor validation in its installed environment without NumPy or
+audio libraries. enge's unit regressions exercise Python, native, and persistent
+rendering. reccy has 465 passing tests and one existing skip; uFor has 1,203
+passing tests, and enge's focused unit regressions have 14 passing tests.
+enge's complete suite has 1,082 passing tests and 21 optional Rubber Band skips.
+Cross-platform execution remains release-only as requested.
 
 The proposed signal-delay node is not implemented by this units integration.
 
@@ -112,7 +145,7 @@ with unit suffixes in their names.
 | Phase and angles | radians, Cycle phase, phase offsets | Declared radians or fraction of a turn |
 | Sample-grid time | frame offsets, crossfades, capacities, timebases | Integer frames when the field requires integers |
 | Electrical and declared signal units | volts, seconds-valued signals | Unit declared by the port or parameter |
-| Contextual values | parameter defaults/limits, route points, graph constants | Unit derived from the relevant declaration |
+| Contextual values | parameter defaults/limits, route points | Unit derived from the relevant declaration; Patch signals stay dimensionless |
 | Compound units | Slew rates, beats per minute, cycles per beat | Declared compound unit, not inferred from the name |
 
 Audit audio effects, sampling/selection/variation, tuning, metadata, playback,
@@ -209,9 +242,10 @@ the schema distinguishes them. They do not become interchangeable just because
 their underlying physical dimension is dimensionless.
 
 For routes, additive amounts use the destination signal unit; multiplicative
-amounts use ratios. For Patch nodes, propagate declared units into constants,
-thresholds, Quantize steps/origins, Latch initial values, and Slew rates. Reject
-incompatible connections; do not invent a physical unit for an undeclared signal.
+amounts use ratios. Reject incompatible declared port connections. By explicit
+user decision, Patch constants, thresholds, Quantize steps/origins, and Latch
+initial values remain dimensionless numbers. Slew rates are dimensionless change
+per second. Do not infer physical Patch units from destination parameters.
 
 ## Serialization and consumer boundaries
 
@@ -245,8 +279,9 @@ use separate commits from implementation changes.
 3. Migrate fixed-unit uFor fields and replace duration/Hz/beat suffix parsing.
    Preserve clock distinctions, integer constraints, canonical values, and exact
    serialization. Remove superseded parsers in the same slice as their callers.
-4. Migrate contextual parameter, modulation, and Patch fields, including collection
+4. Migrate contextual parameter and modulation fields, including collection
    elements and compound rate units. Add dimensional and semantic routing checks.
+   Keep Patch signals dimensionless by explicit user decision.
 5. Update enge's authoring and preparation boundaries and affected consumers.
    Keep callbacks/native paths quantity-free. Coordinate any sibling changes and
    commit each affected project separately.

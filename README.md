@@ -13,6 +13,9 @@ beats, seconds, frames, and ticks are not implicitly interchangeable. See
 [uFor's unit contract](../ufor/doc/units.md). Preparation and native rendering
 continue to use numerical values, not Pint Quantity objects. Unit strings do
 not enable processing features that an engine otherwise rejects.
+Pint expressions such as `"1 ms / 3"` are supported. Angles, dB, and pitch
+intervals are not implicitly interchangeable with dimensionless controls.
+Patch signals remain dimensionless; their physical-unit extension is deferred.
 
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,
