@@ -354,7 +354,7 @@ wheels = [
 [[package]]
 name = "reccy"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/rec/reccy.git?branch=main#9bc3f8f36705d4e5a6642221a1968263426d7d98" }
+source = { git = "ssh://git@github.com/rec/reccy.git?branch=main#c4e270fc9fd680a32c097226a9219c7df7ba0d28" }
 dependencies = [
     { name = "pint" },
     { name = "pydantic" },
@@ -464,7 +464,7 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/rec/ufor.git?branch=main#2e90e3ed51bea48f2978a8768677406c02d3d7e4" }
+source = { git = "ssh://git@github.com/rec/ufor.git?branch=main#e2e37ef01847cfe1f417fbf3a63c7669ab9414ba" }
 dependencies = [
     { name = "pydantic" },
     { name = "reccy" },
