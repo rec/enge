@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-09-24T08:37:13.003086Z"
+exclude-newer = "2026-10-03T08:11:01.000305Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -59,9 +59,9 @@ requires-dist = [
     { name = "mido", specifier = ">=1.3.3" },
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "reccy", git = "https://github.com/rec/reccy.git?branch=main" },
+    { name = "reccy", git = "ssh://git@github.com/rec/reccy.git?branch=main" },
     { name = "tyro", specifier = ">=1.0.16" },
-    { name = "ufor", git = "https://github.com/rec/ufor.git?branch=main" },
+    { name = "ufor", git = "ssh://git@github.com/rec/ufor.git?branch=main" },
 ]
 
 [package.metadata.requires-dev]
@@ -354,7 +354,7 @@ wheels = [
 [[package]]
 name = "reccy"
 version = "0.1.0"
-source = { git = "https://github.com/rec/reccy.git?branch=main#88a0b6b34e810cd86a93eb253c4b17131a9ef8e9" }
+source = { git = "ssh://git@github.com/rec/reccy.git?branch=main#9bc3f8f36705d4e5a6642221a1968263426d7d98" }
 dependencies = [
     { name = "pint" },
     { name = "pydantic" },
@@ -464,8 +464,9 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.1.0"
-source = { git = "https://github.com/rec/ufor.git?branch=main#5cea0275f1e3cac05540a1d6c8561063a2c94ab1" }
+source = { git = "ssh://git@github.com/rec/ufor.git?branch=main#2e90e3ed51bea48f2978a8768677406c02d3d7e4" }
 dependencies = [
     { name = "pydantic" },
+    { name = "reccy" },
     { name = "tomlkit" },
 ]
