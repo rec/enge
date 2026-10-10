@@ -1,6 +1,6 @@
 [project]
 name = "enge"
-version = "0.1.0"
+version = "0.2.0"
 description = "🚂 an audio synthesizer engine in Python and Rust 🚂"
 readme = "README.md"
 authors = [
