@@ -31,7 +31,7 @@ addopts = "-n auto --dist=worksteal"
 
 [tool.uv.sources]
 ufor = { git = "ssh://git@github.com/rec/ufor.git", branch = "main" }
-reccy = { git = "ssh://git@github.com/rec/reccy.git", branch = "main" }
+reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }
 
 [dependency-groups]
 dev = [
