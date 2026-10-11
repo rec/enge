@@ -2266,6 +2266,95 @@ def test_release_free_contour_finishes_after_note_off_and_restores(
         np.testing.assert_allclose(native_replay, native_actual[18000:], atol=0)
 
 
+@pytest.mark.parametrize("interval", [1, 64])
+def test_staged_cycle_fade_remains_exact_across_single_frame_partitions(
+    tmp_path: Path, backend: Literal["numpy", "native"], interval: int
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+        "kind": "stages",
+        "initial_stage": "wave",
+        "stages": [
+            {
+                "name": "wave",
+                "motion": {
+                    "kind": "cycle",
+                    "rate": "3",
+                    "phase": "1/7",
+                    "center": 0.3,
+                    "depth": 0.4,
+                    "delay": "3/96000",
+                    "fade_in": "4801/96000",
+                },
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    prepared = synth.prepare(document)
+    actions = synth_trace.prepare(
+        document.body, [onset(0, pitch=0.1).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    renderer = synth.OfflineSynth(prepared, backend, control_interval=interval)
+    whole = renderer.advance(actions, 0, 48000)
+    frames = np.arange(48000)
+    weights = np.clip((frames - 1.5) / 2400.5, 0, 1)
+    values = 0.3 + 0.4 * weights * np.sin(2 * np.pi * (1 / 7 + frames * 3 / 48000))
+    expected = np.column_stack((0.625 + 0.375 * values, np.zeros(48000)))
+    check_audio(tmp_path / f"stage-cycle-{backend}-{interval}.wav", whole, expected)
+    partitioned = synth.OfflineSynth(prepared, backend, control_interval=interval)
+    pieces = [partitioned.advance(actions, 0, 1), partitioned.advance([], 1, 2)]
+    saved = partitioned.snapshot()
+    tail = partitioned.advance([], 2, 48000)
+    partitioned.restore(saved)
+    np.testing.assert_array_equal(partitioned.advance([], 2, 48000), tail)
+    np.testing.assert_allclose(np.vstack((*pieces, tail)), whole, atol=1e-10, rtol=1e-9)
+
+
+def test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics(
+    tmp_path: Path, backend: Literal["numpy", "native"]
+) -> None:
+    raw = lfo_score("synth").model_dump(mode="json")
+    raw["body"]["voices"][0]["bindings"][0]["output"] = "value"
+    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+        "kind": "patch",
+        "motions": {
+            "wave": {
+                "kind": "stages",
+                "initial_stage": "wave",
+                "stages": [{"name": "wave", "motion": {"kind": "cycle", "rate": "2"}}],
+            },
+            "ramp": {
+                "kind": "stages",
+                "initial_stage": "ramp",
+                "stages": [
+                    {
+                        "name": "ramp",
+                        "motion": {
+                            "kind": "contour",
+                            "playback": "loop",
+                            "segments": [{"duration": "1/4 s", "to": 1}],
+                        },
+                    }
+                ],
+            },
+            "sum": {"kind": "sum", "inputs": ["wave", "ramp"]},
+            "level": {"kind": "affine", "input": "sum", "scale": 0.25, "offset": 0.5},
+        },
+        "outputs": {"value": "level"},
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body, [onset(0, pitch=0.1).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    actual = synth.OfflineSynth(synth.prepare(document), backend).advance(
+        actions, 0, 48000
+    )
+    frames = np.arange(48000)
+    level = 0.5 + 0.25 * (np.sin(2 * np.pi * frames / 24000) + (frames % 12000) / 12000)
+    expected = np.column_stack((0.625 + 0.375 * level, np.zeros(48000)))
+    check_audio(tmp_path / f"mixed-stage-loop-{backend}.wav", actual, expected)
+
+
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 @pytest.mark.parametrize("release_frame", [12000, 12001, 24000])
 def test_staged_motion_renders_and_restores_at_attack_boundary(

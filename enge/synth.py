@@ -43,6 +43,7 @@ from ufor.motion import (
     latch_value,
     motion_at,
     motion_event,
+    next_stage_event,
     slew_value,
     threshold_value,
 )
@@ -1498,7 +1499,8 @@ class ControlRenderer:
             else self.patches[-1 - min(latch_targets)]
         ).voice_id
         queue_index, _ = self._event_queue(voice_id)
-        for i in range(frames):
+        i = 0
+        while i < frames:
             boundary = Fraction(start + i, self.sample_rate)
             events_seen = 0
             sample_values: dict[int, float] = {}
@@ -1673,8 +1675,180 @@ class ControlRenderer:
                     self.envelopes[index].state,
                     self.motion_time(motion, boundary),
                 ).value
+            # Events change state; empty audio frames do not. Render up to the
+            # next event frame, then let the same exact delivery loop handle it.
+            count = frames - i
+            if (
+                count > 1
+                and not latch_targets
+                and all(
+                    settings.motions[self.envelopes[index].name].clock == "seconds"
+                    for index in motion_indices
+                )
+            ):
+                limit = Fraction(start + frames - 1, self.sample_rate)
+                boundaries: list[Fraction] = []
+                for _, index, motion in staged:
+                    runtime = self.envelopes[index].state.runtime
+                    assert isinstance(runtime, StageState)
+                    assert isinstance(motion.body, Stages)
+                    if natural := next_stage_event(motion.body, runtime, limit):
+                        boundaries.append(natural[0])
+                for source_name, port in cycle_ports:
+                    binding = bindings[source_name]
+                    assert isinstance(binding, processing.GeneratorBinding)
+                    motion = settings.motions[binding.reference]
+                    runtime = self.lfos[sources[source_name]].state.runtime
+                    assert isinstance(runtime, CycleState)
+                    assert isinstance(motion.body, Cycle)
+                    position = runtime.position
+                    if position.rate:
+                        marker = next(
+                            m.position for m in motion.body.markers if m.name == port
+                        )
+                        coordinate = position.coordinate + position.rate * (
+                            boundary - position.at
+                        )
+                        turn = floor(coordinate - marker) + 1
+                        boundaries.append(
+                            position.at
+                            + (turn + marker - position.coordinate) / position.rate
+                        )
+                queue = (
+                    self.envelopes[queue_index]
+                    if queue_index >= 0
+                    else self.patches[-1 - queue_index]
+                )
+                boundaries.extend(e.at for e in queue.pending_events)
+                if boundaries:
+                    count = min(
+                        count,
+                        max(1, ceil(min(boundaries) * self.sample_rate) - (start + i)),
+                    )
+                # Check every participant before allocating full spans. One
+                # scalar-only child must not cause block-sized work per frame.
+                supported = all(
+                    self._motion_span(
+                        settings.motions[self.envelopes[index].name],
+                        self.envelopes[index].state,
+                        start + i,
+                        0,
+                    )
+                    is not None
+                    for index in motion_indices
+                )
+                spans = (
+                    {
+                        index: self._motion_span(
+                            settings.motions[self.envelopes[index].name],
+                            self.envelopes[index].state,
+                            start + i,
+                            count,
+                        )
+                        for index in motion_indices
+                    }
+                    if supported
+                    else {}
+                )
+                if supported:
+                    for index, samples in spans.items():
+                        assert samples is not None
+                        values[index][i : i + count] = samples
+                    if count > 1:
+                        last = Fraction(start + i + count - 1, self.sample_rate)
+                        for _, index, motion in staged:
+                            source = self.envelopes[index]
+                            result = advance_motion(motion, source.state, last)
+                            assert not result.events
+                            self.envelopes[index] = source.model_copy(
+                                update={"state": result.state}
+                            )
+                    i += count
+                    continue
+            i += 1
         for index, samples in values.items():
             self.cached_envelopes[index] = np.column_stack((samples, np.ones(frames)))
+
+    def _motion_span(
+        self, motion: MotionUse, state: MotionState, start: int, frames: int
+    ) -> np.ndarray | None:
+        """Render an event-free interval; zero frames checks block support."""
+        runtime = state.runtime
+        body = motion.body
+        if isinstance(runtime, StageState):
+            assert isinstance(body, Stages)
+            if runtime.completed:
+                return np.full(frames, runtime.complete_value)
+            body = next(s.motion for s in body.stages if s.name == runtime.stage)
+            initial = runtime.entry_value
+        elif isinstance(runtime, ContourState):
+            assert isinstance(body, Contour)
+            if runtime.phase == "idle" or runtime.complete_coordinate is not None:
+                return np.full(
+                    frames,
+                    motion_at(motion, state, Fraction(start, self.sample_rate)).value,
+                )
+            initial = runtime.start_value
+        elif isinstance(runtime, SampleHoldState):
+            return np.full(frames, runtime.value)
+        else:
+            return None
+        if isinstance(body, Hold):
+            return np.full(frames, body.value)
+        position = runtime.position
+        if position.paused:
+            return np.full(
+                frames,
+                motion_at(motion, state, Fraction(start, self.sample_rate)).value,
+            )
+        if position.direction != 1:
+            return None
+        if isinstance(body, Cycle):
+            if not frames:
+                return np.empty(0)
+            definition = cycle_lfo(MotionUse(body=body))
+            samples = lfo_samples(
+                definition,
+                lfo.LFOState(
+                    at=position.at,
+                    started_at=position.at - position.age,
+                    phase=position.coordinate % 1,
+                    rate=position.rate,
+                ),
+                start,
+                frames,
+                self.sample_rate,
+                self.backend,
+                1,
+            )
+            return body.center + body.depth * samples[:, 0] * samples[:, 1]
+        assert isinstance(body, Contour)
+        if body.playback != PlaybackMode.once or position.coordinate < 0:
+            return None
+        segments = (
+            body.release
+            if isinstance(runtime, ContourState) and runtime.phase == "release"
+            else body.segments
+        )
+        if any(s.curve for s in segments):
+            return None
+        if not frames:
+            return np.empty(0)
+        speed = position.rate * _duration(segments)
+        if not speed:
+            return np.full(
+                frames,
+                motion_at(motion, state, Fraction(start, self.sample_rate)).value,
+            )
+        scaled = [
+            s.model_copy(update={"duration": s.duration / speed}) for s in segments
+        ]
+        elapsed = (
+            position.coordinate * _duration(segments) / speed
+            + Fraction(start, self.sample_rate)
+            - position.at
+        )
+        return _envelope_values(initial, scaled, elapsed, frames, self.sample_rate)
 
     def _threshold_event(
         self,
