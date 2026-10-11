@@ -8,6 +8,18 @@ from math import ceil, floor, isfinite
 from typing import Literal, Self, cast
 
 import numpy as np
+from envelfo.random import random_word
+from envelfo.runtime import (
+    advance_envelfo,
+    cycle_lfo,
+    envelfo_at,
+    envelfo_event,
+    initial_envelfo,
+    latch_value,
+    next_stage_event,
+    slew_value,
+    threshold_value,
+)
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import envelfo_random, instrument_trace, lfo, modulation
 from ufor.base import Model
@@ -36,15 +48,6 @@ from ufor.envelfo import (
     StageState,
     Sum,
     Threshold,
-    advance_envelfo,
-    cycle_lfo,
-    envelfo_at,
-    envelfo_event,
-    initial_envelfo,
-    latch_value,
-    next_stage_event,
-    slew_value,
-    threshold_value,
 )
 from ufor.envelope import Envelope
 from ufor.oscillator import Oscillator, Waveform
@@ -2074,7 +2077,7 @@ class ControlRenderer:
             state = source.envelfo_key ^ envelfo_random.stream_key(
                 0, f"{source.name}:{connection}"
             )
-        state, word = envelfo_random.random_word(state)
+        state, word = random_word(state)
         source = source.model_copy(
             update={"event_random": source.event_random | {connection: state}}
         )

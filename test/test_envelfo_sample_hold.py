@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import test_fm
 import test_noise
+from envelfo.random import random_word
 from test_dynamic_synth import onset
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio
@@ -95,7 +96,7 @@ def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
         random_state = start.envelfo_key ^ envelfo_random.stream_key(
             0, name + ":sample-hold"
         )
-        random_state, word = envelfo_random.random_word(random_state)
+        random_state, word = random_word(random_state)
         held = np.full(48000, (word >> 11) / 2**53)
         gate_state = start.envelfo_key ^ envelfo_random.stream_key(
             0, name + f":start-{order}"
@@ -108,10 +109,10 @@ def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
             if cutoff == 0:
                 continue
             if cutoff != 2**53:
-                gate_state, gate_word = envelfo_random.random_word(gate_state)
+                gate_state, gate_word = random_word(gate_state)
                 if gate_word >> 11 >= cutoff:
                     continue
-            random_state, word = envelfo_random.random_word(random_state)
+            random_state, word = random_word(random_state)
             held[at + delay :] = (word >> 11) / 2**53
         values.append(held)
     assert values[0][0] != values[1][0]
@@ -175,7 +176,7 @@ def test_sample_hold_activation_is_seeded_without_any_connections(
     for seed in (1, 2):
         actions = synth_trace.prepare(document.body, events, seed=seed).actions
         start = next(a for a in actions if isinstance(a, instrument_trace.VoiceStart))
-        _, word = envelfo_random.random_word(
+        _, word = random_word(
             start.envelfo_key ^ envelfo_random.stream_key(0, "held:sample-hold")
         )
         level = (word >> 11) / 2**53
@@ -239,7 +240,7 @@ def test_sample_hold_reinitializes_when_a_native_voice_slot_is_reused(
     starts = [a for a in actions if isinstance(a, instrument_trace.VoiceStart)]
     levels = []
     for start in starts:
-        _, word = envelfo_random.random_word(
+        _, word = random_word(
             start.envelfo_key ^ envelfo_random.stream_key(0, "held:sample-hold")
         )
         levels.append((word >> 11) / 2**53)
@@ -338,7 +339,7 @@ def test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise(
     events = [test_fm.trigger() if kind == "fm" else test_noise.trigger()]
     actions = synth_trace.prepare(document.body, events, seed=31).actions
     start = next(a for a in actions if isinstance(a, instrument_trace.VoiceStart))
-    _, word = envelfo_random.random_word(
+    _, word = random_word(
         start.envelfo_key ^ envelfo_random.stream_key(0, "held:sample-hold")
     )
     level = (word >> 11) / 2**53

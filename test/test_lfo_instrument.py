@@ -6,19 +6,14 @@ from typing import Literal
 
 import numpy as np
 import pytest
+from envelfo.random import random_word
+from envelfo.runtime import advance_envelfo, initial_envelfo
 from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio, score
 from ufor import envelfo_random, instrument_trace, synth_trace
 from ufor.control import TempoMap
-from ufor.envelfo import (
-    Cycle,
-    EnvelfoParameter,
-    EnvelfoScore,
-    ParameterReference,
-    advance_envelfo,
-    initial_envelfo,
-)
+from ufor.envelfo import Cycle, EnvelfoParameter, EnvelfoScore, ParameterReference
 from ufor.events import EnvelfoChange, LFOChange, Release
 from ufor.library import Entry, Library
 from ufor.samples import instrument, processing, trace
@@ -1077,7 +1072,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                 if probability in (0, 1):
                     forward |= probability == 1
                 else:
-                    states[i], word = envelfo_random.random_word(states[i])
+                    states[i], word = random_word(states[i])
                     forward |= word >> 11 < int(probability * 2**53)
             if start < stop and forward:
                 begin = ceil(start)

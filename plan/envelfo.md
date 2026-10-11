@@ -219,10 +219,17 @@ Envelfo terminology and integration notes when that integration is implemented.
 
 Step 1 is complete as of 2026-10-11: see the
 [inventory and baseline contract](../doc/envelfo-contract.md), the shared
-`conformance/envelfo-runtime.json` traces, and `test/test_envelfo_contract.py`.
-These establish reference behavior and record extraction/parity gaps; they do
-not claim that either standalone library has already been extracted. Step 2 is
-next. Existing consumer tests remain in place.
+`conformance/envelfo-runtime.json` traces, and `test/test_envelfo_contract.py`,
+now owned by the sibling enveLFO repository.
+
+Step 2 is in progress: the NumPy-free Python package now owns scalar and Stages
+execution, operator helpers, random words, 48 moved execution tests, and the
+18 baseline conformance checks. uFor retains definitions, validation, format
+mathematics and stream identities. enge imports the extracted runtime directly.
+Standalone Patch orchestration, retained graph state, connection processing,
+and host-supplied observation/next-delivery scheduling remain the next slice.
+The approved scheduling boundary uses host observations and explicit next
+delivery times, not an implicit audio-rate grid. Rust extraction has not begun.
 
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline

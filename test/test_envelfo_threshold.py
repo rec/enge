@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from envelfo.random import random_word
 from test_dynamic_synth import onset
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio
@@ -184,7 +185,7 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
         state = start.envelfo_key ^ envelfo_random.stream_key(
             0, "patch-gesture-held:sample-hold"
         )
-        state, word = envelfo_random.random_word(state)
+        state, word = random_word(state)
         gate = np.full(48000, 0.75 + 0.25 * (word >> 11) / 2**53)
         gate_state = start.envelfo_key ^ envelfo_random.stream_key(
             0, "patch-gesture-held:start-0"
@@ -193,10 +194,10 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
             if probability == 0:
                 continue
             if probability != 1:
-                gate_state, gate_word = envelfo_random.random_word(gate_state)
+                gate_state, gate_word = random_word(gate_state)
                 if gate_word >> 11 >= int(probability * 2**53):
                     continue
-            state, word = envelfo_random.random_word(state)
+            state, word = random_word(state)
             gate[at + 481 :] = 0.75 + 0.25 * (word >> 11) / 2**53
     if target == "start":
         gate = np.full(48000, 0.5)

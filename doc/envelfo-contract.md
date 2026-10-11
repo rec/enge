@@ -2,13 +2,21 @@
 
 Inventory date: 2026-10-11. This completes the first slice of
 [the extraction plan](../plan/envelfo.md), not the extraction itself.
-Implementation anchors below refer to enge and its sibling uFor and arpeg
+Implementation anchors below refer to enge and its sibling uFor, enveLFO and arpeg
 repositories. These are current capabilities, not promises of a standalone
 Rust API.
 
+Extraction update: scalar/Stages execution, stateless operator execution, random
+words, and their unit tests now live in `envelfo/runtime.py`, `envelfo/random.py`
+and enveLFO's `test/`. The matrix retains the inventory's original uFor test
+names as evidence; runtime tests cited there have moved, while schema and trace
+tests remain in uFor. Format-level shape, envelope and quantizer mathematics
+remain in uFor where validation or other consumers require them. Patch
+orchestration and connection state remain in enge pending the next slice.
+
 ## Capability and evidence matrix
 
-Python reference means uFor scalar semantics unless the row explicitly names
+Python reference means enveLFO scalar semantics unless the row explicitly names
 enge orchestration. Native means execution inside enge's Rust extension;
 an offline `backend="native"` test can still run control orchestration in Python.
 Persistent renderer tests are stronger evidence of Rust-owned control state.
@@ -163,9 +171,10 @@ authorize uFor to depend on their executing library.
 ## Baseline fixtures
 
 `conformance/envelfo-runtime.json` and `test/test_envelfo_contract.py` establish
-the initial language-neutral runtime baseline. They temporarily live in enge
-and will move to the new project during extraction. No runtime implementation
-has moved, and no new repository or package dependency is needed for this slice.
+the initial language-neutral runtime baseline. They now live in the sibling
+enveLFO repository, together with the extracted scalar/Stages runtime and its
+execution tests. uFor retains the authored definitions and validation; enge
+depends on enveLFO and imports execution functions directly.
 
 The JSON uses the current uFor definition representation with canonical unit
 literals, including explicit `s` segment suffixes. Missing definition fields use
@@ -189,16 +198,16 @@ direct song-position queries across a backward jump. Three existing portable
 SplitMix64 vectors anchor randomness. Expectations are handwritten from these
 simple mathematical/ordering rules, not generated from either backend.
 
-The runner uses only pytest, standard-library code and uFor. It can run under
-uFor's NumPy-free environment with enge's normal test configuration disabled:
+The runner uses only pytest, standard-library code, uFor and enveLFO. Run it
+in enveLFO's environment, without NumPy or enge installed:
 
 ```sh
-# From the sibling ufor checkout:
-uv run pytest --noconftest -o addopts= ../enge/test/test_envelfo_contract.py
+# From the sibling envelfo checkout:
+uv run pytest test/test_envelfo_contract.py
 ```
 
-This verifies the baseline reference semantics without NumPy or an enge import.
-It does not prove the not-yet-created package's dependency boundary. The future
+This verifies the baseline reference semantics and the new package's dependency
+boundary without NumPy or an enge import. The future
 Rust runner must read the same cases directly; the current native audio tests
 remain supporting evidence, not a shared standalone conformance runner.
 

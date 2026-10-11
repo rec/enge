@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from envelfo.random import random_word
 from test_dynamic_synth import onset
 from test_envelfo_sample_hold import sample_hold_score
 from test_synth import check_audio
@@ -80,7 +81,7 @@ def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
             if i < offset or (i - offset) % every or cutoff == 0:
                 continue
             if cutoff != 2**53:
-                state, word = envelfo_random.random_word(state)
+                state, word = random_word(state)
                 if word >> 11 >= cutoff:
                     continue
             frame = ceil(at + delay + (1 if source_kind == "threshold" else 0))
