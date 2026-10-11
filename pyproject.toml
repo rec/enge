@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.13"
 classifiers = ["Programming Language :: Python :: 3", "Programming Language :: Python :: 3.13", "Programming Language :: Python :: 3.14","Programming Language :: Python :: 3.15"]
 dependencies = [
+    "envelfo",
     "mido>=1.3.3",
     "numpy>=2.4.1",
     "pydantic>=2.13.4",
@@ -30,6 +31,7 @@ testpaths = ["test"]
 addopts = "-n auto --dist=worksteal"
 
 [tool.uv.sources]
+envelfo = { git = "ssh://git@github.com/rec/envelfo.git", branch = "main" }
 ufor = { git = "ssh://git@github.com/rec/ufor.git", branch = "main" }
 reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }
 
