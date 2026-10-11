@@ -31,7 +31,7 @@ def control_samples(
 def modulation_samples(
     definition: modulation.Modulation, signals: dict[str, np.ndarray], frames: int
 ) -> dict[tuple[str, str], np.ndarray]:
-    """Evaluate value/weight columns without constructing per-sample models."""
+    """Evaluate blocks in arrays and single observations with uFor's scalar math."""
     sources = {s.name: s for s in definition.sources}
     for name, signal in signals.items():
         if name not in sources:
@@ -43,6 +43,17 @@ def modulation_samples(
             raise ValueError(f"source {name} value is outside its domain")
         if np.any((signal[:, 1] < 0) | (signal[:, 1] > 1)):
             raise ValueError(f"Invalid modulation weight {name}")
+    if frames == 1:
+        values = modulation.evaluate(
+            definition,
+            {
+                n: modulation.SourceValue(value=float(s[0, 0]), weight=float(s[0, 1]))
+                for n, s in signals.items()
+            },
+        )
+        return {
+            (v.target.name, v.target.parameter): np.array([v.value]) for v in values
+        }
     additions: dict[modulation.Target, list[np.ndarray]] = {
         p.target: [] for p in definition.parameters
     }

@@ -701,6 +701,7 @@ class ControlRenderer:
         self.cached_lfos: dict[int, np.ndarray] = {}
         self.cached_envelopes: dict[int, np.ndarray] = {}
         self.cached_controls: dict[tuple[int, str, Fraction], np.ndarray] = {}
+        self.cycle_definitions: dict[int, lfo.LFO] = {}
         self.sample_rate = sample_rate
         self.tempo_map = tempo_map.model_copy(deep=True) if tempo_map else None
         self.declarations = declarations
@@ -1197,8 +1198,13 @@ class ControlRenderer:
             )
             for m in settings.motions.values()
         ):
-            rows = [self.values(settings, sources, start + i, 1) for i in range(frames)]
-            output = {n: np.concatenate([r[n] for r in rows]) for n in rows[0]}
+            output = {
+                (p.target.name, p.target.parameter): np.empty(frames)
+                for p in settings.modulation.parameters
+            }
+            for i in range(frames):
+                for name, value in self.values(settings, sources, start + i, 1).items():
+                    output[name][i] = value[0]
             self.clear_cache()
             self.cached_span = span
             self.cached_values[key] = output
@@ -1256,8 +1262,10 @@ class ControlRenderer:
                         and not position.paused
                         and position.direction == 1
                     ):
+                        if id(motion) not in self.cycle_definitions:
+                            self.cycle_definitions[id(motion)] = cycle_lfo(motion)
                         samples = lfo_samples(
-                            cycle_lfo(motion),
+                            self.cycle_definitions[id(motion)],
                             lfo.LFOState(
                                 at=position.at,
                                 started_at=position.at - position.age,

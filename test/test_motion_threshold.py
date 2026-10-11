@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -160,7 +161,11 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
     ],
 )
 def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots(
-    tmp_path: Path, target: str, probability: float, initial_high: bool
+    tmp_path: Path,
+    target: str,
+    probability: float,
+    initial_high: bool,
+    motion_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = threshold_score(target, probability)
     if initial_high:
@@ -197,17 +202,7 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
         gate = np.full(48000, 0.5)
         gate[6001:9001] = 0.5 + 0.5 * np.arange(3000) / 3000
         gate[9001:] = 1.0
-    raw = document.model_dump(mode="json")
-    raw["body"]["voices"][0].update(
-        motions={}, bindings=[], modulation={}, event_connections=[]
-    )
-    baseline = SynthInstrumentScore.model_validate(raw)
-    expected = (
-        synth.OfflineSynth(synth.prepare(baseline)).advance(
-            synth_trace.prepare(baseline.body, events, seed=19).actions, 0, 48000
-        )
-        * gate[:, None]
-    )
+    expected = motion_baseline(0) * gate[:, None]
     definition = synth.prepare(document)
     for backend in ("numpy", "native", "persistent"):
         renderer = (

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,13 @@ from enge import synth
     [(0.5, 0.0, "steps"), (0.75, 0.125, "level"), (1.5, 0.0, "level")],
 )
 def test_quantize_grid_matches_across_clocks_partitions_and_snapshots(
-    tmp_path: Path, backend: str, scope: str, step: float, origin: float, output: str
+    tmp_path: Path,
+    backend: str,
+    scope: str,
+    step: float,
+    origin: float,
+    output: str,
+    motion_baseline: Callable[[int], np.ndarray],
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -53,11 +60,7 @@ def test_quantize_grid_matches_across_clocks_partitions_and_snapshots(
     document = SynthInstrumentScore.model_validate(raw)
     events = [onset(6000, pitch=0.1).model_copy(update={"controls": {}})]
     actions = synth_trace.prepare(document.body, events, seed=5).actions
-    raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
-    baseline = SynthInstrumentScore.model_validate(raw)
-    plain = synth.OfflineSynth(synth.prepare(baseline)).advance(
-        synth_trace.prepare(baseline.body, events, seed=5).actions, 0, 48000
-    )
+    plain = motion_baseline(6000)
     frames = np.arange(48000) - (6000 if scope == "voice" else 0)
     phase = (frames % 24000) / 24000
     values = np.where(phase < 0.5, 4 * phase - 1, 3 - 4 * phase)

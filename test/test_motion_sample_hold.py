@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -79,7 +80,10 @@ def sample_hold_score(source_kind: str, probability: float) -> SynthInstrumentSc
 @pytest.mark.parametrize("source_kind", ["cycle", "stages"])
 @pytest.mark.parametrize("probability", [0.0, 0.5, 1.0])
 def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
-    tmp_path: Path, source_kind: str, probability: float
+    tmp_path: Path,
+    source_kind: str,
+    probability: float,
+    motion_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = sample_hold_score(source_kind, probability)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
@@ -112,14 +116,7 @@ def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
         values.append(held)
     assert values[0][0] != values[1][0]
     signal = 0.5 + 0.5 * values[0] * values[1]
-    baseline_raw = document.model_dump(mode="json")
-    baseline_raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
-    baseline = SynthInstrumentScore.model_validate(baseline_raw)
-    baseline_actions = synth_trace.prepare(baseline.body, events, seed=81).actions
-    expected = (
-        synth.OfflineSynth(synth.prepare(baseline)).advance(baseline_actions, 0, 48000)
-        * signal[:, None]
-    )
+    expected = motion_baseline(0) * signal[:, None]
     definition = synth.prepare(document)
     # Stop after emission but before delivery of a queued update.
     split = 9000

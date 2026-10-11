@@ -39,6 +39,9 @@ def lfo_samples(
     interval = control_interval
     if definition.waveform != Waveform.sine or state.rate * interval * 2 >= sample_rate:
         interval = 1
+    if frames == 1 and interval == 1 and backend == "numpy":
+        value = lfo.lfo_at(definition, state, at)
+        return np.array([[value.value, value.weight]])
     weights = _activation_spans(definition, state, at, frames, sample_rate)
     anchor = ceil(max(state.at, state.started_at) * sample_rate)
     offset = (start - anchor) % interval

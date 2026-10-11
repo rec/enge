@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from math import ceil
 from pathlib import Path
 
@@ -54,7 +55,11 @@ def latch_score(source_kind: str, probability: float) -> SynthInstrumentScore:
 @pytest.mark.parametrize("source_kind", ["cycle", "stages", "threshold"])
 @pytest.mark.parametrize("probability", [0.0, 0.5, 1.0])
 def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
-    tmp_path: Path, backend: str, source_kind: str, probability: float
+    tmp_path: Path,
+    backend: str,
+    source_kind: str,
+    probability: float,
+    motion_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = latch_score(source_kind, probability)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
@@ -83,15 +88,7 @@ def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
                 held[frame:] = input_values[frame]
         held_values.append(held)
     signal = 0.5 + 0.25 * (held_values[0] + held_values[1])
-    raw = document.model_dump(mode="json")
-    raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
-    baseline = SynthInstrumentScore.model_validate(raw)
-    expected = (
-        synth.OfflineSynth(synth.prepare(baseline)).advance(
-            synth_trace.prepare(baseline.body, events, seed=81).actions, 0, 48000
-        )
-        * signal[:, None]
-    )
+    expected = motion_baseline(0) * signal[:, None]
     definition = synth.prepare(document)
     renderer = (
         synth.PersistentSynth(definition, voices=1)
@@ -115,7 +112,10 @@ def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
 @pytest.mark.parametrize("backend", ["numpy", "native", "persistent"])
 @pytest.mark.parametrize("mode", ["unconnected", "connected", "slew"])
 def test_latch_activation_and_same_frame_captures(
-    tmp_path: Path, backend: str, mode: str
+    tmp_path: Path,
+    backend: str,
+    mode: str,
+    motion_baseline: Callable[[int], np.ndarray],
 ) -> None:
     raw = latch_score("cycle", 1).model_dump(mode="json")
     patch = raw["body"]["voices"][0]["motions"]["gesture"]["body"]
@@ -154,14 +154,7 @@ def test_latch_activation_and_same_frame_captures(
     if mode != "unconnected":
         for frame in range(1500, 48000, 6000):
             held[frame:] = inputs[frame]
-    raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
-    baseline = SynthInstrumentScore.model_validate(raw)
-    expected = (
-        synth.OfflineSynth(synth.prepare(baseline)).advance(
-            synth_trace.prepare(baseline.body, events, seed=0).actions, 0, 48000
-        )
-        * (0.5 + 0.5 * held)[:, None]
-    )
+    expected = motion_baseline(0) * (0.5 + 0.5 * held)[:, None]
     definition = synth.prepare(document)
     renderer = (
         synth.PersistentSynth(definition, voices=1)

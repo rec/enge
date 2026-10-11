@@ -69,6 +69,13 @@ def test_lfo_shapes_delay_and_fade_survive_partitions_and_restores(
         for a, b in pairwise(sorted({0, 1, 2, 12002, 48000, *range(0, 48000, 997)}))
     ]
     np.testing.assert_allclose(np.concatenate(chunks), actual, atol=1e-10, rtol=1e-9)
+    for i in (0, 1, 2, 12000, 12001, 12002, 47999):
+        np.testing.assert_allclose(
+            lfo_samples(definition, state, i, 1, 48000, backend),
+            actual[i : i + 1],
+            atol=1e-10,
+            rtol=1e-9,
+        )
     assert state.model_dump_json() == saved
 
 

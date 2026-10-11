@@ -202,6 +202,12 @@ not skipped when compilation is unavailable. `cargo fmt --check` and
 Run one full suite at a time on a shared development machine, including when
 verifying uFor or safaz. Prepare the native extension once, then use
 `uv run --no-sync pytest` for repeated verification of unchanged Rust code.
+For a quick feedback loop, select the changed test file or individual cases;
+run the complete suite before committing. Use `--durations=30` to identify slow
+cases, and compare `-n 4`, `-n 6`, and `-n 10` sequentially on the same selection
+before tuning worker counts. More workers do not necessarily finish sooner.
+See [test performance](doc/test-performance.md) for measurements and profiling
+instructions. Audio regressions retain at least one second at 48 kHz.
 
 Linux, Windows, and macOS use the same Python and Rust engine code. Source builds
 need Python 3.13 or newer and Rust/Cargo 1.85 or newer. On Windows, use the Rust

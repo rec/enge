@@ -100,9 +100,28 @@ def test_array_modulation_matches_scalar_routes_and_weights(interpolation: str) 
             ],
         }
     )
+    # Cover clamping and either side of every knot without rendering audio.
+    values = np.array(
+        [
+            -1,
+            -0.75,
+            -0.500001,
+            -0.5,
+            -0.499999,
+            -0.1,
+            0,
+            0.1,
+            0.499999,
+            0.5,
+            0.500001,
+            0.75,
+            1,
+        ]
+    )
+    frames = len(values)
     signals = {
-        "a": np.column_stack((np.linspace(-1, 1, 48001), np.linspace(0, 1, 48001))),
-        "b": np.column_stack((np.linspace(1, -1, 48001), np.full(48001, 0.6))),
+        "a": np.column_stack((values, np.linspace(0, 1, frames))),
+        "b": np.column_stack((-values, np.full(frames, 0.6))),
     }
     expected = [
         modulation.evaluate(
@@ -112,17 +131,26 @@ def test_array_modulation_matches_scalar_routes_and_weights(interpolation: str) 
                 for n, s in signals.items()
             },
         )[0].value
-        for i in range(48001)
+        for i in range(frames)
     ]
-    actual = control.modulation_samples(definition, signals, 48001)[
+    actual = control.modulation_samples(definition, signals, frames)[
         "processing", "amplitude"
     ]
     np.testing.assert_allclose(actual, expected, atol=1e-14, rtol=1e-14)
+    single = np.concatenate(
+        [
+            control.modulation_samples(
+                definition, {n: s[i : i + 1] for n, s in signals.items()}, 1
+            )["processing", "amplitude"]
+            for i in range(frames)
+        ]
+    )
+    np.testing.assert_allclose(single, actual, atol=1e-14, rtol=1e-14)
     reversed_routes = definition.model_copy(
         update={"routes": list(reversed(definition.routes))}
     )
     np.testing.assert_array_equal(
-        control.modulation_samples(reversed_routes, signals, 48001)[
+        control.modulation_samples(reversed_routes, signals, frames)[
             "processing", "amplitude"
         ],
         actual,
@@ -130,16 +158,41 @@ def test_array_modulation_matches_scalar_routes_and_weights(interpolation: str) 
     bad = {n: s.copy() for n, s in signals.items()}
     bad["a"][3, 0] = 1.01
     with pytest.raises(ValueError, match="source a"):
-        control.modulation_samples(definition, bad, 48001)
+        control.modulation_samples(definition, bad, frames)
+    with pytest.raises(ValueError, match="source a"):
+        control.modulation_samples(definition, {n: s[3:4] for n, s in bad.items()}, 1)
     bad["a"][3, 0] = 0
     bad["a"][3, 1] = -1
     with pytest.raises(ValueError, match="weight"):
-        control.modulation_samples(definition, bad, 48001)
+        control.modulation_samples(definition, bad, frames)
+    with pytest.raises(ValueError, match="weight"):
+        control.modulation_samples(definition, {n: s[3:4] for n, s in bad.items()}, 1)
     with pytest.raises(ValueError, match="missing"):
-        control.modulation_samples(definition, {"a": signals["a"]}, 48001)
+        control.modulation_samples(definition, {"a": signals["a"]}, frames)
+    with pytest.raises(ValueError, match="missing"):
+        control.modulation_samples(definition, {"a": signals["a"][:1]}, 1)
 
 
-def test_additive_routes_retain_small_terms_under_cancellation() -> None:
+@pytest.mark.parametrize("frames", [1, 2])
+def test_modulation_rejects_malformed_and_nonfinite_signals(frames: int) -> None:
+    definition = modulation.Modulation(
+        sources=[modulation.Source(name="a", scope="voice", minimum=-1, maximum=1)]
+    )
+    with pytest.raises(ValueError, match="Unknown modulation source"):
+        control.modulation_samples(
+            definition, {"unknown": np.ones((frames, 2))}, frames
+        )
+    for signal in (
+        np.ones((frames, 1)),
+        np.full((frames, 2), np.nan),
+        np.column_stack((np.zeros(frames), np.full(frames, np.inf))),
+    ):
+        with pytest.raises(ValueError, match="Invalid modulation signal"):
+            control.modulation_samples(definition, {"a": signal}, frames)
+
+
+@pytest.mark.parametrize("frames", [1, 10])
+def test_additive_routes_retain_small_terms_under_cancellation(frames: int) -> None:
     target = {"name": "processing", "parameter": "amplitude"}
     definition = modulation.Modulation.model_validate(
         {
@@ -167,15 +220,15 @@ def test_additive_routes_retain_small_terms_under_cancellation() -> None:
             ],
         }
     )
-    actual = control.modulation_samples(definition, {"a": np.ones((10, 2))}, 10)
-    np.testing.assert_array_equal(actual["processing", "amplitude"], np.full(10, 2))
+    actual = control.modulation_samples(definition, {"a": np.ones((frames, 2))}, frames)
+    np.testing.assert_array_equal(actual["processing", "amplitude"], np.full(frames, 2))
     narrow = definition.model_copy(
         update={
             "parameters": [definition.parameters[0].model_copy(update={"maximum": 1})]
         }
     )
     with pytest.raises(ValueError, match="modulated"):
-        control.modulation_samples(narrow, {"a": np.ones((10, 2))}, 10)
+        control.modulation_samples(narrow, {"a": np.ones((frames, 2))}, frames)
 
 
 @pytest.mark.parametrize("interval", [1, 64, 1024])
@@ -211,6 +264,13 @@ def test_lfo_interval_matches_event_anchored_interpolation(
         ]
     )
     np.testing.assert_allclose(split, actual, atol=1e-10, rtol=1e-9)
+    for i in (0, 1, 2, 127, 47999):
+        np.testing.assert_allclose(
+            lfo_samples(definition, state, 37 + i, 1, 48000, backend, interval),
+            actual[i : i + 1],
+            atol=1e-10,
+            rtol=1e-9,
+        )
     exact = np.sin(2 * np.pi * (1 / 7 + np.arange(48000) * 5 / 48000))
     bound = (2 * np.pi * 5 * interval / 48000) ** 2 / 8
     assert np.max(np.abs(actual[:, 0] - exact)) <= bound + 1e-12
@@ -496,3 +556,10 @@ def test_exponential_arrays_match_scalar_mapping_and_activation(
         for v, w in zip(values, weights, strict=True)
     ]
     np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=1e-14)
+    single = [
+        control.modulation_samples(definition, {"velocity": np.array([[v, w]])}, 1)[
+            "voice", "frequency"
+        ][0]
+        for v, w in zip(values, weights, strict=True)
+    ]
+    np.testing.assert_allclose(single, actual, atol=1e-12, rtol=1e-14)

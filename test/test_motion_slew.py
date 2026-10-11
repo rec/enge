@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -74,7 +75,12 @@ def slew_score(
     ],
 )
 def test_slew_shared_state_limits_rates_and_restores_mid_ramp(
-    tmp_path: Path, rise: float, fall: float, initial: float | None, clock: str
+    tmp_path: Path,
+    rise: float,
+    fall: float,
+    initial: float | None,
+    clock: str,
+    motion_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = slew_score(rise, fall, initial, clock)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
@@ -112,15 +118,7 @@ def test_slew_shared_state_limits_rates_and_restores_mid_ramp(
         )
     if clock == "beats":
         assert values[24000] > values[12000]
-    raw = document.model_dump(mode="json")
-    raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
-    baseline = SynthInstrumentScore.model_validate(raw)
-    expected = (
-        synth.OfflineSynth(synth.prepare(baseline)).advance(
-            synth_trace.prepare(baseline.body, events, seed=5).actions, 0, 48000
-        )
-        * (0.5 + 0.5 * values)[:, None]
-    )
+    expected = motion_baseline(0) * (0.5 + 0.5 * values)[:, None]
     definition = synth.prepare(document)
     for backend in ("numpy", "native", "persistent"):
         renderer = (
