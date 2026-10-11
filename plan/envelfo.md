@@ -217,6 +217,13 @@ Envelfo terminology and integration notes when that integration is implemented.
 
 ## Implementation sequence
 
+Step 1 is complete as of 2026-10-11: see the
+[inventory and baseline contract](../doc/envelfo-contract.md), the shared
+`conformance/envelfo-runtime.json` traces, and `test/test_envelfo_contract.py`.
+These establish reference behavior and record extraction/parity gaps; they do
+not claim that either standalone library has already been extracted. Step 2 is
+next. Existing consumer tests remain in place.
+
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline
    conformance cases. Record Rust gaps without treating them as completed work.

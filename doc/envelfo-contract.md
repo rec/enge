@@ -1,0 +1,225 @@
+# enveLFO extraction inventory and baseline contract
+
+Inventory date: 2026-10-11. This completes the first slice of
+[the extraction plan](../plan/envelfo.md), not the extraction itself.
+Implementation anchors below refer to enge and its sibling uFor and arpeg
+repositories. These are current capabilities, not promises of a standalone
+Rust API.
+
+## Capability and evidence matrix
+
+Python reference means uFor scalar semantics unless the row explicitly names
+enge orchestration. Native means execution inside enge's Rust extension;
+an offline `backend="native"` test can still run control orchestration in Python.
+Persistent renderer tests are stronger evidence of Rust-owned control state.
+Neither kind proves an independent Rust library exists.
+
+| Capability | Python implementation | Rust implementation today | Evidence and remaining gap |
+| --- | --- | --- | --- |
+| Definitions, units, library references | uFor `envelfo.py`, `library.py`, `segments.py`, `score_types.py` | Prepared tuples supplied by Python, not equivalent authored-document validation | uFor `test_envelfo_score_round_trips_simple_bodies`, `test_example_envelfo_library_resolves_all_scores`, `test_units.py`; normalized Rust definition boundary still to extract |
+| Hold | `Stages` child and `envelfo_at`/`advance_envelfo` | `StageDefinition` kind 0, `staged_value` | Baseline `hold-is-a-stage`; Hold is not an allowed top-level `EnvelfoUse.body` |
+| Cycle signals and commands | `initial_envelfo`, `envelfo_at`, `envelfo_event`; uFor shape mathematics | `src/lfo.rs`, `LfoDefinition`, `LfoEventState`, staged Cycle evaluation | uFor `test_cycle_pause_reverse_and_seek_preserve_seconds_position`; enge `test_instrument_lfo_playback_commands_match_offline_and_persistent`; no standalone state API yet |
+| Contour attacks, release, loops, reversal, finite repeats | uFor Contour evaluation and position/state functions | `NamedContourState`, `PlaybackState`, contour coordinate/repeat helpers | uFor `test_triggered_contour_holds_then_releases_from_current_value`, `test_finite_contour_repeats_hold_final_boundary`; enge `test_finite_contour_repeats_match_persistent_native` |
+| Curved Contour segments | uFor `envelope.curve_at`/`curve_progress`, used by Contours and Stages | Persistent named/staged preparation rejects nonzero segment curves | enge `_persistent_modulation` and `_runtime_staged_envelfo`; Rust curved-segment parity is missing, not implied by linear audio tests |
+| Stage transition events and entry capture | uFor `advance_envelfo`, `next_stage_event` | `StagedEnvelfoState`, `next_staged_event`, `staged_transition` | uFor `test_note_off_at_stage_end_discards_obsolete_completion`; enge `test_staged_contour_events_cue_another_envelfo_in_native_runtime`; Rust event time is currently floating point |
+| Patch named signal/event outputs | Definitions/ranges/order in uFor; execution and child materialization in enge | Prepared transform nodes, children and connection tables in persistent runtime | enge `test_patch_named_outputs_match_separate_envelfos`, `test_patch_named_event_output_cues_stage`; `initial_envelfo` does not evaluate a Patch independently |
+| Sum, Product, Affine, Quantize | uFor stateless helpers; enge graph execution | `envelfo_transform_values` evaluation | uFor `test_patch_transforms_follow_dependencies_without_clipping`, `test_quantize_half_steps_choose_the_higher_value`; enge `test_quantize_grid_matches_across_clocks_partitions_and_snapshots` |
+| SampleHold | uFor `SampleHoldState`, explicit sample-event draws; enge owns per-voice seed derivation | SampleHold lowered through named contour state; SplitMix64 implementation | uFor `test_sample_hold_draws_only_on_sample_events_and_restores_its_stream`; enge `test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise` |
+| Latch, Threshold, Slew | uFor scalar helpers; enge owns observation grid, retained graph state and resulting deliveries | Persistent transform state and connection processing | enge `test_latch_activation_and_same_frame_captures`, `test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots`, `test_slew_shared_state_limits_rates_and_restores_mid_ramp`; independent Python graph execution still missing |
+| Event division, offset, chance, delayed delivery | uFor connection validation; enge `ControlRenderer` event queues and counters | Prepared connection tables, `forward_event`, delayed-event queues | enge `test_patch_division_is_first_aligned_independent_and_snapshot_safe`, `test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe`, `test_delayed_envelfo_events_report_queue_and_clock_limits` |
+| Beats, tempo, stop, seek, quantized commands | uFor `TempoMap` and trace preparation; enge converts host time to the instance clock | Prepared `BeatPoint` observations; native playback between host points | uFor `test_synth_trace_cancels_pending_envelfo_command_on_transport_seek`; enge `test_beat_stages_follow_tempo_and_stop_across_restore`, `test_host_tempo_quantizes_envelfo_change_for_both_renderers`; clock acquisition is not part of either core |
+| Direct transport-position Cycle | uFor `PositionDriver.transport`, `envelfo_at` | Native LFO transport-position flag | enge `test_transport_position_cycle_follows_seek_without_crossing_history`; only beat-clock Cycles with transport reset and no delay/fade are allowed |
+| Scope, trigger addressing and release ownership | uFor trace contracts; enge instance admission/routing/lifecycle | Voice/context slots and prepared source owners | enge `test_trigger_addressed_envelfo_changes_only_matching_voice`, `test_trigger_envelfo_playback_matches_persistent_fm_and_noise`; host ownership remains outside the control core |
+| Snapshots and continuation | uFor scalar state JSON; enge aggregate snapshots | Cloned opaque `SynthRuntimeSnapshot` | enge `test_trigger_envelfo_playback_matches_persistent_native` and operator snapshot tests; no shared Rust/Python snapshot wire format exists |
+| Event-free block acceleration | enge `_envelfo_span`, `lfo_samples`, `_envelope_values`; scalar fallback for unsupported spans | Native block LFO/audio kernels and persistent frame processing | enge `test_staged_cycle_fade_remains_exact_across_single_frame_partitions`, `test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics`; acceleration is not the reference contract |
+| arpeg control/event interoperation | arpeg runtime and explicit ports, not yet an enveLFO dependency | `arpeg-core` `ports.rs`, exact `Beat = Ratio<i64>` | Rust `InputPort` includes expression names, but `check_control` rejects breath/bend/pressure with "expression controls require the MIDI player"; standalone expression integration is unfinished |
+
+## Exact current reference boundary
+
+These public functions describe existing behavior; this slice adds no new
+runtime API:
+
+- `initial_envelfo(use, at, seed=0)` initializes Cycle, Contour, Stages, or
+  SampleHold. References must already be materialized. Patch initialization
+  requires orchestration that currently lives in enge.
+- `envelfo_at(use, state, at)` observes a scalar result. For Stages it computes
+  an advance internally but returns only the value: a caller that needs events
+  and continuation must retain the result of `advance_envelfo` instead.
+- `envelfo_event(use, state, event)` applies an ordered command and returns state.
+  For Stages this delegates to advancement but does not return emitted events.
+- `advance_envelfo(use, state, at, event=None)` currently accepts only Stages and
+  returns state, value and ordered events. It is not a general graph evaluator.
+- `next_stage_event` is a nonmutating natural-boundary query. Consumers must
+  still perform advancement to obtain state transitions and emitted events.
+
+Supported command sets are body-specific. For example, Cycle rejects cue/sample,
+Contour rejects cue/reset/transport/rate/sample, and transport-position Cycle
+rejects phase commands. Do not silently add support or manufacture empty event
+lists for features that have no standalone event-emission API today.
+
+### Time and ordering
+
+Python boundary times and positions use `Fraction`, with explicit seconds or
+beats on the owning use. The same rational number in different clocks is not
+interchangeable. Integer audio frames and host conversion remain adapter inputs,
+not an implicit replacement for these clocks.
+
+Elapsed-state queries cannot go back before their saved anchor. Commands must
+increase in `(at, ordinal)` order; separate ordinals allow multiple commands at
+one time. Direct transport-position Cycle queries are different: `at` is song
+position, so a backward song seek can be observed without replaying history.
+
+For staged advancement with a command, natural events strictly before its time
+are processed first, then the command. A command that changes stage at a natural
+boundary can discard the obsolete old-stage completion. Without such a change,
+eligible same-time natural boundaries are processed afterwards.
+
+Natural markers at a named loop boundary precede `cycle`/`turned`. Named
+forward loop wraps emit both start and end markers at the wrap time in their
+existing marker order, including the final crossing. Ping-pong turns do not
+invent the opposite endpoint marker. These rules are already covered by uFor's
+`test_named_contour_loop_boundaries_preserve_markers_and_events`.
+
+Finite repeat counts count boundary crossings, including reversed crossings.
+The final crossing emits its boundary events then `stage.done`; an explicit finish
+transition additionally emits `done`. Without a finish transition, completion
+still holds the boundary value but does not invent a `done` event.
+
+The existing Rust runtime has `f64` beat points, playback positions and delayed
+event times, and snaps near-integer staged event times using a tolerance. This
+is an exact-event-time extraction gap. arpeg uses `Ratio<i64>`; its bounded
+representation is a candidate, not a promise of arbitrary Python Fraction
+range. Decide the checked range/overflow contract before step 3 implements
+the Rust boundary. No time representation is changed in this slice.
+
+### Signals and observation schedules
+
+Results contain a floating `value`, activation `weight`, and exact status tag
+(`idle`, `running`, `held`, `complete`). The current scalar Cycle returns its
+unweighted centered waveform and reports delay/fade through `weight`. A staged
+Cycle applies fade to depth inside its value, preserves the center, and reports
+`weight=1`. These are distinct existing observable contracts. Do not normalize
+them during extraction or apply the fade twice in adapters.
+
+Signal graphs are acyclic and evaluated in dependency order. Sum/Product/Affine
+do not implicitly clip to a modulation domain. Quantize half-step ties select
+the higher grid point. Patch signals remain dimensionless.
+
+Latch, Threshold and Slew have observable state on a supplied observation grid.
+Threshold initializes silently and holds through its deadband. enge schedules
+resulting routed commands on the following frame; Slew receives the elapsed
+time per observation. Partition independence means identical logical
+observations and ordered inputs split across different calls. It does not mean
+changing that observation schedule leaves these operators unchanged.
+
+The standalone graph evaluator must expose or consume the logical observation
+schedule rather than baking an audio rate into the core. Its concrete API is
+step 2/3 work; no new default grid or continuous-crossing detector is selected
+here. Ordinary LFO control interpolation is also a host optimization, not the
+definition of exact Cycle/Staged Cycle observations.
+
+### Events, randomness and state
+
+Keep connection declaration order, every/offset counters, random streams and
+pending deliveries as state. Division happens before chance testing; probability
+zero/one does not consume a random draw. Number source occurrences from zero:
+an occurrence is eligible when `index >= offset` and
+`(index - offset) % every == 0`. Thus `every=3, offset=0` selects musician-facing
+occurrences 1, 4, 7; `offset=2` selects 3, 6, 9, and offsets larger than the
+division are an initial skip, not reduced modulo that division. Chance compares
+the upper 53 random bits against `int(probability * 2**53)` after division.
+
+SplitMix64 advances modulo `2**64`. Signal draws use the upper 53 bits. The
+existing stream-key byte prefix is `ufor-envelfo-v1` followed by a zero byte;
+renaming the package must not change it or the seed/identity encoding.
+uFor traces already call `stream_key` to assign voice keys, so that portable
+identity helper must remain usable by uFor without importing the runtime.
+Random draw execution can move to enveLFO; do not move all seed derivation behind
+an `envelfo -> ufor -> envelfo` dependency cycle.
+
+Preserve current staged event and host connection/queue capacity errors
+(4096 limits at their existing enforcement points). These are not a new global
+graph-size guarantee. Unsupported scope, curves, or Patch-level commands remain
+explicit errors until a separately tested implementation supports them.
+
+JSON restoration of Python scalar state and restoration of native aggregate
+state are distinct existing contracts. Preserve equivalent continuation in
+each. Cross-language snapshot interchange is not required by this baseline.
+
+## Extraction ownership map
+
+| Keep in uFor | Move into enveLFO | Keep in enge/adapters |
+| --- | --- | --- |
+| Definitions, score registration, unit validation, reference materialization, structural port/range checks, portable event/state records | Initialization, body/state advancement, command execution, boundary scheduling, retained graph state, random draws, event connection execution | Voice/context allocation, trigger-to-instance addressing, minimum-hold release policy, audio modulation mapping, output buffers and renderer snapshots |
+| Format mathematics needed by validation, including quantizer range calculations and declared shape/time helpers | Pure graph orchestration currently embedded in `ControlRenderer`, separated from its frame/audio adapter | NumPy block acceleration and native/PyO3 conversion |
+| Portable stream identity construction used by traces | Independent Rust control types and equivalent execution, with a fixture reader for conformance | Aggregation of audio and control states at the consumer boundary |
+
+Each algorithm must have one implementation per language after extraction.
+Do not leave uFor evaluation copies or a second enge native implementation.
+Definition helpers needed for validation stay dependency-safe and are reused,
+not duplicated under new names. Portable state records remaining in uFor do not
+authorize uFor to depend on their executing library.
+
+## Baseline fixtures
+
+`conformance/envelfo-runtime.json` and `test/test_envelfo_contract.py` establish
+the initial language-neutral runtime baseline. They temporarily live in enge
+and will move to the new project during extraction. No runtime implementation
+has moved, and no new repository or package dependency is needed for this slice.
+
+The JSON uses the current uFor definition representation with canonical unit
+literals, including explicit `s` segment suffixes. Missing definition fields use
+the existing uFor defaults. Each case starts at zero with seed zero. Step times
+are rational strings in the definition's clock; events carry their exact time
+and ordinal. Expected values/weights have absolute tolerance `1e-12`, relative
+tolerance zero. Status, event fields/order and selected runtime fields compare
+exactly. Random states/words use hexadecimal strings to avoid JSON number
+precision loss in other readers.
+
+`restore` requests a same-implementation snapshot round trip before the next
+observation. Steps with no event observe the result; Stages retain the returned
+advance state and events, whereas ordinary scalar bodies use their current
+query/command API. The partition test repeats each staged trace without its
+intermediate queries and compares final state and ordered events.
+
+The ten traces anchor constant Hold, triangle quarter-turns, both fade contracts,
+phase-preserving rate/pause/resume, attack/hold/release, same-time release
+precedence, exact fractional markers, final named-loop event ordering, and
+direct song-position queries across a backward jump. Three existing portable
+SplitMix64 vectors anchor randomness. Expectations are handwritten from these
+simple mathematical/ordering rules, not generated from either backend.
+
+The runner uses only pytest, standard-library code and uFor. It can run under
+uFor's NumPy-free environment with enge's normal test configuration disabled:
+
+```sh
+# From the sibling ufor checkout:
+uv run pytest --noconftest -o addopts= ../enge/test/test_envelfo_contract.py
+```
+
+This verifies the baseline reference semantics without NumPy or an enge import.
+It does not prove the not-yet-created package's dependency boundary. The future
+Rust runner must read the same cases directly; the current native audio tests
+remain supporting evidence, not a shared standalone conformance runner.
+
+Pending additions are full Patch execution and observation-grid traces,
+connection gates/delays, curved contours, mapped tempo/quantized transport,
+capacity/error cases and arpeg combined expression traces. Existing tests above
+remain in place; this initial baseline does not replace their coverage or claim
+those extraction gaps are resolved.
+
+## Next slice and decisions
+
+Proceed to the Python extraction with the dependency direction and ownership
+above. Before choosing its public graph scheduling API, review the existing
+logical observation-grid and same-time delivery phases. Before Rust extraction,
+settle checked rational ranges and verify the curved-segment and event-time gaps.
+Before arpeg expression integration, expose the existing player-owned expression
+path at an appropriate library boundary; do not assume enum names mean that
+`arpeg-core` already accepts those controls.
+
+No new behavioral decision is required to freeze this existing baseline.
+
+## Additional work beyond the prompt
+
+None.
