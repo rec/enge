@@ -7,7 +7,7 @@ import test_fm
 import test_synth
 from test_dynamic_synth import onset
 from test_effects import graph_input
-from test_motion_latch import latch_score
+from test_envelfo_latch import latch_score
 from test_synth import check_audio
 from ufor import audio_effects, instrument_trace, synth_trace
 from ufor.events import PerformanceEvent, Trigger
@@ -86,14 +86,14 @@ def test_quantity_authored_instruments_match_canonical_audio(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native", "persistent"])
-def test_quantity_authored_motion_preserves_fractional_event_delivery(
+def test_quantity_authored_envelfo_preserves_fractional_event_delivery(
     tmp_path: Path, backend: Literal["numpy", "native", "persistent"]
 ) -> None:
     canonical = latch_score("cycle", 1)
     raw = canonical.model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["motions"]["gesture"]["body"]
-    patch["motions"]["clock"]["rate"] = "8 Hz"
-    patch["motions"]["wave"]["rate"] = "2 Hz"
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
+    patch["envelfos"]["clock"]["rate"] = "8 Hz"
+    patch["envelfos"]["wave"]["rate"] = "2 Hz"
     patch["events"][0]["delay"] = "12001/192 ms"
     patch["events"][1]["delay"] = "31.25 ms"
     authored = SynthInstrumentScore.model_validate(raw)
@@ -122,7 +122,7 @@ def test_quantity_authored_motion_preserves_fractional_event_delivery(
     np.testing.assert_array_equal(renderer.advance([], 9000, 48000), tail)
     reference = synth.OfflineSynth(synth.prepare(canonical))
     check_audio(
-        tmp_path / f"units-motion-{backend}.wav",
+        tmp_path / f"units-envelfo-{backend}.wav",
         np.vstack((first, tail)),
         reference.advance(actions, 0, 48000),
     )

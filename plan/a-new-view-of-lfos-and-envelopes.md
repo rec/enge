@@ -4,16 +4,16 @@ Design proposal, 2026-09-28. This document proposes a shared model; its TOML
 examples are proposed syntax, not files that today's engine can load. It does
 not authorize implementation or change the existing roadmap.
 
-## 1. Recommendation: call them motions
+## 1. Naming decision: call them envelfos
 
-A **motion** produces control signals over time, can receive events, and can
+An **envelfo** produces control signals over time, can receive events, and can
 emit events of its own. It can be as simple as a sine wave or as involved as a
 collection of interacting processes. An envelope and an LFO are familiar kinds
-of motion. They should share ownership, connections, clocks, event handling,
+of envelfo. They should share ownership, connections, clocks, event handling,
 libraries, and runtime state.
 
-Use `motion` in the format, `Motion` in data types, and “motions” in conversation:
-“Give the filter a slow motion”, “load the bowed motion”, “reverse this motion”.
+Use `envelfo` in the format, `Envelfo` in data types, and “envelfos” in conversation:
+“Give the filter a slow envelfo”, “load the bowed envelfo”, “reverse this envelfo”.
 Keep envelope and LFO in descriptions, search tags, and documentation. A
 musician should not have to unlearn those words to use the system.
 
@@ -21,13 +21,17 @@ Other names considered:
 
 | Name | Strength | Limitation |
 | --- | --- | --- |
-| Motion | Short; includes periodic, triggered, and reactive behavior | Needs a one-sentence introduction |
+| Envelfo | Recognizable envelope-plus-LFO name; distinctive and searchable | Broader capabilities need explanation |
 | Modulator | Established synthesizer terminology | Also used for FM audio operators; suggests a destination is necessary |
 | Gesture | Expressive and musical | Suggests a finite performance rather than a continuous process |
 | Contour | Good for a shaped trajectory | Too narrow for followers, randomness, and external programs |
 | Function | General, with modular-synth precedent | Abstract; suggests a stateless calculation |
 
-“Motion” is the working recommendation, not an implementation dependency.
+`Envelfo` is the chosen name. Informal testing with electronic musicians found
+that it communicated the envelope-plus-LFO purpose directly. It replaces the
+previous vocabulary throughout the APIs, formats, examples, and documentation,
+without compatibility aliases. Composition and event processing extend that
+familiar starting point.
 
 The crucial qualification: **unify the contract, not every implementation**.
 A waveform reader, an envelope follower, and an external program do not have
@@ -56,7 +60,7 @@ We also already have a library foundation, not a blank slate:
   detects ambiguity and dependency cycles.
 - `PresetScore` configures public parameters of interface scores.
 - Instrument settings currently embed separate `lfos` and `envelopes`
-  dictionaries. They do not offer a unified motion library instance with a
+  dictionaries. They do not offer a unified envelfo library instance with a
   shared event/parameter interface.
 
 The proposal extends those facilities. It does not introduce a second library
@@ -68,7 +72,7 @@ The ufor paths refer to the sibling ufor repository.
 
 ## 3. The musician's model
 
-A motion answers five questions:
+An envelfo answers five questions:
 
 1. **What does it produce?** A waveform, contour, sequence, random movement,
    measurement, recording, or external calculation.
@@ -77,11 +81,11 @@ A motion answers five questions:
 3. **What happens when something happens?** Start, release, enter a stage,
    reverse, jump, pause, change a parameter, or emit another event.
 4. **Who owns it?** A voice, trigger, part, or instrument.
-5. **Where do its outputs go?** Sound parameters, another motion, or an event
+5. **Where do its outputs go?** Sound parameters, another envelfo, or an event
    destination.
 
-Most motions only need the first two answers. The rest have documented defaults
-or appear at the point where the motion is connected to an instrument.
+Most envelfos only need the first two answers. The rest have documented defaults
+or appear at the point where the envelfo is connected to an instrument.
 
 There are two port families:
 
@@ -94,7 +98,7 @@ Neither is silently converted into the other. A threshold detector turns a
 signal into events; a pulse or latch turns events into a signal. This avoids
 the ambiguity of calling both a one-sample impulse and a timestamp a “trigger”.
 
-Every motion exposes a primary signal named `value`. Compound motions may expose
+Every envelfo exposes a primary signal named `value`. Compound envelfos may expose
 additional named signals such as `brightness` and `pressure`, and named events
 such as `peak` and `done`. Common lifecycle events have one shared meaning.
 
@@ -106,7 +110,7 @@ apply; no new format version number is chosen by this proposal.
 ### A simple LFO
 
 ```toml
-kind = "motion"
+kind = "envelfo"
 name = "slow-sine"
 title = "Slow sine"
 
@@ -124,7 +128,7 @@ no hidden dependence on the first audio block requested.
 ### A simple envelope
 
 ```toml
-kind = "motion"
+kind = "envelfo"
 name = "soft-pluck"
 title = "Soft pluck"
 
@@ -172,12 +176,12 @@ waveform phase and duty-cycle conventions remain authoritative.
 
 ## 5. An envelope that becomes an LFO
 
-This is naturally a motion with named stages. The stages say what to do; the
+This is naturally an envelfo with named stages. The stages say what to do; the
 transitions say when to change behavior. It is one instance with one `value`
 output throughout.
 
 ```toml
-kind = "motion"
+kind = "envelfo"
 name = "bloom"
 title = "Attack, sway, release"
 
@@ -187,21 +191,21 @@ initial_stage = "waiting"
 
 [[body.stages]]
 name = "waiting"
-motion = { kind = "hold", value = 0.0 }
+envelfo = { kind = "hold", value = 0.0 }
 
 [[body.stages]]
 name = "attack"
-motion = { kind = "contour", initial = "current", segments = [
+envelfo = { kind = "contour", initial = "current", segments = [
   { duration = "300 ms", to = 0.7 },
 ] }
 
 [[body.stages]]
 name = "sway"
-motion = { kind = "cycle", shape = "sine", rate = "3 Hz", center = 0.7, depth = 0.2 }
+envelfo = { kind = "cycle", shape = "sine", rate = "3 Hz", center = 0.7, depth = 0.2 }
 
 [[body.stages]]
 name = "release"
-motion = { kind = "contour", initial = "current", segments = [
+envelfo = { kind = "contour", initial = "current", segments = [
   { duration = "500 ms", to = 0.0 },
 ] }
 
@@ -284,7 +288,7 @@ reversing that traversal. Do not recapture it on every direction change.
 
 A position input, such as `{ source = "scrub.value" }`, can replace an internal
 rate driver. It must not coexist with another position owner. A pedal can then
-scrub an envelope or freeze it anywhere. A transport-locked motion similarly
+scrub an envelope or freeze it anywhere. A transport-locked envelfo similarly
 has an externally owned position: it follows seeks and reversals of that clock;
 local seek/reverse commands are rejected until its driver is explicitly changed.
 
@@ -345,7 +349,7 @@ Contour input bindings retain explicit voice-timed release even when they have
 no direct parameter route; unbound input contours default to immediate release.
 
 Reuse existing typed modulation routes for signal-to-parameter connections.
-A motion's rate, depth, phase offset, curve, and other declared inputs are
+An envelfo's rate, depth, phase offset, curve, and other declared inputs are
 ordinary parameter targets. Multiple additive/multiplicative contributions
 retain ufor's current combination and domain rules.
 
@@ -364,13 +368,13 @@ independently for each voice, resets on voice activation, and
 retains its count through child restarts, stage transitions, render partitions,
 and snapshot restoration. Division filters delivery, not source emission or
 named event outputs. This applies to Patch starts and cues and to instrument
-Motion cue connections in both reference and native rendering.
+Envelfo cue connections in both reference and native rendering.
 
 Connections also accept `probability` in [0, 1], defaulting to 1. Apply it after
 division: each selected event draws independently per connection and voice;
 rejection does not shift the divider. Probabilities use 53-bit integer cutoffs;
 cutoffs zero and 2**53 consume no random words. Prepared voice starts carry a
-Motion key derived from the trace seed and voice identity. Connection identity
+Envelfo key derived from the trace seed and voice identity. Connection identity
 selects an independent SplitMix64
 stream; snapshots preserve its state and voice activation initializes it. Child
 restarts do not initialize it. Matching score seed, voice IDs, and authored
@@ -397,13 +401,13 @@ For example, within a proposed compound `patch` body:
 [body]
 kind = "patch"
 
-[body.motions.wobble]
+[body.envelfos.wobble]
 kind = "cycle"
 shape = "sine"
 rate = "2 Hz"
 markers = [{ name = "peak", position = 0.25, direction = "forward" }]
 
-[body.motions.accent]
+[body.envelfos.accent]
 kind = "contour"
 initial = 0.0
 start = "event"
@@ -438,7 +442,7 @@ all crossed markers in travel order and is subject to event capacity limits.
 Landing on a marker without traversal can instead use a separate `arrived`
 event. Define this once, not separately in each waveform kernel.
 
-Connections can broadcast from a shared motion to matching voices. Connecting
+Connections can broadcast from a shared envelfo to matching voices. Connecting
 many voices back to one shared signal requires a declared reduction, such as
 sum, maximum, latest, or average. Event fan-in requires a defined merge order.
 No implicit “whichever voice ran last” behavior.
@@ -452,7 +456,7 @@ is allowed through a positive delay, with a declared maximum event rate.
 ## 8. Clocks and external synchronization
 
 Clocks are shared services with position, rate, running state, and discontinuity
-events. A motion selects or binds a clock; it does not open a MIDI port itself.
+events. An envelfo selects or binds a clock; it does not open a MIDI port itself.
 The host adapts physical or application inputs into timestamped clock/events.
 
 Keep these separate:
@@ -471,8 +475,8 @@ step, or select a stage. These must be distinct settings. They answer different
 musical intentions.
 
 Clock adapters may accept host tempo maps, MIDI clock, transport messages,
-tap tempo, detected onsets, OSC cues, or another motion's events. The MIDI
-adapter owns protocol pulse counting and transport conversion; the motion
+tap tempo, detected onsets, OSC cues, or another envelfo's events. The MIDI
+adapter owns protocol pulse counting and transport conversion; the envelfo
 only sees a normalized musical clock.
 
 For pulse estimation, declare the acquisition rule, smoothing/phase-correction
@@ -503,17 +507,17 @@ in the first release.
 | Playable movement | Pedal scrubbing; velocity choosing an entry stage; pressure slowing or reversing travel; legato continuation |
 | Rhythmic patterns | Step sequences; Euclidean event patterns; ratchets; swing; alternating lengths; event counting and clock division |
 | Variation | Seeded sample-and-hold; smooth noise; random walks with boundaries; weighted stage choices; probability changing with velocity |
-| Coupled movement | One motion changes another's speed; quadrature outputs; polymetric loops; explicit delayed feedback and phase coupling |
+| Coupled movement | One envelfo changes another's speed; quadrature outputs; polymetric loops; explicit delayed feedback and phase coupling |
 | Reactive movement | Audio-level followers; pitch/onset analysis; pressure, breath, or sensor inputs; threshold-triggered contours |
 | Memory | Capture a played control gesture; repeat or stretch it; hold the value present at a marker; latch a peak until a cue |
 | Structured expression | Morph between two shapes at the same position; bias/skew a contour; quantize to musical pitch intervals; smooth only falling edges |
 | Physical models | A damped spring after each trigger; bouncing/settling gestures; resonant responses to impulses |
 | Multi-output gestures | A bow stroke producing pressure, brightness, and vibrato depth from shared progress; correlated spatial trajectories |
 | Performance structure | Evolve across a phrase or song section; reset on a bar cue; transition at a zero crossing to reduce discontinuities |
-| External intelligence | A program generates motions from analysis, a simulation, a model, or an external sequencer |
+| External intelligence | A program generates envelfos from analysis, a simulation, a model, or an external sequencer |
 
 Distinguish independent voices from intentionally correlated variation. A random
-seed can derive from the score seed, motion identity, and stable instance key.
+seed can derive from the score seed, envelfo identity, and stable instance key.
 Implemented the first variation primitive: voice-owned `sample_hold` draws on
 activation and on connected Patch `sample` commands. Cycle markers and Stages
 ports use the existing division, probability, and seconds-delay rules. Each
@@ -528,7 +532,7 @@ For reversible random shapes, derive each value from seed plus coordinate/index;
 reverse revisits the same values. Stateful random walks and physical models
 instead need recorded history or replay to revisit their past.
 
-An oscillator with a sufficiently high rate is still a motion, but its target
+An oscillator with a sufficiently high rate is still an envelfo, but its target
 may require audio-rate evaluation and appropriate band-limiting. The type system
 must not promise that every control-rate process is a safe audio oscillator.
 
@@ -542,13 +546,13 @@ and lists/dictionaries for collections. Avoid one giant class of optional fields
 
 | Type | Fields and responsibility |
 | --- | --- |
-| `MotionScore` | Existing score header; `kind="motion"`; public `parameters`, `inputs`, `outputs`; one `body` |
-| `MotionBody` | Tagged union of the body types below |
-| `MotionUse` | Exactly one inline body or existing `ScoreReference`; public parameter values and input bindings |
-| `MotionInstance` | A use plus `scope`, owner identity, clock bindings, and lifecycle bindings |
-| `MotionState` | Definition identity, local position/stage, captured values, direction, paused/completed flags, child states, random state, pending events |
-| `MotionSnapshot` | Instance states, graph delays, clock state, queued commands, evaluation-grid origin, and resolved dependency identities |
-| `PreparedMotion` | Resolved immutable definition, typed ports, ordered graph, backend requirements, resource bounds |
+| `EnvelfoScore` | Existing score header; `kind="envelfo"`; public `parameters`, `inputs`, `outputs`; one `body` |
+| `EnvelfoBody` | Tagged union of the body types below |
+| `EnvelfoUse` | Exactly one inline body or existing `ScoreReference`; public parameter values and input bindings |
+| `EnvelfoInstance` | A use plus `scope`, owner identity, clock bindings, and lifecycle bindings |
+| `EnvelfoState` | Definition identity, local position/stage, captured values, direction, paused/completed flags, child states, random state, pending events |
+| `EnvelfoSnapshot` | Instance states, graph delays, clock state, queued commands, evaluation-grid origin, and resolved dependency identities |
+| `PreparedEnvelfo` | Resolved immutable definition, typed ports, ordered graph, backend requirements, resource bounds |
 
 Definition reuse is not state sharing. Two uses of the same library entry get
 independent state. Sharing happens by connecting to one explicitly owned instance.
@@ -586,7 +590,7 @@ because a common preset deserves a friendly name.
 | `Marker` | Name, position, direction filter |
 | `SignalPort` | Name, scalar unit, range when known, evaluation requirement |
 | `EventPort` | Name and declared payload field types |
-| `MotionCommand` | Tagged command from section 6; arguments depend on the tag |
+| `EnvelfoCommand` | Tagged command from section 6; arguments depend on the tag |
 | `Transition` | Allowed source stages, event, optional typed predicate, action |
 | `EventConnection` | Source event reference, target instance, command, payload mapping, optional delay/quantization |
 | `ClockBinding` | Clock identity and synchronization relationship |
@@ -597,25 +601,25 @@ because a common preset deserves a friendly name.
 Stage-local transitions take precedence over program-wide transitions; within
 one list, the first matching transition wins. Predicates use a small tagged set
 of comparisons and boolean combinations over typed inputs/event fields. More
-complex decisions belong in a decision motion or external provider, not a new
+complex decisions belong in a decision envelfo or external provider, not a new
 general-purpose language in TOML.
 
 Known signal ranges help catch errors, but not every external process has a
 provable bound. A connection to a bounded target must declare an accepted range
 or include an explicit limiting transform. Unit conversions such as decibels to
-linear gain are explicit. Scalar ports cover simple motions; named scalar ports
+linear gain are explicit. Scalar ports cover simple envelfos; named scalar ports
 compose multi-dimensional ones without forcing vectors onto every user.
 
 ## 11. Libraries are a first-class requirement
 
-Add `MotionScore` to the existing score union and codec. A library should contain
-individual motions, reusable shapes, and compound motions with musical public
+Add `EnvelfoScore` to the existing score union and codec. A library should contain
+individual envelfos, reusable shapes, and compound envelfos with musical public
 parameters. Library resolution remains in the preparation/host layer.
 
 A reusable sine exposes speed, rather than requiring callers to edit its body:
 
 ```toml
-kind = "motion"
+kind = "envelfo"
 name = "vibrato"
 title = "Vibrato"
 tags = ["#pitch", "#periodic"]
@@ -635,17 +639,17 @@ rate = { parameter = "speed" }
 The reference supplies the rate from the declared parameter, including its unit.
 There is only one authored default. Preparation checks that each reference's
 unit and domain suit its field; this is not arbitrary object mutation. A future
-motion instance inside an instrument could use it as follows:
+envelfo instance inside an instrument could use it as follows:
 
 ```toml
-[motions.vibrato]
+[envelfos.vibrato]
 score = { selector = "factory:vibrato" }
 scope = "voice"
 parameters = { speed = 6.0 }
 ```
 
 This is an embedding fragment, not a complete instrument document. The proposed
-`motions` field replaces the separate generator dictionaries when integration
+`envelfos` field replaces the separate generator dictionaries when integration
 is implemented. Parameter routing to the sound still uses the existing
 modulation system.
 
@@ -656,11 +660,11 @@ Required library behavior:
 - Expose only declared public parameters. No deep-merge inheritance, textual
   templates, arbitrary nested overrides, or implicit dependency on another file's
   private stage names.
-- Permit compound motions to include library motions and re-expose selected
+- Permit compound envelfos to include library envelfos and re-expose selected
   ports/parameters. Recursive inclusion is invalid.
 - Retain resolved identities and content hashes in prepared artifacts and
   snapshots. Editing a library file does not mutate an already playing instance.
-- Reuse `PresetScore` after extending the public-parameter contract to motions;
+- Reuse `PresetScore` after extending the public-parameter contract to envelfos;
   today its parameter handling requires an interface score.
 - Store title, tags, parameter descriptions, unit/range information, and capability
   requirements so both humans and hosts can explain what a preset does.
@@ -684,7 +688,7 @@ events, and updated state. Its manifest declares units, ports, configuration
 schema, provider version, latency, and snapshot/replay capabilities.
 
 Distinguish preparation-time generation, offline streaming, and live buffered
-delivery. Preparation-time output can be frozen as a recording motion. A live
+delivery. Preparation-time output can be frozen as a recording envelfo. A live
 provider runs outside the audio callback; no process launch, file access,
 blocking wait, network request, or interpreted user code belongs in the callback.
 TOML references a host-registered provider, not a shell command to execute merely
@@ -753,9 +757,9 @@ ufor owns portable declarations, validation, and scalar reference semantics.
 enge owns preparation, sample/control evaluation, native state, and resource
 limits. Hosts own physical clocks, MIDI/device input, and external services.
 
-An amplitude motion may be the explicitly selected lifetime owner of a voice.
-Other motions can complete independently. Instrument/part motions survive
-individual note releases; voice motions retire with their voices. On voice
+An amplitude envelfo may be the explicitly selected lifetime owner of a voice.
+Other envelfos can complete independently. Instrument/part envelfos survive
+individual note releases; voice envelfos retire with their voices. On voice
 stealing, deliver the chosen stop policy and invalidate that instance's queued
 events so they cannot act on a reused slot.
 
@@ -767,10 +771,10 @@ systems. Each implemented slice should replace the corresponding old path,
 with shared reference/native semantics, rather than accumulating parallel
 generator engines.
 
-1. **Settle vocabulary and semantics.** Agree on Motion, ports, scope, position
+1. **Settle vocabulary and semantics.** Agree on Envelfo, ports, scope, position
    ownership, lifecycle, units, completion, and event boundary rules. Have a
    musician read the simple and staged TOML examples without explanatory prose.
-2. **Establish the common contract.** Introduce motion definitions and instances
+2. **Establish the common contract.** Introduce envelfo definitions and instances
    for cycle/contour; reuse existing waveform/envelope kernels and routing.
    Preserve current behavior in conformance fixtures. Keep the schema tagged,
    and reject unsupported body kinds explicitly.
@@ -827,7 +831,7 @@ whose parameter it controls. See [Ableton's clip-envelope manual](https://www.ab
 
 Those precedents inform the vocabulary; they are not specifications to copy.
 The proposal here makes the shared state/event contract, reusable libraries,
-cross-motion connections, and external-provider capabilities explicit in a
+cross-envelfo connections, and external-provider capabilities explicit in a
 human-readable format.
 
 ## Additional work beyond the prompt

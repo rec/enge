@@ -80,7 +80,7 @@ enter its failure state.
 binding.** Responding immediately to release is an expressive capability: timbre
 can relax while minimum hold keeps the sound audible. Coordinated release is
 also useful, so expose the choice rather than imposing one policy on every
-envelope. This can be implemented now without introducing the full motion/event
+envelope. This can be implemented now without introducing the full envelfo/event
 graph proposed elsewhere.
 
 Add one field on envelope bindings, not on the reusable envelope shape:
@@ -300,7 +300,7 @@ Long performances can therefore retain historical contexts/generator state.
 Its cached arrays are also copied on return.
 
 **Improvement:** establish ownership-based retirement with stable handles before
-introducing shared motions. Measure long renders and snapshot sizes. Recycling
+introducing shared envelfos. Measure long renders and snapshot sizes. Recycling
 must preserve deterministic identities and must not make old queued events
 refer to a newly reused instance.
 
@@ -335,7 +335,7 @@ proposal does not reintroduce that work.
 ## 4. Organizing principle: excite, evolve, observe
 
 An instrument is a collection of **sound processes** with persistent state,
-driven by events and **motions**, connected through typed ports.
+driven by events and **envelfos**, connected through typed ports.
 
 For many instruments, three musical questions explain the design:
 
@@ -421,9 +421,9 @@ definition, not independent competing implementations.
 | Contract | Contents |
 | --- | --- |
 | Sound process definition | Tagged kind, typed inputs/outputs, parameter declarations, immutable assets |
-| Instrument definition | Named process instances, connections, motions, public controls, output selections |
+| Instrument definition | Named process instances, connections, envelfos, public controls, output selections |
 | Prepared instrument | Resolved library/asset identities, schedule, constant data, preallocated state, capacities |
-| Voice instance | Stable identity, ownership scope, event state, process state, motion instances |
+| Voice instance | Stable identity, ownership scope, event state, process state, envelfo instances |
 | Process state | Algorithm-specific phases, cursors, buffers, modes, or solver state |
 | Execution profile | Required rate, latency, tail behavior, memory/work bounds, supported backend capabilities |
 | Snapshot | State plus prepared-definition identity, pending events, clocks, delays, random/provider state |
@@ -438,7 +438,7 @@ Analysis/spectral frames can be specialized typed ports when a real spectral
 engine needs them, with explicit hop size, window, and latency.
 
 A control stream may run at audio rate, but does not silently become an audio
-connection or trigger. The proposed [motions](a-new-view-of-lfos-and-envelopes.md)
+connection or trigger. The proposed [envelfos](a-new-view-of-lfos-and-envelopes.md)
 and [segments](segments.md) supply control behavior and readable time notation.
 
 ### Preparation and scheduling
@@ -519,7 +519,7 @@ are stated deliberately; attractive naming is not evidence of a new technique.
 Several oscillators exchange phase influence through musical relationships:
 attract, repel, divide, and temporarily lock. A player controls cohesion and
 friction rather than individual modulation indices. Outputs include audible
-taps and synchronization events that can drive motions.
+taps and synchronization events that can drive envelfos.
 
 Prototype against coupled-oscillator/PM baselines. Preserve phase when changing
 relationships, bound coupling, and avoid claiming that nonlinear locking will
@@ -584,7 +584,7 @@ resonances interact.**
 
 A loud low note leaves a slow-decaying imprint. A later high note travels
 through the changed resonant network and acquires a different attack or spectral
-motion. A performer can polish a sound by repetition, erase its history, freeze
+envelfo. A performer can polish a sound by repetition, erase its history, freeze
 it as a material, or let it recover between phrases.
 
 The history is structural, not an audio recording. It need not audibly replay
@@ -749,7 +749,7 @@ A useful matrix includes:
   overlap, and source/output sample-rate differences.
 - Releases during attacks and before minimum hold, zero-time segments, stops,
   voice stealing, long ringing tails, and empty/exhausted sources.
-- Many voices with shared motions versus unique motions, filters, modulation
+- Many voices with shared envelfos versus unique envelfos, filters, modulation
   fan-out, and long performances with repeated snapshots.
 - Tiny/irregular blocks, simultaneous events, capacity boundaries, invalid
   native inputs, incompatible snapshots, and recovery after partial failures.
@@ -767,7 +767,7 @@ rules. Keep gain staging explicit and diagnose non-finite samples before output.
 
 ## 9. Suggested order of work
 
-1. Reproduce and repair sampler motion lifecycle and minimum-hold named-envelope
+1. Reproduce and repair sampler envelfo lifecycle and minimum-hold named-envelope
    behavior. Add boundary, invalid-input, and live recovery tests.
 2. Remove obvious per-sample allocations and prepare graph/parameter adjacency.
    Measure before promising a speedup.
@@ -776,7 +776,7 @@ rules. Keep gain staging explicit and diagnose non-finite samples before output.
 4. Improve oscillator and sampler quality under an explicit policy. Treat sound
    changes as authored/versioned behavior, not unnoticed “optimizations”.
 5. Introduce the common process contract around existing engines incrementally.
-   Prove one mixed instrument using existing noise, sampler/oscillator, motions,
+   Prove one mixed instrument using existing noise, sampler/oscillator, envelfos,
    and processing before designing a large catalog of new node types.
 6. Add a modal body and a few expressive library instruments. Then choose
    wavetable, waveguide, or granular instruments according to desired sounds.

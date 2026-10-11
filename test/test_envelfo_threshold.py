@@ -6,7 +6,7 @@ import pytest
 from test_dynamic_synth import onset
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio
-from ufor import instrument_trace, motion_random, synth_trace
+from ufor import envelfo_random, instrument_trace, synth_trace
 from ufor.synth import SynthInstrumentScore
 
 from enge import synth
@@ -15,7 +15,7 @@ from enge import synth
 def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentScore:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    motions: dict[str, object] = {
+    envelfos: dict[str, object] = {
         "clock": {"kind": "cycle", "shape": "square", "rate": "4", "phase": "1/2"},
         "edge": {"kind": "threshold", "input": "clock", "lower": -0.25, "upper": 0.25},
         "level": {"kind": "affine", "input": "edge", "scale": 0.5, "offset": 0.5},
@@ -23,7 +23,7 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
     events: list[dict[str, object]] = []
     output = "level"
     if target == "sample":
-        motions["held"] = {"kind": "sample_hold", "minimum": 0.5, "maximum": 1}
+        envelfos["held"] = {"kind": "sample_hold", "minimum": 0.5, "maximum": 1}
         events = [
             {
                 "source": "edge.rising",
@@ -35,19 +35,19 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
                 "delay": "1/100",
             }
         ]
-        motions["level"] = {
+        envelfos["level"] = {
             "kind": "affine",
             "input": "held",
             "scale": 0.5,
             "offset": 0.5,
         }
     if target in ("cue", "export"):
-        motions["gesture"] = {
+        envelfos["gesture"] = {
             "kind": "stages",
             "initial_stage": "low",
             "stages": [
-                {"name": "low", "motion": {"kind": "hold", "value": 0.5}},
-                {"name": "high", "motion": {"kind": "hold", "value": 1}},
+                {"name": "low", "envelfo": {"kind": "hold", "value": 0.5}},
+                {"name": "high", "envelfo": {"kind": "hold", "value": 1}},
             ],
             "transitions": [
                 {
@@ -76,31 +76,31 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
                 "cue": "down",
             },
         ]
-        motions["level"] = {
+        envelfos["level"] = {
             "kind": "affine",
             "input": "gesture",
             "scale": 0.5,
             "offset": 0.5,
         }
     if target == "start":
-        motions["attack"] = {
+        envelfos["attack"] = {
             "kind": "contour",
             "initial": 0,
             "start": "event",
             "segments": [{"duration": "1/16 s", "to": 1}],
         }
-        motions["level"] = {
+        envelfos["level"] = {
             "kind": "affine",
             "input": "attack",
             "scale": 0.5,
             "offset": 0.5,
         }
         events = [{"source": "edge.rising", "target": "attack"}]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": motions,
+                "envelfos": envelfos,
                 "outputs": {"value": output},
                 "events": events,
             }
@@ -113,20 +113,20 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
         {"input": 1, "amount": 1},
     ]
     if target == "export":
-        receiver = motions.pop("gesture")
-        motions["level"] = {
+        receiver = envelfos.pop("gesture")
+        envelfos["level"] = {
             "kind": "affine",
             "input": "edge",
             "scale": 0.5,
             "offset": 0.5,
         }
-        patch = voice["motions"]["gesture"]["body"]
+        patch = voice["envelfos"]["gesture"]["body"]
         patch.update(
             events=[], event_outputs={"up": "edge.rising", "down": "edge.falling"}
         )
-        voice["motions"]["receiver"] = {"body": receiver}
+        voice["envelfos"]["receiver"] = {"body": receiver}
         voice["bindings"].append(
-            {"name": "receiver", "kind": "motion", "reference": "receiver"}
+            {"name": "receiver", "kind": "envelfo", "reference": "receiver"}
         )
         voice["modulation"]["sources"].append(
             {"name": "receiver", "scope": "voice", "minimum": -1, "maximum": 1}
@@ -165,12 +165,12 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
     target: str,
     probability: float,
     initial_high: bool,
-    motion_baseline: Callable[[int], np.ndarray],
+    envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = threshold_score(target, probability)
     if initial_high:
         raw = document.model_dump(mode="json")
-        raw["body"]["voices"][0]["motions"]["gesture"]["body"]["motions"]["clock"][
+        raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]["envelfos"]["clock"][
             "phase"
         ] = "0"
         document = SynthInstrumentScore.model_validate(raw)
@@ -181,28 +181,28 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
         gate = np.concatenate(([0.75], (0.5 + 0.5 * gate)[:-1]))
     if target == "sample":
         start = next(a for a in actions if isinstance(a, instrument_trace.VoiceStart))
-        state = start.motion_key ^ motion_random.stream_key(
+        state = start.envelfo_key ^ envelfo_random.stream_key(
             0, "patch-gesture-held:sample-hold"
         )
-        state, word = motion_random.random_word(state)
+        state, word = envelfo_random.random_word(state)
         gate = np.full(48000, 0.75 + 0.25 * (word >> 11) / 2**53)
-        gate_state = start.motion_key ^ motion_random.stream_key(
+        gate_state = start.envelfo_key ^ envelfo_random.stream_key(
             0, "patch-gesture-held:start-0"
         )
         for at in range(12000 if initial_high else 6000, 48000, 24000):
             if probability == 0:
                 continue
             if probability != 1:
-                gate_state, gate_word = motion_random.random_word(gate_state)
+                gate_state, gate_word = envelfo_random.random_word(gate_state)
                 if gate_word >> 11 >= int(probability * 2**53):
                     continue
-            state, word = motion_random.random_word(state)
+            state, word = envelfo_random.random_word(state)
             gate[at + 481 :] = 0.75 + 0.25 * (word >> 11) / 2**53
     if target == "start":
         gate = np.full(48000, 0.5)
         gate[6001:9001] = 0.5 + 0.5 * np.arange(3000) / 3000
         gate[9001:] = 1.0
-    expected = motion_baseline(0) * gate[:, None]
+    expected = envelfo_baseline(0) * gate[:, None]
     definition = synth.prepare(document)
     for backend in ("numpy", "native", "persistent"):
         renderer = (
@@ -225,7 +225,7 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
 
 def test_threshold_hysteresis_resets_on_voice_slot_reuse(tmp_path: Path) -> None:
     raw = threshold_score("gate").model_dump(mode="json")
-    children = raw["body"]["voices"][0]["motions"]["gesture"]["body"]["motions"]
+    children = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]["envelfos"]
     children["clock"].update(shape="sine", rate="2", phase="0")
     children["edge"].update(lower=-0.35, upper=0.45)
     document = SynthInstrumentScore.model_validate(raw)
@@ -243,7 +243,7 @@ def test_threshold_hysteresis_resets_on_voice_slot_reuse(tmp_path: Path) -> None
         cause="transport_stop",
     )
     actions.insert(next(i for i, a in enumerate(actions) if a.tick >= 30000), stop)
-    raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
+    raw["body"]["voices"][0].update(envelfos={}, bindings=[], modulation={})
     baseline = SynthInstrumentScore.model_validate(raw)
     base_actions = synth_trace.prepare(baseline.body, events, seed=5).actions
     base_actions.insert(

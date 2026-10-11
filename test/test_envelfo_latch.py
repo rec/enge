@@ -5,9 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_dynamic_synth import onset
-from test_motion_sample_hold import sample_hold_score
+from test_envelfo_sample_hold import sample_hold_score
 from test_synth import check_audio
-from ufor import instrument_trace, motion_random, synth_trace
+from ufor import envelfo_random, instrument_trace, synth_trace
 from ufor.synth import SynthInstrumentScore
 
 from enge import synth
@@ -17,8 +17,8 @@ def latch_score(source_kind: str, probability: float) -> SynthInstrumentScore:
     raw = sample_hold_score(
         "stages" if source_kind == "stages" else "cycle", probability
     ).model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["motions"]["gesture"]["body"]
-    patch["motions"].update(
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
+    patch["envelfos"].update(
         {
             "wave": {"kind": "cycle", "shape": "triangle", "rate": "2"},
             "pressure": {
@@ -31,16 +31,16 @@ def latch_score(source_kind: str, probability: float) -> SynthInstrumentScore:
             "right": {"kind": "latch", "input": "pressure"},
         }
     )
-    patch["motions"].pop("product")
-    patch["motions"]["sum"] = {"kind": "sum", "inputs": ["left", "right"]}
-    patch["motions"]["level"].update(input="sum", scale=0.25)
+    patch["envelfos"].pop("product")
+    patch["envelfos"]["sum"] = {"kind": "sum", "inputs": ["left", "right"]}
+    patch["envelfos"]["level"].update(input="sum", scale=0.25)
     # A fractional-frame delay distinguishes emission, delivery, and observation.
     patch["events"][0]["delay"] = "12001/192000"
     for connection in patch["events"]:
         connection["action"] = "capture"
     if source_kind == "threshold":
-        patch["motions"]["clock"].update(shape="square", phase="1/2")
-        patch["motions"]["edge"] = {
+        patch["envelfos"]["clock"].update(shape="square", phase="1/2")
+        patch["envelfos"]["edge"] = {
             "kind": "threshold",
             "input": "clock",
             "lower": -0.25,
@@ -59,7 +59,7 @@ def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
     backend: str,
     source_kind: str,
     probability: float,
-    motion_baseline: Callable[[int], np.ndarray],
+    envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = latch_score(source_kind, probability)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
@@ -70,7 +70,7 @@ def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
     held_values: list[np.ndarray] = []
     for order, child in enumerate(("left", "right")):
         held = np.full(48000, input_values[0])
-        state = start.motion_key ^ motion_random.stream_key(
+        state = start.envelfo_key ^ envelfo_random.stream_key(
             0, f"gesture:capture-{child}-{order}"
         )
         every, offset, delay = (2, 1, 3000.25) if order == 0 else (3, 0, 1500)
@@ -80,7 +80,7 @@ def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
             if i < offset or (i - offset) % every or cutoff == 0:
                 continue
             if cutoff != 2**53:
-                state, word = motion_random.random_word(state)
+                state, word = envelfo_random.random_word(state)
                 if word >> 11 >= cutoff:
                     continue
             frame = ceil(at + delay + (1 if source_kind == "threshold" else 0))
@@ -88,7 +88,7 @@ def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
                 held[frame:] = input_values[frame]
         held_values.append(held)
     signal = 0.5 + 0.25 * (held_values[0] + held_values[1])
-    expected = motion_baseline(0) * signal[:, None]
+    expected = envelfo_baseline(0) * signal[:, None]
     definition = synth.prepare(document)
     renderer = (
         synth.PersistentSynth(definition, voices=1)
@@ -115,10 +115,10 @@ def test_latch_activation_and_same_frame_captures(
     tmp_path: Path,
     backend: str,
     mode: str,
-    motion_baseline: Callable[[int], np.ndarray],
+    envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
     raw = latch_score("cycle", 1).model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["motions"]["gesture"]["body"]
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
     if mode != "unconnected":
         for connection in patch["events"]:
             connection.update(every=1, offset=0, delay="0")
@@ -127,13 +127,13 @@ def test_latch_activation_and_same_frame_captures(
     else:
         patch["events"] = []
     if mode == "slew":
-        patch["motions"]["smooth"] = {
+        patch["envelfos"]["smooth"] = {
             "kind": "slew",
             "input": "wave",
             "rise": 2,
             "fall": 4,
         }
-        patch["motions"]["pressure"]["input"] = "smooth"
+        patch["envelfos"]["pressure"]["input"] = "smooth"
     document = SynthInstrumentScore.model_validate(raw)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
     actions = synth_trace.prepare(document.body, events, seed=0).actions
@@ -154,7 +154,7 @@ def test_latch_activation_and_same_frame_captures(
     if mode != "unconnected":
         for frame in range(1500, 48000, 6000):
             held[frame:] = inputs[frame]
-    expected = motion_baseline(0) * (0.5 + 0.5 * held)[:, None]
+    expected = envelfo_baseline(0) * (0.5 + 0.5 * held)[:, None]
     definition = synth.prepare(document)
     renderer = (
         synth.PersistentSynth(definition, voices=1)
@@ -172,8 +172,8 @@ def test_latch_discards_pending_captures_and_initializes_reused_voice_slot(
     tmp_path: Path,
 ) -> None:
     raw = latch_score("cycle", 1).model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["motions"]["gesture"]["body"]
-    patch["motions"]["wave"]["phase"] = "1/4"
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
+    patch["envelfos"]["wave"]["phase"] = "1/4"
     for connection in patch["events"]:
         connection.update(every=1, offset=0, delay="1/8")
     document = SynthInstrumentScore.model_validate(raw)

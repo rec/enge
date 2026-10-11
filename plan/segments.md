@@ -2,7 +2,7 @@
 
 Replace the separate authored envelope segments and mix-automation knots with
 one readable segment notation in ufor, consumed by enge and recs. This is a
-schema and renderer migration, not implementation of the broader motion system.
+schema and renderer migration, not implementation of the broader envelfo system.
 
 ```toml
 initial = 1.0

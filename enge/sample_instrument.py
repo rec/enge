@@ -461,7 +461,7 @@ class PersistentSampler(OfflineSampler):
         common = self.definition.document.body.settings
         all_settings = [common, *self.definition.settings.values()]
         if any(
-            s.motions
+            s.envelfos
             or s.bindings
             or s.modulation.sources
             or s.modulation.parameters

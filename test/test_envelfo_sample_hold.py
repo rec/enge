@@ -8,7 +8,7 @@ import test_noise
 from test_dynamic_synth import onset
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio
-from ufor import instrument_trace, motion_random, synth_trace
+from ufor import envelfo_random, instrument_trace, synth_trace
 from ufor.control import TempoMap
 from ufor.events import Release
 from ufor.synth import SynthInstrumentScore
@@ -28,13 +28,13 @@ def sample_hold_score(source_kind: str, probability: float) -> SynthInstrumentSc
         clock = {
             "kind": "stages",
             "initial_stage": "clock",
-            "stages": [{"name": "clock", "motion": clock}],
+            "stages": [{"name": "clock", "envelfo": clock}],
         }
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {
+                "envelfos": {
                     "clock": clock,
                     "left": {"kind": "sample_hold", "minimum": 0, "maximum": 1},
                     "right": {"kind": "sample_hold", "minimum": 0, "maximum": 1},
@@ -83,7 +83,7 @@ def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
     tmp_path: Path,
     source_kind: str,
     probability: float,
-    motion_baseline: Callable[[int], np.ndarray],
+    envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = sample_hold_score(source_kind, probability)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
@@ -92,12 +92,12 @@ def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
     values: list[np.ndarray] = []
     for order, child in enumerate(("left", "right")):
         name = f"patch-gesture-{child}"
-        random_state = start.motion_key ^ motion_random.stream_key(
+        random_state = start.envelfo_key ^ envelfo_random.stream_key(
             0, name + ":sample-hold"
         )
-        random_state, word = motion_random.random_word(random_state)
+        random_state, word = envelfo_random.random_word(random_state)
         held = np.full(48000, (word >> 11) / 2**53)
-        gate_state = start.motion_key ^ motion_random.stream_key(
+        gate_state = start.envelfo_key ^ envelfo_random.stream_key(
             0, name + f":start-{order}"
         )
         every, offset, delay = (2, 1, 3000) if order == 0 else (3, 0, 1500)
@@ -108,15 +108,15 @@ def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
             if cutoff == 0:
                 continue
             if cutoff != 2**53:
-                gate_state, gate_word = motion_random.random_word(gate_state)
+                gate_state, gate_word = envelfo_random.random_word(gate_state)
                 if gate_word >> 11 >= cutoff:
                     continue
-            random_state, word = motion_random.random_word(random_state)
+            random_state, word = envelfo_random.random_word(random_state)
             held[at + delay :] = (word >> 11) / 2**53
         values.append(held)
     assert values[0][0] != values[1][0]
     signal = 0.5 + 0.5 * values[0] * values[1]
-    expected = motion_baseline(0) * signal[:, None]
+    expected = envelfo_baseline(0) * signal[:, None]
     definition = synth.prepare(document)
     # Stop after emission but before delivery of a queued update.
     split = 9000
@@ -145,7 +145,7 @@ def test_sample_hold_activation_is_seeded_without_any_connections(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {"held": {"clock": clock, "body": {"kind": "sample_hold"}}}
+    voice["envelfos"] = {"held": {"clock": clock, "body": {"kind": "sample_hold"}}}
     voice["bindings"][0]["reference"] = "held"
     voice["modulation"]["routes"][0]["points"] = [
         {"input": -1, "amount": 0},
@@ -165,7 +165,7 @@ def test_sample_hold_activation_is_seeded_without_any_connections(
     )
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
     baseline_raw = document.model_dump(mode="json")
-    baseline_raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
+    baseline_raw["body"]["voices"][0].update(envelfos={}, bindings=[], modulation={})
     baseline = SynthInstrumentScore.model_validate(baseline_raw)
     baseline_actions = synth_trace.prepare(baseline.body, events, seed=1).actions
     base = synth.OfflineSynth(synth.prepare(baseline)).advance(
@@ -175,13 +175,13 @@ def test_sample_hold_activation_is_seeded_without_any_connections(
     for seed in (1, 2):
         actions = synth_trace.prepare(document.body, events, seed=seed).actions
         start = next(a for a in actions if isinstance(a, instrument_trace.VoiceStart))
-        _, word = motion_random.random_word(
-            start.motion_key ^ motion_random.stream_key(0, "held:sample-hold")
+        _, word = envelfo_random.random_word(
+            start.envelfo_key ^ envelfo_random.stream_key(0, "held:sample-hold")
         )
         level = (word >> 11) / 2**53
         levels.append(level)
         commands = [
-            instrument_trace.MotionObservation(
+            instrument_trace.EnvelfoObservation(
                 tick=12000,
                 ordinal=0,
                 name="held",
@@ -190,7 +190,7 @@ def test_sample_hold_activation_is_seeded_without_any_connections(
                 action="seek",
                 position=0.25,
             ),
-            instrument_trace.MotionObservation(
+            instrument_trace.EnvelfoObservation(
                 tick=24000,
                 ordinal=0,
                 name="held",
@@ -221,7 +221,7 @@ def test_sample_hold_reinitializes_when_a_native_voice_slot_is_reused(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {"held": {"body": {"kind": "sample_hold"}}}
+    voice["envelfos"] = {"held": {"body": {"kind": "sample_hold"}}}
     voice["bindings"][0]["reference"] = "held"
     voice["modulation"]["routes"][0]["points"] = [
         {"input": -1, "amount": 0},
@@ -239,13 +239,13 @@ def test_sample_hold_reinitializes_when_a_native_voice_slot_is_reused(
     starts = [a for a in actions if isinstance(a, instrument_trace.VoiceStart)]
     levels = []
     for start in starts:
-        _, word = motion_random.random_word(
-            start.motion_key ^ motion_random.stream_key(0, "held:sample-hold")
+        _, word = envelfo_random.random_word(
+            start.envelfo_key ^ envelfo_random.stream_key(0, "held:sample-hold")
         )
         levels.append((word >> 11) / 2**53)
     assert levels[0] != levels[1]
     baseline_raw = document.model_dump(mode="json")
-    baseline_raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
+    baseline_raw["body"]["voices"][0].update(envelfos={}, bindings=[], modulation={})
     baseline = SynthInstrumentScore.model_validate(baseline_raw)
     base_actions = synth_trace.prepare(baseline.body, events, seed=9).actions
     expected = synth.OfflineSynth(synth.prepare(baseline)).advance(
@@ -281,7 +281,7 @@ def test_unused_sample_hold_does_not_consume_a_native_action_row(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice.update(
-        motions={"unused": {"body": {"kind": "sample_hold"}}},
+        envelfos={"unused": {"body": {"kind": "sample_hold"}}},
         bindings=[],
         modulation={},
     )
@@ -306,8 +306,8 @@ def test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise(
     )
     voice = raw["body"]["voices"][0]
     voice.update(
-        motions={"held": {"body": {"kind": "sample_hold"}}},
-        bindings=[{"name": "held", "kind": "motion", "reference": "held"}],
+        envelfos={"held": {"body": {"kind": "sample_hold"}}},
+        bindings=[{"name": "held", "kind": "envelfo", "reference": "held"}],
         modulation={
             "sources": [
                 {"name": "held", "scope": "voice", "minimum": -1, "maximum": 1}
@@ -338,12 +338,12 @@ def test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise(
     events = [test_fm.trigger() if kind == "fm" else test_noise.trigger()]
     actions = synth_trace.prepare(document.body, events, seed=31).actions
     start = next(a for a in actions if isinstance(a, instrument_trace.VoiceStart))
-    _, word = motion_random.random_word(
-        start.motion_key ^ motion_random.stream_key(0, "held:sample-hold")
+    _, word = envelfo_random.random_word(
+        start.envelfo_key ^ envelfo_random.stream_key(0, "held:sample-hold")
     )
     level = (word >> 11) / 2**53
     baseline_raw = document.model_dump(mode="json")
-    baseline_raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
+    baseline_raw["body"]["voices"][0].update(envelfos={}, bindings=[], modulation={})
     baseline = SynthInstrumentScore.model_validate(baseline_raw)
     base_actions = synth_trace.prepare(baseline.body, events, seed=31).actions
     if kind == "fm":

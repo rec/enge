@@ -31,7 +31,7 @@ enge now pins that uFor implementation and reccy's quantity-copy fix. The latter
 is necessary because enge deep-copies prepared definitions; unit provenance must
 survive that operation. New 48 kHz, one-second regressions compare unit-authored
 documents with canonical numerical documents for synth, FM, sampler, effects,
-fractional delayed Motion events, and persistent/native execution. Effect tests
+fractional delayed Envelfo events, and persistent/native execution. Effect tests
 also check amplitude dB semantics directly.
 
 The authorized migration is complete. reccy's shared parser now delegates unit
@@ -61,7 +61,7 @@ runtime interfaces, not additional authoring syntaxes.
 | Audio effects and automation | Fixed seconds/Hz/dB/frame fields; parameter actions normalize against the processor parameter; no DSP changes |
 | Synth and sample instruments | Mapping frequency, tuning cents, processing gain, filters, holds, fades, variation, region frames and metadata use shared validators |
 | Assets and timebases | Exact byte/frame/tick counts and integer rate numerator; channel counts and rate denominator remain counts |
-| Motions and LFOs | Owning clock selects exact seconds/beats and inverse rate; phase uses turns; segments preserve their explicit clock on export |
+| Envelfos and LFOs | Owning clock selects exact seconds/beats and inverse rate; phase uses turns; segments preserve their explicit clock on export |
 | Modulation, parameters and presets | Defaults, limits, route amounts and nested automation points normalize against their declaration; unresolved overrides wait for resolution |
 | Arpeggiation and tuning | Beat steps and unitful frequency expressions use Pint; pitch-ratio expressions and protocol readers remain mathematical/protocol parsing |
 | Lights, fixtures and slides | Layout coordinates, angular values, fixture units, spatial/temporal rates and slideshow ticks use their existing declared units |
@@ -90,7 +90,7 @@ The proposed signal-delay node is not implemented by this units integration.
   magnitudes, such as seconds and frequency.
 - `ufor/segments.py` parses a small set of duration suffixes itself and preserves
   exact rational seconds or beats.
-- `ufor/motion.py` separately recognizes a Cycle rate's `Hz` suffix.
+- `ufor/envelfo.py` separately recognizes a Cycle rate's `Hz` suffix.
 - Other portable models, including arpeggiation declarations, have additional
   musical-time parsing. An inventory must find these rather than assuming the two
   visible parsers are the complete list.
@@ -149,7 +149,7 @@ with unit suffixes in their names.
 | Compound units | Slew rates, beats per minute, cycles per beat | Declared compound unit, not inferred from the name |
 
 Audit audio effects, sampling/selection/variation, tuning, metadata, playback,
-Motions, control timelines, modulation, and preparation/configuration APIs.
+Envelfos, control timelines, modulation, and preparation/configuration APIs.
 For integer frequency or storage fields that are actually present, retain their
 integer requirements after conversion.
 
@@ -317,4 +317,4 @@ data, and no alternate bespoke unit parser may remain for migrated values.
 ## Additional work beyond the prompt
 
 None. The authorized work implements this units plan; no general cleanup or
-unrelated Motion feature is included.
+unrelated Envelfo feature is included.

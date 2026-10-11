@@ -36,17 +36,17 @@ def filter_score(kind: str) -> SynthInstrumentScore | instrument.SampleInstrumen
         "segments": [{"duration": "1/100 s", "to": 0.2}],
         "release": [{"duration": "1/8 s", "to": 0}],
     }
-    voice["motions"] = {
-        "motion": {"scope": "voice", "body": {"kind": "cycle", "rate": "4"}}
+    voice["envelfos"] = {
+        "envelfo": {"scope": "voice", "body": {"kind": "cycle", "rate": "4"}}
     }
     voice["bindings"] = [
         {"name": "tone", "kind": "control", "control": "tone", "smoothing": "1/200"},
-        {"name": "motion", "kind": "motion", "reference": "motion"},
+        {"name": "envelfo", "kind": "envelfo", "reference": "envelfo"},
     ]
     voice["modulation"] = {
         "sources": [
             {"name": "tone", "scope": "trigger", "minimum": 0, "maximum": 1},
-            {"name": "motion", "scope": "voice", "minimum": -1, "maximum": 1},
+            {"name": "envelfo", "scope": "voice", "minimum": -1, "maximum": 1},
         ],
         "parameters": [
             {
@@ -77,7 +77,7 @@ def filter_score(kind: str) -> SynthInstrumentScore | instrument.SampleInstrumen
             },
             {
                 "name": "resonance",
-                "source": "motion",
+                "source": "envelfo",
                 "target": {"name": "filter-tone", "parameter": "q"},
                 "operation": "add",
                 "unit": "ratio",

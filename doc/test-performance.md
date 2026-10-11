@@ -11,7 +11,7 @@ instrumentation overhead and are not ordinary test timings.
 uv run pytest --durations=30
 uv run pytest -n 0 test/test_control.py
 uv run python -m cProfile -o /private/tmp/enge-latch.prof -m pytest -n 0 -q \
-  'test/test_motion_latch.py::test_latch_captures_delivery_frame_with_independent_gates_and_snapshot[1.0-cycle-numpy]'
+  'test/test_envelfo_latch.py::test_latch_captures_delivery_frame_with_independent_gates_and_snapshot[1.0-cycle-numpy]'
 ```
 
 Read the profile without launching the engine:
@@ -47,8 +47,8 @@ sequentially with four, six, and ten workers:
 
 ```sh
 uv run pytest -n 4 --durations=5 \
-  test/test_motion_latch.py::test_latch_activation_and_same_frame_captures \
-  test/test_motion_quantize.py \
+  test/test_envelfo_latch.py::test_latch_activation_and_same_frame_captures \
+  test/test_envelfo_quantize.py \
   test/test_control.py::test_array_modulation_matches_scalar_routes_and_weights
 ```
 
@@ -69,8 +69,8 @@ uFor scalar evaluator, while multi-frame queries remain vectorized. Stateful
 Patch output is filled into preallocated arrays instead of retaining every
 one-frame result dictionary until concatenation.
 
-Motion tests share read-only, session-local reference audio for the same plain
-square-wave instrument. Randomized Motion output, snapshots, partitioning,
+Envelfo tests share read-only, session-local reference audio for the same plain
+square-wave instrument. Randomized Envelfo output, snapshots, partitioning,
 and NumPy/native/persistent comparisons are still evaluated separately.
 No persistent disk cache or new dependency is introduced.
 
@@ -84,7 +84,7 @@ at least one second of 48 kHz WAV output; none have been shortened or removed.
 
 The first pass did not remove the dominant cost. A representative staged-clock
 and cue-routing regression took 51.84 seconds under cProfile, with roughly
-688,000 `advance_motion` calls. Its event-processing method accounted for
+688,000 `advance_envelfo` calls. Its event-processing method accounted for
 51.23 seconds of the test. Most calls merely advanced state through frames
 that contained no events.
 
@@ -106,7 +106,7 @@ ordinary LFO controls. Delay/fade weights are applied inside the staged value,
 as in the scalar reference. Beat clocks, nonlinear or reversing contours, and
 per-frame Latch/Threshold/Slew observation retain their existing evaluation
 path. The optimization does not remove these cases or change their coverage.
-Block eligibility is checked for all participating Motions before allocating
+Block eligibility is checked for all participating Envelfos before allocating
 arrays. A mixed block/scalar-only configuration therefore does not perform
 block-sized allocations repeatedly on every frame.
 
@@ -125,7 +125,7 @@ URL with uFor's HTTPS source; repository Git remotes remain SSH.
 - An earlier optimized full run passed 1,089 cases in 121.27 seconds, before
   adding the two mixed-mode regressions and final block-eligibility check.
 - The final representative profiled Stages case took 0.95 seconds, versus
-  51.84 seconds before. `advance_motion` calls fell from 688,264 to 624;
+  51.84 seconds before. `advance_envelfo` calls fell from 688,264 to 624;
   event-processing time fell from 51.23 seconds to 0.09 seconds.
 - All 1,206 uFor tests passed for the boundary-query change. The six new enge
   cases cover exact staged Cycle delay/fade under control intervals and

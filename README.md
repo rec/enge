@@ -8,7 +8,7 @@ decoding and preparation can belong to the engine's sampler preparation.
 Authored uFor quantities accept Pint unit strings through reccy's shared parser,
 for example `"48 kHz"` for an output rate, `"20 ms"` for a duration,
 `"1 semitone"` for a cents offset, and `"-6 dB"` for effect gain. Bare numbers
-retain their documented canonical units. Exact Motion timing stays rational;
+retain their documented canonical units. Exact Envelfo timing stays rational;
 beats, seconds, frames, and ticks are not implicitly interchangeable. See
 [uFor's unit contract](../ufor/doc/units.md). Preparation and native rendering
 continue to use numerical values, not Pint Quantity objects. Unit strings do
@@ -16,6 +16,11 @@ not enable processing features that an engine otherwise rejects.
 Pint expressions such as `"1 ms / 3"` are supported. Angles, dB, and pitch
 intervals are not implicitly interchangeable with dimensionless controls.
 Patch signals remain dimensionless; their physical-unit extension is deferred.
+
+Envelopes and LFOs share the Envelfo control model. Its Python types use
+`Envelfo`, its score kind and bindings use `envelfo`, and its generator collections
+use `envelfos`. This is a breaking rename: update existing documents and imports;
+old spellings and compatibility aliases are not supported.
 
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,

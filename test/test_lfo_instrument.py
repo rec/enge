@@ -9,18 +9,18 @@ import pytest
 from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio, score
-from ufor import instrument_trace, motion_random, synth_trace
+from ufor import envelfo_random, instrument_trace, synth_trace
 from ufor.control import TempoMap
-from ufor.events import LFOChange, MotionChange, Release
-from ufor.library import Entry, Library
-from ufor.motion import (
+from ufor.envelfo import (
     Cycle,
-    MotionParameter,
-    MotionScore,
+    EnvelfoParameter,
+    EnvelfoScore,
     ParameterReference,
-    advance_motion,
-    initial_motion,
+    advance_envelfo,
+    initial_envelfo,
 )
+from ufor.events import EnvelfoChange, LFOChange, Release
+from ufor.library import Entry, Library
 from ufor.samples import instrument, processing, trace
 from ufor.synth import SynthInstrumentScore
 
@@ -30,8 +30,8 @@ from enge import live, sample_instrument, synth
 def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
     return processing.SoundSettings.model_validate(
         {
-            "motions": {
-                "motion": {
+            "envelfos": {
+                "envelfo": {
                     "scope": scope,
                     "body": {
                         "kind": "cycle",
@@ -42,10 +42,12 @@ def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
                     },
                 }
             },
-            "bindings": [{"name": "motion", "kind": "motion", "reference": "motion"}],
+            "bindings": [
+                {"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}
+            ],
             "modulation": {
                 "sources": [
-                    {"name": "motion", "scope": scope, "minimum": -1, "maximum": 1}
+                    {"name": "envelfo", "scope": scope, "minimum": -1, "maximum": 1}
                 ],
                 "parameters": [
                     {
@@ -60,7 +62,7 @@ def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
                 "routes": [
                     {
                         "name": "tremolo",
-                        "source": "motion",
+                        "source": "envelfo",
                         "target": {"name": "processing", "parameter": "amplitude"},
                         "operation": "multiply",
                         "unit": "ratio",
@@ -82,12 +84,12 @@ def test_patch_transforms_share_children_and_match_native_runtime(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "clock": clock,
             "body": {
                 "kind": "patch",
-                "motions": {
+                "envelfos": {
                     "output": {
                         "kind": "affine",
                         "input": "sum",
@@ -131,11 +133,11 @@ def test_patch_transforms_share_children_and_match_native_runtime(
     voice["bindings"][0].update(reference="gesture", output="level")
     if release_timing == "voice":
         voice["minimum_hold_seconds"] = "1"
-        voice["motions"]["gesture"]["body"]["outputs"]["envelope"] = "env"
+        voice["envelfos"]["gesture"]["body"]["outputs"]["envelope"] = "env"
         voice["bindings"].append(
             {
                 "name": "envelope",
-                "kind": "motion",
+                "kind": "envelfo",
                 "reference": "gesture",
                 "output": "envelope",
                 "release_timing": "voice",
@@ -150,7 +152,7 @@ def test_patch_transforms_share_children_and_match_native_runtime(
         {"input": 1, "amount": 1},
     ]
     voice["bindings"].append(
-        {"name": "pitch", "kind": "motion", "reference": "gesture", "output": "same"}
+        {"name": "pitch", "kind": "envelfo", "reference": "gesture", "output": "same"}
     )
     voice["modulation"]["sources"].append(
         {"name": "pitch", "scope": "voice", "minimum": 0, "maximum": 1}
@@ -215,7 +217,7 @@ def test_patch_transforms_share_children_and_match_native_runtime(
     signal = 0.5 + 0.25 * (vib * env + vib)
     baseline_raw = document.model_dump(mode="json")
     baseline_voice = baseline_raw["body"]["voices"][0]
-    baseline_voice.update(motions={}, bindings=[], modulation={})
+    baseline_voice.update(envelfos={}, bindings=[], modulation={})
     baseline = SynthInstrumentScore.model_validate(baseline_raw)
     baseline_actions = synth_trace.prepare(
         baseline.body,
@@ -258,9 +260,9 @@ def test_patch_cycle_transforms_use_shared_absolute_clocks(
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"]["motion"]["body"] = {
+    voice["envelfos"]["envelfo"]["body"] = {
         "kind": "patch",
-        "motions": {
+        "envelfos": {
             "cycle": {"kind": "cycle", "rate": "4", "phase": "1/4"},
             "sum": {"kind": "sum", "inputs": ["cycle", "cycle"]},
             "output": {"kind": "affine", "input": "sum", "scale": 0.25, "offset": 1},
@@ -278,7 +280,7 @@ def test_patch_cycle_transforms_use_shared_absolute_clocks(
     events = [onset(6000, pitch=0.1).model_copy(update={"controls": {}})]
     actions = synth_trace.prepare(document.body, events, seed=0).actions
     baseline_raw = document.model_dump(mode="json")
-    baseline_raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
+    baseline_raw["body"]["voices"][0].update(envelfos={}, bindings=[], modulation={})
     baseline = SynthInstrumentScore.model_validate(baseline_raw)
     baseline_actions = synth_trace.prepare(baseline.body, events, seed=0).actions
     signal = 1 + 0.5 * np.sin(2 * np.pi * (0.25 + 4 * np.arange(48000) / 48000))
@@ -307,7 +309,7 @@ def lfo_score(
     settings = lfo_settings(scope).model_dump(mode="json")
     voice = raw["body"]["voices" if kind == "synth" else "slots"][0]
     owner = raw["body"]["settings"] if kind == "sampler" and scope != "voice" else voice
-    owner.update({n: settings[n] for n in ("motions", "bindings", "modulation")})
+    owner.update({n: settings[n] for n in ("envelfos", "bindings", "modulation")})
     voice["envelope"] = {
         "segments": [{"duration": "0 s", "to": 1}],
         "release": [{"duration": "1/4 s", "to": 0}],
@@ -325,7 +327,7 @@ def test_beat_contour_follows_tempo_without_following_transport_seek(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"]["motion"] = {
+    voice["envelfos"]["envelfo"] = {
         "clock": "beats",
         "body": {
             "kind": "contour",
@@ -411,7 +413,7 @@ def test_beat_stages_follow_tempo_and_stop_across_restore(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"]["motion"] = {
+    voice["envelfos"]["envelfo"] = {
         "clock": "beats",
         "body": {
             "kind": "stages",
@@ -419,12 +421,12 @@ def test_beat_stages_follow_tempo_and_stop_across_restore(
             "stages": [
                 {
                     "name": "attack",
-                    "motion": {
+                    "envelfo": {
                         "kind": "contour",
                         "segments": [{"duration": "1 beat", "to": 1}],
                     },
                 },
-                {"name": "sustain", "motion": {"kind": "hold", "value": 1}},
+                {"name": "sustain", "envelfo": {"kind": "hold", "value": 1}},
             ],
             "transitions": [
                 {
@@ -488,7 +490,7 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
-    raw["body"]["voices"][0]["motions"]["motion"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "clock": "beats",
         "position_driver": "transport",
         "body": {
@@ -560,7 +562,7 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
     [(False, "stages"), (True, "stages"), (True, "cycle"), (True, "contour")],
 )
 @pytest.mark.parametrize("backend", ["numpy", "native"])
-def test_patch_named_outputs_match_separate_motions(
+def test_patch_named_outputs_match_separate_envelfos(
     tmp_path: Path,
     backend: Literal["numpy", "native"],
     shared_child: bool,
@@ -574,18 +576,18 @@ def test_patch_named_outputs_match_separate_motions(
         "stages": [
             {
                 "name": "attack",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "segments": [{"duration": "1/4 s", "to": 1}],
                 },
             },
             {
                 "name": "sustain",
-                "motion": {"kind": "cycle", "rate": "2", "center": 0.8, "depth": 0.2},
+                "envelfo": {"kind": "cycle", "rate": "2", "center": 0.8, "depth": 0.2},
             },
             {
                 "name": "release",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0}],
@@ -608,14 +610,14 @@ def test_patch_named_outputs_match_separate_motions(
     vibrato = {"kind": "cycle", "rate": "5"}
     contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
     child = {"stages": stages, "cycle": vibrato, "contour": contour}[shared_body]
-    voice["motions"] = {"amp": {"body": child}}
+    voice["envelfos"] = {"amp": {"body": child}}
     if not shared_child:
-        voice["motions"]["vib"] = {"body": vibrato}
+        voice["envelfos"]["vib"] = {"body": vibrato}
     voice["bindings"] = [
-        {"name": "level", "kind": "motion", "reference": "amp"},
+        {"name": "level", "kind": "envelfo", "reference": "amp"},
         {
             "name": "pitch",
-            "kind": "motion",
+            "kind": "envelfo",
             "reference": "amp" if shared_child else "vib",
         },
     ]
@@ -695,11 +697,11 @@ def test_patch_named_outputs_match_separate_motions(
     expected = synth.OfflineSynth(synth.prepare(separate), backend).advance(
         actions, 0, 48000
     )
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {"amp": child}
+                "envelfos": {"amp": child}
                 if shared_child
                 else {"amp": stages, "vib": vibrato},
                 "outputs": {"level": "amp", "pitch": "amp" if shared_child else "vib"},
@@ -743,7 +745,7 @@ def test_patch_named_outputs_match_separate_motions(
     replay.restore(snapshot)
     np.testing.assert_array_equal(replay.advance(second_actions, 24000, 48000), second)
     check_audio(tmp_path / "patch-persistent.wav", np.vstack((first, second)), expected)
-    command = instrument_trace.MotionObservation(
+    command = instrument_trace.EnvelfoObservation(
         tick=12000,
         ordinal=0,
         name="gesture",
@@ -752,13 +754,13 @@ def test_patch_named_outputs_match_separate_motions(
         action="seek",
         position=0.5,
     )
-    with pytest.raises(synth.EngineError, match="Patch-level Motion commands"):
+    with pytest.raises(synth.EngineError, match="Patch-level Envelfo commands"):
         synth.OfflineSynth(prepared, backend).advance(
             sorted([*patch_actions, command], key=lambda a: (a.tick, a.ordinal)),
             0,
             48000,
         )
-    with pytest.raises(synth.EngineError, match="Patch-level Motion commands"):
+    with pytest.raises(synth.EngineError, match="Patch-level Envelfo commands"):
         synth.PersistentSynth(prepared, voices=2).advance(
             sorted([*patch_actions, command], key=lambda a: (a.tick, a.ordinal)),
             0,
@@ -792,7 +794,7 @@ def test_patch_child_event_starts_unexposed_contour(
         clock = {
             "kind": "stages",
             "initial_stage": "waiting",
-            "stages": [{"name": "waiting", "motion": {"kind": "hold"}}],
+            "stages": [{"name": "waiting", "envelfo": {"kind": "hold"}}],
             "transitions": [
                 {
                     "from": ["waiting"],
@@ -808,7 +810,7 @@ def test_patch_child_event_starts_unexposed_contour(
             "stages": [
                 {
                     "name": "playing",
-                    "motion": clock
+                    "envelfo": clock
                     if source_kind == "staged-marker"
                     else {
                         "kind": "contour",
@@ -817,11 +819,11 @@ def test_patch_child_event_starts_unexposed_contour(
                 }
             ],
         }
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {
+                "envelfos": {
                     "clock": clock,
                     "accent": {
                         "kind": "contour",
@@ -846,9 +848,9 @@ def test_patch_child_event_starts_unexposed_contour(
             }
         }
     }
-    voice["motions"]["unused"] = voice["motions"]["gesture"]
+    voice["envelfos"]["unused"] = voice["envelfos"]["gesture"]
     voice["bindings"] = [
-        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+        {"name": "level", "kind": "envelfo", "reference": "gesture", "output": "value"}
     ]
     voice["modulation"] = {
         "sources": [{"name": "level", "scope": "voice", "minimum": 0, "maximum": 1}],
@@ -953,7 +955,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
         clock = {
             "kind": "stages",
             "initial_stage": "clock",
-            "stages": [{"name": "clock", "motion": clock}],
+            "stages": [{"name": "clock", "envelfo": clock}],
         }
     contour = {
         "kind": "contour",
@@ -968,8 +970,8 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
             "kind": "stages",
             "initial_stage": "waiting",
             "stages": [
-                {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
-                {"name": "accent", "motion": contour},
+                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                {"name": "accent", "envelfo": contour},
             ],
             "transitions": [
                 {
@@ -984,11 +986,11 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                 },
             ],
         }
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {"clock": clock, "accent": target},
+                "envelfos": {"clock": clock, "accent": target},
                 "outputs": {"value": "accent"},
                 "events": [
                     {
@@ -1007,7 +1009,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
         }
     }
     voice["bindings"] = [
-        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+        {"name": "level", "kind": "envelfo", "reference": "gesture", "output": "value"}
     ]
     voice["modulation"]["sources"] = [
         {
@@ -1046,7 +1048,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     actions = synth_trace.prepare(document.body, events, seed=seed).actions
     starts = [a for a in actions if isinstance(a, synth_trace.VoiceStart)]
     assert all(
-        a.motion_key == motion_random.stream_key(seed, a.voice_id) for a in starts
+        a.envelfo_key == envelfo_random.stream_key(seed, a.voice_id) for a in starts
     )
     expected = np.zeros((48000, 2))
     for voice in starts:
@@ -1059,8 +1061,8 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
             expected[activation:stop, 0] += 0.5 * levels
         voice_id = voice.voice_id
         states = [
-            motion_random.stream_key(seed, voice_id)
-            ^ motion_random.stream_key(
+            envelfo_random.stream_key(seed, voice_id)
+            ^ envelfo_random.stream_key(
                 0,
                 f"patch-gesture-accent:{'start' if command == 'start' else 'cue'}-{i}",
             )
@@ -1075,7 +1077,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
                 if probability in (0, 1):
                     forward |= probability == 1
                 else:
-                    states[i], word = motion_random.random_word(states[i])
+                    states[i], word = envelfo_random.random_word(states[i])
                     forward |= word >> 11 < int(probability * 2**53)
             if start < stop and forward:
                 begin = ceil(start)
@@ -1139,22 +1141,22 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
 @pytest.mark.parametrize(
     ("backend", "delay", "error", "burst"),
     [
-        ("numpy", "1", "Delayed Motion event capacity exceeded", False),
-        ("native", "1", "Delayed Motion event capacity exceeded", False),
-        ("persistent", "1", "Delayed Motion event capacity exceeded", False),
+        ("numpy", "1", "Delayed Envelfo event capacity exceeded", False),
+        ("native", "1", "Delayed Envelfo event capacity exceeded", False),
+        ("persistent", "1", "Delayed Envelfo event capacity exceeded", False),
         ("persistent", "1/" + str(10**400), "time is not representable", False),
         ("persistent", str(10**400), "time is not representable", False),
-        ("numpy", "1/192000", "Motion event capacity exceeded", True),
-        ("native", "1/192000", "Motion event capacity exceeded", True),
-        ("persistent", "1/192000", "Motion event capacity exceeded", True),
+        ("numpy", "1/192000", "Envelfo event capacity exceeded", True),
+        ("native", "1/192000", "Envelfo event capacity exceeded", True),
+        ("persistent", "1/192000", "Envelfo event capacity exceeded", True),
     ],
 )
-def test_delayed_motion_events_report_queue_and_clock_limits(
+def test_delayed_envelfo_events_report_queue_and_clock_limits(
     backend: str, delay: str, error: str, burst: bool
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "clock": {
             "body": {
                 "kind": "cycle",
@@ -1166,7 +1168,9 @@ def test_delayed_motion_events_report_queue_and_clock_limits(
             "body": {
                 "kind": "stages",
                 "initial_stage": "waiting",
-                "stages": [{"name": "waiting", "motion": {"kind": "hold", "value": 0}}],
+                "stages": [
+                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}}
+                ],
                 "transitions": [
                     {
                         "from": ["waiting"],
@@ -1178,7 +1182,7 @@ def test_delayed_motion_events_report_queue_and_clock_limits(
         },
     }
     voice["bindings"] = [
-        {"name": n, "kind": "motion", "reference": n} for n in ("clock", "target")
+        {"name": n, "kind": "envelfo", "reference": n} for n in ("clock", "target")
     ]
     voice["modulation"] = {
         "sources": [
@@ -1196,12 +1200,12 @@ def test_delayed_motion_events_report_queue_and_clock_limits(
         }
     ]
     if burst:
-        cycle = voice["motions"]["clock"]["body"]
+        cycle = voice["envelfos"]["clock"]["body"]
         cycle["markers"].append({"name": "tick", "position": "1/2"})
-        voice["motions"]["clock"]["body"] = {
+        voice["envelfos"]["clock"]["body"] = {
             "kind": "stages",
             "initial_stage": "running",
-            "stages": [{"name": "running", "motion": cycle}],
+            "stages": [{"name": "running", "envelfo": cycle}],
         }
         voice["event_connections"][0]["every"] = 100
         voice["event_connections"] *= 4096
@@ -1255,11 +1259,11 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
     ]
     if reverse_connections:
         connections.reverse()
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {
+                "envelfos": {
                     "early": {
                         "kind": "cycle",
                         "rate": "1",
@@ -1271,7 +1275,7 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
                         "stages": [
                             {
                                 "name": "playing",
-                                "motion": {
+                                "envelfo": {
                                     "kind": "contour",
                                     "segments": [{"duration": "1/48000 s", "to": 1}],
                                     "markers": [{"name": "mark", "position": "3/4"}],
@@ -1291,7 +1295,7 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
         }
     }
     voice["bindings"] = [
-        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+        {"name": "level", "kind": "envelfo", "reference": "gesture", "output": "value"}
     ]
     voice["modulation"]["sources"] = [
         {"name": "level", "scope": "voice", "minimum": 0, "maximum": 1}
@@ -1365,7 +1369,7 @@ def test_patch_child_event_cues_child_stages(
             "stages": [
                 {
                     "name": "playing",
-                    "motion": clock
+                    "envelfo": clock
                     if source_kind == "staged-marker"
                     else {
                         "kind": "contour",
@@ -1374,11 +1378,11 @@ def test_patch_child_event_cues_child_stages(
                 }
             ],
         }
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {
+                "envelfos": {
                     "clock": clock,
                     "level": {
                         "kind": "stages",
@@ -1386,9 +1390,9 @@ def test_patch_child_event_cues_child_stages(
                         "stages": [
                             {
                                 "name": "waiting",
-                                "motion": {"kind": "hold", "value": -1},
+                                "envelfo": {"kind": "hold", "value": -1},
                             },
-                            {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                            {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
                         ],
                         "transitions": [
                             {
@@ -1414,7 +1418,7 @@ def test_patch_child_event_cues_child_stages(
         }
     }
     voice["bindings"] = [
-        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+        {"name": "level", "kind": "envelfo", "reference": "gesture", "output": "value"}
     ]
     voice["modulation"]["sources"] = [
         {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1}
@@ -1468,18 +1472,18 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
     voice = raw["body"]["voices"][0]
     stage_position = "1/4" if stage_first else "3/4"
     cycle_position = "3/192000" if stage_first else "1/192000"
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "body": {
                 "kind": "patch",
-                "motions": {
+                "envelfos": {
                     "staged": {
                         "kind": "stages",
                         "initial_stage": "playing",
                         "stages": [
                             {
                                 "name": "playing",
-                                "motion": {
+                                "envelfo": {
                                     "kind": "contour",
                                     "segments": [{"duration": "1/48000 s", "to": 1}],
                                     "markers": [
@@ -1500,9 +1504,9 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
                         "stages": [
                             {
                                 "name": "waiting",
-                                "motion": {"kind": "hold", "value": -1},
+                                "envelfo": {"kind": "hold", "value": -1},
                             },
-                            {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                            {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
                         ],
                         "transitions": [
                             {
@@ -1537,7 +1541,7 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
         }
     }
     voice["bindings"] = [
-        {"name": "level", "kind": "motion", "reference": "gesture", "output": "value"}
+        {"name": "level", "kind": "envelfo", "reference": "gesture", "output": "value"}
     ]
     voice["modulation"]["sources"] = [
         {"name": "level", "scope": "voice", "minimum": -1, "maximum": 1}
@@ -1584,7 +1588,7 @@ def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"]["motion"] = {
+    voice["envelfos"]["envelfo"] = {
         "clock": "beats",
         "body": {
             "kind": "cycle",
@@ -1635,7 +1639,7 @@ def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelope"]["release"] = [{"duration": "1 s", "to": 0}]
-    voice["motions"]["motion"] = {
+    voice["envelfos"]["envelfo"] = {
         "clock": "beats",
         "body": {
             "kind": "contour",
@@ -1680,7 +1684,7 @@ def test_beat_cycle_pause_preserves_musical_phase(
     tmp_path: Path, backend: Literal["numpy", "native"], scope: str
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
-    raw["body"]["voices"][0]["motions"]["motion"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "scope": scope,
         "clock": "beats",
         "body": {"kind": "cycle", "rate": "1"},
@@ -1696,23 +1700,23 @@ def test_beat_cycle_pause_preserves_musical_phase(
     )
     changes = (
         [
-            LFOChange(tick=12000, ordinal=0, name="motion", action="pause"),
-            LFOChange(tick=24000, ordinal=0, name="motion", action="resume"),
+            LFOChange(tick=12000, ordinal=0, name="envelfo", action="pause"),
+            LFOChange(tick=24000, ordinal=0, name="envelfo", action="resume"),
         ]
         if scope == "instrument"
         else [
-            MotionChange(
+            EnvelfoChange(
                 tick=12000,
                 ordinal=0,
-                name="motion",
+                name="envelfo",
                 part="main",
                 trigger_id="note",
                 action="pause",
             ),
-            MotionChange(
+            EnvelfoChange(
                 tick=24000,
                 ordinal=0,
-                name="motion",
+                name="envelfo",
                 part="main",
                 trigger_id="note",
                 action="resume",
@@ -1753,7 +1757,7 @@ def test_beat_cycle_pause_preserves_musical_phase(
 
 @pytest.mark.parametrize("body_kind", ["contour", "stages"])
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
-def test_trigger_addressed_motion_changes_only_matching_voice(
+def test_trigger_addressed_envelfo_changes_only_matching_voice(
     tmp_path: Path, body_kind: str, kind: str
 ) -> None:
     raw = lfo_score(kind, "voice").model_dump(mode="json")
@@ -1765,10 +1769,10 @@ def test_trigger_addressed_motion_changes_only_matching_voice(
         else {
             "kind": "stages",
             "initial_stage": "rise",
-            "stages": [{"name": "rise", "motion": contour}],
+            "stages": [{"name": "rise", "envelfo": contour}],
         }
     )
-    voice["motions"]["motion"]["body"] = body
+    voice["envelfos"]["envelfo"]["body"] = body
     if body_kind == "contour":
         modulation = voice["modulation"]
         modulation["sources"][0]["minimum"] = 0
@@ -1783,35 +1787,35 @@ def test_trigger_addressed_motion_changes_only_matching_voice(
         update={"controls": {}, "ordinal": 1}
     )
     changes = [
-        MotionChange(
+        EnvelfoChange(
             tick=12000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="pause",
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=24000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="seek",
             position=0.75,
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=36000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="resume",
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=40000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="shift",
@@ -1847,7 +1851,7 @@ def test_sampler_contour_playback_and_release_survive_restore(
 ) -> None:
     raw = lfo_score("sampler", "voice").model_dump(mode="json")
     slot = raw["body"]["slots"][0]
-    slot["motions"]["motion"]["body"] = {
+    slot["envelfos"]["envelfo"]["body"] = {
         "kind": "contour",
         "playback": playback,
         "segments": [{"duration": "1/2 s", "to": 1}],
@@ -1858,10 +1862,10 @@ def test_sampler_contour_playback_and_release_survive_restore(
     document = instrument.SampleInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-        MotionChange(
+        EnvelfoChange(
             tick=26000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="shift",
@@ -1891,7 +1895,7 @@ def test_sampler_contour_playback_and_release_survive_restore(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
-def test_trigger_motion_change_reaches_every_started_voice(
+def test_trigger_envelfo_change_reaches_every_started_voice(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     single = lfo_score("synth", "voice")
@@ -1903,10 +1907,10 @@ def test_trigger_motion_change_reaches_every_started_voice(
     layered = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-        MotionChange(
+        EnvelfoChange(
             tick=12000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="pause",
@@ -1923,11 +1927,11 @@ def test_trigger_motion_change_reaches_every_started_voice(
     check_audio(tmp_path / f"trigger-layers-{backend}.wav", actual, expected)
 
 
-def test_library_motion_materializes_before_synth_preparation(tmp_path: Path) -> None:
+def test_library_envelfo_materializes_before_synth_preparation(tmp_path: Path) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
-    raw["body"]["voices"][0]["motions"]["motion"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "scope": "voice",
-        "score": {"selector": "motions:vibrato"},
+        "score": {"selector": "envelfos:vibrato"},
         "parameters": {"speed": 6},
     }
     authored = SynthInstrumentScore.model_validate(raw)
@@ -1936,15 +1940,15 @@ def test_library_motion_materializes_before_synth_preparation(tmp_path: Path) ->
     library = Library(
         [
             Entry(
-                library="motions",
+                library="envelfos",
                 address="/vibrato.toml",
                 name="vibrato",
                 sha256="c" * 64,
-                score=MotionScore(
+                score=EnvelfoScore(
                     name="vibrato",
                     title="Vibrato",
                     parameters={
-                        "speed": MotionParameter(
+                        "speed": EnvelfoParameter(
                             unit="hz", default=5, minimum=0.1, maximum=20
                         )
                     },
@@ -1957,14 +1961,14 @@ def test_library_motion_materializes_before_synth_preparation(tmp_path: Path) ->
                 ),
             ),
             Entry(
-                library="motions", address="/patch.toml", name="patch", score=authored
+                library="envelfos", address="/patch.toml", name="patch", score=authored
             ),
         ]
     )
-    materialized = library.materialize("motions:patch")
+    materialized = library.materialize("envelfos:patch")
     assert isinstance(materialized, SynthInstrumentScore)
     inline = lfo_score("synth").model_dump(mode="json")
-    inline["body"]["voices"][0]["motions"]["motion"]["body"]["rate"] = "6"
+    inline["body"]["voices"][0]["envelfos"]["envelfo"]["body"]["rate"] = "6"
     expected = SynthInstrumentScore.model_validate(inline)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
     actions = synth_trace.prepare(
@@ -1984,10 +1988,10 @@ def test_library_motion_materializes_before_synth_preparation(tmp_path: Path) ->
     )
     check_audio(tmp_path / "library-vibrato.wav", actual_audio, expected_audio)
     origin = (
-        renderer.snapshot().definition.instrument.voices[0].motions["motion"].origin
+        renderer.snapshot().definition.instrument.voices[0].envelfos["envelfo"].origin
     )
     assert origin is not None
-    assert origin.identity == "motions:/vibrato.toml"
+    assert origin.identity == "envelfos:/vibrato.toml"
     assert origin.sha256 == "c" * 64
 
 
@@ -2000,8 +2004,8 @@ def test_named_envelope_modulates_synth_and_releases(
     voice["envelope"]["release"] = [{"duration": "1/4 s", "to": 1}]
     voice.update(
         {
-            "motions": {
-                "motion": {
+            "envelfos": {
+                "envelfo": {
                     "body": {
                         "kind": "contour",
                         "initial": 0,
@@ -2010,10 +2014,12 @@ def test_named_envelope_modulates_synth_and_releases(
                     }
                 }
             },
-            "bindings": [{"name": "motion", "kind": "motion", "reference": "motion"}],
+            "bindings": [
+                {"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}
+            ],
             "modulation": {
                 "sources": [
-                    {"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}
+                    {"name": "envelfo", "scope": "voice", "minimum": 0, "maximum": 1}
                 ],
                 "parameters": [
                     {
@@ -2028,7 +2034,7 @@ def test_named_envelope_modulates_synth_and_releases(
                 "routes": [
                     {
                         "name": "shape",
-                        "source": "motion",
+                        "source": "envelfo",
                         "target": {"name": "processing", "parameter": "amplitude"},
                         "operation": "multiply",
                         "unit": "ratio",
@@ -2098,8 +2104,8 @@ def test_named_contour_releases_before_voice_minimum_hold(
     voice = raw["body"]["voices"][0]
     voice["minimum_hold_seconds"] = hold
     voice["envelope"]["release"] = [{"duration": "1/4 s", "to": 0}]
-    voice["motions"] = {
-        "motion": {
+    voice["envelfos"] = {
+        "envelfo": {
             "body": {
                 "kind": "contour",
                 "initial": 1,
@@ -2110,14 +2116,14 @@ def test_named_contour_releases_before_voice_minimum_hold(
     }
     voice["bindings"] = [
         {
-            "name": "motion",
-            "kind": "motion",
-            "reference": "motion",
+            "name": "envelfo",
+            "kind": "envelfo",
+            "reference": "envelfo",
             "release_timing": release_timing,
         }
     ]
     voice["modulation"] = {
-        "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
+        "sources": [{"name": "envelfo", "scope": "voice", "minimum": 0, "maximum": 1}],
         "parameters": [
             {
                 "target": {"name": "processing", "parameter": "amplitude"},
@@ -2131,7 +2137,7 @@ def test_named_contour_releases_before_voice_minimum_hold(
         "routes": [
             {
                 "name": "shape",
-                "source": "motion",
+                "source": "envelfo",
                 "target": {"name": "processing", "parameter": "amplitude"},
                 "operation": "multiply",
                 "unit": "ratio",
@@ -2206,7 +2212,7 @@ def test_release_free_contour_finishes_after_note_off_and_restores(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
-    voice["motions"]["motion"]["body"] = {
+    voice["envelfos"]["envelfo"]["body"] = {
         "kind": "contour",
         "initial": 0,
         "segments": [{"duration": "1/2 s", "to": 1}],
@@ -2271,13 +2277,13 @@ def test_staged_cycle_fade_remains_exact_across_single_frame_partitions(
     tmp_path: Path, backend: Literal["numpy", "native"], interval: int
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
-    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
         "kind": "stages",
         "initial_stage": "wave",
         "stages": [
             {
                 "name": "wave",
-                "motion": {
+                "envelfo": {
                     "kind": "cycle",
                     "rate": "3",
                     "phase": "1/7",
@@ -2315,13 +2321,13 @@ def test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     raw["body"]["voices"][0]["bindings"][0]["output"] = "value"
-    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
         "kind": "patch",
-        "motions": {
+        "envelfos": {
             "wave": {
                 "kind": "stages",
                 "initial_stage": "wave",
-                "stages": [{"name": "wave", "motion": {"kind": "cycle", "rate": "2"}}],
+                "stages": [{"name": "wave", "envelfo": {"kind": "cycle", "rate": "2"}}],
             },
             "ramp": {
                 "kind": "stages",
@@ -2329,7 +2335,7 @@ def test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics(
                 "stages": [
                     {
                         "name": "ramp",
-                        "motion": {
+                        "envelfo": {
                             "kind": "contour",
                             "playback": "loop",
                             "segments": [{"duration": "1/4 s", "to": 1}],
@@ -2357,20 +2363,20 @@ def test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics(
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 @pytest.mark.parametrize("release_frame", [12000, 12001, 24000])
-def test_staged_motion_renders_and_restores_at_attack_boundary(
+def test_staged_envelfo_renders_and_restores_at_attack_boundary(
     tmp_path: Path, backend: Literal["numpy", "native"], release_frame: int
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
-    voice["motions"]["motion"]["body"] = {
+    voice["envelfos"]["envelfo"]["body"] = {
         "kind": "stages",
         "initial_stage": "waiting",
         "stages": [
-            {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}},
+            {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
             {
                 "name": "attack",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "initial": "current",
                     "segments": [
@@ -2385,7 +2391,7 @@ def test_staged_motion_renders_and_restores_at_attack_boundary(
             },
             {
                 "name": "sway",
-                "motion": {
+                "envelfo": {
                     "kind": "cycle",
                     "rate": "4",
                     "center": 0.6,
@@ -2394,7 +2400,7 @@ def test_staged_motion_renders_and_restores_at_attack_boundary(
             },
             {
                 "name": "release",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0.0}],
@@ -2484,20 +2490,20 @@ def test_staged_motion_renders_and_restores_at_attack_boundary(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
-def test_staged_sampler_motion_releases_and_restores(
+def test_staged_sampler_envelfo_releases_and_restores(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     raw = lfo_score("sampler").model_dump(mode="json")
     slot = raw["body"]["slots"][0]
     slot["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
-    slot["motions"]["motion"]["body"] = {
+    slot["envelfos"]["envelfo"]["body"] = {
         "kind": "stages",
         "initial_stage": "waiting",
         "stages": [
-            {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}},
+            {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
             {
                 "name": "attack",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 1.0}],
@@ -2505,7 +2511,7 @@ def test_staged_sampler_motion_releases_and_restores(
             },
             {
                 "name": "release",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0.0}],
@@ -2567,12 +2573,12 @@ def test_staged_sampler_motion_releases_and_restores(
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 @pytest.mark.parametrize("cascade", [False, True])
 @pytest.mark.parametrize("position", ["1/4", "24001/96000"])
-def test_staged_marker_cues_another_motion_at_exact_time(
+def test_staged_marker_cues_another_envelfo_at_exact_time(
     tmp_path: Path, backend: Literal["numpy", "native"], cascade: bool, position: str
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "clock": {
             "body": {
                 "kind": "stages",
@@ -2580,7 +2586,7 @@ def test_staged_marker_cues_another_motion_at_exact_time(
                 "stages": [
                     {
                         "name": "cycle",
-                        "motion": {
+                        "envelfo": {
                             "kind": "cycle",
                             "rate": "1",
                             "markers": [{"name": "peak", "position": position}],
@@ -2594,8 +2600,8 @@ def test_staged_marker_cues_another_motion_at_exact_time(
                 "kind": "stages",
                 "initial_stage": "waiting",
                 "stages": [
-                    {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}},
-                    {"name": "bright", "motion": {"kind": "hold", "value": 1.0}},
+                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
+                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1.0}},
                 ],
                 "transitions": [
                     {
@@ -2608,8 +2614,8 @@ def test_staged_marker_cues_another_motion_at_exact_time(
         },
     }
     voice["bindings"] = [
-        {"name": "clock", "kind": "motion", "reference": "clock"},
-        {"name": "level", "kind": "motion", "reference": "level"},
+        {"name": "clock", "kind": "envelfo", "reference": "clock"},
+        {"name": "level", "kind": "envelfo", "reference": "level"},
     ]
     voice["modulation"]["sources"] = [
         {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
@@ -2625,12 +2631,12 @@ def test_staged_marker_cues_another_motion_at_exact_time(
         }
     ]
     if cascade:
-        voice["motions"]["relay"] = {
+        voice["envelfos"]["relay"] = {
             "body": {
                 "kind": "stages",
                 "initial_stage": "waiting",
                 "stages": [
-                    {"name": "waiting", "motion": {"kind": "hold", "value": 0.0}}
+                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}}
                 ],
                 "transitions": [
                     {
@@ -2642,7 +2648,7 @@ def test_staged_marker_cues_another_motion_at_exact_time(
             }
         }
         voice["bindings"].append(
-            {"name": "relay", "kind": "motion", "reference": "relay"}
+            {"name": "relay", "kind": "envelfo", "reference": "relay"}
         )
         voice["modulation"]["sources"].append(
             {"name": "relay", "scope": "voice", "minimum": -1, "maximum": 1}
@@ -2657,10 +2663,10 @@ def test_staged_marker_cues_another_motion_at_exact_time(
             },
         ]
     document = SynthInstrumentScore.model_validate(raw)
-    clock = document.body.voices[0].motions["clock"]
-    probe = advance_motion(
+    clock = document.body.voices[0].envelfos["clock"]
+    probe = advance_envelfo(
         clock,
-        initial_motion(clock, Fraction(0)),
+        initial_envelfo(clock, Fraction(0)),
         Fraction(12001, 48000),
     )
     assert [e.port for e in probe.events] == ["peak"]
@@ -2720,13 +2726,13 @@ def test_patch_named_event_output_cues_stage(
         pulse = {
             "kind": "stages",
             "initial_stage": "playing",
-            "stages": [{"name": "playing", "motion": pulse}],
+            "stages": [{"name": "playing", "envelfo": pulse}],
         }
-    voice["motions"] = {
+    voice["envelfos"] = {
         "patch": {
             "body": {
                 "kind": "patch",
-                "motions": {"carrier": {"kind": "cycle", "rate": "1"}, "pulse": pulse},
+                "envelfos": {"carrier": {"kind": "cycle", "rate": "1"}, "pulse": pulse},
                 "outputs": {"signal": "carrier"},
                 "event_outputs": {"strike": "pulse.peak"},
             }
@@ -2736,8 +2742,8 @@ def test_patch_named_event_output_cues_stage(
                 "kind": "stages",
                 "initial_stage": "waiting",
                 "stages": [
-                    {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
-                    {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
                 ],
                 "transitions": [
                     {
@@ -2750,8 +2756,8 @@ def test_patch_named_event_output_cues_stage(
         },
     }
     voice["bindings"] = [
-        {"name": "patch", "kind": "motion", "reference": "patch", "output": "signal"},
-        {"name": "level", "kind": "motion", "reference": "level"},
+        {"name": "patch", "kind": "envelfo", "reference": "patch", "output": "signal"},
+        {"name": "level", "kind": "envelfo", "reference": "level"},
     ]
     voice["modulation"]["sources"] = [
         {"name": "patch", "scope": "voice", "minimum": -1, "maximum": 1},
@@ -2873,8 +2879,8 @@ def test_named_lfo_names_remain_local_to_settings_and_instances(
         {
             **entries[0],
             "name": "second",
-            "motions": {
-                "motion": {
+            "envelfos": {
+                "envelfo": {
                     "scope": scope,
                     "body": {"kind": "cycle", "rate": "0", "phase": "3/4"},
                 }

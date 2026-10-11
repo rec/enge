@@ -228,8 +228,8 @@ def test_contour_playback_modulates_fm_and_survives_restore(
 ) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
-        "motion": {
+    voice["envelfos"] = {
+        "envelfo": {
             "body": {
                 "kind": "contour",
                 "playback": playback,
@@ -239,9 +239,9 @@ def test_contour_playback_modulates_fm_and_survives_restore(
             }
         }
     }
-    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
+    voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
     voice["modulation"] = {
-        "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
+        "sources": [{"name": "envelfo", "scope": "voice", "minimum": 0, "maximum": 1}],
         "parameters": [
             {
                 "target": {"name": "fm", "parameter": "carrier_level"},
@@ -254,8 +254,8 @@ def test_contour_playback_modulates_fm_and_survives_restore(
         ],
         "routes": [
             {
-                "name": "motion",
-                "source": "motion",
+                "name": "envelfo",
+                "source": "envelfo",
                 "target": {"name": "fm", "parameter": "carrier_level"},
                 "operation": "multiply",
                 "unit": "ratio",
@@ -324,16 +324,16 @@ def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
     target = {"name": "edge-modulator-carrier", "parameter": "index"}
-    voice["motions"] = {
-        "motion": {
+    voice["envelfos"] = {
+        "envelfo": {
             "scope": "instrument",
             "body": {"kind": "cycle", "shape": "sine", "rate": 2},
         }
     }
-    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
+    voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
     voice["modulation"] = {
         "sources": [
-            {"name": "motion", "scope": "instrument", "minimum": -1, "maximum": 1}
+            {"name": "envelfo", "scope": "instrument", "minimum": -1, "maximum": 1}
         ],
         "parameters": [
             {
@@ -347,8 +347,8 @@ def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(
         ],
         "routes": [
             {
-                "name": "motion",
-                "source": "motion",
+                "name": "envelfo",
+                "source": "envelfo",
                 "target": target,
                 "operation": "add",
                 "unit": "radians",
@@ -361,8 +361,8 @@ def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(
         document.body,
         [
             trigger(),
-            LFOChange(tick=12000, ordinal=0, name="motion", action="rate", rate=5),
-            LFOChange(tick=24000, ordinal=0, name="motion", action="reset"),
+            LFOChange(tick=12000, ordinal=0, name="envelfo", action="rate", rate=5),
+            LFOChange(tick=24000, ordinal=0, name="envelfo", action="reset"),
             Release(tick=36000, ordinal=0, part="main", trigger_id="note"),
         ],
         seed=0,
@@ -793,7 +793,7 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
 
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "color": {"body": {"kind": "cycle", "shape": "sine", "rate": 2}}
     }
     voice["modulation"]["sources"][0].update(scope="voice", minimum=-1)
@@ -801,7 +801,7 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
         {"input": -1, "amount": -1},
         {"input": 1, "amount": 1},
     ]
-    voice["motions"]["level"] = voice["motions"]["color"]
+    voice["envelfos"]["level"] = voice["envelfos"]["color"]
     voice["modulation"]["sources"].append(
         {
             "name": "level",
@@ -831,8 +831,8 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
         }
     )
     voice["bindings"] = [
-        {"name": "color", "kind": "motion", "reference": "color"},
-        {"name": "level", "kind": "motion", "reference": "level"},
+        {"name": "color", "kind": "envelfo", "reference": "color"},
+        {"name": "level", "kind": "envelfo", "reference": "level"},
     ]
     voice["processing"]["filter_order"] = order
     carrier = next(

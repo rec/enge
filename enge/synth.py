@@ -9,23 +9,22 @@ from typing import Literal, Self, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import instrument_trace, lfo, modulation, motion_random
+from ufor import envelfo_random, instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.control import TempoMap
-from ufor.envelope import Envelope
-from ufor.motion import (
+from ufor.envelfo import (
     Affine,
     Contour,
     ContourState,
     Cycle,
     CycleState,
     EnterStage,
+    EnvelfoEvent,
+    EnvelfoOutputEvent,
+    EnvelfoState,
+    EnvelfoUse,
     Hold,
     Latch,
-    MotionEvent,
-    MotionOutputEvent,
-    MotionState,
-    MotionUse,
     Patch,
     PlaybackMode,
     Product,
@@ -37,16 +36,17 @@ from ufor.motion import (
     StageState,
     Sum,
     Threshold,
-    advance_motion,
+    advance_envelfo,
     cycle_lfo,
-    initial_motion,
+    envelfo_at,
+    envelfo_event,
+    initial_envelfo,
     latch_value,
-    motion_at,
-    motion_event,
     next_stage_event,
     slew_value,
     threshold_value,
 )
+from ufor.envelope import Envelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import (
@@ -119,10 +119,10 @@ class LFOSource(Model, frozen=True):
     part: str | None
     trigger_id: str | None
     voice_id: str | None
-    state: MotionState
+    state: EnvelfoState
 
 
-class DelayedMotionEvent(Model, frozen=True):
+class DelayedEnvelfoEvent(Model, frozen=True):
     at: Fraction
     target: int
     order: int
@@ -137,12 +137,12 @@ class EnvelopeSource(Model, frozen=True):
     part: str
     trigger_id: str | None
     voice_id: str
-    state: MotionState
+    state: EnvelfoState
     pending_release: Fraction | None = None
     event_counts: dict[str, int] = Field(default_factory=dict)
-    motion_key: int = 0
+    envelfo_key: int = 0
     event_random: dict[str, int] = Field(default_factory=dict)
-    pending_events: list[DelayedMotionEvent] = Field(default_factory=list)
+    pending_events: list[DelayedEnvelfoEvent] = Field(default_factory=list)
 
 
 class OscillatorState(Model, frozen=True):
@@ -166,9 +166,9 @@ class PatchState(Model, frozen=True):
     name: str
     values: dict[str, float] = Field(default_factory=dict)
     event_counts: dict[str, int] = Field(default_factory=dict)
-    motion_key: int = 0
+    envelfo_key: int = 0
     event_random: dict[str, int] = Field(default_factory=dict)
-    pending_events: list[DelayedMotionEvent] = Field(default_factory=list)
+    pending_events: list[DelayedEnvelfoEvent] = Field(default_factory=list)
 
 
 class PreparedEnvelope(Model, frozen=True):
@@ -434,36 +434,36 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
 
 
 def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
-    motions = dict(voice.motions)
+    envelfos = dict(voice.envelfos)
     bindings = list(voice.bindings)
     sources = list(voice.modulation.sources)
     changed = False
     for index, binding in enumerate(bindings):
         if not isinstance(binding, processing.GeneratorBinding):
             continue
-        parent = motions[binding.reference]
+        parent = envelfos[binding.reference]
         if not isinstance(parent.body, Patch):
             continue
         assert binding.output is not None
         child_name = parent.body.outputs[binding.output]
         name = f"patch-{binding.reference}-{child_name}"
-        if name in voice.motions:
-            raise EngineError(f"Patch output Motion name collides: {name}")
-        child = parent.body.motions[child_name]
+        if name in voice.envelfos:
+            raise EngineError(f"Patch output Envelfo name collides: {name}")
+        child = parent.body.envelfos[child_name]
         if isinstance(
             child, (Sum, Product, Affine, Quantize, Latch, Threshold, Slew)
         ) or any(
             isinstance(b, (Latch, Threshold, Slew))
-            for b in parent.body.motions.values()
+            for b in parent.body.envelfos.values()
         ):
             continue
-        if name not in motions:
-            motions[name] = MotionUse(
+        if name not in envelfos:
+            envelfos[name] = EnvelfoUse(
                 scope=parent.scope, clock=parent.clock, body=child
             )
         bindings[index] = binding.model_copy(update={"reference": name, "output": None})
         changed = True
-    for parent_name, parent in voice.motions.items():
+    for parent_name, parent in voice.envelfos.items():
         if not isinstance(parent.body, Patch):
             continue
         if not any(
@@ -492,7 +492,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             if child_name in visited:
                 continue
             visited.add(child_name)
-            child = parent.body.motions[child_name]
+            child = parent.body.envelfos[child_name]
             if isinstance(child, (Sum, Product)):
                 pending.extend(child.inputs)
             elif isinstance(child, (Affine, Quantize, Latch, Threshold, Slew)):
@@ -501,12 +501,12 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                 children.add(child_name)
         for child_name in children:
             name = f"patch-{parent_name}-{child_name}"
-            if name in voice.motions:
-                raise EngineError(f"Patch child Motion name collides: {name}")
-            child = parent.body.motions[child_name]
-            motions.setdefault(
+            if name in voice.envelfos:
+                raise EngineError(f"Patch child Envelfo name collides: {name}")
+            child = parent.body.envelfos[child_name]
+            envelfos.setdefault(
                 name,
-                MotionUse(
+                EnvelfoUse(
                     scope=parent.scope,
                     clock=parent.clock,
                     body=cast(Cycle | Contour | Stages | SampleHold, child),
@@ -554,24 +554,24 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         source_binding = original_bindings[connection.source]
         if not isinstance(source_binding, processing.GeneratorBinding):
             continue
-        parent = voice.motions[source_binding.reference]
+        parent = voice.envelfos[source_binding.reference]
         if not isinstance(parent.body, Patch):
             continue
         child_name, _, port = parent.body.event_outputs[connection.port].partition(".")
-        if isinstance(parent.body.motions[child_name], Threshold):
+        if isinstance(parent.body.envelfos[child_name], Threshold):
             continue
-        child_motion = f"patch-{source_binding.reference}-{child_name}"
+        child_envelfo = f"patch-{source_binding.reference}-{child_name}"
         child_binding = next(
             binding.name
             for binding in bindings
             if isinstance(binding, processing.GeneratorBinding)
-            and binding.reference == child_motion
+            and binding.reference == child_envelfo
         )
         event_connections[index] = connection.model_copy(
             update={"source": child_binding, "port": port}
         )
         changed = True
-    for parent_name, parent in voice.motions.items():
+    for parent_name, parent in voice.envelfos.items():
         if not isinstance(parent.body, Patch) or not any(
             isinstance(binding, processing.GeneratorBinding)
             and binding.reference == parent_name
@@ -582,25 +582,25 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             if connection.action != "cue":
                 continue
             child_name, _, port = connection.source.partition(".")
-            if isinstance(parent.body.motions[child_name], Threshold):
+            if isinstance(parent.body.envelfos[child_name], Threshold):
                 continue
-            source_motion = f"patch-{parent_name}-{child_name}"
-            target_motion = f"patch-{parent_name}-{connection.target}"
+            source_envelfo = f"patch-{parent_name}-{child_name}"
+            target_envelfo = f"patch-{parent_name}-{connection.target}"
             source_binding = next(
                 binding.name
                 for binding in bindings
                 if isinstance(binding, processing.GeneratorBinding)
-                and binding.reference == source_motion
+                and binding.reference == source_envelfo
             )
             target_binding = next(
                 binding.name
                 for binding in bindings
                 if isinstance(binding, processing.GeneratorBinding)
-                and binding.reference == target_motion
+                and binding.reference == target_envelfo
             )
             assert connection.cue is not None
             event_connections.append(
-                processing.MotionEventConnection(
+                processing.EnvelfoEventConnection(
                     source=source_binding,
                     port=port,
                     destination=target_binding,
@@ -617,7 +617,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
     return SynthVoice.model_validate(
         voice.model_dump()
         | {
-            "motions": motions,
+            "envelfos": envelfos,
             "bindings": bindings,
             "event_connections": event_connections,
             "modulation": voice.modulation.model_copy(update={"sources": sources}),
@@ -628,9 +628,9 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
 def _patch_child_names(settings: SoundSettings) -> set[str]:
     return {
         f"patch-{name}-{child}"
-        for name, motion in settings.motions.items()
-        if isinstance(motion.body, Patch)
-        for child in motion.body.motions
+        for name, envelfo in settings.envelfos.items()
+        if isinstance(envelfo.body, Patch)
+        for child in envelfo.body.envelfos
     }
 
 
@@ -645,7 +645,7 @@ def _patch_start_connections(
     connections: list[
         tuple[str, str, int, int, int, int, float, Fraction, str | None]
     ] = []
-    for parent_name, parent in settings.motions.items():
+    for parent_name, parent in settings.envelfos.items():
         if not isinstance(parent.body, Patch):
             continue
         for order, connection in enumerate(parent.body.events):
@@ -654,8 +654,8 @@ def _patch_start_connections(
             child_name, _, port = connection.source.partition(".")
             source_name = f"patch-{parent_name}-{child_name}"
             target_name = f"patch-{parent_name}-{connection.target}"
-            if source_name not in settings.motions or (
-                connection.action != "capture" and target_name not in settings.motions
+            if source_name not in settings.envelfos or (
+                connection.action != "capture" and target_name not in settings.envelfos
             ):
                 continue
             connections.append(
@@ -715,22 +715,22 @@ class ControlRenderer:
         self.patches: list[PatchState] = []
         self.new_context("instrument", None, None, 0, {})
 
-    def motion_time(self, motion: MotionUse, seconds: Fraction) -> Fraction:
-        if motion.clock == "seconds":
+    def envelfo_time(self, envelfo: EnvelfoUse, seconds: Fraction) -> Fraction:
+        if envelfo.clock == "seconds":
             return seconds
         if self.tempo_map is None:
-            raise EngineError("Beat-clock Motion requires a host tempo map")
-        if motion.position_driver == "transport":
+            raise EngineError("Beat-clock Envelfo requires a host tempo map")
+        if envelfo.position_driver == "transport":
             return self.tempo_map.beat_at(seconds)
         return self.tempo_map.elapsed_beats(Fraction(0), seconds)
 
-    def motion_seconds(self, motion: MotionUse, at: Fraction) -> Fraction:
-        if motion.clock == "seconds":
+    def envelfo_seconds(self, envelfo: EnvelfoUse, at: Fraction) -> Fraction:
+        if envelfo.clock == "seconds":
             return at
         assert self.tempo_map is not None
         seconds = self.tempo_map.time_for_elapsed_beat(at)
         if seconds is None:
-            raise EngineError("Beat-clock Motion event has no host time")
+            raise EngineError("Beat-clock Envelfo event has no host time")
         return seconds
 
     def new_context(
@@ -801,14 +801,14 @@ class ControlRenderer:
             if not matches:
                 raise EngineError(f"Unknown instrument LFO: {action.name}")
             for index, source in matches:
-                definition = self.settings[source.setting].motions[source.name]
+                definition = self.settings[source.setting].envelfos[source.name]
                 self.lfos[index] = source.model_copy(
                     update={
-                        "state": motion_event(
+                        "state": envelfo_event(
                             definition,
                             source.state,
-                            MotionEvent(
-                                at=self.motion_time(
+                            EnvelfoEvent(
+                                at=self.envelfo_time(
                                     definition, Fraction(action.tick, self.sample_rate)
                                 ),
                                 ordinal=action.ordinal,
@@ -832,16 +832,16 @@ class ControlRenderer:
                         )
                     }
                 )
-        elif isinstance(action, instrument_trace.MotionObservation):
+        elif isinstance(action, instrument_trace.EnvelfoObservation):
             if any(
                 action.name in self.patch_children[index]
                 or (
-                    (motion := settings.motions.get(action.name)) is not None
-                    and isinstance(motion.body, Patch)
+                    (envelfo := settings.envelfos.get(action.name)) is not None
+                    and isinstance(envelfo.body, Patch)
                 )
                 for index, settings in enumerate(self.settings)
             ):
-                raise EngineError("Patch-level Motion commands are not implemented")
+                raise EngineError("Patch-level Envelfo commands are not implemented")
             for index, source in enumerate(self.lfos):
                 if (
                     source.name == action.name
@@ -850,13 +850,13 @@ class ControlRenderer:
                     and (source.part, source.trigger_id)
                     == (action.part, action.trigger_id)
                 ):
-                    definition = self.settings[source.setting].motions[source.name]
+                    definition = self.settings[source.setting].envelfos[source.name]
                     self.lfos[index] = source.model_copy(
                         update={
-                            "state": motion_event(
+                            "state": envelfo_event(
                                 definition,
                                 source.state,
-                                self._motion_observation(action, definition),
+                                self._envelfo_observation(action, definition),
                             )
                         }
                     )
@@ -869,8 +869,8 @@ class ControlRenderer:
                 ):
                     continue
                 settings = self.settings[source.setting]
-                definition = settings.motions[source.name]
-                event = self._motion_observation(action, definition)
+                definition = settings.envelfos[source.name]
+                event = self._envelfo_observation(action, definition)
                 if (
                     isinstance(source.state.runtime, SampleHoldState)
                     and event.at == source.state.runtime.at
@@ -884,11 +884,11 @@ class ControlRenderer:
                         }
                     )
                 if isinstance(definition.body, Stages):
-                    result = advance_motion(definition, source.state, event.at, event)
+                    result = advance_envelfo(definition, source.state, event.at, event)
                     state = result.state
                     emitted = [(source.binding_name, e) for e in result.events]
                 else:
-                    state = motion_event(definition, source.state, event)
+                    state = envelfo_event(definition, source.state, event)
                     emitted = []
                 self.envelopes[index] = source.model_copy(update={"state": state})
                 if emitted:
@@ -944,11 +944,11 @@ class ControlRenderer:
             return False
         return True
 
-    def _motion_observation(
-        self, action: instrument_trace.MotionObservation, motion: MotionUse
-    ) -> MotionEvent:
-        return MotionEvent(
-            at=self.motion_time(motion, Fraction(action.tick, self.sample_rate)),
+    def _envelfo_observation(
+        self, action: instrument_trace.EnvelfoObservation, envelfo: EnvelfoUse
+    ) -> EnvelfoEvent:
+        return EnvelfoEvent(
+            at=self.envelfo_time(envelfo, Fraction(action.tick, self.sample_rate)),
             ordinal=action.ordinal,
             action=action.action,
             position=None
@@ -961,14 +961,14 @@ class ControlRenderer:
         self, settings: SoundSettings, action: instrument_trace.VoiceStart
     ) -> dict[str, int]:
         result: dict[str, int] = {}
-        emitted: list[tuple[str, MotionOutputEvent]] = []
+        emitted: list[tuple[str, EnvelfoOutputEvent]] = []
         bindings = {b.name: b for b in settings.bindings}
         for source in settings.modulation.sources:
             binding = bindings[source.name]
             if isinstance(binding, processing.GeneratorBinding):
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
-                motion = settings.motions[binding.reference]
-                if isinstance(motion.body, Patch):
+                envelfo = settings.envelfos[binding.reference]
+                if isinstance(envelfo.body, Patch):
                     index = next(
                         (
                             i
@@ -984,15 +984,15 @@ class ControlRenderer:
                             PatchState(
                                 voice_id=action.voice_id,
                                 name=binding.reference,
-                                motion_key=action.motion_key,
+                                envelfo_key=action.envelfo_key,
                             )
                         )
                     result[source.name] = -1 - index
                     continue
-                if isinstance(motion.body, (Contour, Stages, SampleHold)):
-                    if motion.scope != "voice":
+                if isinstance(envelfo.body, (Contour, Stages, SampleHold)):
+                    if envelfo.scope != "voice":
                         raise EngineError(
-                            "Staged and contour Motions require voice scope"
+                            "Staged and contour Envelfos require voice scope"
                         )
                     existing = None
                     if binding.reference in self.patch_children[setting]:
@@ -1009,28 +1009,28 @@ class ControlRenderer:
                         result[source.name] = existing
                         continue
                     index = len(self.envelopes)
-                    initial = initial_motion(
-                        motion,
-                        self.motion_time(
-                            motion, Fraction(action.tick, self.sample_rate)
+                    initial = initial_envelfo(
+                        envelfo,
+                        self.envelfo_time(
+                            envelfo, Fraction(action.tick, self.sample_rate)
                         ),
-                        seed=action.motion_key
-                        ^ motion_random.stream_key(
+                        seed=action.envelfo_key
+                        ^ envelfo_random.stream_key(
                             0, binding.reference + ":sample-hold"
                         )
-                        if isinstance(motion.body, SampleHold)
+                        if isinstance(envelfo.body, SampleHold)
                         else 0,
                     )
-                    if isinstance(motion.body, Stages):
-                        advanced = advance_motion(
-                            motion,
+                    if isinstance(envelfo.body, Stages):
+                        advanced = advance_envelfo(
+                            envelfo,
                             initial,
-                            self.motion_time(
-                                motion, Fraction(action.tick, self.sample_rate)
+                            self.envelfo_time(
+                                envelfo, Fraction(action.tick, self.sample_rate)
                             ),
-                            MotionEvent(
-                                at=self.motion_time(
-                                    motion, Fraction(action.tick, self.sample_rate)
+                            EnvelfoEvent(
+                                at=self.envelfo_time(
+                                    envelfo, Fraction(action.tick, self.sample_rate)
                                 ),
                                 ordinal=action.ordinal,
                                 action="note_on",
@@ -1038,13 +1038,13 @@ class ControlRenderer:
                         )
                         initial = advanced.state
                         emitted.extend((binding.name, e) for e in advanced.events)
-                    elif isinstance(motion.body, Contour) and motion.body.release:
-                        initial = motion_event(
-                            motion,
+                    elif isinstance(envelfo.body, Contour) and envelfo.body.release:
+                        initial = envelfo_event(
+                            envelfo,
                             initial,
-                            MotionEvent(
-                                at=self.motion_time(
-                                    motion, Fraction(action.tick, self.sample_rate)
+                            EnvelfoEvent(
+                                at=self.envelfo_time(
+                                    envelfo, Fraction(action.tick, self.sample_rate)
                                 ),
                                 ordinal=action.ordinal,
                                 action="note_on",
@@ -1059,13 +1059,13 @@ class ControlRenderer:
                             trigger_id=action.trigger_id,
                             voice_id=action.voice_id,
                             state=initial,
-                            motion_key=action.motion_key,
+                            envelfo_key=action.envelfo_key,
                         )
                     )
                     result[source.name] = index
                     continue
-                part = action.part if motion.scope in ("part", "voice") else None
-                voice_id = action.voice_id if motion.scope == "voice" else None
+                part = action.part if envelfo.scope in ("part", "voice") else None
+                voice_id = action.voice_id if envelfo.scope == "voice" else None
                 index = next(
                     (
                         i
@@ -1086,10 +1086,10 @@ class ControlRenderer:
                             if voice_id is not None
                             else None,
                             voice_id=voice_id,
-                            state=initial_motion(
-                                motion,
-                                self.motion_time(
-                                    motion,
+                            state=initial_envelfo(
+                                envelfo,
+                                self.envelfo_time(
+                                    envelfo,
                                     Fraction(
                                         action.tick if voice_id is not None else 0,
                                         self.sample_rate,
@@ -1125,11 +1125,11 @@ class ControlRenderer:
             Fraction(action.tick, self.sample_rate)
             + (renderer.release_frame - renderer.frame_count) / self.sample_rate
         )
-        emitted: list[tuple[str, MotionOutputEvent]] = []
+        emitted: list[tuple[str, EnvelfoOutputEvent]] = []
         released: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
-                settings.motions[binding.reference].body, (Contour, Stages)
+                settings.envelfos[binding.reference].body, (Contour, Stages)
             ):
                 continue
             index = sources[binding.name]
@@ -1137,7 +1137,7 @@ class ControlRenderer:
                 continue
             released.add(index)
             source = self.envelopes[index]
-            definition = settings.motions[binding.reference]
+            definition = settings.envelfos[binding.reference]
             if (
                 isinstance(definition.body, Contour)
                 and binding.release_timing == ReleaseTiming.voice
@@ -1147,19 +1147,19 @@ class ControlRenderer:
                     update={"pending_release": voice_release_at}
                 )
                 continue
-            event = MotionEvent(
-                at=self.motion_time(
+            event = EnvelfoEvent(
+                at=self.envelfo_time(
                     definition, Fraction(action.tick, self.sample_rate)
                 ),
                 ordinal=action.ordinal,
                 action="note_off",
             )
             if isinstance(definition.body, Stages):
-                advanced = advance_motion(definition, source.state, event.at, event)
+                advanced = advance_envelfo(definition, source.state, event.at, event)
                 state = advanced.state
                 emitted.extend((binding.name, e) for e in advanced.events)
             else:
-                state = motion_event(definition, source.state, event)
+                state = envelfo_event(definition, source.state, event)
             self.envelopes[index] = source.model_copy(update={"state": state})
         self._dispatch_staged_events(settings, sources, emitted)
 
@@ -1195,9 +1195,10 @@ class ControlRenderer:
         if frames > 1 and any(
             isinstance(m.body, Patch)
             and any(
-                isinstance(b, (Latch, Threshold, Slew)) for b in m.body.motions.values()
+                isinstance(b, (Latch, Threshold, Slew))
+                for b in m.body.envelfos.values()
             )
-            for m in settings.motions.values()
+            for m in settings.envelfos.values()
         ):
             output = {
                 (p.target.name, p.target.parameter): np.empty(frames)
@@ -1210,19 +1211,19 @@ class ControlRenderer:
             self.cached_span = span
             self.cached_values[key] = output
             return {n: v.copy() for n, v in output.items()}
-        self._motion_event_values(settings, sources, start, frames)
+        self._envelfo_event_values(settings, sources, start, frames)
         signals: dict[str, np.ndarray] = {}
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
                 index = sources[binding.name]
-                motion = settings.motions[binding.reference]
-                if isinstance(motion.body, Patch):
+                envelfo = settings.envelfos[binding.reference]
+                if isinstance(envelfo.body, Patch):
                     continue
-                if isinstance(motion.body, (Contour, Stages, SampleHold)):
+                if isinstance(envelfo.body, (Contour, Stages, SampleHold)):
                     if index not in self.cached_envelopes:
                         source = self.envelopes[index]
                         state = source.state
-                        assert isinstance(motion.body, (Contour, SampleHold))
+                        assert isinstance(envelfo.body, (Contour, SampleHold))
                         values = np.empty(frames)
                         for i in range(frames):
                             at = Fraction(start + i, self.sample_rate)
@@ -1230,12 +1231,12 @@ class ControlRenderer:
                                 source.pending_release is not None
                                 and at >= source.pending_release
                             ):
-                                state = motion_event(
-                                    motion,
+                                state = envelfo_event(
+                                    envelfo,
                                     state,
-                                    MotionEvent(
-                                        at=self.motion_time(
-                                            motion, source.pending_release
+                                    EnvelfoEvent(
+                                        at=self.envelfo_time(
+                                            envelfo, source.pending_release
                                         ),
                                         ordinal=0,
                                         action="note_off",
@@ -1245,8 +1246,8 @@ class ControlRenderer:
                                     update={"state": state, "pending_release": None}
                                 )
                                 self.envelopes[index] = source
-                            values[i] = motion_at(
-                                motion, state, self.motion_time(motion, at)
+                            values[i] = envelfo_at(
+                                envelfo, state, self.envelfo_time(envelfo, at)
                             ).value
                         self.cached_envelopes[index] = np.column_stack(
                             (values, np.ones(frames))
@@ -1255,18 +1256,18 @@ class ControlRenderer:
                     continue
                 if index not in self.cached_lfos:
                     state = self.lfos[index].state.runtime
-                    assert isinstance(motion.body, Cycle)
+                    assert isinstance(envelfo.body, Cycle)
                     assert isinstance(state, CycleState)
                     position = state.position
                     if (
-                        motion.clock == "seconds"
+                        envelfo.clock == "seconds"
                         and not position.paused
                         and position.direction == 1
                     ):
-                        if id(motion) not in self.cycle_definitions:
-                            self.cycle_definitions[id(motion)] = cycle_lfo(motion)
+                        if id(envelfo) not in self.cycle_definitions:
+                            self.cycle_definitions[id(envelfo)] = cycle_lfo(envelfo)
                         samples = lfo_samples(
-                            self.cycle_definitions[id(motion)],
+                            self.cycle_definitions[id(envelfo)],
                             lfo.LFOState(
                                 at=position.at,
                                 started_at=position.at - position.age,
@@ -1280,16 +1281,16 @@ class ControlRenderer:
                             self.control_interval,
                         )
                         samples[:, 0] = (
-                            motion.body.center + motion.body.depth * samples[:, 0]
+                            envelfo.body.center + envelfo.body.depth * samples[:, 0]
                         )
                     else:
                         samples = np.empty((frames, 2))
                         for i in range(frames):
-                            value = motion_at(
-                                motion,
+                            value = envelfo_at(
+                                envelfo,
                                 self.lfos[index].state,
-                                self.motion_time(
-                                    motion, Fraction(start + i, self.sample_rate)
+                                self.envelfo_time(
+                                    envelfo, Fraction(start + i, self.sample_rate)
                                 ),
                             )
                             samples[i] = value.value, value.weight
@@ -1313,7 +1314,7 @@ class ControlRenderer:
                     )
                 )
             signals[binding.name] = self.cached_controls[source_key]
-        for parent_name, parent in settings.motions.items():
+        for parent_name, parent in settings.envelfos.items():
             if not isinstance(parent.body, Patch):
                 continue
             selected = [
@@ -1329,7 +1330,7 @@ class ControlRenderer:
             state = self.patches[patch_index]
             retained = dict(state.values)
             for name in parent.body.signal_order:
-                body = parent.body.motions[name]
+                body = parent.body.envelfos[name]
                 if isinstance(body, (Sum, Product)):
                     if any(n not in children for n in body.inputs):
                         continue
@@ -1411,21 +1412,21 @@ class ControlRenderer:
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
 
-    def _motion_event_values(
+    def _envelfo_event_values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
     ) -> None:
-        staged: list[tuple[str, int, MotionUse]] = []
+        staged: list[tuple[str, int, EnvelfoUse]] = []
         seen: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding):
                 continue
             index = sources[binding.name]
             if index in seen or not isinstance(
-                settings.motions[binding.reference].body, Stages
+                settings.envelfos[binding.reference].body, Stages
             ):
                 continue
             seen.add(index)
-            staged.append((binding.name, index, settings.motions[binding.reference]))
+            staged.append((binding.name, index, settings.envelfos[binding.reference]))
         patch_starts = _patch_start_connections(settings, sources)
         contour_targets = {
             target
@@ -1437,13 +1438,13 @@ class ControlRenderer:
             for _, _, target, _, _, _, _, _, capture in patch_starts
             if capture is not None
         }
-        for parent_name, parent in settings.motions.items():
+        for parent_name, parent in settings.envelfos.items():
             if not isinstance(parent.body, Patch):
                 continue
             for connection in parent.body.events:
                 if (
                     isinstance(
-                        parent.body.motions[connection.source.partition(".")[0]],
+                        parent.body.envelfos[connection.source.partition(".")[0]],
                         Threshold,
                     )
                     and connection.action != "cue"
@@ -1463,13 +1464,13 @@ class ControlRenderer:
                         if isinstance(b, processing.GeneratorBinding)
                         and b.reference == target
                     )
-        motion_indices = {index for _, index, _ in staged} | contour_targets
-        if (not motion_indices and not latch_targets) or (
+        envelfo_indices = {index for _, index, _ in staged} | contour_targets
+        if (not envelfo_indices and not latch_targets) or (
             not latch_targets
-            and all(index in self.cached_envelopes for index in motion_indices)
+            and all(index in self.cached_envelopes for index in envelfo_indices)
         ):
             return
-        values = {index: np.empty(frames) for index in motion_indices}
+        values = {index: np.empty(frames) for index in envelfo_indices}
         bindings = {binding.name: binding for binding in settings.bindings}
         cycle_ports = list(
             dict.fromkeys(
@@ -1480,7 +1481,7 @@ class ControlRenderer:
                         (binding := bindings[connection.source]),
                         processing.GeneratorBinding,
                     )
-                    and isinstance(settings.motions[binding.reference].body, Cycle)
+                    and isinstance(settings.envelfos[binding.reference].body, Cycle)
                 ]
                 + [
                     (source, port)
@@ -1489,13 +1490,13 @@ class ControlRenderer:
                         (binding := bindings[source]),
                         processing.GeneratorBinding,
                     )
-                    and isinstance(settings.motions[binding.reference].body, Cycle)
+                    and isinstance(settings.envelfos[binding.reference].body, Cycle)
                 ]
             )
         )
         voice_id = (
-            self.envelopes[min(motion_indices)]
-            if motion_indices
+            self.envelopes[min(envelfo_indices)]
+            if envelfo_indices
             else self.patches[-1 - min(latch_targets)]
         ).voice_id
         queue_index, _ = self._event_queue(voice_id)
@@ -1509,8 +1510,8 @@ class ControlRenderer:
             for order, (source_name, port) in enumerate(cycle_ports):
                 binding = bindings[source_name]
                 assert isinstance(binding, processing.GeneratorBinding)
-                motion = settings.motions[binding.reference]
-                assert isinstance(motion.body, Cycle)
+                envelfo = settings.envelfos[binding.reference]
+                assert isinstance(envelfo.body, Cycle)
                 source = self.lfos[sources[source_name]]
                 assert isinstance(source.state.runtime, CycleState)
                 position = source.state.runtime.position
@@ -1518,13 +1519,15 @@ class ControlRenderer:
                 previous = max(origin, boundary - Fraction(1, self.sample_rate))
                 if boundary <= previous:
                     continue
-                marker = next(m.position for m in motion.body.markers if m.name == port)
+                marker = next(
+                    m.position for m in envelfo.body.markers if m.name == port
+                )
                 first = position.coordinate + position.rate * (previous - origin)
                 last = position.coordinate + position.rate * (boundary - origin)
                 first_turn = floor(first - marker) + 1
                 last_turn = floor(last - marker)
                 if last_turn - first_turn + 1 > 4096 - len(cycle_events):
-                    raise EngineError("Motion event capacity exceeded")
+                    raise EngineError("Envelfo event capacity exceeded")
                 for turn in range(first_turn, last_turn + 1):
                     at = origin + (turn + marker - position.coordinate) / position.rate
                     cycle_events.append((at, order, source_name, port))
@@ -1535,20 +1538,20 @@ class ControlRenderer:
                     (
                         name,
                         index,
-                        motion,
-                        advance_motion(
-                            motion,
+                        envelfo,
+                        advance_envelfo(
+                            envelfo,
                             self.envelopes[index].state,
-                            self.motion_time(motion, boundary),
+                            self.envelfo_time(envelfo, boundary),
                         ),
                     )
-                    for name, index, motion in staged
+                    for name, index, envelfo in staged
                 ]
                 next_staged_event = (
                     min(
                         (
-                            self.motion_seconds(motion, event.at)
-                            for _, _, motion, result in attempts
+                            self.envelfo_seconds(envelfo, event.at)
+                            for _, _, envelfo, result in attempts
                             for event in result.events
                         ),
                         default=None,
@@ -1591,12 +1594,12 @@ class ControlRenderer:
                         )
                         sample_values[index] = result.value.value
                     break
-                emitted: list[tuple[str, MotionOutputEvent]] = []
-                for name, index, motion in staged:
-                    result = advance_motion(
-                        motion,
+                emitted: list[tuple[str, EnvelfoOutputEvent]] = []
+                for name, index, envelfo in staged:
+                    result = advance_envelfo(
+                        envelfo,
                         self.envelopes[index].state,
-                        self.motion_time(motion, next_event),
+                        self.envelfo_time(envelfo, next_event),
                     )
                     self.envelopes[index] = self.envelopes[index].model_copy(
                         update={"state": result.state}
@@ -1610,7 +1613,7 @@ class ControlRenderer:
                     emitted.append(
                         (
                             name,
-                            MotionOutputEvent(
+                            EnvelfoOutputEvent(
                                 at=at,
                                 port=port,
                                 stage=name,
@@ -1621,7 +1624,7 @@ class ControlRenderer:
                     cycle_event_index += 1
                 events_seen += len(emitted)
                 if events_seen > 4096:
-                    raise EngineError("Motion event capacity exceeded")
+                    raise EngineError("Envelfo event capacity exceeded")
                 if emitted:
                     self._dispatch_staged_events(
                         settings, sources, emitted, pending_starts
@@ -1664,16 +1667,16 @@ class ControlRenderer:
                         )
                 events_seen += len(due)
                 if events_seen > 4096:
-                    raise EngineError("Motion event capacity exceeded")
+                    raise EngineError("Envelfo event capacity exceeded")
             self._start_patch_contours(settings, pending_starts)
             for _, index, _ in staged:
                 values[index][i] = sample_values[index]
             for index in contour_targets:
-                motion = settings.motions[self.envelopes[index].name]
-                values[index][i] = motion_at(
-                    motion,
+                envelfo = settings.envelfos[self.envelopes[index].name]
+                values[index][i] = envelfo_at(
+                    envelfo,
                     self.envelopes[index].state,
-                    self.motion_time(motion, boundary),
+                    self.envelfo_time(envelfo, boundary),
                 ).value
             # Events change state; empty audio frames do not. Render up to the
             # next event frame, then let the same exact delivery loop handle it.
@@ -1682,29 +1685,29 @@ class ControlRenderer:
                 count > 1
                 and not latch_targets
                 and all(
-                    settings.motions[self.envelopes[index].name].clock == "seconds"
-                    for index in motion_indices
+                    settings.envelfos[self.envelopes[index].name].clock == "seconds"
+                    for index in envelfo_indices
                 )
             ):
                 limit = Fraction(start + frames - 1, self.sample_rate)
                 boundaries: list[Fraction] = []
-                for _, index, motion in staged:
+                for _, index, envelfo in staged:
                     runtime = self.envelopes[index].state.runtime
                     assert isinstance(runtime, StageState)
-                    assert isinstance(motion.body, Stages)
-                    if natural := next_stage_event(motion.body, runtime, limit):
+                    assert isinstance(envelfo.body, Stages)
+                    if natural := next_stage_event(envelfo.body, runtime, limit):
                         boundaries.append(natural[0])
                 for source_name, port in cycle_ports:
                     binding = bindings[source_name]
                     assert isinstance(binding, processing.GeneratorBinding)
-                    motion = settings.motions[binding.reference]
+                    envelfo = settings.envelfos[binding.reference]
                     runtime = self.lfos[sources[source_name]].state.runtime
                     assert isinstance(runtime, CycleState)
-                    assert isinstance(motion.body, Cycle)
+                    assert isinstance(envelfo.body, Cycle)
                     position = runtime.position
                     if position.rate:
                         marker = next(
-                            m.position for m in motion.body.markers if m.name == port
+                            m.position for m in envelfo.body.markers if m.name == port
                         )
                         coordinate = position.coordinate + position.rate * (
                             boundary - position.at
@@ -1728,24 +1731,24 @@ class ControlRenderer:
                 # Check every participant before allocating full spans. One
                 # scalar-only child must not cause block-sized work per frame.
                 supported = all(
-                    self._motion_span(
-                        settings.motions[self.envelopes[index].name],
+                    self._envelfo_span(
+                        settings.envelfos[self.envelopes[index].name],
                         self.envelopes[index].state,
                         start + i,
                         0,
                     )
                     is not None
-                    for index in motion_indices
+                    for index in envelfo_indices
                 )
                 spans = (
                     {
-                        index: self._motion_span(
-                            settings.motions[self.envelopes[index].name],
+                        index: self._envelfo_span(
+                            settings.envelfos[self.envelopes[index].name],
                             self.envelopes[index].state,
                             start + i,
                             count,
                         )
-                        for index in motion_indices
+                        for index in envelfo_indices
                     }
                     if supported
                     else {}
@@ -1756,9 +1759,9 @@ class ControlRenderer:
                         values[index][i : i + count] = samples
                     if count > 1:
                         last = Fraction(start + i + count - 1, self.sample_rate)
-                        for _, index, motion in staged:
+                        for _, index, envelfo in staged:
                             source = self.envelopes[index]
-                            result = advance_motion(motion, source.state, last)
+                            result = advance_envelfo(envelfo, source.state, last)
                             assert not result.events
                             self.envelopes[index] = source.model_copy(
                                 update={"state": result.state}
@@ -1769,24 +1772,24 @@ class ControlRenderer:
         for index, samples in values.items():
             self.cached_envelopes[index] = np.column_stack((samples, np.ones(frames)))
 
-    def _motion_span(
-        self, motion: MotionUse, state: MotionState, start: int, frames: int
+    def _envelfo_span(
+        self, envelfo: EnvelfoUse, state: EnvelfoState, start: int, frames: int
     ) -> np.ndarray | None:
         """Render an event-free interval; zero frames checks block support."""
         runtime = state.runtime
-        body = motion.body
+        body = envelfo.body
         if isinstance(runtime, StageState):
             assert isinstance(body, Stages)
             if runtime.completed:
                 return np.full(frames, runtime.complete_value)
-            body = next(s.motion for s in body.stages if s.name == runtime.stage)
+            body = next(s.envelfo for s in body.stages if s.name == runtime.stage)
             initial = runtime.entry_value
         elif isinstance(runtime, ContourState):
             assert isinstance(body, Contour)
             if runtime.phase == "idle" or runtime.complete_coordinate is not None:
                 return np.full(
                     frames,
-                    motion_at(motion, state, Fraction(start, self.sample_rate)).value,
+                    envelfo_at(envelfo, state, Fraction(start, self.sample_rate)).value,
                 )
             initial = runtime.start_value
         elif isinstance(runtime, SampleHoldState):
@@ -1799,14 +1802,14 @@ class ControlRenderer:
         if position.paused:
             return np.full(
                 frames,
-                motion_at(motion, state, Fraction(start, self.sample_rate)).value,
+                envelfo_at(envelfo, state, Fraction(start, self.sample_rate)).value,
             )
         if position.direction != 1:
             return None
         if isinstance(body, Cycle):
             if not frames:
                 return np.empty(0)
-            definition = cycle_lfo(MotionUse(body=body))
+            definition = cycle_lfo(EnvelfoUse(body=body))
             samples = lfo_samples(
                 definition,
                 lfo.LFOState(
@@ -1838,7 +1841,7 @@ class ControlRenderer:
         if not speed:
             return np.full(
                 frames,
-                motion_at(motion, state, Fraction(start, self.sample_rate)).value,
+                envelfo_at(envelfo, state, Fraction(start, self.sample_rate)).value,
             )
         scaled = [
             s.model_copy(update={"duration": s.duration / speed}) for s in segments
@@ -1859,13 +1862,13 @@ class ControlRenderer:
         port: str,
         at: Fraction,
     ) -> None:
-        parent = settings.motions[parent_name]
+        parent = settings.envelfos[parent_name]
         assert isinstance(parent.body, Patch)
         bindings = {
             b.reference: b.name
             for b in settings.bindings
             if isinstance(b, processing.GeneratorBinding)
-            and not isinstance(settings.motions[b.reference].body, Patch)
+            and not isinstance(settings.envelfos[b.reference].body, Patch)
         }
         for order, connection in enumerate(parent.body.events):
             if connection.source != f"{child}.{port}":
@@ -1917,7 +1920,7 @@ class ControlRenderer:
         self,
         settings: SoundSettings,
         sources: dict[str, int],
-        emitted: list[tuple[str, MotionOutputEvent]],
+        emitted: list[tuple[str, EnvelfoOutputEvent]],
         starts: list[tuple[Fraction, int, int, str | None]] | None = None,
     ) -> None:
         pending = deque(emitted)
@@ -1929,8 +1932,8 @@ class ControlRenderer:
             name, event = pending.popleft()
             source_binding = bindings[name]
             assert isinstance(source_binding, processing.GeneratorBinding)
-            source_motion = settings.motions[source_binding.reference]
-            seconds = self.motion_seconds(source_motion, event.at)
+            source_envelfo = settings.envelfos[source_binding.reference]
+            seconds = self.envelfo_seconds(source_envelfo, event.at)
             for (
                 source_name,
                 port,
@@ -1961,7 +1964,7 @@ class ControlRenderer:
                         pending_starts.append((seconds, order, target_index, capture))
                     delivered += 1
                     if delivered > 4096:
-                        raise EngineError("Motion event connection capacity exceeded")
+                        raise EngineError("Envelfo event connection capacity exceeded")
             for order, connection in enumerate(settings.event_connections):
                 if connection.source != name or connection.port != event.port:
                     continue
@@ -1986,7 +1989,7 @@ class ControlRenderer:
                     )
                 delivered += 1
                 if delivered > 4096:
-                    raise EngineError("Motion event connection capacity exceeded")
+                    raise EngineError("Envelfo event connection capacity exceeded")
         if starts is None:
             self._start_patch_contours(settings, pending_starts)
 
@@ -1998,7 +2001,7 @@ class ControlRenderer:
         for i, patch in enumerate(self.patches):
             if patch.voice_id == voice_id:
                 return -1 - i, patch
-        raise EngineError("Motion event voice has no state owner")
+        raise EngineError("Envelfo event voice has no state owner")
 
     def _delay_event(
         self,
@@ -2013,8 +2016,8 @@ class ControlRenderer:
         ).voice_id
         index, source = self._event_queue(voice_id)
         if len(source.pending_events) == 4096:
-            raise EngineError("Delayed Motion event capacity exceeded")
-        event = DelayedMotionEvent(
+            raise EngineError("Delayed Envelfo event capacity exceeded")
+        event = DelayedEnvelfoEvent(
             at=at, target=target, order=order, cue=cue, capture=capture
         )
         updated = source.model_copy(
@@ -2029,16 +2032,16 @@ class ControlRenderer:
 
     def _deliver_cue(
         self, settings: SoundSettings, index: int, cue: str, seconds: Fraction
-    ) -> list[tuple[str, MotionOutputEvent]]:
+    ) -> list[tuple[str, EnvelfoOutputEvent]]:
         source = self.envelopes[index]
-        motion = settings.motions[source.name]
-        at = self.motion_time(motion, seconds)
+        envelfo = settings.envelfos[source.name]
+        at = self.envelfo_time(envelfo, seconds)
         assert isinstance(source.state.runtime, StageState)
-        result = advance_motion(
-            motion,
+        result = advance_envelfo(
+            envelfo,
             source.state,
             at,
-            MotionEvent(
+            EnvelfoEvent(
                 at=at, ordinal=source.state.runtime.ordinal + 1, action="cue", cue=cue
             ),
         )
@@ -2068,10 +2071,10 @@ class ControlRenderer:
         if threshold == 2**53:
             return True
         if (state := source.event_random.get(connection)) is None:
-            state = source.motion_key ^ motion_random.stream_key(
+            state = source.envelfo_key ^ envelfo_random.stream_key(
                 0, f"{source.name}:{connection}"
             )
-        state, word = motion_random.random_word(state)
+        state, word = envelfo_random.random_word(state)
         source = source.model_copy(
             update={"event_random": source.event_random | {connection: state}}
         )
@@ -2102,16 +2105,18 @@ class ControlRenderer:
                 )
                 continue
             source = self.envelopes[index]
-            motion = settings.motions[source.name]
-            at = self.motion_time(motion, seconds)
+            envelfo = settings.envelfos[source.name]
+            at = self.envelfo_time(envelfo, seconds)
             assert isinstance(source.state.runtime, (ContourState, SampleHoldState))
-            state = motion_event(
-                motion,
+            state = envelfo_event(
+                envelfo,
                 source.state,
-                MotionEvent(
+                EnvelfoEvent(
                     at=at,
                     ordinal=source.state.runtime.ordinal + 1,
-                    action="sample" if isinstance(motion.body, SampleHold) else "start",
+                    action="sample"
+                    if isinstance(envelfo.body, SampleHold)
+                    else "start",
                 ),
             )
             self.envelopes[index] = source.model_copy(update={"state": state})
@@ -2160,9 +2165,9 @@ class OfflineSynth:
         if tempo_map is None and any(
             m.clock == "beats"
             for v in self.templates.values()
-            for m in v.motions.values()
+            for m in v.envelfos.values()
         ):
-            raise EngineError("Beat-clock Motion requires a host tempo map")
+            raise EngineError("Beat-clock Envelfo requires a host tempo map")
         self.controls = ControlRenderer(
             self.definition.sample_rate,
             self.definition.instrument.controls,
@@ -2351,9 +2356,9 @@ class PersistentSynth:
         if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
             raise EngineError("Persistent synth requires one oscillator voice template")
         template = templates[0]
-        if any(m.clock == "beats" for m in template.motions.values()):
+        if any(m.clock == "beats" for m in template.envelfos.values()):
             if tempo_map is None:
-                raise EngineError("Beat-clock Motion requires a host tempo map")
+                raise EngineError("Beat-clock Envelfo requires a host tempo map")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             filters=template.processing.filters,
@@ -2391,11 +2396,11 @@ class PersistentSynth:
             envelope_attacks,
             envelope_releases,
             envelope_parameters,
-            self.named_motion_sources,
+            self.named_envelfo_sources,
             self.source_scopes,
             runtime_filters,
-            staged_motions,
-            self.staged_motion_sources,
+            staged_envelfos,
+            self.staged_envelfo_sources,
             event_connections,
         ) = _persistent_modulation(definition, template)
         self.part_contexts: dict[str, int] = {}
@@ -2426,8 +2431,8 @@ class PersistentSynth:
             envelope_releases,
             envelope_parameters,
         )
-        _configure_sample_hold_motions(
-            self.runtime, template, self.named_motion_sources
+        _configure_sample_hold_envelfos(
+            self.runtime, template, self.named_envelfo_sources
         )
         if tempo_map is not None:
             self.runtime.set_beat_clock(
@@ -2444,29 +2449,29 @@ class PersistentSynth:
             self.runtime.set_beat_named_envelopes(
                 [
                     i
-                    for name, indices in self.named_motion_sources.items()
-                    if template.motions[name].clock == "beats"
+                    for name, indices in self.named_envelfo_sources.items()
+                    if template.envelfos[name].clock == "beats"
                     for i in indices
                 ]
             )
-        self.runtime.set_staged_motions(staged_motions, event_connections)
+        self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
         patch_children = _patch_child_names(template)
-        self.runtime.set_motion_state_owners(
-            _motion_state_owners(
+        self.runtime.set_envelfo_state_owners(
+            _envelfo_state_owners(
                 len(lfos), patch_children, self.lfo_sources, self.voice_lfo_sources
             ),
-            _motion_state_owners(
-                len(envelope_initials), patch_children, self.named_motion_sources
+            _envelfo_state_owners(
+                len(envelope_initials), patch_children, self.named_envelfo_sources
             ),
-            _motion_state_owners(
-                len(staged_motions), patch_children, self.staged_motion_sources
+            _envelfo_state_owners(
+                len(staged_envelfos), patch_children, self.staged_envelfo_sources
             ),
         )
         for source_map in (
             self.lfo_sources,
             self.voice_lfo_sources,
-            self.named_motion_sources,
-            self.staged_motion_sources,
+            self.named_envelfo_sources,
+            self.staged_envelfo_sources,
         ):
             for name, indices in source_map.items():
                 if name in patch_children:
@@ -2478,20 +2483,20 @@ class PersistentSynth:
             self.runtime,
             template,
             self.lfo_sources | self.voice_lfo_sources,
-            self.named_motion_sources,
-            self.staged_motion_sources,
+            self.named_envelfo_sources,
+            self.staged_envelfo_sources,
             self.definition.sample_rate,
         )
         patch_stage_starts: list[
             tuple[int, str, int, int, int, int, int, int, float, bool]
         ] = []
-        for parent_name, parent in template.motions.items():
+        for parent_name, parent in template.envelfos.items():
             if not isinstance(parent.body, Patch):
                 continue
             if (
                 parent.body.events
                 and f"patch-{parent_name}-{parent.body.events[0].target}"
-                not in template.motions
+                not in template.envelfos
                 and not any(
                     isinstance(b, processing.GeneratorBinding)
                     and b.reference == parent_name
@@ -2503,18 +2508,18 @@ class PersistentSynth:
                 if connection.action not in ("start", "sample", "capture"):
                     continue
                 child_name, _, port = connection.source.partition(".")
-                child = parent.body.motions[child_name]
+                child = parent.body.envelfos[child_name]
                 if isinstance(child, Threshold):
                     continue
                 capture = connection.action == "capture"
                 destination = (
                     self.transform_nodes[parent_name, connection.target]
                     if capture
-                    else self.named_motion_sources[
+                    else self.named_envelfo_sources[
                         f"patch-{parent_name}-{connection.target}"
                     ][0]
                 )
-                key = motion_random.stream_key(
+                key = envelfo_random.stream_key(
                     0,
                     f"{parent_name}:capture-{connection.target}-{order}"
                     if capture
@@ -2545,7 +2550,7 @@ class PersistentSynth:
                     assert isinstance(child, Stages)
                     patch_stage_starts.append(
                         (
-                            self.staged_motion_sources[
+                            self.staged_envelfo_sources[
                                 f"patch-{parent_name}-{child_name}"
                             ][0],
                             port,
@@ -2565,12 +2570,12 @@ class PersistentSynth:
         for order, connection in enumerate(template.event_connections):
             source_binding = bindings[connection.source]
             assert isinstance(source_binding, processing.GeneratorBinding)
-            source_motion = template.motions[source_binding.reference]
-            if not isinstance(source_motion.body, Cycle):
+            source_envelfo = template.envelfos[source_binding.reference]
+            if not isinstance(source_envelfo.body, Cycle):
                 continue
             marker = next(
                 m.position
-                for m in source_motion.body.markers
+                for m in source_envelfo.body.markers
                 if m.name == connection.port
             )
             target_binding = bindings[connection.destination]
@@ -2579,13 +2584,13 @@ class PersistentSynth:
                 (
                     self.voice_lfo_sources[source_binding.reference][0],
                     float(marker),
-                    self.staged_motion_sources[target_binding.reference][0],
+                    self.staged_envelfo_sources[target_binding.reference][0],
                     connection.cue,
                     len(patch_events),
                     connection.every,
                     connection.offset,
                     int(connection.probability * 2**53),
-                    motion_random.stream_key(
+                    envelfo_random.stream_key(
                         0, f"{target_binding.reference}:cue-{order}"
                     ),
                     _runtime_event_delay(connection.delay, self.definition.sample_rate),
@@ -2597,8 +2602,8 @@ class PersistentSynth:
         self.runtime.set_threshold_events(
             _threshold_runtime_connections(
                 template,
-                self.named_motion_sources,
-                self.staged_motion_sources,
+                self.named_envelfo_sources,
+                self.staged_envelfo_sources,
                 self.transform_nodes,
                 self.definition.sample_rate,
             )
@@ -2745,12 +2750,14 @@ class PersistentSynth:
                         0,
                     )
                     count += 1
-            elif isinstance(action, instrument_trace.MotionObservation):
-                motion = self.template.motions.get(action.name)
+            elif isinstance(action, instrument_trace.EnvelfoObservation):
+                envelfo = self.template.envelfos.get(action.name)
                 if action.name in _patch_child_names(self.template) or (
-                    motion is not None and isinstance(motion.body, Patch)
+                    envelfo is not None and isinstance(envelfo.body, Patch)
                 ):
-                    raise EngineError("Patch-level Motion commands are not implemented")
+                    raise EngineError(
+                        "Patch-level Envelfo commands are not implemented"
+                    )
                 command = ("pause", "resume", "reverse", "seek", "shift").index(
                     action.action
                 )
@@ -2760,8 +2767,8 @@ class PersistentSynth:
                     ):
                         continue
                     for kind, sources in (
-                        (9, self.named_motion_sources),
-                        (10, self.staged_motion_sources),
+                        (9, self.named_envelfo_sources),
+                        (10, self.staged_envelfo_sources),
                         (11, self.voice_lfo_sources),
                     ):
                         for source in sources.get(action.name, []):
@@ -2804,8 +2811,8 @@ class PersistentSynth:
                         offset,
                         12,
                         slot,
-                        action.motion_key & 0xFFFF_FFFF,
-                        action.motion_key >> 32,
+                        action.envelfo_key & 0xFFFF_FFFF,
+                        action.envelfo_key >> 32,
                         0,
                     )
                     count += 1
@@ -2847,11 +2854,11 @@ class PersistentSynth:
             or any(
                 isinstance(m.body, Patch)
                 and any(0 < c.probability < 1 for c in m.body.events)
-                for m in self.template.motions.values()
+                for m in self.template.envelfos.values()
             )
             or any(
-                isinstance(self.template.motions[n].body, SampleHold)
-                for n in self.named_motion_sources
+                isinstance(self.template.envelfos[n].body, SampleHold)
+                for n in self.named_envelfo_sources
             )
         )
 
@@ -3160,32 +3167,32 @@ def validate_envelope(envelope: Envelope) -> None:
 
 
 def validate_generators(
-    settings: SoundSettings, allow_beat_motions: bool = False
+    settings: SoundSettings, allow_beat_envelfos: bool = False
 ) -> None:
-    """Validate the Motion clocks supported by the selected renderer."""
-    if any(g.score is not None for g in settings.motions.values()):
-        raise EngineError("Library Motion uses must be materialized before rendering")
+    """Validate the Envelfo clocks supported by the selected renderer."""
+    if any(g.score is not None for g in settings.envelfos.values()):
+        raise EngineError("Library Envelfo uses must be materialized before rendering")
     if any(
         g.scope != "voice"
-        for g in settings.motions.values()
+        for g in settings.envelfos.values()
         if isinstance(g.body, (Contour, Stages, SampleHold))
     ):
-        raise EngineError("Staged and contour Motions require voice scope")
+        raise EngineError("Staged and contour Envelfos require voice scope")
     if any(
         g.clock != "seconds"
         and not (
-            allow_beat_motions
+            allow_beat_envelfos
             and isinstance(g.body, (Contour, Cycle, Stages, SampleHold, Patch))
         )
-        for g in settings.motions.values()
+        for g in settings.envelfos.values()
     ):
-        raise EngineError("Beat-clock Motions require a supported synth renderer")
+        raise EngineError("Beat-clock Envelfos require a supported synth renderer")
     if any(
         not isinstance(b, ControlBinding)
         and not isinstance(b, processing.GeneratorBinding)
         for b in settings.bindings
     ):
-        raise EngineError("Only control and motion bindings are implemented")
+        raise EngineError("Only control and envelfo bindings are implemented")
 
 
 def validate_modulation(settings: SoundSettings) -> None:
@@ -3222,7 +3229,7 @@ def _validate_voice(voice: SynthVoice) -> None:
         filter_order=voice.processing.filter_order,
     ):
         raise EngineError("Only tuning and filter processing are implemented")
-    validate_generators(voice, allow_beat_motions=True)
+    validate_generators(voice, allow_beat_envelfos=True)
     if any(c.mode == "fade" for c in voice.chokes):
         raise EngineError("Fade retirement is not implemented")
     validate_modulation(voice)
@@ -3266,13 +3273,13 @@ def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> float:
     try:
         frames = float(seconds * sample_rate)
     except OverflowError:
-        raise EngineError("Delayed Motion event time is not representable") from None
+        raise EngineError("Delayed Envelfo event time is not representable") from None
     if not isfinite(frames) or (seconds and frames == 0):
-        raise EngineError("Delayed Motion event time is not representable")
+        raise EngineError("Delayed Envelfo event time is not representable")
     return frames
 
 
-def _configure_sample_hold_motions(
+def _configure_sample_hold_envelfos(
     runtime: _native.SynthRuntime,
     settings: SoundSettings,
     sources: dict[str, list[int]],
@@ -3280,15 +3287,15 @@ def _configure_sample_hold_motions(
     definitions = [
         (
             i,
-            motion_random.stream_key(0, name + ":sample-hold"),
+            envelfo_random.stream_key(0, name + ":sample-hold"),
             body.minimum,
             body.maximum,
         )
         for name, indices in sources.items()
-        if isinstance(body := settings.motions[name].body, SampleHold)
+        if isinstance(body := settings.envelfos[name].body, SampleHold)
         for i in indices
     ]
-    runtime.set_sample_hold_motions(definitions)
+    runtime.set_sample_hold_envelfos(definitions)
 
 
 def _configure_patch_transforms(
@@ -3304,12 +3311,12 @@ def _configure_patch_transforms(
     ] = []
     outputs: dict[tuple[str, str], int] = {}
     detectors: dict[tuple[str, str], int] = {}
-    for parent_name, parent in template.motions.items():
+    for parent_name, parent in template.envelfos.items():
         if not isinstance(parent.body, Patch):
             continue
         children: dict[str, tuple[int, int, float, float]] = {}
         for name in parent.body.signal_order:
-            body = parent.body.motions[name]
+            body = parent.body.envelfos[name]
             reference = f"patch-{parent_name}-{name}"
             if isinstance(body, Cycle) and reference in lfos:
                 children[name] = (0, lfos[reference][0], body.center, body.depth)
@@ -3373,7 +3380,7 @@ def _configure_patch_transforms(
                 and children[name][0] != 3
                 and any(
                     isinstance(b, (Latch, Threshold, Slew))
-                    for b in parent.body.motions.values()
+                    for b in parent.body.envelfos.values()
                 )
             ):
                 nodes.append((2, [children[name]], 1.0, 0.0, None))
@@ -3407,7 +3414,7 @@ def _configure_patch_transforms(
                 slope,
             )
         )
-    runtime.set_motion_transforms(nodes, routes)
+    runtime.set_envelfo_transforms(nodes, routes)
     return detectors
 
 
@@ -3423,9 +3430,9 @@ def _threshold_runtime_connections(
     ] = []
     bindings = {b.name: b for b in template.bindings}
     for (parent_name, child), node in nodes.items():
-        parent = template.motions[parent_name]
+        parent = template.envelfos[parent_name]
         assert isinstance(parent.body, Patch)
-        if not isinstance(parent.body.motions[child], Threshold):
+        if not isinstance(parent.body.envelfos[child], Threshold):
             continue
         for order, connection in enumerate(parent.body.events):
             origin, _, port = connection.source.partition(".")
@@ -3446,7 +3453,7 @@ def _threshold_runtime_connections(
                     connection.every,
                     connection.offset,
                     int(connection.probability * 2**53),
-                    motion_random.stream_key(
+                    envelfo_random.stream_key(
                         0,
                         f"{parent_name}:capture-{connection.target}-{order}"
                         if capture
@@ -3480,7 +3487,7 @@ def _threshold_runtime_connections(
                     connection.every,
                     connection.offset,
                     int(connection.probability * 2**53),
-                    motion_random.stream_key(0, f"{target}:cue-{order}"),
+                    envelfo_random.stream_key(0, f"{target}:cue-{order}"),
                     1.0 + _runtime_event_delay(connection.delay, rate),
                     False,
                 )
@@ -3523,7 +3530,7 @@ def _persistent_modulation(
         and not isinstance(b, processing.GeneratorBinding)
         for b in bindings.values()
     ):
-        raise EngineError("Persistent synth supports control and motion bindings")
+        raise EngineError("Persistent synth supports control and envelfo bindings")
     sources = {s.name: s for s in template.modulation.sources}
     if bindings.keys() != sources.keys():
         raise EngineError("Persistent synth modulation sources require bindings")
@@ -3615,7 +3622,7 @@ def _persistent_modulation(
     }
     patch_children = {
         f"patch-{parent_name}-{child}"
-        for parent_name, parent in template.motions.items()
+        for parent_name, parent in template.envelfos.items()
         if isinstance(parent.body, Patch)
         for child in (
             {
@@ -3631,7 +3638,7 @@ def _persistent_modulation(
     }
     event_only_patch_outputs = {
         f"patch-{parent_name}-{child}"
-        for parent_name, parent in template.motions.items()
+        for parent_name, parent in template.envelfos.items()
         if isinstance(parent.body, Patch) and parent.body.event_outputs
         for child in parent.body.outputs.values()
     }
@@ -3664,10 +3671,10 @@ def _persistent_modulation(
     envelope_parameters: list[
         tuple[int, int, float, float, bool, int, float, float, int | None, bool]
     ] = []
-    named_motion_sources: dict[str, list[int]] = {}
-    staged_motions: list[StagedRuntimeDefinition] = []
+    named_envelfo_sources: dict[str, list[int]] = {}
+    staged_envelfos: list[StagedRuntimeDefinition] = []
     staged_bindings: dict[str, int] = {}
-    staged_motion_sources: dict[str, list[int]] = {}
+    staged_envelfo_sources: dict[str, list[int]] = {}
     source_scopes: set[str] = set()
     for route in routes:
         source = sources.get(route.source)
@@ -3745,11 +3752,11 @@ def _persistent_modulation(
             source_controls.append(binding.control)
         else:
             assert isinstance(binding, processing.GeneratorBinding)
-            motion = template.motions[binding.reference]
-            if isinstance(motion.body, Patch):
+            envelfo = template.envelfos[binding.reference]
+            if isinstance(envelfo.body, Patch):
                 continue
-            if isinstance(motion.body, SampleHold):
-                named_motion_sources.setdefault(binding.reference, []).append(
+            if isinstance(envelfo.body, SampleHold):
+                named_envelfo_sources.setdefault(binding.reference, []).append(
                     len(envelope_initials)
                 )
                 envelope_initials.append(0.0)
@@ -3770,8 +3777,8 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            if isinstance(motion.body, Contour):
-                generator = motion.body
+            if isinstance(envelfo.body, Contour):
+                generator = envelfo.body
                 assert isinstance(generator.initial, float)
                 if source.scope != "voice" or any(
                     segment.curve != 0
@@ -3780,12 +3787,12 @@ def _persistent_modulation(
                     raise EngineError(
                         "Persistent named envelopes require linear voice segments"
                     )
-                named_motion_sources.setdefault(binding.reference, []).append(
+                named_envelfo_sources.setdefault(binding.reference, []).append(
                     len(envelope_initials)
                 )
                 envelope_initials.append(generator.initial)
                 duration_scale = (
-                    1 if motion.clock == "beats" else definition.sample_rate
+                    1 if envelfo.clock == "beats" else definition.sample_rate
                 )
                 envelope_attacks.append(
                     [
@@ -3834,27 +3841,27 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            if isinstance(motion.body, Stages):
-                staged_bindings[binding.name] = len(staged_motions)
-                staged_motion_sources.setdefault(binding.reference, []).append(
-                    len(staged_motions)
+            if isinstance(envelfo.body, Stages):
+                staged_bindings[binding.name] = len(staged_envelfos)
+                staged_envelfo_sources.setdefault(binding.reference, []).append(
+                    len(staged_envelfos)
                 )
-                staged_motions.append(
-                    _runtime_staged_motion(
-                        motion.body,
+                staged_envelfos.append(
+                    _runtime_staged_envelfo(
+                        envelfo.body,
                         definition.sample_rate,
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
                         intercept,
                         slope,
-                        motion.clock == "beats",
+                        envelfo.clock == "beats",
                     )
                 )
                 continue
-            assert isinstance(motion.body, Cycle)
-            intercept += slope * motion.body.center
-            slope *= motion.body.depth
-            generator = cycle_lfo(motion)
+            assert isinstance(envelfo.body, Cycle)
+            intercept += slope * envelfo.body.center
+            slope *= envelfo.body.depth
+            generator = cycle_lfo(envelfo)
             index = len(lfo_rows)
             lfo_rows.append(
                 [
@@ -3867,9 +3874,9 @@ def _persistent_modulation(
                     intercept,
                     slope,
                     2.0
-                    if motion.position_driver == "transport"
+                    if envelfo.position_driver == "transport"
                     else 1.0
-                    if motion.clock == "beats"
+                    if envelfo.clock == "beats"
                     else 0.0,
                 ]
             )
@@ -3878,9 +3885,9 @@ def _persistent_modulation(
                 generator.rate,
                 generator.phase,
                 generator.delay
-                * (1 if motion.clock == "beats" else definition.sample_rate),
+                * (1 if envelfo.clock == "beats" else definition.sample_rate),
                 generator.fade_in
-                * (1 if motion.clock == "beats" else definition.sample_rate),
+                * (1 if envelfo.clock == "beats" else definition.sample_rate),
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
             if source.scope == "instrument":
@@ -3891,11 +3898,11 @@ def _persistent_modulation(
         if binding.name not in event_sources or binding.name in routed_sources:
             continue
         assert isinstance(binding, processing.GeneratorBinding)
-        motion = template.motions[binding.reference]
-        if isinstance(motion.body, Patch):
+        envelfo = template.envelfos[binding.reference]
+        if isinstance(envelfo.body, Patch):
             continue
-        if isinstance(motion.body, SampleHold):
-            named_motion_sources.setdefault(binding.reference, []).append(
+        if isinstance(envelfo.body, SampleHold):
+            named_envelfo_sources.setdefault(binding.reference, []).append(
                 len(envelope_initials)
             )
             envelope_initials.append(0.0)
@@ -3903,10 +3910,10 @@ def _persistent_modulation(
             envelope_releases.append([])
             envelope_parameters.append((0, 1, 1, 0, False, 0, 0, 1, None, True))
             continue
-        if isinstance(motion.body, Cycle):
-            generator = cycle_lfo(motion)
-            source_scopes.add(motion.scope)
-            if motion.scope != "voice":
+        if isinstance(envelfo.body, Cycle):
+            generator = cycle_lfo(envelfo)
+            source_scopes.add(envelfo.scope)
+            if envelfo.scope != "voice":
                 lfo_sources.setdefault(binding.reference, []).append(len(lfo_rows))
             else:
                 voice_lfo_sources.setdefault(binding.reference, []).append(
@@ -3914,7 +3921,7 @@ def _persistent_modulation(
                 )
             lfo_rows.append(
                 [
-                    ["instrument", "part", "trigger", "voice"].index(motion.scope),
+                    ["instrument", "part", "trigger", "voice"].index(envelfo.scope),
                     [Waveform.sine, Waveform.square, Waveform.triangle].index(
                         generator.waveform
                     ),
@@ -3922,7 +3929,7 @@ def _persistent_modulation(
                     1,
                     1,
                     0,
-                    1 if motion.clock == "beats" else 0,
+                    1 if envelfo.clock == "beats" else 0,
                 ]
             )
             for value in (
@@ -3930,23 +3937,23 @@ def _persistent_modulation(
                 generator.rate,
                 generator.phase,
                 generator.delay
-                * (1 if motion.clock == "beats" else definition.sample_rate),
+                * (1 if envelfo.clock == "beats" else definition.sample_rate),
                 generator.fade_in
-                * (1 if motion.clock == "beats" else definition.sample_rate),
+                * (1 if envelfo.clock == "beats" else definition.sample_rate),
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
             continue
-        if isinstance(motion.body, Contour):
-            generator = motion.body
+        if isinstance(envelfo.body, Contour):
+            generator = envelfo.body
             assert isinstance(generator.initial, float)
-            if motion.scope != "voice" or any(
+            if envelfo.scope != "voice" or any(
                 s.curve != 0 for s in [*generator.segments, *generator.release]
             ):
                 raise EngineError(
                     "Persistent named envelopes require linear voice segments"
                 )
-            duration_scale = 1 if motion.clock == "beats" else definition.sample_rate
-            named_motion_sources.setdefault(binding.reference, []).append(
+            duration_scale = 1 if envelfo.clock == "beats" else definition.sample_rate
+            named_envelfo_sources.setdefault(binding.reference, []).append(
                 len(envelope_initials)
             )
             envelope_initials.append(generator.initial)
@@ -3990,21 +3997,21 @@ def _persistent_modulation(
                 )
             )
             continue
-        assert isinstance(motion.body, Stages)
-        source_scopes.add(motion.scope)
-        staged_bindings[binding.name] = len(staged_motions)
-        staged_motion_sources.setdefault(binding.reference, []).append(
-            len(staged_motions)
+        assert isinstance(envelfo.body, Stages)
+        source_scopes.add(envelfo.scope)
+        staged_bindings[binding.name] = len(staged_envelfos)
+        staged_envelfo_sources.setdefault(binding.reference, []).append(
+            len(staged_envelfos)
         )
-        staged_motions.append(
-            _runtime_staged_motion(
-                motion.body,
+        staged_envelfos.append(
+            _runtime_staged_envelfo(
+                envelfo.body,
                 definition.sample_rate,
                 None,
                 0,
                 0,
                 0,
-                motion.clock == "beats",
+                envelfo.clock == "beats",
             )
         )
     event_connections = [
@@ -4016,7 +4023,7 @@ def _persistent_modulation(
             c.every,
             c.offset,
             int(c.probability * 2**53),
-            motion_random.stream_key(
+            envelfo_random.stream_key(
                 0,
                 cast(processing.GeneratorBinding, bindings[c.destination]).reference
                 + f":cue-{order}",
@@ -4025,7 +4032,7 @@ def _persistent_modulation(
         )
         for order, c in enumerate(template.event_connections)
         if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)
-        if isinstance(template.motions[binding.reference].body, Stages)
+        if isinstance(template.envelfos[binding.reference].body, Stages)
     ]
     for target, index, _, _, _, _ in source_parameters:
         if (parameter := parameters.get(target)) is not None:
@@ -4049,16 +4056,16 @@ def _persistent_modulation(
         envelope_attacks,
         envelope_releases,
         envelope_parameters,
-        named_motion_sources,
+        named_envelfo_sources,
         source_scopes,
         np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
-        staged_motions,
-        staged_motion_sources,
+        staged_envelfos,
+        staged_envelfo_sources,
         event_connections,
     )
 
 
-def _motion_state_owners(
+def _envelfo_state_owners(
     count: int, names: set[str], *source_maps: dict[str, list[int]]
 ) -> list[int]:
     owners = list(range(count))
@@ -4070,7 +4077,7 @@ def _motion_state_owners(
     return owners
 
 
-def _runtime_staged_motion(
+def _runtime_staged_envelfo(
     body: Stages,
     sample_rate: int,
     parameter: int | None,
@@ -4095,52 +4102,52 @@ def _runtime_staged_motion(
         ]
     ] = []
     for stage in body.stages:
-        motion = stage.motion
-        if isinstance(motion, Hold):
-            stages.append((0, motion.value, False, [], [], [], 0, 0.0, 1.0, None))
-        elif isinstance(motion, Contour):
-            if any(s.curve != 0 for s in motion.segments):
+        envelfo = stage.envelfo
+        if isinstance(envelfo, Hold):
+            stages.append((0, envelfo.value, False, [], [], [], 0, 0.0, 1.0, None))
+        elif isinstance(envelfo, Contour):
+            if any(s.curve != 0 for s in envelfo.segments):
                 raise EngineError("Persistent staged contours require linear segments")
             stages.append(
                 (
                     1,
-                    0.0 if motion.initial == "current" else motion.initial,
-                    motion.initial == "current",
+                    0.0 if envelfo.initial == "current" else envelfo.initial,
+                    envelfo.initial == "current",
                     [
                         (float(s.duration * (1 if beat_clock else sample_rate)), s.to)
-                        for s in motion.segments
+                        for s in envelfo.segments
                     ],
                     [],
-                    [(float(m.position), m.name) for m in motion.markers],
+                    [(float(m.position), m.name) for m in envelfo.markers],
                     [
                         PlaybackMode.once,
                         PlaybackMode.loop,
                         PlaybackMode.ping_pong,
-                    ].index(motion.playback),
+                    ].index(envelfo.playback),
                     float(
                         next(
                             m.position
-                            for m in motion.markers
-                            if m.name == motion.loop_start
+                            for m in envelfo.markers
+                            if m.name == envelfo.loop_start
                         )
                     )
-                    if motion.loop_start is not None
+                    if envelfo.loop_start is not None
                     else 0.0,
                     float(
                         next(
                             m.position
-                            for m in motion.markers
-                            if m.name == motion.loop_end
+                            for m in envelfo.markers
+                            if m.name == envelfo.loop_end
                         )
                     )
-                    if motion.loop_end is not None
+                    if envelfo.loop_end is not None
                     else 1.0,
-                    motion.repeat_count,
+                    envelfo.repeat_count,
                 )
             )
         else:
-            assert isinstance(motion, Cycle)
-            assert isinstance(motion.rate, Fraction)
+            assert isinstance(envelfo, Cycle)
+            assert isinstance(envelfo.rate, Fraction)
             stages.append(
                 (
                     2,
@@ -4150,18 +4157,18 @@ def _runtime_staged_motion(
                     [
                         float(
                             [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                                motion.shape
+                                envelfo.shape
                             )
                         ),
-                        float(motion.rate / (1 if beat_clock else sample_rate)),
-                        float(motion.phase),
-                        float(motion.duty_cycle),
-                        float(motion.delay * (1 if beat_clock else sample_rate)),
-                        float(motion.fade_in * (1 if beat_clock else sample_rate)),
-                        motion.center,
-                        motion.depth,
+                        float(envelfo.rate / (1 if beat_clock else sample_rate)),
+                        float(envelfo.phase),
+                        float(envelfo.duty_cycle),
+                        float(envelfo.delay * (1 if beat_clock else sample_rate)),
+                        float(envelfo.fade_in * (1 if beat_clock else sample_rate)),
+                        envelfo.center,
+                        envelfo.depth,
                     ],
-                    [(float(m.position), m.name) for m in motion.markers],
+                    [(float(m.position), m.name) for m in envelfo.markers],
                     0,
                     0.0,
                     1.0,

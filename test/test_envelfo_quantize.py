@@ -25,13 +25,13 @@ def test_quantize_grid_matches_across_clocks_partitions_and_snapshots(
     step: float,
     origin: float,
     output: str,
-    motion_baseline: Callable[[int], np.ndarray],
+    envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"]["motion"]["body"] = {
+    voice["envelfos"]["envelfo"]["body"] = {
         "kind": "patch",
-        "motions": {
+        "envelfos": {
             "wave": {"kind": "cycle", "shape": "triangle", "rate": "2"},
             "steps": {
                 "kind": "quantize",
@@ -60,7 +60,7 @@ def test_quantize_grid_matches_across_clocks_partitions_and_snapshots(
     document = SynthInstrumentScore.model_validate(raw)
     events = [onset(6000, pitch=0.1).model_copy(update={"controls": {}})]
     actions = synth_trace.prepare(document.body, events, seed=5).actions
-    plain = motion_baseline(6000)
+    plain = envelfo_baseline(6000)
     frames = np.arange(48000) - (6000 if scope == "voice" else 0)
     phase = (frames % 24000) / 24000
     values = np.where(phase < 0.5, 4 * phase - 1, 3 - 4 * phase)

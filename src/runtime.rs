@@ -153,7 +153,7 @@ struct StageDefinition {
 }
 
 #[derive(Clone, PartialEq)]
-struct StagedMotionDefinition {
+struct StagedEnvelfoDefinition {
     stages: Vec<StageDefinition>,
     transitions: Vec<(usize, String, usize)>,
     initial_stage: usize,
@@ -165,7 +165,7 @@ struct StagedMotionDefinition {
 }
 
 #[derive(Clone)]
-struct StagedMotionState {
+struct StagedEnvelfoState {
     stage: usize,
     playback: PlaybackState,
     entry_value: f64,
@@ -280,8 +280,8 @@ type StageStartInput = (
     bool,
 );
 
-type MotionTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64, Option<f64>);
-type MotionTransformRoute = (usize, usize, usize, f64, f64);
+type EnvelfoTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64, Option<f64>);
+type EnvelfoTransformRoute = (usize, usize, usize, f64, f64);
 
 type StageInput = (
     u8,
@@ -307,7 +307,7 @@ type NamedContourInput = (
     Option<usize>,
     bool,
 );
-type StagedMotionInput = (
+type StagedEnvelfoInput = (
     Vec<StageInput>,
     Vec<(usize, String, usize)>,
     usize,
@@ -351,9 +351,9 @@ struct GraphEdge {
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
-    motion_transform_states: Vec<Option<f64>>,
-    motion_transforms: Vec<MotionTransformInput>,
-    motion_transform_routes: Vec<MotionTransformRoute>,
+    envelfo_transform_states: Vec<Option<f64>>,
+    envelfo_transforms: Vec<EnvelfoTransformInput>,
+    envelfo_transform_routes: Vec<EnvelfoTransformRoute>,
     rate: f64,
     waveform: u8,
     source_kind: u8,
@@ -385,12 +385,12 @@ pub struct SynthRuntimeSnapshot {
     pending_contour_starts: Vec<ContourStart>,
     delayed_events: Vec<Vec<DelayedEvent>>,
     event_counts: Vec<usize>,
-    motion_keys: Vec<u64>,
+    envelfo_keys: Vec<u64>,
     event_random: Vec<u64>,
     beat_points: Vec<BeatPoint>,
-    staged_motions: Vec<StagedMotionDefinition>,
+    staged_envelfos: Vec<StagedEnvelfoDefinition>,
     staged_owners: Vec<usize>,
-    staged_states: Vec<StagedMotionState>,
+    staged_states: Vec<StagedEnvelfoState>,
     staged_connections: Vec<StagedConnection>,
     staged_pending: VecDeque<StagedEvent>,
     filter_definitions: Vec<FilterDefinition>,
@@ -431,10 +431,10 @@ pub struct SynthRuntimeSnapshot {
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntime {
-    motion_transforms: Vec<MotionTransformInput>,
-    motion_transform_routes: Vec<MotionTransformRoute>,
-    motion_transform_values: Vec<f64>,
-    motion_transform_states: Vec<Option<f64>>,
+    envelfo_transforms: Vec<EnvelfoTransformInput>,
+    envelfo_transform_routes: Vec<EnvelfoTransformRoute>,
+    envelfo_transform_values: Vec<f64>,
+    envelfo_transform_states: Vec<Option<f64>>,
     rate: f64,
     filter_after_amplitude: bool,
     waveform: u8,
@@ -467,12 +467,12 @@ pub struct SynthRuntime {
     pending_contour_starts: Vec<ContourStart>,
     delayed_events: Vec<Vec<DelayedEvent>>,
     event_counts: Vec<usize>,
-    motion_keys: Vec<u64>,
+    envelfo_keys: Vec<u64>,
     event_random: Vec<u64>,
     beat_points: Vec<BeatPoint>,
-    staged_motions: Vec<StagedMotionDefinition>,
+    staged_envelfos: Vec<StagedEnvelfoDefinition>,
     staged_owners: Vec<usize>,
-    staged_states: Vec<StagedMotionState>,
+    staged_states: Vec<StagedEnvelfoState>,
     staged_connections: Vec<StagedConnection>,
     staged_pending: VecDeque<StagedEvent>,
     filter_definitions: Vec<FilterDefinition>,
@@ -582,10 +582,10 @@ impl SynthRuntime {
             .flat_map(|_| control_states.clone())
             .collect();
         Ok(Self {
-            motion_transforms: Vec::new(),
-            motion_transform_routes: Vec::new(),
-            motion_transform_values: Vec::new(),
-            motion_transform_states: Vec::new(),
+            envelfo_transforms: Vec::new(),
+            envelfo_transform_routes: Vec::new(),
+            envelfo_transform_values: Vec::new(),
+            envelfo_transform_states: Vec::new(),
             rate,
             waveform,
             source_kind: 0,
@@ -618,10 +618,10 @@ impl SynthRuntime {
             pending_contour_starts: Vec::new(),
             delayed_events: (0..slots).map(|_| Vec::new()).collect(),
             event_counts: Vec::new(),
-            motion_keys: vec![0; slots],
+            envelfo_keys: vec![0; slots],
             event_random: Vec::new(),
             beat_points: Vec::new(),
-            staged_motions: Vec::new(),
+            staged_envelfos: Vec::new(),
             staged_owners: Vec::new(),
             staged_states: Vec::new(),
             staged_connections: Vec::new(),
@@ -983,7 +983,7 @@ impl SynthRuntime {
                 .iter()
                 .any(|index| *index >= self.named_envelopes.len())
         {
-            return Err(PyValueError::new_err("Invalid beat-clock named Motion"));
+            return Err(PyValueError::new_err("Invalid beat-clock named Envelfo"));
         }
         for index in indices {
             self.named_envelopes[index].beat_clock = true;
@@ -991,9 +991,9 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn set_staged_motions(
+    fn set_staged_envelfos(
         &mut self,
-        inputs: Vec<StagedMotionInput>,
+        inputs: Vec<StagedEnvelfoInput>,
         connections: Vec<StageConnectionInput>,
     ) -> PyResult<()> {
         let mut definitions = Vec::with_capacity(inputs.len());
@@ -1019,7 +1019,7 @@ impl SynthRuntime {
                     *source >= stages.len() || event.is_empty() || *target > stages.len()
                 })
             {
-                return Err(PyValueError::new_err("Invalid staged Motion definition"));
+                return Err(PyValueError::new_err("Invalid staged Envelfo definition"));
             }
             let stages: Vec<StageDefinition> = stages
                 .into_iter()
@@ -1074,7 +1074,7 @@ impl SynthRuntime {
                                     || name.is_empty()
                             })
                         {
-                            return Err(PyValueError::new_err("Invalid staged Motion stage"));
+                            return Err(PyValueError::new_err("Invalid staged Envelfo stage"));
                         }
                         Ok(StageDefinition {
                             kind,
@@ -1096,10 +1096,10 @@ impl SynthRuntime {
                 .collect::<PyResult<_>>()?;
             if stages[initial_stage].current_initial {
                 return Err(PyValueError::new_err(
-                    "Initial staged Motion stage cannot capture current",
+                    "Initial staged Envelfo stage cannot capture current",
                 ));
             }
-            definitions.push(StagedMotionDefinition {
+            definitions.push(StagedEnvelfoDefinition {
                 stages,
                 transitions,
                 initial_stage,
@@ -1122,11 +1122,11 @@ impl SynthRuntime {
                     || *delay < 0.0
             },
         ) {
-            return Err(PyValueError::new_err("Invalid staged Motion connection"));
+            return Err(PyValueError::new_err("Invalid staged Envelfo connection"));
         }
         self.staged_states = (0..self.frequencies.len())
             .flat_map(|_| {
-                definitions.iter().map(|definition| StagedMotionState {
+                definitions.iter().map(|definition| StagedEnvelfoState {
                     stage: definition.initial_stage,
                     playback: stage_playback(
                         &definition.stages[definition.initial_stage],
@@ -1143,8 +1143,8 @@ impl SynthRuntime {
                 })
             })
             .collect();
-        self.staged_motions = definitions;
-        self.staged_owners = (0..self.staged_motions.len()).collect();
+        self.staged_envelfos = definitions;
+        self.staged_owners = (0..self.staged_envelfos.len()).collect();
         self.staged_connections = connections
             .into_iter()
             .map(
@@ -1168,7 +1168,7 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn set_sample_hold_motions(
+    fn set_sample_hold_envelfos(
         &mut self,
         definitions: Vec<(usize, u64, f64, f64)>,
     ) -> PyResult<()> {
@@ -1190,7 +1190,7 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn set_motion_state_owners(
+    fn set_envelfo_state_owners(
         &mut self,
         lfos: Vec<usize>,
         envelopes: Vec<usize>,
@@ -1199,12 +1199,12 @@ impl SynthRuntime {
         if self.frame != 0
             || lfos.len() != self.lfo_definitions.len()
             || envelopes.len() != self.named_envelopes.len()
-            || stages.len() != self.staged_motions.len()
-            || !valid_motion_owners(&lfos)
-            || !valid_motion_owners(&envelopes)
-            || !valid_motion_owners(&stages)
+            || stages.len() != self.staged_envelfos.len()
+            || !valid_envelfo_owners(&lfos)
+            || !valid_envelfo_owners(&envelopes)
+            || !valid_envelfo_owners(&stages)
         {
-            return Err(PyValueError::new_err("Invalid shared Motion state owners"));
+            return Err(PyValueError::new_err("Invalid shared Envelfo state owners"));
         }
         self.lfo_owners = lfos;
         self.named_owners = envelopes;
@@ -1212,10 +1212,10 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn set_motion_transforms(
+    fn set_envelfo_transforms(
         &mut self,
-        nodes: Vec<MotionTransformInput>,
-        routes: Vec<MotionTransformRoute>,
+        nodes: Vec<EnvelfoTransformInput>,
+        routes: Vec<EnvelfoTransformRoute>,
     ) -> PyResult<()> {
         if self.frame != 0
             || nodes
@@ -1237,7 +1237,7 @@ impl SynthRuntime {
                                 || match kind {
                                     0 => *index >= self.lfo_definitions.len(),
                                     1 => *index >= self.named_envelopes.len(),
-                                    2 => *index >= self.staged_motions.len(),
+                                    2 => *index >= self.staged_envelfos.len(),
                                     3 => *index >= node,
                                     _ => true,
                                 }
@@ -1253,12 +1253,12 @@ impl SynthRuntime {
                         || !slope.is_finite()
                 })
         {
-            return Err(PyValueError::new_err("Invalid Motion transform graph"));
+            return Err(PyValueError::new_err("Invalid Envelfo transform graph"));
         }
-        self.motion_transform_values = vec![0.0; self.frequencies.len() * nodes.len()];
-        self.motion_transform_states = vec![None; self.motion_transform_values.len()];
-        self.motion_transforms = nodes;
-        self.motion_transform_routes = routes;
+        self.envelfo_transform_values = vec![0.0; self.frequencies.len() * nodes.len()];
+        self.envelfo_transform_states = vec![None; self.envelfo_transform_values.len()];
+        self.envelfo_transforms = nodes;
+        self.envelfo_transform_routes = routes;
         Ok(())
     }
 
@@ -1291,10 +1291,10 @@ impl SynthRuntime {
                         || !(0.0..1.0).contains(marker)
                         || if *capture {
                             cue.is_some()
-                                || *destination >= self.motion_transforms.len()
-                                || self.motion_transforms[*destination].0 != 6
+                                || *destination >= self.envelfo_transforms.len()
+                                || self.envelfo_transforms[*destination].0 != 6
                         } else if cue.is_some() {
-                            *destination >= self.staged_motions.len()
+                            *destination >= self.staged_envelfos.len()
                         } else {
                             *destination >= self.named_envelopes.len()
                                 || !self.named_envelopes[*destination].event_started
@@ -1351,15 +1351,15 @@ impl SynthRuntime {
         if self.frame != 0
             || connections.iter().any(
                 |(source, port, destination, _, every, _, probability, _, delay, capture)| {
-                    *source >= self.staged_motions.len()
+                    *source >= self.staged_envelfos.len()
                         || *every == 0
                         || *probability > (1 << 53)
                         || !delay.is_finite()
                         || *delay < 0.0
                         || port.is_empty()
                         || if *capture {
-                            *destination >= self.motion_transforms.len()
-                                || self.motion_transforms[*destination].0 != 6
+                            *destination >= self.envelfo_transforms.len()
+                                || self.envelfo_transforms[*destination].0 != 6
                         } else {
                             *destination >= self.named_envelopes.len()
                                 || !self.named_envelopes[*destination].event_started
@@ -1425,8 +1425,8 @@ impl SynthRuntime {
                     delay,
                     capture,
                 )| {
-                    *source >= self.motion_transforms.len()
-                        || self.motion_transforms[*source].0 != 3
+                    *source >= self.envelfo_transforms.len()
+                        || self.envelfo_transforms[*source].0 != 3
                         || (*marker != 0.0 && *marker != 1.0)
                         || *every == 0
                         || *probability > (1 << 53)
@@ -1434,10 +1434,10 @@ impl SynthRuntime {
                         || *delay < 1.0
                         || if *capture {
                             cue.is_some()
-                                || *destination >= self.motion_transforms.len()
-                                || self.motion_transforms[*destination].0 != 6
+                                || *destination >= self.envelfo_transforms.len()
+                                || self.envelfo_transforms[*destination].0 != 6
                         } else if cue.is_some() {
-                            *destination >= self.staged_motions.len()
+                            *destination >= self.staged_envelfos.len()
                         } else {
                             *destination >= self.named_envelopes.len()
                                 || !self.named_envelopes[*destination].event_started
@@ -1601,9 +1601,9 @@ impl SynthRuntime {
 
     pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
-            motion_transform_states: self.motion_transform_states.clone(),
-            motion_transforms: self.motion_transforms.clone(),
-            motion_transform_routes: self.motion_transform_routes.clone(),
+            envelfo_transform_states: self.envelfo_transform_states.clone(),
+            envelfo_transforms: self.envelfo_transforms.clone(),
+            envelfo_transform_routes: self.envelfo_transform_routes.clone(),
             rate: self.rate,
             waveform: self.waveform,
             source_kind: self.source_kind,
@@ -1635,10 +1635,10 @@ impl SynthRuntime {
             pending_contour_starts: self.pending_contour_starts.clone(),
             delayed_events: self.delayed_events.clone(),
             event_counts: self.event_counts.clone(),
-            motion_keys: self.motion_keys.clone(),
+            envelfo_keys: self.envelfo_keys.clone(),
             event_random: self.event_random.clone(),
             beat_points: self.beat_points.clone(),
-            staged_motions: self.staged_motions.clone(),
+            staged_envelfos: self.staged_envelfos.clone(),
             staged_owners: self.staged_owners.clone(),
             staged_states: self.staged_states.clone(),
             staged_connections: self.staged_connections.clone(),
@@ -1681,8 +1681,8 @@ impl SynthRuntime {
 
     pub(crate) fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         self.validate_snapshot(snapshot)?;
-        self.motion_transform_states
-            .clone_from(&snapshot.motion_transform_states);
+        self.envelfo_transform_states
+            .clone_from(&snapshot.envelfo_transform_states);
         self.frequencies.clone_from(&snapshot.frequencies);
         self.phases.clone_from(&snapshot.phases);
         self.errors.clone_from(&snapshot.errors);
@@ -1701,7 +1701,7 @@ impl SynthRuntime {
             queue.clone_from(saved);
         }
         self.event_counts.clone_from(&snapshot.event_counts);
-        self.motion_keys.clone_from(&snapshot.motion_keys);
+        self.envelfo_keys.clone_from(&snapshot.envelfo_keys);
         self.event_random.clone_from(&snapshot.event_random);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
@@ -1769,8 +1769,8 @@ impl SynthRuntime {
     }
 
     fn reset_voice_event_counts(&mut self, voice: usize) {
-        let nodes = self.motion_transforms.len();
-        self.motion_transform_states[voice * nodes..(voice + 1) * nodes].fill(None);
+        let nodes = self.envelfo_transforms.len();
+        self.envelfo_transform_states[voice * nodes..(voice + 1) * nodes].fill(None);
         self.delayed_events[voice].clear();
         let connections =
             self.staged_connections.len() + self.patch_events.len() + self.patch_stage_starts.len();
@@ -1796,7 +1796,7 @@ impl SynthRuntime {
             .iter_mut()
             .zip(keys)
         {
-            *state = self.motion_keys[voice] ^ key;
+            *state = self.envelfo_keys[voice] ^ key;
         }
     }
 
@@ -1824,12 +1824,12 @@ impl SynthRuntime {
             || self.lfo_owners != snapshot.lfo_owners
             || self.named_envelopes != snapshot.named_envelopes
             || self.named_owners != snapshot.named_owners
-            || self.motion_transforms != snapshot.motion_transforms
-            || self.motion_transform_routes != snapshot.motion_transform_routes
+            || self.envelfo_transforms != snapshot.envelfo_transforms
+            || self.envelfo_transform_routes != snapshot.envelfo_transform_routes
             || self.patch_events != snapshot.patch_events
             || self.patch_stage_starts != snapshot.patch_stage_starts
             || self.beat_points != snapshot.beat_points
-            || self.staged_motions != snapshot.staged_motions
+            || self.staged_envelfos != snapshot.staged_envelfos
             || self.staged_owners != snapshot.staged_owners
             || self.staged_connections != snapshot.staged_connections
             || self.filter_definitions != snapshot.filter_definitions
@@ -1872,7 +1872,7 @@ impl SynthRuntime {
         f64::INFINITY
     }
 
-    fn staged_time(&self, definition: &StagedMotionDefinition, frame: f64) -> f64 {
+    fn staged_time(&self, definition: &StagedEnvelfoDefinition, frame: f64) -> f64 {
         if definition.beat_clock {
             self.local_beat_at(frame)
         } else {
@@ -1993,7 +1993,7 @@ impl SynthRuntime {
                 if !self.active[voice] {
                     continue;
                 }
-                self.evaluate_motion_transforms(voice)?;
+                self.evaluate_envelfo_transforms(voice)?;
                 let amplitude = self.parameter(voice, 0)?
                     * if self.source_kind == 3 {
                         self.parameter(voice, self.graph_carrier_parameter)?
@@ -2271,9 +2271,9 @@ impl SynthRuntime {
                     || action[4] != action[4] as u32 as f64
                     || action[5] != 0.0
                 {
-                    return Err(PyValueError::new_err("Invalid Motion stream key"));
+                    return Err(PyValueError::new_err("Invalid Envelfo stream key"));
                 }
-                self.motion_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
+                self.envelfo_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
             }
             0 => {
                 if self.source_kind != 2 && (action[3] <= 0.0 || action[4] < 0.0)
@@ -2290,10 +2290,10 @@ impl SynthRuntime {
                 let lfo_base = voice * self.lfo_definitions.len();
                 self.voice_lfo_event_states[lfo_base..lfo_base + self.lfo_definitions.len()]
                     .fill(None);
-                for (source, definition) in self.staged_motions.iter().enumerate() {
-                    let index = voice * self.staged_motions.len() + source;
+                for (source, definition) in self.staged_envelfos.iter().enumerate() {
+                    let index = voice * self.staged_envelfos.len() + source;
                     let at = self.staged_time(definition, self.frame as f64);
-                    self.staged_states[index] = StagedMotionState {
+                    self.staged_states[index] = StagedEnvelfoState {
                         stage: definition.initial_stage,
                         playback: stage_playback(
                             &definition.stages[definition.initial_stage],
@@ -2351,7 +2351,7 @@ impl SynthRuntime {
                     );
                     if let Some((key, _, _)) = definition.sample_hold {
                         let state = &mut self.named_states[envelope_base + index];
-                        state.random_state = self.motion_keys[voice] ^ key;
+                        state.random_state = self.envelfo_keys[voice] ^ key;
                         sample_hold_draw(definition, state);
                     }
                 }
@@ -2377,8 +2377,8 @@ impl SynthRuntime {
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
-                    for (source, definition) in self.staged_motions.iter().enumerate() {
-                        let index = voice * self.staged_motions.len() + source;
+                    for (source, definition) in self.staged_envelfos.iter().enumerate() {
+                        let index = voice * self.staged_envelfos.len() + source;
                         let at = self.staged_time(definition, self.frame as f64);
                         if staged_transition(
                             definition,
@@ -2591,7 +2591,7 @@ impl SynthRuntime {
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
                 {
-                    return Err(PyValueError::new_err("Invalid named Motion action"));
+                    return Err(PyValueError::new_err("Invalid named Envelfo action"));
                 }
                 let index = voice * self.named_envelopes.len() + source;
                 let definition = &self.named_envelopes[source];
@@ -2635,27 +2635,27 @@ impl SynthRuntime {
                 let command = action[4] as usize;
                 if !self.active[voice]
                     || action[3] != source as f64
-                    || source >= self.staged_motions.len()
+                    || source >= self.staged_envelfos.len()
                     || action[4] != command as f64
                     || command > 4
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
                 {
-                    return Err(PyValueError::new_err("Invalid staged Motion action"));
+                    return Err(PyValueError::new_err("Invalid staged Envelfo action"));
                 }
-                let index = voice * self.staged_motions.len() + source;
-                let at = self.staged_time(&self.staged_motions[source], self.frame as f64);
+                let index = voice * self.staged_envelfos.len() + source;
+                let at = self.staged_time(&self.staged_envelfos[source], self.frame as f64);
                 let state = &mut self.staged_states[index];
                 if (command == 3 || command == 4)
-                    && self.staged_motions[source].stages[state.stage].kind == 0
+                    && self.staged_envelfos[source].stages[state.stage].kind == 0
                 {
                     return Err(PyValueError::new_err("Hold stage cannot change position"));
                 }
                 state.playback.command(command, action[5], at);
                 if command == 4
-                    && self.staged_motions[source].stages[state.stage].kind == 1
-                    && self.staged_motions[source].stages[state.stage].playback == 0
+                    && self.staged_envelfos[source].stages[state.stage].kind == 1
+                    && self.staged_envelfos[source].stages[state.stage].playback == 0
                 {
                     state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
                 }
@@ -2742,11 +2742,11 @@ impl SynthRuntime {
                 if !self.active[voice] {
                     continue;
                 }
-                for (source, definition) in self.staged_motions.iter().enumerate() {
+                for (source, definition) in self.staged_envelfos.iter().enumerate() {
                     if self.staged_owners[source] != source {
                         continue;
                     }
-                    let state = &self.staged_states[voice * self.staged_motions.len() + source];
+                    let state = &self.staged_states[voice * self.staged_envelfos.len() + source];
                     let limit = self.staged_time(definition, limit_frame);
                     if let Some((stage_at, order, port)) =
                         next_staged_event(definition, state, limit, inclusive)
@@ -2798,7 +2798,7 @@ impl SynthRuntime {
                 batch_at = None;
                 if count > 4096 {
                     return Err(PyValueError::new_err(
-                        "Delayed Motion event capacity exceeded",
+                        "Delayed Envelfo event capacity exceeded",
                     ));
                 }
                 continue;
@@ -2806,11 +2806,11 @@ impl SynthRuntime {
             for (voice, source, stage_at, order, port) in events {
                 if count == 4096 {
                     return Err(PyValueError::new_err(
-                        "Staged Motion event capacity exceeded",
+                        "Staged Envelfo event capacity exceeded",
                     ));
                 }
-                let definition = &self.staged_motions[source];
-                let state = &mut self.staged_states[voice * self.staged_motions.len() + source];
+                let definition = &self.staged_envelfos[source];
+                let state = &mut self.staged_states[voice * self.staged_envelfos.len() + source];
                 state.cursor_at = stage_at;
                 state.cursor_order = order;
                 state.playback.advance(stage_at);
@@ -2963,7 +2963,7 @@ impl SynthRuntime {
                 }
                 if count == 4096 {
                     return Err(PyValueError::new_err(
-                        "Staged Motion event capacity exceeded",
+                        "Staged Envelfo event capacity exceeded",
                     ));
                 }
                 if connection.delay > 0.0 {
@@ -2976,10 +2976,10 @@ impl SynthRuntime {
                     count += 1;
                     continue;
                 }
-                let definition = &self.staged_motions[connection.destination];
+                let definition = &self.staged_envelfos[connection.destination];
                 let at = self.staged_time(definition, event.at);
                 let state = &mut self.staged_states
-                    [event.voice * self.staged_motions.len() + connection.destination];
+                    [event.voice * self.staged_envelfos.len() + connection.destination];
                 if staged_transition(definition, state, &format!("cue.{}", connection.cue), at) {
                     self.staged_pending.push_back(StagedEvent {
                         at: event.at,
@@ -3010,7 +3010,7 @@ impl SynthRuntime {
                 }
                 if count == 4096 {
                     return Err(PyValueError::new_err(
-                        "Staged Motion event capacity exceeded",
+                        "Staged Envelfo event capacity exceeded",
                     ));
                 }
                 if connection.delay > 0.0 {
@@ -3024,8 +3024,8 @@ impl SynthRuntime {
                     continue;
                 }
                 if connection.capture {
-                    self.motion_transform_states
-                        [event.voice * self.motion_transforms.len() + connection.destination] =
+                    self.envelfo_transform_states
+                        [event.voice * self.envelfo_transforms.len() + connection.destination] =
                         None;
                     count += 1;
                     continue;
@@ -3111,15 +3111,15 @@ impl SynthRuntime {
                 continue;
             }
             if connection.capture {
-                self.motion_transform_states[voice * self.motion_transforms.len() + destination] =
-                    None;
+                self.envelfo_transform_states
+                    [voice * self.envelfo_transforms.len() + destination] = None;
                 continue;
             }
             if let Some(cue) = &connection.cue {
-                let definition = &self.staged_motions[destination];
+                let definition = &self.staged_envelfos[destination];
                 let stage_at = self.staged_time(definition, at);
                 let state =
-                    &mut self.staged_states[voice * self.staged_motions.len() + destination];
+                    &mut self.staged_states[voice * self.staged_envelfos.len() + destination];
                 if staged_transition(definition, state, &format!("cue.{cue}"), stage_at) {
                     self.staged_pending.push_back(StagedEvent {
                         at,
@@ -3175,13 +3175,13 @@ impl SynthRuntime {
                     }
                 };
                 if capture {
-                    self.motion_transform_states
-                        [voice * self.motion_transforms.len() + destination] = None;
+                    self.envelfo_transform_states
+                        [voice * self.envelfo_transforms.len() + destination] = None;
                 } else if let Some(cue) = cue {
-                    let definition = &self.staged_motions[destination];
+                    let definition = &self.staged_envelfos[destination];
                     let stage_at = self.staged_time(definition, at);
                     let state =
-                        &mut self.staged_states[voice * self.staged_motions.len() + destination];
+                        &mut self.staged_states[voice * self.staged_envelfos.len() + destination];
                     if staged_transition(definition, state, &format!("cue.{cue}"), stage_at) {
                         self.staged_pending.push_back(StagedEvent {
                             at,
@@ -3303,10 +3303,10 @@ impl SynthRuntime {
         Ok((value, weight))
     }
 
-    fn evaluate_motion_transforms(&mut self, voice: usize) -> PyResult<()> {
-        let base = voice * self.motion_transforms.len();
+    fn evaluate_envelfo_transforms(&mut self, voice: usize) -> PyResult<()> {
+        let base = voice * self.envelfo_transforms.len();
         for (node, (kind, inputs, scale, offset, initial)) in
-            self.motion_transforms.iter().enumerate()
+            self.envelfo_transforms.iter().enumerate()
         {
             let mut output = if *kind == 1 { 1.0 } else { 0.0 };
             for (source_kind, source, center, depth) in inputs {
@@ -3326,15 +3326,15 @@ impl SynthRuntime {
                         )
                     }
                     2 => {
-                        let definition = &self.staged_motions[*source];
+                        let definition = &self.staged_envelfos[*source];
                         staged_value(
                             definition,
                             &self.staged_states
-                                [voice * self.staged_motions.len() + self.staged_owners[*source]],
+                                [voice * self.staged_envelfos.len() + self.staged_owners[*source]],
                             self.staged_time(definition, self.frame as f64),
                         )
                     }
-                    _ => self.motion_transform_values[base + source],
+                    _ => self.envelfo_transform_values[base + source],
                 };
                 if *kind == 1 {
                     output *= value;
@@ -3342,9 +3342,9 @@ impl SynthRuntime {
                     output += value;
                 }
             }
-            self.motion_transform_values[base + node] = if *kind == 6 {
-                let value = self.motion_transform_states[base + node].unwrap_or(output);
-                self.motion_transform_states[base + node] = Some(value);
+            self.envelfo_transform_values[base + node] = if *kind == 6 {
+                let value = self.envelfo_transform_states[base + node].unwrap_or(output);
+                self.envelfo_transform_states[base + node] = Some(value);
                 value
             } else if *kind == 5 {
                 let position = (output - offset) / scale;
@@ -3352,15 +3352,15 @@ impl SynthRuntime {
                 let nearest = lower + if position - lower >= 0.5 { 1.0 } else { 0.0 };
                 offset + nearest * scale
             } else if *kind == 4 {
-                let value = match self.motion_transform_states[base + node] {
+                let value = match self.envelfo_transform_states[base + node] {
                     None => initial.unwrap_or(output),
                     Some(previous) if output >= previous => output.min(previous + scale),
                     Some(previous) => output.max(previous - offset),
                 };
-                self.motion_transform_states[base + node] = Some(value);
+                self.envelfo_transform_states[base + node] = Some(value);
                 value
             } else if *kind == 3 {
-                let previous = self.motion_transform_states[base + node];
+                let previous = self.envelfo_transform_states[base + node];
                 let value = match previous {
                     None => {
                         if output >= *offset {
@@ -3373,7 +3373,7 @@ impl SynthRuntime {
                     Some(1.0) if output <= *scale => 0.0,
                     Some(value) => value,
                 };
-                self.motion_transform_states[base + node] = Some(value);
+                self.envelfo_transform_states[base + node] = Some(value);
                 if previous.is_some_and(|old| old != value) {
                     let connections = self.staged_connections.len()
                         + self.patch_events.len()
@@ -3460,12 +3460,12 @@ impl SynthRuntime {
                 product *= amount;
             }
         }
-        for (source, definition) in self.staged_motions.iter().enumerate() {
+        for (source, definition) in self.staged_envelfos.iter().enumerate() {
             if definition.parameter != Some(parameter) {
                 continue;
             }
-            let state =
-                &self.staged_states[voice * self.staged_motions.len() + self.staged_owners[source]];
+            let state = &self.staged_states
+                [voice * self.staged_envelfos.len() + self.staged_owners[source]];
             let value = staged_value(
                 definition,
                 state,
@@ -3478,13 +3478,13 @@ impl SynthRuntime {
                 product *= amount;
             }
         }
-        for (source, target, operation, intercept, slope) in &self.motion_transform_routes {
+        for (source, target, operation, intercept, slope) in &self.envelfo_transform_routes {
             if *target != parameter {
                 continue;
             }
             let amount = intercept
                 + slope
-                    * self.motion_transform_values[voice * self.motion_transforms.len() + source];
+                    * self.envelfo_transform_values[voice * self.envelfo_transforms.len() + source];
             if *operation == 0 {
                 addition += amount;
             } else {
@@ -4152,7 +4152,7 @@ fn contour_coordinate(coordinate: f64, playback: usize, start: f64, end: f64) ->
     }
 }
 
-fn staged_value(definition: &StagedMotionDefinition, state: &StagedMotionState, at: f64) -> f64 {
+fn staged_value(definition: &StagedEnvelfoDefinition, state: &StagedEnvelfoState, at: f64) -> f64 {
     if state.completed {
         return state.complete_value;
     }
@@ -4229,8 +4229,8 @@ fn staged_event_time(playback: &PlaybackState, target: f64) -> f64 {
 }
 
 fn next_staged_event(
-    definition: &StagedMotionDefinition,
-    state: &StagedMotionState,
+    definition: &StagedEnvelfoDefinition,
+    state: &StagedEnvelfoState,
     limit: f64,
     inclusive: bool,
 ) -> Option<(f64, usize, String)> {
@@ -4473,8 +4473,8 @@ fn next_staged_event(
 }
 
 fn staged_transition(
-    definition: &StagedMotionDefinition,
-    state: &mut StagedMotionState,
+    definition: &StagedEnvelfoDefinition,
+    state: &mut StagedEnvelfoState,
     event: &str,
     at: f64,
 ) -> bool {
@@ -4495,7 +4495,7 @@ fn staged_transition(
         true
     } else {
         let stage = &definition.stages[*target];
-        *state = StagedMotionState {
+        *state = StagedEnvelfoState {
             stage: *target,
             playback: stage_playback(stage, at, state.playback.paused, state.playback.direction),
             entry_value: if stage.current_initial {
@@ -4520,7 +4520,7 @@ fn advance_ramp(value: &mut f64, step: f64, remaining: &mut usize) {
     }
 }
 
-fn valid_motion_owners(owners: &[usize]) -> bool {
+fn valid_envelfo_owners(owners: &[usize]) -> bool {
     owners
         .iter()
         .enumerate()
@@ -4535,13 +4535,13 @@ fn queue_delayed_event(
 ) -> PyResult<()> {
     if queue.len() == 4096 {
         return Err(PyValueError::new_err(
-            "Delayed Motion event capacity exceeded",
+            "Delayed Envelfo event capacity exceeded",
         ));
     }
     let due = at + delay;
     if !due.is_finite() || due <= at {
         return Err(PyValueError::new_err(
-            "Delayed Motion event time is not representable",
+            "Delayed Envelfo event time is not representable",
         ));
     }
     queue.push(DelayedEvent {
@@ -4560,17 +4560,17 @@ fn forward_event(count: &mut usize, state: &mut u64, every: usize, probability: 
     if probability == (1 << 53) {
         return true;
     }
-    motion_random_word(state) >> 11 < probability
+    envelfo_random_word(state) >> 11 < probability
 }
 
 fn sample_hold_draw(definition: &NamedEnvelopeDefinition, state: &mut NamedContourState) {
     let (_, minimum, maximum) = definition.sample_hold.unwrap();
-    let word = motion_random_word(&mut state.random_state);
+    let word = envelfo_random_word(&mut state.random_state);
     state.start_value =
         minimum + (maximum - minimum) * ((word >> 11) as f64 / (1_u64 << 53) as f64);
 }
 
-fn motion_random_word(state: &mut u64) -> u64 {
+fn envelfo_random_word(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e3779b97f4a7c15);
     let mut word = (*state ^ (*state >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);

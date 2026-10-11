@@ -97,7 +97,7 @@ def test_lfo_demo_vibrato_tremolo_and_live_gain(
                 },
                 {
                     "name": "vibrato",
-                    "source": "motion",
+                    "source": "envelfo",
                     "target": {"name": "processing", "parameter": "tuning_cents"},
                     "operation": "add",
                     "unit": "cents",

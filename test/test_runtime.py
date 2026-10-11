@@ -11,7 +11,7 @@ from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
 from ufor.control import TempoMap
 from ufor.envelope import Envelope
-from ufor.events import LFOChange, MotionChange, Release, Trigger
+from ufor.events import EnvelfoChange, LFOChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
 from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.segments import Segment
@@ -306,7 +306,7 @@ def test_persistent_synth_evolves_scoped_lfos_in_rust(
     tmp_path: Path, scope: str, waveform: str, duty: str
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
-    raw["body"]["voices"][0]["motions"]["motion"]["body"].update(
+    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"].update(
         shape=waveform, duty_cycle=duty, center=0.2, depth=0.7
     )
     document = SynthInstrumentScore.model_validate(raw)
@@ -348,8 +348,8 @@ def test_persistent_synth_applies_instrument_lfo_events(tmp_path: Path) -> None:
         document.body,
         [
             onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-            LFOChange(tick=12000, ordinal=0, name="motion", action="rate", rate=5),
-            LFOChange(tick=24000, ordinal=0, name="motion", action="reset"),
+            LFOChange(tick=12000, ordinal=0, name="envelfo", action="rate", rate=5),
+            LFOChange(tick=24000, ordinal=0, name="envelfo", action="reset"),
         ],
         seed=0,
     ).actions
@@ -380,12 +380,12 @@ def test_instrument_lfo_playback_commands_match_offline_and_persistent(
     document = lfo_score("synth", "instrument")
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-        LFOChange(tick=12000, ordinal=0, name="motion", action="pause"),
-        LFOChange(tick=18000, ordinal=0, name="motion", action="resume"),
-        LFOChange(tick=24000, ordinal=0, name="motion", action="reverse"),
-        LFOChange(tick=30000, ordinal=0, name="motion", action="seek", position=0.75),
-        LFOChange(tick=36000, ordinal=0, name="motion", action="rate", rate=2),
-        LFOChange(tick=39000, ordinal=0, name="motion", action="shift", offset=-0.5),
+        LFOChange(tick=12000, ordinal=0, name="envelfo", action="pause"),
+        LFOChange(tick=18000, ordinal=0, name="envelfo", action="resume"),
+        LFOChange(tick=24000, ordinal=0, name="envelfo", action="reverse"),
+        LFOChange(tick=30000, ordinal=0, name="envelfo", action="seek", position=0.75),
+        LFOChange(tick=36000, ordinal=0, name="envelfo", action="rate", rate=2),
+        LFOChange(tick=39000, ordinal=0, name="envelfo", action="shift", offset=-0.5),
     ]
     actions = prepare_trace(document.body, events, seed=0).actions
     definition = prepare(document)
@@ -416,7 +416,7 @@ def test_instrument_lfo_playback_commands_match_offline_and_persistent(
 
 
 @pytest.mark.parametrize("body_kind", ["cycle", "contour", "stages"])
-def test_trigger_motion_playback_matches_persistent_native(
+def test_trigger_envelfo_playback_matches_persistent_native(
     tmp_path: Path, body_kind: str
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
@@ -430,70 +430,70 @@ def test_trigger_motion_playback_matches_persistent_native(
         body = {
             "kind": "stages",
             "initial_stage": "rise",
-            "stages": [{"name": "rise", "motion": contour}],
+            "stages": [{"name": "rise", "envelfo": contour}],
         }
     else:
-        body = raw["body"]["voices"][0]["motions"]["motion"]["body"]
-    raw["body"]["voices"][0]["motions"]["motion"]["body"] = body
+        body = raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"]
+    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = body
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
         onset(0, "second", pitch=0.2).model_copy(update={"controls": {}, "ordinal": 1}),
-        MotionChange(
+        EnvelfoChange(
             tick=12000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="pause",
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=18000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="seek",
             position=0.75,
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=24000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="resume",
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=30000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="reverse",
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=36000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="seek",
             position=0.5,
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=39000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="shift",
             offset=0.75,
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=42000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="shift",
@@ -512,7 +512,7 @@ def test_trigger_motion_playback_matches_persistent_native(
         )
         if end == 37886:
             snapshot = renderer.snapshot()
-    check_audio(tmp_path / f"trigger-motion-{body_kind}.wav", actual, expected)
+    check_audio(tmp_path / f"trigger-envelfo-{body_kind}.wav", actual, expected)
     restored = PersistentSynth(definition, voices=4)
     restored.restore(snapshot)
     replay = restored.advance(
@@ -528,14 +528,14 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"]["motion"]["body"] = {
+    voice["envelfos"]["envelfo"]["body"] = {
         "kind": "contour",
         "playback": playback,
         "segments": [{"duration": "1/2 s", "to": 1}],
         "release": [{"duration": "1/4 s", "to": 0}],
     }
     if named:
-        voice["motions"]["motion"]["body"].update(
+        voice["envelfos"]["envelfo"]["body"].update(
             {
                 "markers": [
                     {"name": "start", "position": "1/4"},
@@ -550,19 +550,19 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-        MotionChange(
+        EnvelfoChange(
             tick=26000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="shift",
             offset=1.5,
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=28000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="reverse",
@@ -596,13 +596,13 @@ def test_staged_contour_playback_and_release_match_persistent_native(
     tmp_path: Path, playback: str, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
-    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
         "kind": "stages",
         "initial_stage": "sweep",
         "stages": [
             {
                 "name": "sweep",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "playback": playback,
                     "segments": [{"duration": "1/4 s", "to": 1}],
@@ -611,7 +611,7 @@ def test_staged_contour_playback_and_release_match_persistent_native(
             },
             {
                 "name": "release",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0}],
@@ -627,8 +627,8 @@ def test_staged_contour_playback_and_release_match_persistent_native(
         ],
     }
     if named:
-        raw["body"]["voices"][0]["motions"]["motion"]["body"]["stages"][0][
-            "motion"
+        raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"]["stages"][0][
+            "envelfo"
         ].update(
             {
                 "markers": [
@@ -642,10 +642,10 @@ def test_staged_contour_playback_and_release_match_persistent_native(
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-        MotionChange(
+        EnvelfoChange(
             tick=13000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="shift",
@@ -681,19 +681,19 @@ def test_staged_contour_cycle_enters_next_stage_in_native_runtime(
     tmp_path: Path, playback: str, boundary: int
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
-    raw["body"]["voices"][0]["motions"]["motion"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
         "kind": "stages",
         "initial_stage": "sweep",
         "stages": [
             {
                 "name": "sweep",
-                "motion": {
+                "envelfo": {
                     "kind": "contour",
                     "playback": playback,
                     "segments": [{"duration": "1/4 s", "to": 1}],
                 },
             },
-            {"name": "held", "motion": {"kind": "hold", "value": 0.5}},
+            {"name": "held", "envelfo": {"kind": "hold", "value": 0.5}},
         ],
         "transitions": [
             {
@@ -717,17 +717,17 @@ def test_staged_contour_cycle_enters_next_stage_in_native_runtime(
 
 
 @pytest.mark.parametrize("kind", ["fm", "noise"])
-def test_trigger_motion_playback_matches_persistent_fm_and_noise(
+def test_trigger_envelfo_playback_matches_persistent_fm_and_noise(
     tmp_path: Path, kind: str
 ) -> None:
     raw = (test_fm.score() if kind == "fm" else test_noise.score()).model_dump(
         mode="json"
     )
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
-        "motion": {"body": {"kind": "cycle", "rate": "2", "phase": "1/4"}}
+    voice["envelfos"] = {
+        "envelfo": {"body": {"kind": "cycle", "rate": "2", "phase": "1/4"}}
     }
-    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
+    voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
     target = (
         {"name": "fm", "parameter": "carrier_level"}
         if kind == "fm"
@@ -735,7 +735,7 @@ def test_trigger_motion_playback_matches_persistent_fm_and_noise(
     )
     level = 0.2 if kind == "fm" else 1
     voice["modulation"] = {
-        "sources": [{"name": "motion", "scope": "voice", "minimum": -1, "maximum": 1}],
+        "sources": [{"name": "envelfo", "scope": "voice", "minimum": -1, "maximum": 1}],
         "parameters": [
             {
                 "target": target,
@@ -748,8 +748,8 @@ def test_trigger_motion_playback_matches_persistent_fm_and_noise(
         ],
         "routes": [
             {
-                "name": "motion",
-                "source": "motion",
+                "name": "envelfo",
+                "source": "envelfo",
                 "target": target,
                 "operation": "multiply",
                 "unit": "ratio",
@@ -767,54 +767,54 @@ def test_trigger_motion_playback_matches_persistent_fm_and_noise(
     events = [
         first,
         second,
-        MotionChange(
+        EnvelfoChange(
             tick=6000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="pause",
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=10000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="seek",
             position=0.75,
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=12000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="resume",
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=15000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="reverse",
         ),
         Release(tick=18000, ordinal=0, part="main", trigger_id="note"),
         first.model_copy(update={"tick": 24000}),
-        MotionChange(
+        EnvelfoChange(
             tick=30000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="seek",
             position=0.25,
         ),
-        MotionChange(
+        EnvelfoChange(
             tick=34000,
             ordinal=0,
-            name="motion",
+            name="envelfo",
             part="main",
             trigger_id="note",
             action="shift",
@@ -824,7 +824,7 @@ def test_trigger_motion_playback_matches_persistent_fm_and_noise(
     actions = prepare_trace(document.body, events, seed=0).actions
     assert any(isinstance(a, VoiceRetirement) for a in actions)
     baseline_actions = prepare_trace(
-        document.body, [e for e in events if not isinstance(e, MotionChange)], seed=0
+        document.body, [e for e in events if not isinstance(e, EnvelfoChange)], seed=0
     ).actions
     definition = fm.prepare(document) if kind == "fm" else noise.prepare(document)
     if kind == "fm":
@@ -844,7 +844,7 @@ def test_trigger_motion_playback_matches_persistent_fm_and_noise(
         )
         if end == 24925:
             snapshot = renderer.snapshot()
-    check_audio(tmp_path / f"trigger-motion-{kind}.wav", actual, expected)
+    check_audio(tmp_path / f"trigger-envelfo-{kind}.wav", actual, expected)
     if kind == "fm":
         restored = fm.PersistentFM(definition, voices=4)
     else:
@@ -882,11 +882,11 @@ def test_finite_contour_repeats_match_persistent_native(
                 "loop_end": "end",
             }
         )
-    voice["motions"]["motion"]["body"] = (
+    voice["envelfos"]["envelfo"]["body"] = (
         {
             "kind": "stages",
             "initial_stage": "sweep",
-            "stages": [{"name": "sweep", "motion": contour}],
+            "stages": [{"name": "sweep", "envelfo": contour}],
         }
         if staged
         else contour
@@ -898,10 +898,10 @@ def test_finite_contour_repeats_match_persistent_native(
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
     if reverse:
         events.append(
-            MotionChange(
+            EnvelfoChange(
                 tick=14000,
                 ordinal=0,
-                name="motion",
+                name="envelfo",
                 part="main",
                 trigger_id="note",
                 action="reverse",
@@ -926,10 +926,10 @@ def test_finite_contour_repeats_match_persistent_native(
     np.testing.assert_allclose(replay.advance(later, 13337, 48000), second, atol=0)
 
 
-def test_host_tempo_quantizes_motion_change_for_both_renderers(tmp_path: Path) -> None:
+def test_host_tempo_quantizes_envelfo_change_for_both_renderers(tmp_path: Path) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"]["motion"]["body"] = {
+    voice["envelfos"]["envelfo"]["body"] = {
         "kind": "contour",
         "segments": [{"duration": "1 s", "to": 1}],
     }
@@ -945,10 +945,10 @@ def test_host_tempo_quantizes_motion_change_for_both_renderers(tmp_path: Path) -
         }
     )
     start = onset(0, pitch=0.1).model_copy(update={"controls": {}})
-    command = MotionChange(
+    command = EnvelfoChange(
         tick=12000,
         ordinal=0,
-        name="motion",
+        name="envelfo",
         part="main",
         trigger_id="note",
         action="pause",
@@ -970,7 +970,7 @@ def test_host_tempo_quantizes_motion_change_for_both_renderers(tmp_path: Path) -
     definition = prepare(document)
     expected = OfflineSynth(definition, "numpy").advance(manual, 0, 48000)
     actual = PersistentSynth(definition, voices=2).advance(actions, 0, 48000)
-    check_audio(tmp_path / "quantized-motion.wav", actual, expected)
+    check_audio(tmp_path / "quantized-envelfo.wav", actual, expected)
 
 
 def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
@@ -978,7 +978,7 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "clock": {
             "body": {
                 "kind": "stages",
@@ -986,7 +986,7 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
                 "stages": [
                     {
                         "name": "cycle",
-                        "motion": {
+                        "envelfo": {
                             "kind": "cycle",
                             "rate": "1",
                             "phase": "1/2",
@@ -1001,8 +1001,8 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
                 "kind": "stages",
                 "initial_stage": "waiting",
                 "stages": [
-                    {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
-                    {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
                 ],
                 "transitions": [
                     {
@@ -1015,8 +1015,8 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
         },
     }
     voice["bindings"] = [
-        {"name": "clock", "kind": "motion", "reference": "clock"},
-        {"name": "level", "kind": "motion", "reference": "level"},
+        {"name": "clock", "kind": "envelfo", "reference": "clock"},
+        {"name": "level", "kind": "envelfo", "reference": "level"},
     ]
     voice["modulation"]["sources"] = [
         {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
@@ -1034,7 +1034,7 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-        MotionChange(
+        EnvelfoChange(
             tick=1,
             ordinal=0,
             name="clock",
@@ -1063,12 +1063,12 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
         ("loop", "stage.done", 12000, False),
     ],
 )
-def test_staged_contour_events_cue_another_motion_in_native_runtime(
+def test_staged_contour_events_cue_another_envelfo_in_native_runtime(
     tmp_path: Path, playback: str, port: str, boundary: int, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "clock": {
             "body": {
                 "kind": "stages",
@@ -1076,7 +1076,7 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
                 "stages": [
                     {
                         "name": "sweep",
-                        "motion": {
+                        "envelfo": {
                             "kind": "contour",
                             "playback": playback,
                             "segments": [{"duration": "1/4 s", "to": 1}],
@@ -1090,8 +1090,8 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
                 "kind": "stages",
                 "initial_stage": "waiting",
                 "stages": [
-                    {"name": "waiting", "motion": {"kind": "hold", "value": 0}},
-                    {"name": "bright", "motion": {"kind": "hold", "value": 1}},
+                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
                 ],
                 "transitions": [
                     {
@@ -1104,9 +1104,9 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
         },
     }
     if port == "stage.done":
-        voice["motions"]["clock"]["body"]["stages"][0]["motion"]["repeat_count"] = 1
+        voice["envelfos"]["clock"]["body"]["stages"][0]["envelfo"]["repeat_count"] = 1
     if named:
-        voice["motions"]["clock"]["body"]["stages"][0]["motion"].update(
+        voice["envelfos"]["clock"]["body"]["stages"][0]["envelfo"].update(
             {
                 "markers": [
                     {"name": "start", "position": "1/4"},
@@ -1117,9 +1117,9 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
             }
         )
         if boundary == 9000:
-            level = voice["motions"]["level"]["body"]
+            level = voice["envelfos"]["level"]["body"]
             level["stages"].insert(
-                1, {"name": "middle", "motion": {"kind": "hold", "value": 0}}
+                1, {"name": "middle", "envelfo": {"kind": "hold", "value": 0}}
             )
             level["transitions"][0]["from"] = ["middle"]
             level["transitions"].insert(
@@ -1131,8 +1131,8 @@ def test_staged_contour_events_cue_another_motion_in_native_runtime(
                 },
             )
     voice["bindings"] = [
-        {"name": "clock", "kind": "motion", "reference": "clock"},
-        {"name": "level", "kind": "motion", "reference": "level"},
+        {"name": "clock", "kind": "envelfo", "reference": "clock"},
+        {"name": "level", "kind": "envelfo", "reference": "level"},
     ]
     voice["modulation"]["sources"] = [
         {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
@@ -1174,7 +1174,7 @@ def test_reversed_contour_markers_repeat_across_native_snapshot(
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "clock": {
             "body": {
                 "kind": "stages",
@@ -1182,7 +1182,7 @@ def test_reversed_contour_markers_repeat_across_native_snapshot(
                 "stages": [
                     {
                         "name": "sweep",
-                        "motion": {
+                        "envelfo": {
                             "kind": "contour",
                             "playback": "loop",
                             "segments": [{"duration": "1/4 s", "to": 1}],
@@ -1200,8 +1200,8 @@ def test_reversed_contour_markers_repeat_across_native_snapshot(
                 "kind": "stages",
                 "initial_stage": "quiet",
                 "stages": [
-                    {"name": "quiet", "motion": {"kind": "hold", "value": 0}},
-                    {"name": "loud", "motion": {"kind": "hold", "value": 1}},
+                    {"name": "quiet", "envelfo": {"kind": "hold", "value": 0}},
+                    {"name": "loud", "envelfo": {"kind": "hold", "value": 1}},
                 ],
                 "transitions": [
                     {
@@ -1229,8 +1229,8 @@ def test_reversed_contour_markers_repeat_across_native_snapshot(
         },
     }
     voice["bindings"] = [
-        {"name": "clock", "kind": "motion", "reference": "clock"},
-        {"name": "level", "kind": "motion", "reference": "level"},
+        {"name": "clock", "kind": "envelfo", "reference": "clock"},
+        {"name": "level", "kind": "envelfo", "reference": "level"},
     ]
     voice["modulation"]["sources"] = [
         {"name": "clock", "scope": "voice", "minimum": -1, "maximum": 1},
@@ -1254,7 +1254,7 @@ def test_reversed_contour_markers_repeat_across_native_snapshot(
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
-        MotionChange(
+        EnvelfoChange(
             tick=18000,
             ordinal=0,
             name="clock",

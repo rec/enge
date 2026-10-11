@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_dynamic_synth import onset
+from test_envelfo_threshold import threshold_score
 from test_lfo_instrument import lfo_score
-from test_motion_threshold import threshold_score
 from test_synth import check_audio
 from ufor import instrument_trace, synth_trace
 from ufor.control import TempoMap
@@ -19,12 +19,12 @@ def slew_score(
 ) -> SynthInstrumentScore:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
+    voice["envelfos"] = {
         "gesture": {
             "clock": clock,
             "body": {
                 "kind": "patch",
-                "motions": {
+                "envelfos": {
                     "clock": {
                         "kind": "cycle",
                         "shape": "square",
@@ -80,7 +80,7 @@ def test_slew_shared_state_limits_rates_and_restores_mid_ramp(
     fall: float,
     initial: float | None,
     clock: str,
-    motion_baseline: Callable[[int], np.ndarray],
+    envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
     document = slew_score(rise, fall, initial, clock)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
@@ -118,7 +118,7 @@ def test_slew_shared_state_limits_rates_and_restores_mid_ramp(
         )
     if clock == "beats":
         assert values[24000] > values[12000]
-    expected = motion_baseline(0) * (0.5 + 0.5 * values)[:, None]
+    expected = envelfo_baseline(0) * (0.5 + 0.5 * values)[:, None]
     definition = synth.prepare(document)
     for backend in ("numpy", "native", "persistent"):
         renderer = (
@@ -171,7 +171,7 @@ def test_slew_initializes_fresh_when_a_voice_slot_is_reused(tmp_path: Path) -> N
 
 def test_slew_drives_threshold_cues_on_the_following_frame(tmp_path: Path) -> None:
     raw = threshold_score("cue").model_dump(mode="json")
-    children = raw["body"]["voices"][0]["motions"]["gesture"]["body"]["motions"]
+    children = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]["envelfos"]
     children["smooth"] = {"kind": "slew", "input": "clock", "rise": 16, "fall": 8}
     children["edge"].update(input="smooth", lower=-0.3113, upper=0.2313)
     document = SynthInstrumentScore.model_validate(raw)
@@ -192,7 +192,7 @@ def test_slew_drives_threshold_cues_on_the_following_frame(tmp_path: Path) -> No
             high = True
         elif high and smooth <= -0.3113:
             high = False
-    raw["body"]["voices"][0].update(motions={}, bindings=[], modulation={})
+    raw["body"]["voices"][0].update(envelfos={}, bindings=[], modulation={})
     baseline = SynthInstrumentScore.model_validate(raw)
     expected = (
         synth.OfflineSynth(synth.prepare(baseline)).advance(

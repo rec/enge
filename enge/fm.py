@@ -582,11 +582,11 @@ class PersistentFM(synth.PersistentSynth):
             envelope_attacks,
             envelope_releases,
             envelope_parameters,
-            self.named_motion_sources,
+            self.named_envelfo_sources,
             self.source_scopes,
             runtime_filters,
-            staged_motions,
-            self.staged_motion_sources,
+            staged_envelfos,
+            self.staged_envelfo_sources,
             event_connections,
         ) = synth._persistent_modulation(shared, template, source_parameters)
         self.part_contexts: dict[str, int] = {}
@@ -666,10 +666,10 @@ class PersistentFM(synth.PersistentSynth):
             envelope_releases,
             envelope_parameters,
         )
-        synth._configure_sample_hold_motions(
-            self.runtime, template, self.named_motion_sources
+        synth._configure_sample_hold_envelfos(
+            self.runtime, template, self.named_envelfo_sources
         )
-        self.runtime.set_staged_motions(staged_motions, event_connections)
+        self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
 
     def snapshot(self) -> PersistentFMSnapshot:  # ty: ignore[invalid-method-override]
         return PersistentFMSnapshot(

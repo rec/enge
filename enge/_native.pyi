@@ -206,7 +206,7 @@ class SynthRuntime:
         self, points: list[tuple[float, float, float, float]]
     ) -> None: ...
     def set_beat_named_envelopes(self, indices: list[int]) -> None: ...
-    def set_staged_motions(
+    def set_staged_envelfos(
         self,
         definitions: list[
             tuple[
@@ -235,13 +235,13 @@ class SynthRuntime:
         ],
         connections: list[tuple[int, str, int, str, int, int, int, int, float]],
     ) -> None: ...
-    def set_sample_hold_motions(
+    def set_sample_hold_envelfos(
         self, definitions: list[tuple[int, int, float, float]]
     ) -> None: ...
-    def set_motion_state_owners(
+    def set_envelfo_state_owners(
         self, lfos: list[int], envelopes: list[int], stages: list[int]
     ) -> None: ...
-    def set_motion_transforms(
+    def set_envelfo_transforms(
         self,
         nodes: list[
             tuple[int, list[tuple[int, int, float, float]], float, float, float | None]

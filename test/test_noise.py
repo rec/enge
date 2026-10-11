@@ -220,8 +220,8 @@ def test_persistent_noise_applies_contour_playback(
 ) -> None:
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["motions"] = {
-        "motion": {
+    voice["envelfos"] = {
+        "envelfo": {
             "body": {
                 "kind": "contour",
                 "playback": playback,
@@ -231,9 +231,9 @@ def test_persistent_noise_applies_contour_playback(
             }
         }
     }
-    voice["bindings"] = [{"name": "motion", "kind": "motion", "reference": "motion"}]
+    voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
     voice["modulation"] = {
-        "sources": [{"name": "motion", "scope": "voice", "minimum": 0, "maximum": 1}],
+        "sources": [{"name": "envelfo", "scope": "voice", "minimum": 0, "maximum": 1}],
         "parameters": [
             {
                 "target": {"name": "processing", "parameter": "amplitude"},
@@ -246,8 +246,8 @@ def test_persistent_noise_applies_contour_playback(
         ],
         "routes": [
             {
-                "name": "motion",
-                "source": "motion",
+                "name": "envelfo",
+                "source": "envelfo",
                 "target": {"name": "processing", "parameter": "amplitude"},
                 "operation": "multiply",
                 "unit": "ratio",
@@ -394,7 +394,7 @@ def test_noise_lfo_amplitude_matches_oracle(
         "segments": [{"duration": 0, "to": 1}],
         "release": [{"duration": 0, "to": 0}],
     }
-    voice["motions"] = {
+    voice["envelfos"] = {
         "pulse": {"body": {"kind": "cycle", "shape": "sine", "rate": 2}}
     }
     voice["modulation"] = {
@@ -420,7 +420,7 @@ def test_noise_lfo_amplitude_matches_oracle(
             }
         ],
     }
-    voice["bindings"] = [{"name": "pulse", "kind": "motion", "reference": "pulse"}]
+    voice["bindings"] = [{"name": "pulse", "kind": "envelfo", "reference": "pulse"}]
     document = SynthInstrumentScore.model_validate(raw)
     actions = synth_trace.prepare(document.body, [trigger()], seed=1).actions
     start = next(a for a in actions if isinstance(a, synth_trace.VoiceStart))
