@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 rubberband = ["dep:rubberband-sys"]
 
 [dependencies]
+envelfo-core = { git = "ssh://git@github.com/rec/envelfo.git", rev = "e04fd21c4c53539bab6936d1f798f14400072844" }
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module"] }
 rtrb = "0.4.0"
