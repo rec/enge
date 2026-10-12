@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-10-04T18:16:06.667148Z"
+exclude-newer = "2026-10-05T08:38:57.353414Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -77,7 +77,7 @@ dev = [
 [[package]]
 name = "envelfo"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#1daa01f226199ddbc5c3d48f48d4acefed75399f" }
+source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#1c4ec435112be7b0c7cc9e1638af067278ba1c23" }
 dependencies = [
     { name = "ufor" },
 ]
