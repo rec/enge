@@ -18,6 +18,14 @@ frame queues and cross-instance routing. The standalone scheduler is covered
 by `test/test_patch.py` and `conformance/envelfo-patch.json` in enveLFO; replacing
 the entire audio adapter and proving scheduler parity remain integration work.
 
+Rust extraction update, 2026-10-12: the sibling `envelfo-core` crate now owns
+checked rational time, exact scalar Cycle state/commands, and the native random
+word kernel. It passes the four Cycle cases and random vectors directly from
+the shared corpus, without a Python process. enge's native runtime imports that
+kernel. Contours, Stages, markers, composition and native exact-time adapter
+integration are still missing from the standalone Rust core; the matrix's
+native column continues to describe enge, not completed standalone parity.
+
 ## Capability and evidence matrix
 
 Python reference means enveLFO scalar semantics unless the row explicitly names
@@ -53,7 +61,7 @@ runtime API:
 
 - `initial_envelfo(use, at, seed=0)` initializes Cycle, Contour, Stages, or
   SampleHold. References must already be materialized. Patch initialization
-  requires orchestration that currently lives in enge.
+uses the separate standalone `envelfo.patch` orchestration API.
 - `envelfo_at(use, state, at)` observes a scalar result. For Stages it computes
   an advance internally but returns only the value: a caller that needs events
   and continuation must retain the result of `advance_envelfo` instead.
@@ -99,10 +107,14 @@ still holds the boundary value but does not invent a `done` event.
 
 The existing Rust runtime has `f64` beat points, playback positions and delayed
 event times, and snaps near-integer staged event times using a tolerance. This
-is an exact-event-time extraction gap. arpeg uses `Ratio<i64>`; its bounded
-representation is a candidate, not a promise of arbitrary Python Fraction
-range. Decide the checked range/overflow contract before step 3 implements
-the Rust boundary. No time representation is changed in this slice.
+is still an exact-event-time native integration gap. The approved standalone
+boundary uses reduced signed i64 numerators and positive i64 denominators,
+with i128 intermediates and explicit errors when normalized components do not
+fit. It supports checked conversion to/from arpeg's `Ratio<i64>`; it does not
+promise arbitrary Python Fraction range. Command overflow leaves the supplied
+Cycle state unchanged. Floating-point conversion is limited to signal values,
+not comparisons, phase wraps or position advancement. Rust snapshots currently
+use cloned state, not a shared serialized wire format.
 
 ### Signals and observation schedules
 

@@ -1,5 +1,6 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
+use envelfo_core::random::random_word;
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -4560,20 +4561,12 @@ fn forward_event(count: &mut usize, state: &mut u64, every: usize, probability: 
     if probability == (1 << 53) {
         return true;
     }
-    envelfo_random_word(state) >> 11 < probability
+    random_word(state) >> 11 < probability
 }
 
 fn sample_hold_draw(definition: &NamedEnvelopeDefinition, state: &mut NamedContourState) {
     let (_, minimum, maximum) = definition.sample_hold.unwrap();
-    let word = envelfo_random_word(&mut state.random_state);
+    let word = random_word(&mut state.random_state);
     state.start_value =
         minimum + (maximum - minimum) * ((word >> 11) as f64 / (1_u64 << 53) as f64);
-}
-
-fn envelfo_random_word(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9e3779b97f4a7c15);
-    let mut word = (*state ^ (*state >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
-    word ^= word >> 31;
-    word
 }

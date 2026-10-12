@@ -234,7 +234,19 @@ grid. Two additional shared Patch traces and 27 focused unit cases cover that
 boundary. enge reuses the connection gate and retained signal evaluator while
 keeping its frame queue, cross-instance routing and NumPy block acceleration.
 Replacing that entire audio-host adapter with the standalone scheduler remains
-consumer integration work, not completed parity. Rust extraction has not begun.
+consumer integration work, not completed parity.
+
+Step 3 started on 2026-10-12. `crates/envelfo-core` now provides checked signed
+64-bit rational components, exact Cycle playback/commands and portable random
+words, independently of Python, NumPy and enge. Arithmetic reduces i128
+intermediates before checking the final i64 components and returns explicit
+overflow errors; failed Cycle commands preserve the original state. Four shared
+Cycle traces and the portable random vectors run directly in Rust, alongside
+boundary/overflow tests in debug and optimized builds. enge consumes the extracted
+random-word kernel rather than retaining a duplicate. Native playback still uses
+floating-point event positions. Contours, Stages, marker emission, Patch
+operations/scheduling, host tempo maps and bindings remain Rust extraction work;
+the full parity matrix is not complete.
 
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline
