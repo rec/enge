@@ -12,7 +12,11 @@ and enveLFO's `test/`. The matrix retains the inventory's original uFor test
 names as evidence; runtime tests cited there have moved, while schema and trace
 tests remain in uFor. Format-level shape, envelope and quantizer mathematics
 remain in uFor where validation or other consumers require them. Patch
-orchestration and connection state remain in enge pending the next slice.
+orchestration now also has a NumPy-free entry point in `envelfo.patch`. enge's
+audio-host adapter shares its gate and retained signal evaluation, but retains
+frame queues and cross-instance routing. The standalone scheduler is covered
+by `test/test_patch.py` and `conformance/envelfo-patch.json` in enveLFO; replacing
+the entire audio adapter and proving scheduler parity remain integration work.
 
 ## Capability and evidence matrix
 
@@ -211,8 +215,16 @@ boundary without NumPy or an enge import. The future
 Rust runner must read the same cases directly; the current native audio tests
 remain supporting evidence, not a shared standalone conformance runner.
 
-Pending additions are full Patch execution and observation-grid traces,
-connection gates/delays, curved contours, mapped tempo/quantized transport,
+Two shared Patch traces now anchor exact Cycle-to-Contour starts and explicit
+Threshold delivery, without importing enge or NumPy. Standalone unit cases also
+exercise staged cues, elapsed beat clocks, stop/seek maps, seconds delays,
+division/offset/chance, retained observations, bounded queues, and restoration.
+The host must supply matching observations and random stream identities when
+comparing standalone and audio-host results. Matching a different host's
+flattened connection index is not assumed.
+
+Pending shared additions are broader Patch/connection and observation traces,
+curved contours, mapped tempo/quantized transport,
 capacity/error cases and arpeg combined expression traces. Existing tests above
 remain in place; this initial baseline does not replace their coverage or claim
 those extraction gaps are resolved.

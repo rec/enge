@@ -8,17 +8,14 @@ from math import ceil, floor, isfinite
 from typing import Literal, Self, cast
 
 import numpy as np
-from envelfo.random import random_word
+from envelfo.patch import connection_gate, observe_signals
 from envelfo.runtime import (
     advance_envelfo,
     cycle_lfo,
     envelfo_at,
     envelfo_event,
     initial_envelfo,
-    latch_value,
     next_stage_event,
-    slew_value,
-    threshold_value,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import envelfo_random, instrument_trace, lfo, modulation
@@ -1332,7 +1329,34 @@ class ControlRenderer:
             patch_index = -1 - sources[selected[0].name]
             state = self.patches[patch_index]
             retained = dict(state.values)
+            if any(
+                isinstance(b, (Latch, Threshold, Slew))
+                for b in parent.body.envelfos.values()
+            ):
+                assert frames == 1
+                inputs = {
+                    n: float(signals[b.name][0, 0] * signals[b.name][0, 1])
+                    for n in parent.body.envelfos
+                    for b in settings.bindings
+                    if isinstance(b, processing.GeneratorBinding)
+                    and b.reference == f"patch-{parent_name}-{n}"
+                }
+                values, retained, emitted = observe_signals(
+                    parent.body, inputs, retained, Fraction(1, self.sample_rate)
+                )
+                children = {n: np.full(frames, v) for n, v in values.items()}
+                for name, port in emitted:
+                    self._threshold_event(
+                        settings,
+                        sources,
+                        parent_name,
+                        name,
+                        port,
+                        Fraction(start + 1, self.sample_rate),
+                    )
             for name in parent.body.signal_order:
+                if name in children:
+                    continue
                 body = parent.body.envelfos[name]
                 if isinstance(body, (Sum, Product)):
                     if any(n not in children for n in body.inputs):
@@ -1355,41 +1379,6 @@ class ControlRenderer:
                             body.origin
                             + (lower + (position - lower >= 0.5)) * body.step
                         )
-                elif isinstance(body, Latch):
-                    if body.input in children:
-                        value = latch_value(
-                            float(children[body.input][0]), retained.get(name)
-                        )
-                        retained[name] = value
-                        children[name] = np.full(frames, value)
-                elif isinstance(body, Threshold):
-                    if body.input not in children:
-                        continue
-                    value, port = threshold_value(
-                        body, float(children[body.input][0]), retained.get(name)
-                    )
-                    retained[name] = value
-                    children[name] = np.full(frames, value)
-                    if port is not None:
-                        self._threshold_event(
-                            settings,
-                            sources,
-                            parent_name,
-                            name,
-                            port,
-                            Fraction(start + 1, self.sample_rate),
-                        )
-                elif isinstance(body, Slew):
-                    if body.input not in children:
-                        continue
-                    value = slew_value(
-                        body,
-                        float(children[body.input][0]),
-                        retained.get(name),
-                        Fraction(1, self.sample_rate),
-                    )
-                    retained[name] = value
-                    children[name] = np.full(frames, value)
                 else:
                     binding = next(
                         (
@@ -2055,12 +2044,21 @@ class ControlRenderer:
         self, index: int, connection: str, every: int, offset: int, probability: float
     ) -> bool:
         source = self.envelopes[index] if index >= 0 else self.patches[-1 - index]
-        count = source.event_counts.get(connection, offset)
-        threshold = int(probability * 2**53)
+        count, state, forwarded = connection_gate(
+            source.event_counts.get(connection),
+            source.event_random.get(connection),
+            every,
+            offset,
+            probability,
+            source.envelfo_key,
+            f"{source.name}:{connection}",
+        )
         source = source.model_copy(
             update={
-                "event_counts": source.event_counts
-                | {connection: every - 1 if count == 0 else count - 1}
+                "event_counts": source.event_counts | {connection: count},
+                "event_random": source.event_random
+                if state is None
+                else source.event_random | {connection: state},
             }
         )
         if index >= 0:
@@ -2069,25 +2067,7 @@ class ControlRenderer:
         else:
             assert isinstance(source, PatchState)
             self.patches[-1 - index] = source
-        if count != 0 or threshold == 0:
-            return False
-        if threshold == 2**53:
-            return True
-        if (state := source.event_random.get(connection)) is None:
-            state = source.envelfo_key ^ envelfo_random.stream_key(
-                0, f"{source.name}:{connection}"
-            )
-        state, word = random_word(state)
-        source = source.model_copy(
-            update={"event_random": source.event_random | {connection: state}}
-        )
-        if index >= 0:
-            assert isinstance(source, EnvelopeSource)
-            self.envelopes[index] = source
-        else:
-            assert isinstance(source, PatchState)
-            self.patches[-1 - index] = source
-        return word >> 11 < threshold
+        return forwarded
 
     def _start_patch_contours(
         self,

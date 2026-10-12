@@ -226,10 +226,15 @@ Step 2 is in progress: the NumPy-free Python package now owns scalar and Stages
 execution, operator helpers, random words, 48 moved execution tests, and the
 18 baseline conformance checks. uFor retains definitions, validation, format
 mathematics and stream identities. enge imports the extracted runtime directly.
-Standalone Patch orchestration, retained graph state, connection processing,
-and host-supplied observation/next-delivery scheduling remain the next slice.
-The approved scheduling boundary uses host observations and explicit next
-delivery times, not an implicit audio-rate grid. Rust extraction has not begun.
+Standalone Patch execution is now available in `envelfo.patch`: named outputs,
+retained operators, exact natural boundaries, start/sample/capture/cue connections,
+division/chance gates, seconds delays, host tempo maps and snapshots. Its host
+boundary uses explicit observation and next-delivery times, not an audio-rate
+grid. Two additional shared Patch traces and 27 focused unit cases cover that
+boundary. enge reuses the connection gate and retained signal evaluator while
+keeping its frame queue, cross-instance routing and NumPy block acceleration.
+Replacing that entire audio-host adapter with the standalone scheduler remains
+consumer integration work, not completed parity. Rust extraction has not begun.
 
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline
