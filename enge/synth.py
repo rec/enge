@@ -18,19 +18,19 @@ from envelfo.runtime import (
     next_stage_event,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import envelfo_random, instrument_trace, lfo, modulation
+from ufor import envelfo_random, envelope, instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.control import TempoMap
 from ufor.envelfo import (
     LFO,
     Affine,
-    Contour,
-    ContourState,
     EnterStage,
     EnvelfoEvent,
     EnvelfoOutputEvent,
     EnvelfoState,
     EnvelfoUse,
+    Envelope,
+    EnvelopeState,
     Hold,
     Latch,
     LFOState,
@@ -46,7 +46,6 @@ from ufor.envelfo import (
     Sum,
     Threshold,
 )
-from ufor.envelope import Envelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import (
@@ -175,7 +174,7 @@ class PreparedEnvelope(Model, frozen=True):
     """The shared amplitude lifetime of an oscillator or sample voice."""
 
     sample_rate: int = Field(gt=0)
-    envelope: Envelope
+    envelope: envelope.Envelope
     filter_order: processing.FilterOrder = processing.FilterOrder.before_amplitude
     minimum_hold_seconds: Fraction = Field(default=Fraction(0), ge=0)
 
@@ -509,7 +508,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                 EnvelfoUse(
                     scope=parent.scope,
                     clock=parent.clock,
-                    body=cast(LFO | Contour | Stages | SampleHold, child),
+                    body=cast(LFO | Envelope | Stages | SampleHold, child),
                 ),
             )
             if any(
@@ -542,7 +541,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                     name=name,
                     scope=parent.scope.value,
                     minimum=0
-                    if isinstance(child, Contour) and child.polarity == "unipolar"
+                    if isinstance(child, Envelope) and child.polarity == "unipolar"
                     else -1,
                     maximum=1,
                 )
@@ -989,10 +988,10 @@ class ControlRenderer:
                         )
                     result[source.name] = -1 - index
                     continue
-                if isinstance(envelfo.body, (Contour, Stages, SampleHold)):
+                if isinstance(envelfo.body, (Envelope, Stages, SampleHold)):
                     if envelfo.scope != "voice":
                         raise EngineError(
-                            "Staged and contour Envelfos require voice scope"
+                            "Staged and envelope Envelfos require voice scope"
                         )
                     existing = None
                     if binding.reference in self.patch_children[setting]:
@@ -1038,7 +1037,7 @@ class ControlRenderer:
                         )
                         initial = advanced.state
                         emitted.extend((binding.name, e) for e in advanced.events)
-                    elif isinstance(envelfo.body, Contour) and envelfo.body.release:
+                    elif isinstance(envelfo.body, Envelope) and envelfo.body.release:
                         initial = envelfo_event(
                             envelfo,
                             initial,
@@ -1129,7 +1128,7 @@ class ControlRenderer:
         released: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
-                settings.envelfos[binding.reference].body, (Contour, Stages)
+                settings.envelfos[binding.reference].body, (Envelope, Stages)
             ):
                 continue
             index = sources[binding.name]
@@ -1139,7 +1138,7 @@ class ControlRenderer:
             source = self.envelopes[index]
             definition = settings.envelfos[binding.reference]
             if (
-                isinstance(definition.body, Contour)
+                isinstance(definition.body, Envelope)
                 and binding.release_timing == ReleaseTiming.voice
                 and voice_release_at > Fraction(action.tick, self.sample_rate)
             ):
@@ -1219,11 +1218,11 @@ class ControlRenderer:
                 envelfo = settings.envelfos[binding.reference]
                 if isinstance(envelfo.body, Patch):
                     continue
-                if isinstance(envelfo.body, (Contour, Stages, SampleHold)):
+                if isinstance(envelfo.body, (Envelope, Stages, SampleHold)):
                     if index not in self.cached_envelopes:
                         source = self.envelopes[index]
                         state = source.state
-                        assert isinstance(envelfo.body, (Contour, SampleHold))
+                        assert isinstance(envelfo.body, (Envelope, SampleHold))
                         values = np.empty(frames)
                         for i in range(frames):
                             at = Fraction(start + i, self.sample_rate)
@@ -1420,7 +1419,7 @@ class ControlRenderer:
             seen.add(index)
             staged.append((binding.name, index, settings.envelfos[binding.reference]))
         patch_starts = _patch_start_connections(settings, sources)
-        contour_targets = {
+        envelope_targets = {
             target
             for _, _, target, _, _, _, _, _, capture in patch_starts
             if capture is None
@@ -1450,13 +1449,13 @@ class ControlRenderer:
                         )
                         continue
                     target = f"patch-{parent_name}-{connection.target}"
-                    contour_targets.update(
+                    envelope_targets.update(
                         sources[b.name]
                         for b in settings.bindings
                         if isinstance(b, processing.GeneratorBinding)
                         and b.reference == target
                     )
-        envelfo_indices = {index for _, index, _ in staged} | contour_targets
+        envelfo_indices = {index for _, index, _ in staged} | envelope_targets
         if (not envelfo_indices and not latch_targets) or (
             not latch_targets
             and all(index in self.cached_envelopes for index in envelfo_indices)
@@ -1660,10 +1659,10 @@ class ControlRenderer:
                 events_seen += len(due)
                 if events_seen > 4096:
                     raise EngineError("Envelfo event capacity exceeded")
-            self._start_patch_contours(settings, pending_starts)
+            self._start_patch_envelopes(settings, pending_starts)
             for _, index, _ in staged:
                 values[index][i] = sample_values[index]
-            for index in contour_targets:
+            for index in envelope_targets:
                 envelfo = settings.envelfos[self.envelopes[index].name]
                 values[index][i] = envelfo_at(
                     envelfo,
@@ -1776,8 +1775,8 @@ class ControlRenderer:
                 return np.full(frames, runtime.complete_value)
             body = next(s.envelfo for s in body.stages if s.name == runtime.stage)
             initial = runtime.entry_value
-        elif isinstance(runtime, ContourState):
-            assert isinstance(body, Contour)
+        elif isinstance(runtime, EnvelopeState):
+            assert isinstance(body, Envelope)
             if runtime.phase == "idle" or runtime.complete_coordinate is not None:
                 return np.full(
                     frames,
@@ -1817,12 +1816,12 @@ class ControlRenderer:
                 1,
             )
             return body.center + body.depth * samples[:, 0] * samples[:, 1]
-        assert isinstance(body, Contour)
+        assert isinstance(body, Envelope)
         if body.playback != PlaybackMode.once or position.coordinate < 0:
             return None
         segments = (
             body.release
-            if isinstance(runtime, ContourState) and runtime.phase == "release"
+            if isinstance(runtime, EnvelopeState) and runtime.phase == "release"
             else body.segments
         )
         if any(s.curve for s in segments):
@@ -1983,7 +1982,7 @@ class ControlRenderer:
                 if delivered > 4096:
                     raise EngineError("Envelfo event connection capacity exceeded")
         if starts is None:
-            self._start_patch_contours(settings, pending_starts)
+            self._start_patch_envelopes(settings, pending_starts)
 
     def _event_queue(self, voice_id: str) -> tuple[int, EnvelopeSource | PatchState]:
         # Keep one bounded queue per voice, including graphs without envelopes.
@@ -2069,7 +2068,7 @@ class ControlRenderer:
             self.patches[-1 - index] = source
         return forwarded
 
-    def _start_patch_contours(
+    def _start_patch_envelopes(
         self,
         settings: SoundSettings,
         starts: list[tuple[Fraction, int, int, str | None]],
@@ -2090,7 +2089,7 @@ class ControlRenderer:
             source = self.envelopes[index]
             envelfo = settings.envelfos[source.name]
             at = self.envelfo_time(envelfo, seconds)
-            assert isinstance(source.state.runtime, (ContourState, SampleHoldState))
+            assert isinstance(source.state.runtime, (EnvelopeState, SampleHoldState))
             state = envelfo_event(
                 envelfo,
                 source.state,
@@ -3097,7 +3096,7 @@ def oscillator_samples(
 
 
 def envelope_samples(
-    envelope: Envelope,
+    envelope: envelope.Envelope,
     start: int,
     length: int,
     sample_rate: int,
@@ -3138,7 +3137,7 @@ def envelope_samples(
     return values
 
 
-def validate_envelope(envelope: Envelope) -> None:
+def validate_envelope(envelope: envelope.Envelope) -> None:
     """Validate the amplitude-envelope profile shared by both voice renderers."""
     if envelope.clock != "seconds" or envelope.scope != "voice":
         raise EngineError("Envelopes must use the voice seconds clock")
@@ -3158,14 +3157,14 @@ def validate_generators(
     if any(
         g.scope != "voice"
         for g in settings.envelfos.values()
-        if isinstance(g.body, (Contour, Stages, SampleHold))
+        if isinstance(g.body, (Envelope, Stages, SampleHold))
     ):
-        raise EngineError("Staged and contour Envelfos require voice scope")
+        raise EngineError("Staged and envelope Envelfos require voice scope")
     if any(
         g.clock != "seconds"
         and not (
             allow_beat_envelfos
-            and isinstance(g.body, (Contour, LFO, Stages, SampleHold, Patch))
+            and isinstance(g.body, (Envelope, LFO, Stages, SampleHold, Patch))
         )
         for g in settings.envelfos.values()
     ):
@@ -3285,7 +3284,7 @@ def _configure_patch_transforms(
     runtime: _native.SynthRuntime,
     template: SoundSettings,
     lfos: dict[str, list[int]],
-    contours: dict[str, list[int]],
+    envelopes: dict[str, list[int]],
     stages: dict[str, list[int]],
     rate: int,
 ) -> dict[tuple[str, str], int]:
@@ -3303,8 +3302,8 @@ def _configure_patch_transforms(
             reference = f"patch-{parent_name}-{name}"
             if isinstance(body, LFO) and reference in lfos:
                 children[name] = (0, lfos[reference][0], body.center, body.depth)
-            elif isinstance(body, (Contour, SampleHold)) and reference in contours:
-                children[name] = (1, contours[reference][0], 0.0, 1.0)
+            elif isinstance(body, (Envelope, SampleHold)) and reference in envelopes:
+                children[name] = (1, envelopes[reference][0], 0.0, 1.0)
             elif isinstance(body, Stages) and reference in stages:
                 children[name] = (2, stages[reference][0], 0.0, 1.0)
             elif isinstance(
@@ -3403,7 +3402,7 @@ def _configure_patch_transforms(
 
 def _threshold_runtime_connections(
     template: SoundSettings,
-    contours: dict[str, list[int]],
+    envelopes: dict[str, list[int]],
     stages: dict[str, list[int]],
     nodes: dict[tuple[str, str], int],
     rate: int,
@@ -3430,7 +3429,7 @@ def _threshold_runtime_connections(
                     float(port == "rising"),
                     nodes[parent_name, connection.target]
                     if capture
-                    else (stages if cue is not None else contours)[target][0],
+                    else (stages if cue is not None else envelopes)[target][0],
                     cue,
                     order,
                     connection.every,
@@ -3760,7 +3759,7 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            if isinstance(envelfo.body, Contour):
+            if isinstance(envelfo.body, Envelope):
                 generator = envelfo.body
                 assert isinstance(generator.initial, float)
                 if source.scope != "voice" or any(
@@ -3926,7 +3925,7 @@ def _persistent_modulation(
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
             continue
-        if isinstance(envelfo.body, Contour):
+        if isinstance(envelfo.body, Envelope):
             generator = envelfo.body
             assert isinstance(generator.initial, float)
             if envelfo.scope != "voice" or any(
@@ -4088,9 +4087,9 @@ def _runtime_staged_envelfo(
         envelfo = stage.envelfo
         if isinstance(envelfo, Hold):
             stages.append((0, envelfo.value, False, [], [], [], 0, 0.0, 1.0, None))
-        elif isinstance(envelfo, Contour):
+        elif isinstance(envelfo, Envelope):
             if any(s.curve != 0 for s in envelfo.segments):
-                raise EngineError("Persistent staged contours require linear segments")
+                raise EngineError("Persistent staged envelopes require linear segments")
             stages.append(
                 (
                     1,

@@ -103,7 +103,7 @@ snapshot and subsequent-command timing.
 
 Staged LFO values remain exact even when the host requests interpolated
 ordinary LFO controls. Delay/fade weights are applied inside the staged value,
-as in the scalar reference. Beat clocks, nonlinear or reversing contours, and
+as in the scalar reference. Beat clocks, nonlinear or reversing envelopes, and
 per-frame Latch/Threshold/Slew observation retain their existing evaluation
 path. The optimization does not remove these cases or change their coverage.
 Block eligibility is checked for all participating Envelfos before allocating
@@ -129,7 +129,7 @@ URL with uFor's HTTPS source; repository Git remotes remain SSH.
   event-processing time fell from 51.23 seconds to 0.09 seconds.
 - All 1,206 uFor tests passed for the boundary-query change. The six new enge
   cases cover exact staged LFO delay/fade under control intervals and
-  single-frame partitions, plus mixed staged LFO/looping-Contour evaluation.
+  single-frame partitions, plus mixed staged LFO/looping-Envelope evaluation.
 
 Full-suite timings are single-host measurements, not cross-platform guarantees.
 The remaining slowest cases involve per-frame threshold/slew observations and

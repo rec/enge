@@ -26,6 +26,10 @@ The periodic Envelfo body is named `LFO` and uses `kind = "lfo"`. Update the
 former `Cycle` spelling in authored documents and imports; there is no alias.
 The `cycle` output event still denotes a completed loop traversal.
 
+The general-purpose Envelfo envelope is `ufor.envelfo.Envelope`, with
+`kind = "envelope"` and state `EnvelopeState`, replacing `Contour` with no aliases.
+The lower-level renderer model `ufor.envelope.Envelope` is unchanged.
+
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,
 smooths controls in their declared scopes, preserves phase through pitch changes,

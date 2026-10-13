@@ -89,7 +89,7 @@ Add one field on envelope bindings, not on the reusable envelope shape:
 [[bindings]]
 name = "brightness"
 kind = "envelope"
-reference = "filter-contour"
+reference = "filter-envelope"
 release_timing = "event"
 ```
 

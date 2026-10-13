@@ -102,7 +102,7 @@ def test_patch_transforms_share_children_and_match_native_runtime(
                         "fade_in": "1/8",
                     },
                     "env": {
-                        "kind": "contour",
+                        "kind": "envelope",
                         "segments": [
                             {
                                 "duration": "1/2 s"
@@ -317,7 +317,7 @@ def lfo_score(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
-def test_beat_contour_follows_tempo_without_following_transport_seek(
+def test_beat_envelope_follows_tempo_without_following_transport_seek(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
@@ -325,7 +325,7 @@ def test_beat_contour_follows_tempo_without_following_transport_seek(
     voice["envelfos"]["envelfo"] = {
         "clock": "beats",
         "body": {
-            "kind": "contour",
+            "kind": "envelope",
             "segments": [{"duration": "2 beats", "to": 1}],
         },
     }
@@ -376,7 +376,7 @@ def test_beat_contour_follows_tempo_without_following_transport_seek(
     expected = np.zeros((48000, 2), dtype=np.float64)
     expected[:, 0] = 0.25 + 0.75 * beats / 2
     check_audio(
-        tmp_path / f"beat-contour-{backend}.wav", np.vstack((first, second)), expected
+        tmp_path / f"beat-envelope-{backend}.wav", np.vstack((first, second)), expected
     )
     persistent = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
     native_first = persistent.advance(actions, 0, 24000)
@@ -396,7 +396,7 @@ def test_beat_contour_follows_tempo_without_following_transport_seek(
             ),
         ).restore(native_snapshot)
     check_audio(
-        tmp_path / f"beat-contour-persistent-{backend}.wav",
+        tmp_path / f"beat-envelope-persistent-{backend}.wav",
         np.vstack((native_first, native_second)),
         expected,
     )
@@ -417,7 +417,7 @@ def test_beat_stages_follow_tempo_and_stop_across_restore(
                 {
                     "name": "attack",
                     "envelfo": {
-                        "kind": "contour",
+                        "kind": "envelope",
                         "segments": [{"duration": "1 beat", "to": 1}],
                     },
                 },
@@ -554,7 +554,7 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
 
 @pytest.mark.parametrize(
     ("shared_child", "shared_body"),
-    [(False, "stages"), (True, "stages"), (True, "lfo"), (True, "contour")],
+    [(False, "stages"), (True, "stages"), (True, "lfo"), (True, "envelope")],
 )
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_patch_named_outputs_match_separate_envelfos(
@@ -572,7 +572,7 @@ def test_patch_named_outputs_match_separate_envelfos(
             {
                 "name": "attack",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "segments": [{"duration": "1/4 s", "to": 1}],
                 },
             },
@@ -583,7 +583,7 @@ def test_patch_named_outputs_match_separate_envelfos(
             {
                 "name": "release",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0}],
                 },
@@ -603,8 +603,8 @@ def test_patch_named_outputs_match_separate_envelfos(
         ],
     }
     vibrato = {"kind": "lfo", "rate": "5"}
-    contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
-    child = {"stages": stages, "lfo": vibrato, "contour": contour}[shared_body]
+    envelope = {"kind": "envelope", "segments": [{"duration": "1 s", "to": 1}]}
+    child = {"stages": stages, "lfo": vibrato, "envelope": envelope}[shared_body]
     voice["envelfos"] = {"amp": {"body": child}}
     if not shared_child:
         voice["envelfos"]["vib"] = {"body": vibrato}
@@ -621,13 +621,13 @@ def test_patch_named_outputs_match_separate_envelfos(
             {
                 "name": "level",
                 "scope": "voice",
-                "minimum": 0 if shared_child and shared_body == "contour" else -1,
+                "minimum": 0 if shared_child and shared_body == "envelope" else -1,
                 "maximum": 1,
             },
             {
                 "name": "pitch",
                 "scope": "voice",
-                "minimum": 0 if shared_child and shared_body == "contour" else -1,
+                "minimum": 0 if shared_child and shared_body == "envelope" else -1,
                 "maximum": 1,
             },
         ],
@@ -658,7 +658,9 @@ def test_patch_named_outputs_match_separate_envelfos(
                 "unit": "ratio",
                 "points": [
                     {
-                        "input": 0 if shared_child and shared_body == "contour" else -1,
+                        "input": 0
+                        if shared_child and shared_body == "envelope"
+                        else -1,
                         "amount": 0,
                     },
                     {"input": 1, "amount": 1},
@@ -672,7 +674,9 @@ def test_patch_named_outputs_match_separate_envelfos(
                 "unit": "cents",
                 "points": [
                     {
-                        "input": 0 if shared_child and shared_body == "contour" else -1,
+                        "input": 0
+                        if shared_child and shared_body == "envelope"
+                        else -1,
                         "amount": -50,
                     },
                     {"input": 1, "amount": 50},
@@ -774,7 +778,7 @@ def test_patch_named_outputs_match_separate_envelfos(
         ("staged-action", "0", 1),
     ],
 )
-def test_patch_child_event_starts_unexposed_contour(
+def test_patch_child_event_starts_unexposed_envelope(
     tmp_path: Path, source_kind: str, phase: str, first_marker: int
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
@@ -808,7 +812,7 @@ def test_patch_child_event_starts_unexposed_contour(
                     "envelfo": clock
                     if source_kind == "staged-marker"
                     else {
-                        "kind": "contour",
+                        "kind": "envelope",
                         "segments": [{"duration": "1/4 s", "to": 1}],
                     },
                 }
@@ -821,7 +825,7 @@ def test_patch_child_event_starts_unexposed_contour(
                 "envelfos": {
                     "clock": clock,
                     "accent": {
-                        "kind": "contour",
+                        "kind": "envelope",
                         "start": "event",
                         "segments": [
                             {"duration": "1/8 s", "to": 1},
@@ -952,21 +956,21 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
             "initial_stage": "clock",
             "stages": [{"name": "clock", "envelfo": clock}],
         }
-    contour = {
-        "kind": "contour",
+    envelope = {
+        "kind": "envelope",
         "segments": [
             {"duration": "1/64 s", "to": 1},
             {"duration": "1/64 s", "to": 0},
         ],
     }
-    target = contour | {"start": "event"}
+    target = envelope | {"start": "event"}
     if command == "cue":
         target = {
             "kind": "stages",
             "initial_stage": "waiting",
             "stages": [
                 {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
-                {"name": "accent", "envelfo": contour},
+                {"name": "accent", "envelfo": envelope},
             ],
             "transitions": [
                 {
@@ -1271,7 +1275,7 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
                             {
                                 "name": "playing",
                                 "envelfo": {
-                                    "kind": "contour",
+                                    "kind": "envelope",
                                     "segments": [{"duration": "1/48000 s", "to": 1}],
                                     "markers": [{"name": "mark", "position": "3/4"}],
                                 },
@@ -1279,7 +1283,7 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
                         ],
                     },
                     "accent": {
-                        "kind": "contour",
+                        "kind": "envelope",
                         "start": "event",
                         "segments": [{"duration": "1/1000 s", "to": 1}],
                     },
@@ -1367,7 +1371,7 @@ def test_patch_child_event_cues_child_stages(
                     "envelfo": clock
                     if source_kind == "staged-marker"
                     else {
-                        "kind": "contour",
+                        "kind": "envelope",
                         "segments": [{"duration": "1/4 s", "to": 1}],
                     },
                 }
@@ -1479,7 +1483,7 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
                             {
                                 "name": "playing",
                                 "envelfo": {
-                                    "kind": "contour",
+                                    "kind": "envelope",
                                     "segments": [{"duration": "1/48000 s", "to": 1}],
                                     "markers": [
                                         {"name": "mark", "position": stage_position}
@@ -1628,7 +1632,7 @@ def test_beat_lfo_tracks_host_tempo_in_both_offline_backends(
         check_audio(tmp_path / "beat-lfo-persistent.wav", native, expected)
 
 
-def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
+def test_persistent_beat_envelope_releases_at_frame_boundary_while_clock_stops(
     tmp_path: Path,
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
@@ -1637,7 +1641,7 @@ def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
     voice["envelfos"]["envelfo"] = {
         "clock": "beats",
         "body": {
-            "kind": "contour",
+            "kind": "envelope",
             "initial": 1,
             "segments": [{"duration": "1 beat", "to": 1}],
             "release": [{"duration": "1 beat", "to": 0}],
@@ -1670,7 +1674,7 @@ def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
     actual = synth.PersistentSynth(definition, voices=2, tempo_map=clock).advance(
         actions, 0, 48000
     )
-    check_audio(tmp_path / "beat-contour-stop-release.wav", actual, expected)
+    check_audio(tmp_path / "beat-envelope-stop-release.wav", actual, expected)
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
@@ -1750,25 +1754,25 @@ def test_beat_lfo_pause_preserves_musical_phase(
         )
 
 
-@pytest.mark.parametrize("body_kind", ["contour", "stages"])
+@pytest.mark.parametrize("body_kind", ["envelope", "stages"])
 @pytest.mark.parametrize("kind", ["synth", "sampler"])
 def test_trigger_addressed_envelfo_changes_only_matching_voice(
     tmp_path: Path, body_kind: str, kind: str
 ) -> None:
     raw = lfo_score(kind, "voice").model_dump(mode="json")
     voice = raw["body"]["voices" if kind == "synth" else "slots"][0]
-    contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
+    envelope = {"kind": "envelope", "segments": [{"duration": "1 s", "to": 1}]}
     body = (
-        contour
-        if body_kind == "contour"
+        envelope
+        if body_kind == "envelope"
         else {
             "kind": "stages",
             "initial_stage": "rise",
-            "stages": [{"name": "rise", "envelfo": contour}],
+            "stages": [{"name": "rise", "envelfo": envelope}],
         }
     )
     voice["envelfos"]["envelfo"]["body"] = body
-    if body_kind == "contour":
+    if body_kind == "envelope":
         modulation = voice["modulation"]
         modulation["sources"][0]["minimum"] = 0
         modulation["routes"][0]["points"][0]["input"] = 0
@@ -1841,13 +1845,13 @@ def test_trigger_addressed_envelfo_changes_only_matching_voice(
 
 
 @pytest.mark.parametrize("playback", ["loop", "ping_pong"])
-def test_sampler_contour_playback_and_release_survive_restore(
+def test_sampler_envelope_playback_and_release_survive_restore(
     tmp_path: Path, playback: str
 ) -> None:
     raw = lfo_score("sampler", "voice").model_dump(mode="json")
     slot = raw["body"]["slots"][0]
     slot["envelfos"]["envelfo"]["body"] = {
-        "kind": "contour",
+        "kind": "envelope",
         "playback": playback,
         "segments": [{"duration": "1/2 s", "to": 1}],
         "release": [{"duration": "1/4 s", "to": 0}],
@@ -1880,7 +1884,7 @@ def test_sampler_contour_playback_and_release_survive_restore(
         )
         if end == 24925:
             snapshot = renderer.snapshot()
-    check_audio(tmp_path / f"sampler-contour-{playback}.wav", actual, expected)
+    check_audio(tmp_path / f"sampler-envelope-{playback}.wav", actual, expected)
     restored = sample_instrument.OfflineSampler(definition)
     restored.restore(snapshot)
     replay = restored.advance(
@@ -2002,7 +2006,7 @@ def test_named_envelope_modulates_synth_and_releases(
             "envelfos": {
                 "envelfo": {
                     "body": {
-                        "kind": "contour",
+                        "kind": "envelope",
                         "initial": 0,
                         "segments": [{"duration": "1/4 s", "to": 1}],
                         "release": [{"duration": "1/4 s", "to": 0}],
@@ -2089,7 +2093,7 @@ def test_named_envelope_modulates_synth_and_releases(
 @pytest.mark.parametrize("release_timing", ["event", "voice"])
 @pytest.mark.parametrize("hold", ["1/2", "48001/96000"])
 @pytest.mark.parametrize("release_duration", ["1/4 s", "0 s"])
-def test_named_contour_releases_before_voice_minimum_hold(
+def test_named_envelope_releases_before_voice_minimum_hold(
     tmp_path: Path,
     release_timing: Literal["event", "voice"],
     hold: str,
@@ -2102,7 +2106,7 @@ def test_named_contour_releases_before_voice_minimum_hold(
     voice["envelfos"] = {
         "envelfo": {
             "body": {
-                "kind": "contour",
+                "kind": "envelope",
                 "initial": 1,
                 "segments": [{"duration": "1/4 s", "to": 1}],
                 "release": [{"duration": release_duration, "to": 0}],
@@ -2163,7 +2167,7 @@ def test_named_contour_releases_before_voice_minimum_hold(
     offline_replay.restore(offline_snapshot)
     np.testing.assert_allclose(offline_replay.advance([], 20000, 48000), offline_second)
     check_audio(
-        tmp_path / f"named-contour-minimum-hold-{release_timing}.wav",
+        tmp_path / f"named-envelope-minimum-hold-{release_timing}.wav",
         np.concatenate((offline_first, offline_second)),
         reference,
     )
@@ -2175,7 +2179,7 @@ def test_named_contour_releases_before_voice_minimum_hold(
     restored.restore(snapshot)
     np.testing.assert_allclose(restored.advance([], 20000, 48000), second, atol=0)
     check_audio(
-        tmp_path / f"persistent-contour-minimum-hold-{release_timing}.wav",
+        tmp_path / f"persistent-envelope-minimum-hold-{release_timing}.wav",
         np.concatenate((first, second)),
         reference,
     )
@@ -2191,7 +2195,7 @@ def test_named_contour_releases_before_voice_minimum_hold(
         stopped_audio = stopped.advance(stopped_actions, 0, 48000)
         assert all(s.pending_release is None for s in stopped.snapshot().envelopes)
         check_audio(
-            tmp_path / "stopped-contour-minimum-hold.wav",
+            tmp_path / "stopped-envelope-minimum-hold.wav",
             synth.PersistentSynth(prepared, voices=4).advance(
                 stopped_actions, 0, 48000
             ),
@@ -2201,14 +2205,14 @@ def test_named_contour_releases_before_voice_minimum_hold(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
-def test_release_free_contour_finishes_after_note_off_and_restores(
+def test_release_free_envelope_finishes_after_note_off_and_restores(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
     voice["envelfos"]["envelfo"]["body"] = {
-        "kind": "contour",
+        "kind": "envelope",
         "initial": 0,
         "segments": [{"duration": "1/2 s", "to": 1}],
     }
@@ -2238,7 +2242,7 @@ def test_release_free_contour_finishes_after_note_off_and_restores(
     restored.restore(snapshot)
     replay = restored.advance([], 18000, 48000)
     actual = np.concatenate([first, second])
-    check_audio(tmp_path / f"one-shot-contour-{backend}.wav", actual, expected)
+    check_audio(tmp_path / f"one-shot-envelope-{backend}.wav", actual, expected)
     np.testing.assert_allclose(replay, second, atol=0)
     assert np.max(np.abs(actual[23000:24000])) > np.max(np.abs(actual[11000:12000]))
     assert np.max(np.abs(actual[36000:37000])) == pytest.approx(
@@ -2262,7 +2266,7 @@ def test_release_free_contour_finishes_after_note_off_and_restores(
         native_restored.restore(native_snapshot)
         native_replay = native_restored.advance([], 18000, 48000)
         check_audio(
-            tmp_path / "one-shot-contour-persistent.wav", native_actual, expected
+            tmp_path / "one-shot-envelope-persistent.wav", native_actual, expected
         )
         np.testing.assert_allclose(native_replay, native_actual[18000:], atol=0)
 
@@ -2311,7 +2315,7 @@ def test_staged_lfo_fade_remains_exact_across_single_frame_partitions(
     np.testing.assert_allclose(np.vstack((*pieces, tail)), whole, atol=1e-10, rtol=1e-9)
 
 
-def test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics(
+def test_mixed_staged_cycle_and_looping_envelope_keep_scalar_boundary_semantics(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
@@ -2331,7 +2335,7 @@ def test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics(
                     {
                         "name": "ramp",
                         "envelfo": {
-                            "kind": "contour",
+                            "kind": "envelope",
                             "playback": "loop",
                             "segments": [{"duration": "1/4 s", "to": 1}],
                         },
@@ -2372,7 +2376,7 @@ def test_staged_envelfo_renders_and_restores_at_attack_boundary(
             {
                 "name": "attack",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "initial": "current",
                     "segments": [
                         {
@@ -2396,7 +2400,7 @@ def test_staged_envelfo_renders_and_restores_at_attack_boundary(
             {
                 "name": "release",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0.0}],
                 },
@@ -2499,7 +2503,7 @@ def test_staged_sampler_envelfo_releases_and_restores(
             {
                 "name": "attack",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 1.0}],
                 },
@@ -2507,7 +2511,7 @@ def test_staged_sampler_envelfo_releases_and_restores(
             {
                 "name": "release",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0.0}],
                 },

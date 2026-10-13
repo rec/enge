@@ -9,8 +9,8 @@ from test_dynamic_synth import change, dynamic_score, onset
 from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
+from ufor import envelope
 from ufor.control import TempoMap
-from ufor.envelope import Envelope
 from ufor.events import EnvelfoChange, LFOChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
 from ufor.samples.processing import FilterResponse, ResonantFilter
@@ -123,7 +123,7 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
     voice = document.body.voices[0].model_copy(
         update={
             "minimum_hold_seconds": Fraction(1, 10),
-            "envelope": Envelope(
+            "envelope": envelope.Envelope(
                 initial=0.2,
                 segments=[
                     Segment(duration="1/20 s", to=1),
@@ -415,14 +415,14 @@ def test_instrument_lfo_playback_commands_match_offline_and_persistent(
     assert not np.allclose(expected[18000:24000], baseline[18000:24000])
 
 
-@pytest.mark.parametrize("body_kind", ["lfo", "contour", "stages"])
+@pytest.mark.parametrize("body_kind", ["lfo", "envelope", "stages"])
 def test_trigger_envelfo_playback_matches_persistent_native(
     tmp_path: Path, body_kind: str
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
-    contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
-    if body_kind == "contour":
-        body = contour
+    envelope = {"kind": "envelope", "segments": [{"duration": "1 s", "to": 1}]}
+    if body_kind == "envelope":
+        body = envelope
         modulation = raw["body"]["voices"][0]["modulation"]
         modulation["sources"][0]["minimum"] = 0
         modulation["routes"][0]["points"][0]["input"] = 0
@@ -430,7 +430,7 @@ def test_trigger_envelfo_playback_matches_persistent_native(
         body = {
             "kind": "stages",
             "initial_stage": "rise",
-            "stages": [{"name": "rise", "envelfo": contour}],
+            "stages": [{"name": "rise", "envelfo": envelope}],
         }
     else:
         body = raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"]
@@ -523,13 +523,13 @@ def test_trigger_envelfo_playback_matches_persistent_native(
 
 @pytest.mark.parametrize("playback", ["loop", "ping_pong"])
 @pytest.mark.parametrize("named", [False, True])
-def test_contour_playback_and_immediate_release_match_persistent_native(
+def test_envelope_playback_and_immediate_release_match_persistent_native(
     tmp_path: Path, playback: str, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelfos"]["envelfo"]["body"] = {
-        "kind": "contour",
+        "kind": "envelope",
         "playback": playback,
         "segments": [{"duration": "1/2 s", "to": 1}],
         "release": [{"duration": "1/4 s", "to": 0}],
@@ -581,7 +581,7 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
         )
         if end == 24925:
             snapshot = renderer.snapshot()
-    check_audio(tmp_path / f"contour-{playback}-{named}.wav", actual, expected)
+    check_audio(tmp_path / f"envelope-{playback}-{named}.wav", actual, expected)
     restored = PersistentSynth(definition, voices=2)
     restored.restore(snapshot)
     replay = restored.advance(
@@ -592,7 +592,7 @@ def test_contour_playback_and_immediate_release_match_persistent_native(
 
 @pytest.mark.parametrize("playback", ["loop", "ping_pong"])
 @pytest.mark.parametrize("named", [False, True])
-def test_staged_contour_playback_and_release_match_persistent_native(
+def test_staged_envelope_playback_and_release_match_persistent_native(
     tmp_path: Path, playback: str, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
@@ -603,7 +603,7 @@ def test_staged_contour_playback_and_release_match_persistent_native(
             {
                 "name": "sweep",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "playback": playback,
                     "segments": [{"duration": "1/4 s", "to": 1}],
                     "markers": [{"name": "quarter", "position": "1/4"}],
@@ -612,7 +612,7 @@ def test_staged_contour_playback_and_release_match_persistent_native(
             {
                 "name": "release",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "initial": "current",
                     "segments": [{"duration": "1/4 s", "to": 0}],
                 },
@@ -665,7 +665,7 @@ def test_staged_contour_playback_and_release_match_persistent_native(
         )
         if end == 9970:
             snapshot = renderer.snapshot()
-    check_audio(tmp_path / f"staged-contour-{playback}-{named}.wav", actual, expected)
+    check_audio(tmp_path / f"staged-envelope-{playback}-{named}.wav", actual, expected)
     restored = PersistentSynth(definition, voices=2)
     restored.restore(snapshot)
     replay = restored.advance(
@@ -677,7 +677,7 @@ def test_staged_contour_playback_and_release_match_persistent_native(
 @pytest.mark.parametrize(
     ("playback", "boundary"), [("loop", 12000), ("ping_pong", 24000)]
 )
-def test_staged_contour_cycle_enters_next_stage_in_native_runtime(
+def test_staged_envelope_cycle_enters_next_stage_in_native_runtime(
     tmp_path: Path, playback: str, boundary: int
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
@@ -688,7 +688,7 @@ def test_staged_contour_cycle_enters_next_stage_in_native_runtime(
             {
                 "name": "sweep",
                 "envelfo": {
-                    "kind": "contour",
+                    "kind": "envelope",
                     "playback": playback,
                     "segments": [{"duration": "1/4 s", "to": 1}],
                 },
@@ -860,19 +860,19 @@ def test_trigger_envelfo_playback_matches_persistent_fm_and_noise(
 @pytest.mark.parametrize("named", [False, True])
 @pytest.mark.parametrize("staged", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_finite_contour_repeats_match_persistent_native(
+def test_finite_envelope_repeats_match_persistent_native(
     tmp_path: Path, playback: str, named: bool, staged: bool, reverse: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    contour = {
-        "kind": "contour",
+    envelope = {
+        "kind": "envelope",
         "playback": playback,
         "segments": [{"duration": "1/4 s", "to": 1}],
         "repeat_count": 2,
     }
     if named:
-        contour.update(
+        envelope.update(
             {
                 "markers": [
                     {"name": "start", "position": "1/4"},
@@ -886,10 +886,10 @@ def test_finite_contour_repeats_match_persistent_native(
         {
             "kind": "stages",
             "initial_stage": "sweep",
-            "stages": [{"name": "sweep", "envelfo": contour}],
+            "stages": [{"name": "sweep", "envelfo": envelope}],
         }
         if staged
-        else contour
+        else envelope
     )
     if not staged:
         voice["modulation"]["sources"][0]["minimum"] = 0
@@ -917,7 +917,7 @@ def test_finite_contour_repeats_match_persistent_native(
     second = renderer.advance(later, 13337, 48000)
     actual = np.concatenate([first, second])
     check_audio(
-        tmp_path / f"finite-contour-{playback}-{named}-{staged}-{reverse}.wav",
+        tmp_path / f"finite-envelope-{playback}-{named}-{staged}-{reverse}.wav",
         actual,
         expected,
     )
@@ -930,7 +930,7 @@ def test_host_tempo_quantizes_envelfo_change_for_both_renderers(tmp_path: Path) 
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelfos"]["envelfo"]["body"] = {
-        "kind": "contour",
+        "kind": "envelope",
         "segments": [{"duration": "1 s", "to": 1}],
     }
     voice["modulation"]["sources"][0]["minimum"] = 0
@@ -1063,7 +1063,7 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
         ("loop", "stage.done", 12000, False),
     ],
 )
-def test_staged_contour_events_cue_another_envelfo_in_native_runtime(
+def test_staged_envelope_events_cue_another_envelfo_in_native_runtime(
     tmp_path: Path, playback: str, port: str, boundary: int, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
@@ -1077,7 +1077,7 @@ def test_staged_contour_events_cue_another_envelfo_in_native_runtime(
                     {
                         "name": "sweep",
                         "envelfo": {
-                            "kind": "contour",
+                            "kind": "envelope",
                             "playback": playback,
                             "segments": [{"duration": "1/4 s", "to": 1}],
                         },
@@ -1162,14 +1162,14 @@ def test_staged_contour_events_cue_another_envelfo_in_native_runtime(
     expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)
     actual = PersistentSynth(definition, voices=2).advance(actions, 0, 48000)
     check_audio(
-        tmp_path / f"staged-contour-event-{playback}-{port}-{named}.wav",
+        tmp_path / f"staged-envelope-event-{playback}-{port}-{named}.wav",
         actual,
         expected,
     )
     assert abs(expected[boundary + 1, 0]) > abs(expected[boundary - 1, 0])
 
 
-def test_reversed_contour_markers_repeat_across_native_snapshot(
+def test_reversed_envelope_markers_repeat_across_native_snapshot(
     tmp_path: Path,
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
@@ -1183,7 +1183,7 @@ def test_reversed_contour_markers_repeat_across_native_snapshot(
                     {
                         "name": "sweep",
                         "envelfo": {
-                            "kind": "contour",
+                            "kind": "envelope",
                             "playback": "loop",
                             "segments": [{"duration": "1/4 s", "to": 1}],
                             "markers": [
@@ -1271,7 +1271,7 @@ def test_reversed_contour_markers_repeat_across_native_snapshot(
     snapshot = renderer.snapshot()
     second = renderer.advance([a for a in actions if a.tick >= 24001], 24001, 48000)
     actual = np.concatenate((first, second))
-    check_audio(tmp_path / "reversed-contour-markers.wav", actual, expected)
+    check_audio(tmp_path / "reversed-envelope-markers.wav", actual, expected)
     restored = PersistentSynth(definition, voices=2)
     restored.restore(snapshot)
     np.testing.assert_allclose(

@@ -24,7 +24,7 @@ Other names considered:
 | Envelfo | Recognizable envelope-plus-LFO name; distinctive and searchable | Broader capabilities need explanation |
 | Modulator | Established synthesizer terminology | Also used for FM audio operators; suggests a destination is necessary |
 | Gesture | Expressive and musical | Suggests a finite performance rather than a continuous process |
-| Contour | Good for a shaped trajectory | Too narrow for followers, randomness, and external programs |
+| Envelope | Good for a shaped trajectory | Too narrow for followers, randomness, and external programs |
 | Function | General, with modular-synth precedent | Abstract; suggests a stateless calculation |
 
 `Envelfo` is the chosen name. Informal testing with electronic musicians found
@@ -74,7 +74,7 @@ The ufor paths refer to the sibling ufor repository.
 
 An envelfo answers five questions:
 
-1. **What does it produce?** A waveform, contour, sequence, random movement,
+1. **What does it produce?** A waveform, envelope, sequence, random movement,
    measurement, recording, or external calculation.
 2. **What moves it?** Elapsed time, musical time, incoming pulses, or another
    signal controlling its position.
@@ -133,7 +133,7 @@ name = "soft-pluck"
 title = "Soft pluck"
 
 [body]
-kind = "contour"
+kind = "envelope"
 initial = 0.0
 segments = [
   { duration = "10 ms", to = 1.0 },
@@ -149,8 +149,8 @@ may use that event for voice retirement; an arbitrary modulation envelope must
 not kill the voice just because it finishes.
 
 The musician writes neither a graph nor a state machine for either example.
-`lfo` and `contour` are distinct useful body types with the same external
-contract. A contour without release is an autonomous one-shot: activation
+`lfo` and `envelope` are distinct useful body types with the same external
+contract. A envelope without release is an autonomous one-shot: activation
 starts it and reaching its end completes it. An explicit `playback` setting can
 instead loop or reflect it. These defaults are selected by the documented body
 variant, never guessed from the instrument target.
@@ -161,7 +161,7 @@ Use a small, specified unit grammar, not an expression language:
 
 - Durations: `"10 ms"`, `"0.2 s"`, `"1/4 beat"`.
 - Rates: `"5 Hz"`, `"2 cycles/beat"`.
-- Positions: numeric fractions of a cycle or contour, with named markers for
+- Positions: numeric fractions of a cycle or envelope, with named markers for
   musically meaningful places.
 
 Parse decimal and fractional time literals exactly. Beats require a named clock
@@ -195,7 +195,7 @@ envelfo = { kind = "hold", value = 0.0 }
 
 [[body.stages]]
 name = "attack"
-envelfo = { kind = "contour", initial = "current", segments = [
+envelfo = { kind = "envelope", initial = "current", segments = [
   { duration = "300 ms", to = 0.7 },
 ] }
 
@@ -205,7 +205,7 @@ envelfo = { kind = "lfo", shape = "sine", rate = "3 Hz", center = 0.7, depth = 0
 
 [[body.stages]]
 name = "release"
-envelfo = { kind = "contour", initial = "current", segments = [
+envelfo = { kind = "envelope", initial = "current", segments = [
   { duration = "500 ms", to = 0.0 },
 ] }
 
@@ -250,7 +250,7 @@ special case in the other.
 ## 6. Playback, triggers, and movement through a shape
 
 Separate the shape from the mechanism moving through it. An LFO reads a
-periodic shape; a contour reads a bounded trajectory; a recording reads stored
+periodic shape; a envelope reads a bounded trajectory; a recording reads stored
 values. These bodies can share a position driver.
 
 | Command | Meaning |
@@ -281,9 +281,9 @@ This is a signed playback-rate type, separate from the existing strictly
 positive Hz domain used for sound-frequency targets. A rate change preserves
 position. Changing direction does not retrigger or restart delay/fade behavior.
 For a periodic reader, the unwrapped coordinate continues counting positive
-or negative turns; the shape is sampled at its fractional phase. Contours
+or negative turns; the shape is sampled at its fractional phase. Envelopes
 reverse through their authored shape, including the curvature of each segment.
-For a contour starting from `current`, retain the captured entry value when
+For a envelope starting from `current`, retain the captured entry value when
 reversing that traversal. Do not recapture it on every direction change.
 
 A position input, such as `{ source = "scrub.value" }`, can replace an internal
@@ -345,8 +345,8 @@ Output source domains must cover conservative inferred ranges. LFO onset
 weights scale transform inputs toward zero; the transformed output has weight
 one. Regression coverage includes envelope-shaped vibrato, seconds and beat
 clocks, tempo changes, release, partitioning, and exact snapshot replay.
-Contour input bindings retain explicit voice-timed release even when they have
-no direct parameter route; unbound input contours default to immediate release.
+Envelope input bindings retain explicit voice-timed release even when they have
+no direct parameter route; unbound input envelopes default to immediate release.
 
 Reuse existing typed modulation routes for signal-to-parameter connections.
 An envelfo's rate, depth, phase offset, curve, and other declared inputs are
@@ -390,7 +390,7 @@ discarded when that voice stops or retires. Both renderers cap pending delayed
 commands at 4096 per voice and report overflow. Native preparation reserves this
 queue only for voices with delayed connections; enqueueing does not grow it.
 At a shared instant, natural source events precede delayed commands. Delayed cues
-with the same deadline retain enqueue order; Contour starts retain their existing
+with the same deadline retain enqueue order; Envelope starts retain their existing
 time/connection ordering. Zero delay keeps immediate
 delivery. A native deadline that cannot advance or remain finite at its floating
 frame coordinate is an error, not an immediate delivery.
@@ -408,7 +408,7 @@ rate = "2 Hz"
 markers = [{ name = "peak", position = 0.25, direction = "forward" }]
 
 [body.envelfos.accent]
-kind = "contour"
+kind = "envelope"
 initial = 0.0
 start = "event"
 segments = [{ duration = "80 ms", to = 1.0 }, { duration = "120 ms", to = 0.0 }]
@@ -422,7 +422,7 @@ action = { kind = "start" }
 value = "accent.value"
 ```
 
-Here `start="event"` overrides the autonomous contour's activation default.
+Here `start="event"` overrides the autonomous envelope's activation default.
 References such as `wobble.peak` have the fixed grammar `instance.port`; instance
 names cannot contain dots. They are references, not expressions.
 
@@ -508,9 +508,9 @@ in the first release.
 | Rhythmic patterns | Step sequences; Euclidean event patterns; ratchets; swing; alternating lengths; event counting and clock division |
 | Variation | Seeded sample-and-hold; smooth noise; random walks with boundaries; weighted stage choices; probability changing with velocity |
 | Coupled movement | One envelfo changes another's speed; quadrature outputs; polymetric loops; explicit delayed feedback and phase coupling |
-| Reactive movement | Audio-level followers; pitch/onset analysis; pressure, breath, or sensor inputs; threshold-triggered contours |
+| Reactive movement | Audio-level followers; pitch/onset analysis; pressure, breath, or sensor inputs; threshold-triggered envelopes |
 | Memory | Capture a played control gesture; repeat or stretch it; hold the value present at a marker; latch a peak until a cue |
-| Structured expression | Morph between two shapes at the same position; bias/skew a contour; quantize to musical pitch intervals; smooth only falling edges |
+| Structured expression | Morph between two shapes at the same position; bias/skew a envelope; quantize to musical pitch intervals; smooth only falling edges |
 | Physical models | A damped spring after each trigger; bouncing/settling gestures; resonant responses to impulses |
 | Multi-output gestures | A bow stroke producing pressure, brightness, and vibrato depth from shared progress; correlated spatial trajectories |
 | Performance structure | Evolve across a phrase or song section; reset on a bar cue; transition at a zero crossing to reduce discontinuities |
@@ -565,7 +565,7 @@ The host maps physical key presses and retriggers to these stable owners.
 | --- | --- | --- |
 | `hold` | `value` | Constant signal, also useful as a waiting stage |
 | `lfo` | `shape`, rate or position driver, `phase`, `center`, `depth`, optional markers/playback | Periodic waveform or reusable periodic shape |
-| `contour` | `initial`, `segments`, optional `release`, `start`, `playback`, markers | Traversable finite shape; release makes it a triggered envelope by default |
+| `envelope` | `initial`, `segments`, optional `release`, `start`, `playback`, markers | Traversable finite shape; release makes it a triggered envelope by default |
 | `stages` | `initial_stage`, named child uses, ordered transitions | One active child; events select the behavior |
 | `patch` | Named child uses, signal routes, event connections, output selections | Children run together and interact |
 | `random` | Algorithm, seed, range, update driver, interpolation | Deterministic random process with stated reversibility |
@@ -574,8 +574,8 @@ The host maps physical key presses and retriggers to these stable owners.
 | `transform` | Operation and typed inputs/options | Sum, product, map, slew, quantize, delay, latch, or other registered operation |
 | `external` | Provider identity/version, port contract, configuration, execution contract | Call a separately implemented generator |
 
-`steps` can be a library contour using held segments. ADSR can be a library
-contour with exposed attack/decay/sustain/release parameters. Delay and fade-in
+`steps` can be a library envelope using held segments. ADSR can be a library
+envelope with exposed attack/decay/sustain/release parameters. Delay and fade-in
 can be library compositions. Do not add a second runtime implementation just
 because a common preset deserves a friendly name.
 
@@ -775,7 +775,7 @@ generator engines.
    ownership, lifecycle, units, completion, and event boundary rules. Have a
    musician read the simple and staged TOML examples without explanatory prose.
 2. **Establish the common contract.** Introduce envelfo definitions and instances
-   for LFO/contour; reuse existing waveform/envelope kernels and routing.
+   for LFO/envelope; reuse existing waveform/envelope kernels and routing.
    Preserve current behavior in conformance fixtures. Keep the schema tagged,
    and reject unsupported body kinds explicitly.
 3. **Add library uses and public parameters.** Integrate existing references,

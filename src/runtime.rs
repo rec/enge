@@ -90,7 +90,7 @@ struct NamedEnvelopeDefinition {
 }
 
 #[derive(Clone)]
-struct NamedContourState {
+struct NamedEnvelopeState {
     random_state: u64,
     playback: PlaybackState,
     start_value: f64,
@@ -132,7 +132,7 @@ struct PatchStageStartConnection {
 }
 
 #[derive(Clone)]
-struct ContourStart {
+struct EnvelopeStart {
     at: f64,
     order: usize,
     voice: usize,
@@ -296,7 +296,7 @@ type StageInput = (
     f64,
     Option<usize>,
 );
-type NamedContourInput = (
+type NamedEnvelopeInput = (
     usize,
     usize,
     f64,
@@ -383,7 +383,7 @@ pub struct SynthRuntimeSnapshot {
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
-    pending_contour_starts: Vec<ContourStart>,
+    pending_envelope_starts: Vec<EnvelopeStart>,
     delayed_events: Vec<Vec<DelayedEvent>>,
     event_counts: Vec<usize>,
     envelfo_keys: Vec<u64>,
@@ -405,7 +405,7 @@ pub struct SynthRuntimeSnapshot {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
-    named_states: Vec<NamedContourState>,
+    named_states: Vec<NamedEnvelopeState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -465,7 +465,7 @@ pub struct SynthRuntime {
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
-    pending_contour_starts: Vec<ContourStart>,
+    pending_envelope_starts: Vec<EnvelopeStart>,
     delayed_events: Vec<Vec<DelayedEvent>>,
     event_counts: Vec<usize>,
     envelfo_keys: Vec<u64>,
@@ -487,7 +487,7 @@ pub struct SynthRuntime {
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
     mod_release_levels: Vec<f64>,
-    named_states: Vec<NamedContourState>,
+    named_states: Vec<NamedEnvelopeState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -616,7 +616,7 @@ impl SynthRuntime {
             named_owners: Vec::new(),
             patch_events: Vec::new(),
             patch_stage_starts: Vec::new(),
-            pending_contour_starts: Vec::new(),
+            pending_envelope_starts: Vec::new(),
             delayed_events: (0..slots).map(|_| Vec::new()).collect(),
             event_counts: Vec::new(),
             envelfo_keys: vec![0; slots],
@@ -867,7 +867,7 @@ impl SynthRuntime {
         initials: Vec<f64>,
         attacks: Vec<Vec<(f64, f64)>>,
         releases: Vec<Vec<(f64, f64)>>,
-        parameters: Vec<NamedContourInput>,
+        parameters: Vec<NamedEnvelopeInput>,
     ) -> PyResult<()> {
         let count = initials.len();
         if attacks.len() != count || releases.len() != count || parameters.len() != count {
@@ -944,7 +944,7 @@ impl SynthRuntime {
             .iter()
             .cycle()
             .take(states)
-            .map(|definition| named_contour_initial(definition, 0.0))
+            .map(|definition| named_envelope_initial(definition, 0.0))
             .collect();
         Ok(())
     }
@@ -1633,7 +1633,7 @@ impl SynthRuntime {
             named_owners: self.named_owners.clone(),
             patch_events: self.patch_events.clone(),
             patch_stage_starts: self.patch_stage_starts.clone(),
-            pending_contour_starts: self.pending_contour_starts.clone(),
+            pending_envelope_starts: self.pending_envelope_starts.clone(),
             delayed_events: self.delayed_events.clone(),
             event_counts: self.event_counts.clone(),
             envelfo_keys: self.envelfo_keys.clone(),
@@ -1696,8 +1696,8 @@ impl SynthRuntime {
         self.named_states.clone_from(&snapshot.named_states);
         self.staged_states.clone_from(&snapshot.staged_states);
         self.staged_pending.clone_from(&snapshot.staged_pending);
-        self.pending_contour_starts
-            .clone_from(&snapshot.pending_contour_starts);
+        self.pending_envelope_starts
+            .clone_from(&snapshot.pending_envelope_starts);
         for (queue, saved) in self.delayed_events.iter_mut().zip(&snapshot.delayed_events) {
             queue.clone_from(saved);
         }
@@ -1989,7 +1989,7 @@ impl SynthRuntime {
             self.advance_patch_events(true)?;
             self.advance_staged(self.frame as f64, true, true)?;
             self.dispatch_staged_events()?;
-            self.flush_contour_starts()?;
+            self.flush_envelope_starts()?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
@@ -2346,7 +2346,7 @@ impl SynthRuntime {
                 }
                 let envelope_base = voice * self.named_envelopes.len();
                 for (index, definition) in self.named_envelopes.iter().enumerate() {
-                    self.named_states[envelope_base + index] = named_contour_initial(
+                    self.named_states[envelope_base + index] = named_envelope_initial(
                         definition,
                         self.named_time(definition, self.frame as f64),
                     );
@@ -2601,7 +2601,7 @@ impl SynthRuntime {
                 }
                 let at = self.named_time(definition, self.frame as f64);
                 let mut state =
-                    named_contour_settled(definition, &self.named_states[index], self.frame as f64);
+                    named_envelope_settled(definition, &self.named_states[index], self.frame as f64);
                 if let Some(count) = definition.repeat_count.filter(|_| !state.released) {
                     if state.complete_coordinate.is_none() {
                         let (crossed, boundary) = repeat_crossings(
@@ -3031,7 +3031,7 @@ impl SynthRuntime {
                     count += 1;
                     continue;
                 }
-                self.pending_contour_starts.push(ContourStart {
+                self.pending_envelope_starts.push(EnvelopeStart {
                     at: event.at,
                     order: connection.order,
                     voice: event.voice,
@@ -3131,7 +3131,7 @@ impl SynthRuntime {
                 }
                 continue;
             }
-            self.pending_contour_starts.push(ContourStart {
+            self.pending_envelope_starts.push(EnvelopeStart {
                 at,
                 order: connection.order,
                 voice,
@@ -3192,7 +3192,7 @@ impl SynthRuntime {
                         });
                     }
                 } else {
-                    self.pending_contour_starts.push(ContourStart {
+                    self.pending_envelope_starts.push(EnvelopeStart {
                         at,
                         voice,
                         destination,
@@ -3205,11 +3205,11 @@ impl SynthRuntime {
         Ok(count)
     }
 
-    fn flush_contour_starts(&mut self) -> PyResult<()> {
-        if self.pending_contour_starts.len() > 4096 {
+    fn flush_envelope_starts(&mut self) -> PyResult<()> {
+        if self.pending_envelope_starts.len() > 4096 {
             return Err(PyValueError::new_err("Patch event capacity exceeded"));
         }
-        let mut starts = std::mem::take(&mut self.pending_contour_starts);
+        let mut starts = std::mem::take(&mut self.pending_envelope_starts);
         starts.sort_by(|a, b| {
             a.at.total_cmp(&b.at)
                 .then_with(|| a.order.cmp(&b.order))
@@ -3226,9 +3226,9 @@ impl SynthRuntime {
             let start_value = if previous.idle {
                 definition.initial
             } else {
-                named_contour_value(definition, previous, event.at, event.at)
+                named_envelope_value(definition, previous, event.at, event.at)
             };
-            let mut state = named_contour_initial(definition, event.at);
+            let mut state = named_envelope_initial(definition, event.at);
             state.idle = false;
             state.start_value = start_value;
             self.named_states[index] = state;
@@ -3318,7 +3318,7 @@ impl SynthRuntime {
                     }
                     1 => {
                         let definition = &self.named_envelopes[*source];
-                        named_contour_value(
+                        named_envelope_value(
                             definition,
                             &self.named_states
                                 [voice * self.named_envelopes.len() + self.named_owners[*source]],
@@ -3448,7 +3448,7 @@ impl SynthRuntime {
             if definition.parameter != parameter {
                 continue;
             }
-            let value = named_contour_value(
+            let value = named_envelope_value(
                 definition,
                 &self.named_states[envelope_base + self.named_owners[source]],
                 self.named_time(definition, self.frame as f64),
@@ -3935,9 +3935,9 @@ pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -
     entry
 }
 
-fn named_contour_initial(definition: &NamedEnvelopeDefinition, at: f64) -> NamedContourState {
+fn named_envelope_initial(definition: &NamedEnvelopeDefinition, at: f64) -> NamedEnvelopeState {
     let duration = total_frames(&definition.attack);
-    NamedContourState {
+    NamedEnvelopeState {
         random_state: 0,
         playback: PlaybackState {
             at,
@@ -3956,11 +3956,11 @@ fn named_contour_initial(definition: &NamedEnvelopeDefinition, at: f64) -> Named
     }
 }
 
-fn named_contour_settled(
+fn named_envelope_settled(
     definition: &NamedEnvelopeDefinition,
-    state: &NamedContourState,
+    state: &NamedEnvelopeState,
     frame: f64,
-) -> NamedContourState {
+) -> NamedEnvelopeState {
     let mut settled = state.clone();
     if let Some((_, release_at)) = state
         .pending_release
@@ -3970,7 +3970,7 @@ fn named_contour_settled(
         let value = envelope_value(
             state.start_value,
             &definition.attack,
-            named_contour_coordinate(definition, state, release_at) * duration,
+            named_envelope_coordinate(definition, state, release_at) * duration,
         );
         let release_duration = total_frames(&definition.release);
         settled.start_value = value;
@@ -3994,9 +3994,9 @@ fn named_contour_settled(
     settled
 }
 
-fn named_contour_value(
+fn named_envelope_value(
     definition: &NamedEnvelopeDefinition,
-    state: &NamedContourState,
+    state: &NamedEnvelopeState,
     at: f64,
     frame: f64,
 ) -> f64 {
@@ -4006,7 +4006,7 @@ fn named_contour_value(
     if state.idle {
         return definition.initial;
     }
-    let settled = named_contour_settled(definition, state, frame);
+    let settled = named_envelope_settled(definition, state, frame);
     let segments = if settled.released {
         &definition.release
     } else {
@@ -4016,7 +4016,7 @@ fn named_contour_value(
     envelope_value(
         settled.start_value,
         segments,
-        named_contour_coordinate(definition, &settled, at) * duration,
+        named_envelope_coordinate(definition, &settled, at) * duration,
     )
 }
 
@@ -4076,13 +4076,13 @@ fn repeat_boundary_coordinate(
             loop_start
         }
     } else {
-        contour_coordinate(boundary, playback, loop_start, loop_end)
+        envelope_coordinate(boundary, playback, loop_start, loop_end)
     }
 }
 
-fn named_contour_coordinate(
+fn named_envelope_coordinate(
     definition: &NamedEnvelopeDefinition,
-    state: &NamedContourState,
+    state: &NamedEnvelopeState,
     at: f64,
 ) -> f64 {
     if let Some(coordinate) = state.complete_coordinate {
@@ -4108,7 +4108,7 @@ fn named_contour_coordinate(
             }
         }
     }
-    contour_coordinate(
+    envelope_coordinate(
         state.playback.coordinate_at(at),
         if state.released {
             0
@@ -4120,7 +4120,7 @@ fn named_contour_coordinate(
     )
 }
 
-fn contour_coordinate(coordinate: f64, playback: usize, start: f64, end: f64) -> f64 {
+fn envelope_coordinate(coordinate: f64, playback: usize, start: f64, end: f64) -> f64 {
     if start != 0.0 || end != 1.0 {
         if coordinate < end {
             return coordinate.max(0.0);
@@ -4175,7 +4175,7 @@ fn staged_value(definition: &StagedEnvelfoDefinition, state: &StagedEnvelfoState
                     stage.loop_end,
                 )
             } else {
-                contour_coordinate(coordinate, stage.playback, stage.loop_start, stage.loop_end)
+                envelope_coordinate(coordinate, stage.playback, stage.loop_start, stage.loop_end)
             };
             envelope_value(state.entry_value, &stage.segments, bounded * duration)
         }
@@ -4564,7 +4564,7 @@ fn forward_event(count: &mut usize, state: &mut u64, every: usize, probability: 
     random_word(state) >> 11 < probability
 }
 
-fn sample_hold_draw(definition: &NamedEnvelopeDefinition, state: &mut NamedContourState) {
+fn sample_hold_draw(definition: &NamedEnvelopeDefinition, state: &mut NamedEnvelopeState) {
     let (_, minimum, maximum) = definition.sample_hold.unwrap();
     let word = random_word(&mut state.random_state);
     state.start_value =

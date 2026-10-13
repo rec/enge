@@ -7,8 +7,7 @@ import pytest
 from test_filters import matrix_filter
 from test_synth import check_audio
 from test_synth_demo import publish_flac
-from ufor import synth_trace
-from ufor.envelope import Envelope
+from ufor import envelope, synth_trace
 from ufor.events import ControlChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
 from ufor.samples.processing import FilterOrder, ResonantFilter
@@ -55,7 +54,7 @@ def scalar_noise(key: int, start: int, count: int) -> np.ndarray:
 def definition() -> noise.PreparedVoice:
     return noise.PreparedVoice(
         sample_rate=48000,
-        envelope=Envelope(
+        envelope=envelope.Envelope(
             segments=[Segment(duration=0, to=1)],
             release=[Segment(duration="1/10 s", to=0)],
         ),
@@ -215,7 +214,7 @@ def test_persistent_noise_matches_native_across_blocks_and_restore(
 
 
 @pytest.mark.parametrize("playback", ["once", "loop", "ping_pong"])
-def test_persistent_noise_applies_contour_playback(
+def test_persistent_noise_applies_envelope_playback(
     tmp_path: Path, playback: str
 ) -> None:
     raw = score().model_dump()
@@ -223,7 +222,7 @@ def test_persistent_noise_applies_contour_playback(
     voice["envelfos"] = {
         "envelfo": {
             "body": {
-                "kind": "contour",
+                "kind": "envelope",
                 "playback": playback,
                 "initial": 0,
                 "segments": [{"duration": "1/4 s", "to": 1}],
@@ -278,7 +277,9 @@ def test_persistent_noise_applies_contour_playback(
         [action for action in actions if 24925 <= action.tick < 48000], 24925, 48000
     )
 
-    check_audio(tmp_path / f"persistent-noise-contour-{playback}.wav", actual, expected)
+    check_audio(
+        tmp_path / f"persistent-noise-envelope-{playback}.wav", actual, expected
+    )
     np.testing.assert_allclose(replay, actual[24925:], atol=0)
 
 

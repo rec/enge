@@ -22,12 +22,12 @@ Rust extraction update, 2026-10-12: the sibling `envelfo-core` crate now owns
 checked rational time, exact scalar LFO state/commands, and the native random
 word kernel. It passes the four LFO cases and random vectors directly from
 the shared corpus, without a Python process. enge's native runtime imports that
-kernel. Contours, Stages, markers, composition and native exact-time adapter
+kernel. Envelopes, Stages, markers, composition and native exact-time adapter
 integration are still missing from the standalone Rust core; the matrix's
 native column continues to describe enge, not completed standalone parity.
 
 Rust extraction update, 2026-10-13: `envelfo-core` now also provides normalized
-Contour/Stages definitions and exact playback. Curved segments, current-level
+Envelope/Stages definitions and exact playback. Curved segments, current-level
 release/retrigger and Stage entry capture, named-loop finite repeats, markers
 and transitions pass direct Rust tests; all ten shared body traces now run in
 both languages. Clone continuation and failed-update rollback are covered.
@@ -73,19 +73,19 @@ Neither kind proves an independent Rust library exists.
 | Definitions, units, library references | uFor `envelfo.py`, `library.py`, `segments.py`, `score_types.py` | Prepared tuples supplied by Python, not equivalent authored-document validation | uFor `test_envelfo_score_round_trips_simple_bodies`, `test_example_envelfo_library_resolves_all_scores`, `test_units.py`; normalized Rust definition boundary still to extract |
 | Hold | `Stages` child and `envelfo_at`/`advance_envelfo` | `StageDefinition` kind 0, `staged_value` | Baseline `hold-is-a-stage`; Hold is not an allowed top-level `EnvelfoUse.body` |
 | LFO signals and commands | `initial_envelfo`, `envelfo_at`, `envelfo_event`; uFor shape mathematics | `src/lfo.rs`, `LfoDefinition`, `LfoEventState`, staged LFO evaluation | uFor `test_cycle_pause_reverse_and_seek_preserve_seconds_position`; enge `test_instrument_lfo_playback_commands_match_offline_and_persistent`; no standalone state API yet |
-| Contour attacks, release, loops, reversal, finite repeats | uFor Contour evaluation and position/state functions | `NamedContourState`, `PlaybackState`, contour coordinate/repeat helpers | uFor `test_triggered_contour_holds_then_releases_from_current_value`, `test_finite_contour_repeats_hold_final_boundary`; enge `test_finite_contour_repeats_match_persistent_native` |
-| Curved Contour segments | uFor `envelope.curve_at`/`curve_progress`, used by Contours and Stages | Persistent named/staged preparation rejects nonzero segment curves | enge `_persistent_modulation` and `_runtime_staged_envelfo`; Rust curved-segment parity is missing, not implied by linear audio tests |
-| Stage transition events and entry capture | uFor `advance_envelfo`, `next_stage_event` | `StagedEnvelfoState`, `next_staged_event`, `staged_transition` | uFor `test_note_off_at_stage_end_discards_obsolete_completion`; enge `test_staged_contour_events_cue_another_envelfo_in_native_runtime`; Rust event time is currently floating point |
+| Envelope attacks, release, loops, reversal, finite repeats | uFor Envelope evaluation and position/state functions | `NamedEnvelopeState`, `PlaybackState`, envelope coordinate/repeat helpers | uFor `test_triggered_envelope_holds_then_releases_from_current_value`, `test_finite_envelope_repeats_hold_final_boundary`; enge `test_finite_envelope_repeats_match_persistent_native` |
+| Curved Envelope segments | uFor `envelope.curve_at`/`curve_progress`, used by Envelopes and Stages | Persistent named/staged preparation rejects nonzero segment curves | enge `_persistent_modulation` and `_runtime_staged_envelfo`; Rust curved-segment parity is missing, not implied by linear audio tests |
+| Stage transition events and entry capture | uFor `advance_envelfo`, `next_stage_event` | `StagedEnvelfoState`, `next_staged_event`, `staged_transition` | uFor `test_note_off_at_stage_end_discards_obsolete_completion`; enge `test_staged_envelope_events_cue_another_envelfo_in_native_runtime`; Rust event time is currently floating point |
 | Patch named signal/event outputs | Definitions/ranges/order in uFor; execution and child materialization in enge | Prepared transform nodes, children and connection tables in persistent runtime | enge `test_patch_named_outputs_match_separate_envelfos`, `test_patch_named_event_output_cues_stage`; `initial_envelfo` does not evaluate a Patch independently |
 | Sum, Product, Affine, Quantize | uFor stateless helpers; enge graph execution | `envelfo_transform_values` evaluation | uFor `test_patch_transforms_follow_dependencies_without_clipping`, `test_quantize_half_steps_choose_the_higher_value`; enge `test_quantize_grid_matches_across_clocks_partitions_and_snapshots` |
-| SampleHold | uFor `SampleHoldState`, explicit sample-event draws; enge owns per-voice seed derivation | SampleHold lowered through named contour state; SplitMix64 implementation | uFor `test_sample_hold_draws_only_on_sample_events_and_restores_its_stream`; enge `test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise` |
+| SampleHold | uFor `SampleHoldState`, explicit sample-event draws; enge owns per-voice seed derivation | SampleHold lowered through named envelope state; SplitMix64 implementation | uFor `test_sample_hold_draws_only_on_sample_events_and_restores_its_stream`; enge `test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise` |
 | Latch, Threshold, Slew | uFor scalar helpers; enge owns observation grid, retained graph state and resulting deliveries | Persistent transform state and connection processing | enge `test_latch_activation_and_same_frame_captures`, `test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots`, `test_slew_shared_state_limits_rates_and_restores_mid_ramp`; independent Python graph execution still missing |
 | Event division, offset, chance, delayed delivery | uFor connection validation; enge `ControlRenderer` event queues and counters | Prepared connection tables, `forward_event`, delayed-event queues | enge `test_patch_division_is_first_aligned_independent_and_snapshot_safe`, `test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe`, `test_delayed_envelfo_events_report_queue_and_clock_limits` |
 | Beats, tempo, stop, seek, quantized commands | uFor `TempoMap` and trace preparation; enge converts host time to the instance clock | Prepared `BeatPoint` observations; native playback between host points | uFor `test_synth_trace_cancels_pending_envelfo_command_on_transport_seek`; enge `test_beat_stages_follow_tempo_and_stop_across_restore`, `test_host_tempo_quantizes_envelfo_change_for_both_renderers`; clock acquisition is not part of either core |
 | Direct transport-position LFO | uFor `PositionDriver.transport`, `envelfo_at` | Native LFO transport-position flag | enge `test_transport_position_cycle_follows_seek_without_crossing_history`; only beat-clock LFOs with transport reset and no delay/fade are allowed |
 | Scope, trigger addressing and release ownership | uFor trace contracts; enge instance admission/routing/lifecycle | Voice/context slots and prepared source owners | enge `test_trigger_addressed_envelfo_changes_only_matching_voice`, `test_trigger_envelfo_playback_matches_persistent_fm_and_noise`; host ownership remains outside the control core |
 | Snapshots and continuation | uFor scalar state JSON; enge aggregate snapshots | Cloned opaque `SynthRuntimeSnapshot` | enge `test_trigger_envelfo_playback_matches_persistent_native` and operator snapshot tests; no shared Rust/Python snapshot wire format exists |
-| Event-free block acceleration | enge `_envelfo_span`, `lfo_samples`, `_envelope_values`; scalar fallback for unsupported spans | Native block LFO/audio kernels and persistent frame processing | enge `test_staged_cycle_fade_remains_exact_across_single_frame_partitions`, `test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics`; acceleration is not the reference contract |
+| Event-free block acceleration | enge `_envelfo_span`, `lfo_samples`, `_envelope_values`; scalar fallback for unsupported spans | Native block LFO/audio kernels and persistent frame processing | enge `test_staged_cycle_fade_remains_exact_across_single_frame_partitions`, `test_mixed_staged_cycle_and_looping_envelope_keep_scalar_boundary_semantics`; acceleration is not the reference contract |
 | arpeg control/event interoperation | arpeg runtime and explicit ports, not yet an enveLFO dependency | `arpeg-core` `ports.rs`, exact `Beat = Ratio<i64>` | Rust `InputPort` includes expression names, but `check_control` rejects breath/bend/pressure with "expression controls require the MIDI player"; standalone expression integration is unfinished |
 
 ## Exact current reference boundary
@@ -93,7 +93,7 @@ Neither kind proves an independent Rust library exists.
 These public functions describe existing behavior; this slice adds no new
 runtime API:
 
-- `initial_envelfo(use, at, seed=0)` initializes LFO, Contour, Stages, or
+- `initial_envelfo(use, at, seed=0)` initializes LFO, Envelope, Stages, or
   SampleHold. References must already be materialized. Patch initialization
 uses the separate standalone `envelfo.patch` orchestration API.
 - `envelfo_at(use, state, at)` observes a scalar result. For Stages it computes
@@ -107,7 +107,7 @@ uses the separate standalone `envelfo.patch` orchestration API.
   still perform advancement to obtain state transitions and emitted events.
 
 Supported command sets are body-specific. For example, LFO rejects cue/sample,
-Contour rejects cue/reset/transport/rate/sample, and transport-position LFO
+Envelope rejects cue/reset/transport/rate/sample, and transport-position LFO
 rejects phase commands. Do not silently add support or manufacture empty event
 lists for features that have no standalone event-emission API today.
 
@@ -132,7 +132,7 @@ Natural markers at a named loop boundary precede `cycle`/`turned`. Named
 forward loop wraps emit both start and end markers at the wrap time in their
 existing marker order, including the final crossing. Ping-pong turns do not
 invent the opposite endpoint marker. These rules are already covered by uFor's
-`test_named_contour_loop_boundaries_preserve_markers_and_events`.
+`test_named_envelope_loop_boundaries_preserve_markers_and_events`.
 
 Finite repeat counts count boundary crossings, including reversed crossings.
 The final crossing emits its boundary events then `stage.done`; an explicit finish
@@ -261,7 +261,7 @@ boundary without NumPy or an enge import. The future
 Rust runner must read the same cases directly; the current native audio tests
 remain supporting evidence, not a shared standalone conformance runner.
 
-Four shared Patch traces now anchor exact LFO-to-Contour starts, explicit
+Four shared Patch traces now anchor exact LFO-to-Envelope starts, explicit
 Threshold delivery, retained signal observations and graph ordering, without
 importing enge or NumPy. Standalone unit cases also
 exercise staged cues, elapsed beat clocks, stop/seek maps, seconds delays,
@@ -271,7 +271,7 @@ comparing standalone and audio-host results. Matching a different host's
 flattened connection index is not assumed.
 
 Pending shared additions are broader Patch/connection and observation traces,
-curved contours, mapped tempo/quantized transport,
+curved envelopes, mapped tempo/quantized transport,
 capacity/error cases and arpeg combined expression traces. Existing tests above
 remain in place; this initial baseline does not replace their coverage or claim
 those extraction gaps are resolved.

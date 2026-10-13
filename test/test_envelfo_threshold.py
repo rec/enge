@@ -85,7 +85,7 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
         }
     if target == "start":
         envelfos["attack"] = {
-            "kind": "contour",
+            "kind": "envelope",
             "initial": 0,
             "start": "event",
             "segments": [{"duration": "1/16 s", "to": 1}],
