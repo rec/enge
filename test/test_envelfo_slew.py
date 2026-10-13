@@ -26,7 +26,7 @@ def slew_score(
                 "kind": "patch",
                 "envelfos": {
                     "clock": {
-                        "kind": "cycle",
+                        "kind": "lfo",
                         "shape": "square",
                         "rate": "2",
                         "phase": "1/2",

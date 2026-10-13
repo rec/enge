@@ -11,7 +11,7 @@ instrumentation overhead and are not ordinary test timings.
 uv run pytest --durations=30
 uv run pytest -n 0 test/test_control.py
 uv run python -m cProfile -o /private/tmp/enge-latch.prof -m pytest -n 0 -q \
-  'test/test_envelfo_latch.py::test_latch_captures_delivery_frame_with_independent_gates_and_snapshot[1.0-cycle-numpy]'
+  'test/test_envelfo_latch.py::test_latch_captures_delivery_frame_with_independent_gates_and_snapshot[1.0-lfo-numpy]'
 ```
 
 Read the profile without launching the engine:
@@ -38,7 +38,7 @@ and the default native build without the optional Rubber Band feature:
   single-frame cancellation and malformed/nonfinite signals.
 - Representative Latch test under cProfile: 27.95 seconds before optimization,
   16.60 seconds afterward. This is approximately 41% less test time.
-- The profile identified repeated Cycle-to-LFO model validation, one-frame
+- The profile identified repeated enveLFO-to-renderer-LFO model validation, one-frame
   LFO span generation, and one-element modulation arrays as bottlenecks.
   WAV regression writing was not a significant cost in this profile.
 
@@ -61,7 +61,7 @@ After optimization, the same 38-case selection with ten workers took
 
 ## Changes and coverage
 
-The renderer retains converted immutable Cycle definitions for its lifetime.
+The renderer retains converted immutable LFO definitions for its lifetime.
 Exact one-frame NumPy LFO queries reuse uFor's scalar evaluator; interpolated
 sine queries still use their event-anchored interpolation grid. Native LFO
 queries still execute the Rust kernel. One-frame modulation uses the existing
@@ -95,13 +95,13 @@ uv run python -m cProfile -o /private/tmp/enge-stages.prof -m pytest -n 0 -q \
 
 The follow-up renders event-free seconds-clock intervals using the existing
 LFO and linear-envelope block kernels. uFor's natural-boundary query determines
-where the next stage event occurs. Cycle markers and queued deliveries also
+where the next stage event occurs. LFO markers and queued deliveries also
 bound each interval. The original delivery loop still processes those events
 at exact fractional times, including multiple events observed on one frame.
 State is advanced to the last observed frame of each interval, preserving
 snapshot and subsequent-command timing.
 
-Staged Cycle values remain exact even when the host requests interpolated
+Staged LFO values remain exact even when the host requests interpolated
 ordinary LFO controls. Delay/fade weights are applied inside the staged value,
 as in the scalar reference. Beat clocks, nonlinear or reversing contours, and
 per-frame Latch/Threshold/Slew observation retain their existing evaluation
@@ -128,8 +128,8 @@ URL with uFor's HTTPS source; repository Git remotes remain SSH.
   51.84 seconds before. `advance_envelfo` calls fell from 688,264 to 624;
   event-processing time fell from 51.23 seconds to 0.09 seconds.
 - All 1,206 uFor tests passed for the boundary-query change. The six new enge
-  cases cover exact staged Cycle delay/fade under control intervals and
-  single-frame partitions, plus mixed staged Cycle/looping-Contour evaluation.
+  cases cover exact staged LFO delay/fade under control intervals and
+  single-frame partitions, plus mixed staged LFO/looping-Contour evaluation.
 
 Full-suite timings are single-host measurements, not cross-platform guarantees.
 The remaining slowest cases involve per-frame threshold/slew observations and

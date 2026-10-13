@@ -13,7 +13,7 @@ from test_sample_instrument import sample_score
 from test_synth import check_audio, score
 from ufor import envelfo_random, instrument_trace, synth_trace
 from ufor.control import TempoMap
-from ufor.envelfo import Cycle, EnvelfoParameter, EnvelfoScore, ParameterReference
+from ufor.envelfo import LFO, EnvelfoParameter, EnvelfoScore, ParameterReference
 from ufor.events import EnvelfoChange, LFOChange, Release
 from ufor.library import Entry, Library
 from ufor.samples import instrument, processing, trace
@@ -29,7 +29,7 @@ def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
                 "envelfo": {
                     "scope": scope,
                     "body": {
-                        "kind": "cycle",
+                        "kind": "lfo",
                         "rate": "4",
                         "phase": "1/4",
                         "delay": "1/8",
@@ -94,7 +94,7 @@ def test_patch_transforms_share_children_and_match_native_runtime(
                     "sum": {"kind": "sum", "inputs": ["shaped", "vib"]},
                     "shaped": {"kind": "product", "inputs": ["vib", "env"]},
                     "vib": {
-                        "kind": "cycle",
+                        "kind": "lfo",
                         "shape": "triangle",
                         "rate": "2",
                         "phase": "1/4",
@@ -250,7 +250,7 @@ def test_patch_transforms_share_children_and_match_native_runtime(
 
 
 @pytest.mark.parametrize("scope", ["part", "instrument"])
-def test_patch_cycle_transforms_use_shared_absolute_clocks(
+def test_patch_lfo_transforms_use_shared_absolute_clocks(
     tmp_path: Path, scope: str
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
@@ -258,8 +258,8 @@ def test_patch_cycle_transforms_use_shared_absolute_clocks(
     voice["envelfos"]["envelfo"]["body"] = {
         "kind": "patch",
         "envelfos": {
-            "cycle": {"kind": "cycle", "rate": "4", "phase": "1/4"},
-            "sum": {"kind": "sum", "inputs": ["cycle", "cycle"]},
+            "lfo": {"kind": "lfo", "rate": "4", "phase": "1/4"},
+            "sum": {"kind": "sum", "inputs": ["lfo", "lfo"]},
             "output": {"kind": "affine", "input": "sum", "scale": 0.25, "offset": 1},
         },
         "outputs": {"level": "output"},
@@ -489,7 +489,7 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
         "clock": "beats",
         "position_driver": "transport",
         "body": {
-            "kind": "cycle",
+            "kind": "lfo",
             "shape": "triangle",
             "rate": "1/4",
             "reset": "transport",
@@ -534,7 +534,7 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
     restored.restore(saved)
     np.testing.assert_array_equal(restored.advance([], 24000, 48000), second)
     check_audio(
-        tmp_path / f"transport-cycle-{backend}.wav",
+        tmp_path / f"transport-lfo-{backend}.wav",
         np.vstack((first, second)),
         expected,
     )
@@ -546,7 +546,7 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
     restored.restore(saved)
     np.testing.assert_array_equal(restored.advance([], 24000, 48000), second)
     check_audio(
-        tmp_path / "transport-cycle-persistent.wav",
+        tmp_path / "transport-lfo-persistent.wav",
         np.vstack((first, second)),
         expected,
     )
@@ -554,7 +554,7 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
 
 @pytest.mark.parametrize(
     ("shared_child", "shared_body"),
-    [(False, "stages"), (True, "stages"), (True, "cycle"), (True, "contour")],
+    [(False, "stages"), (True, "stages"), (True, "lfo"), (True, "contour")],
 )
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_patch_named_outputs_match_separate_envelfos(
@@ -578,7 +578,7 @@ def test_patch_named_outputs_match_separate_envelfos(
             },
             {
                 "name": "sustain",
-                "envelfo": {"kind": "cycle", "rate": "2", "center": 0.8, "depth": 0.2},
+                "envelfo": {"kind": "lfo", "rate": "2", "center": 0.8, "depth": 0.2},
             },
             {
                 "name": "release",
@@ -602,9 +602,9 @@ def test_patch_named_outputs_match_separate_envelfos(
             },
         ],
     }
-    vibrato = {"kind": "cycle", "rate": "5"}
+    vibrato = {"kind": "lfo", "rate": "5"}
     contour = {"kind": "contour", "segments": [{"duration": "1 s", "to": 1}]}
-    child = {"stages": stages, "cycle": vibrato, "contour": contour}[shared_body]
+    child = {"stages": stages, "lfo": vibrato, "contour": contour}[shared_body]
     voice["envelfos"] = {"amp": {"body": child}}
     if not shared_child:
         voice["envelfos"]["vib"] = {"body": vibrato}
@@ -720,7 +720,7 @@ def test_patch_named_outputs_match_separate_envelfos(
     second_actions = [a for a in patch_actions if a.tick >= 24000]
     first = renderer.advance(first_actions, 0, 24000)
     snapshot = renderer.snapshot()
-    if shared_child and shared_body == "cycle":
+    if shared_child and shared_body == "lfo":
         assert len(snapshot.lfos) == 1
     else:
         assert len(snapshot.envelopes) == 1
@@ -766,8 +766,8 @@ def test_patch_named_outputs_match_separate_envelfos(
 @pytest.mark.parametrize(
     ("source_kind", "phase", "first_marker"),
     [
-        ("cycle", "0", 6000),
-        ("cycle", "1/7", 2572),
+        ("lfo", "0", 6000),
+        ("lfo", "1/7", 2572),
         ("staged-marker", "0", 6000),
         ("staged-marker", "1/7", 2572),
         ("staged-done", "0", 12000),
@@ -780,7 +780,7 @@ def test_patch_child_event_starts_unexposed_contour(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     clock = {
-        "kind": "cycle",
+        "kind": "lfo",
         "rate": "2",
         "phase": phase,
         "markers": [{"name": "peak", "position": "1/4"}],
@@ -798,7 +798,7 @@ def test_patch_child_event_starts_unexposed_contour(
                 }
             ],
         }
-    elif source_kind != "cycle":
+    elif source_kind != "lfo":
         clock = {
             "kind": "stages",
             "initial_stage": "playing",
@@ -908,7 +908,7 @@ def test_patch_child_event_starts_unexposed_contour(
     )
 
 
-@pytest.mark.parametrize("source_kind", ["cycle", "stages"])
+@pytest.mark.parametrize("source_kind", ["lfo", "stages"])
 @pytest.mark.parametrize("command", ["start", "cue"])
 @pytest.mark.parametrize("divisors", [[3], [2, 3]])
 @pytest.mark.parametrize("restart", [False, True])
@@ -942,7 +942,7 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     clock = {
-        "kind": "cycle",
+        "kind": "lfo",
         "rate": "8",
         "markers": [{"name": "pulse", "position": "1/4"}],
     }
@@ -1154,7 +1154,7 @@ def test_delayed_envelfo_events_report_queue_and_clock_limits(
     voice["envelfos"] = {
         "clock": {
             "body": {
-                "kind": "cycle",
+                "kind": "lfo",
                 "rate": "48000",
                 "markers": [{"name": "pulse", "position": "1/4"}],
             }
@@ -1195,12 +1195,12 @@ def test_delayed_envelfo_events_report_queue_and_clock_limits(
         }
     ]
     if burst:
-        cycle = voice["envelfos"]["clock"]["body"]
-        cycle["markers"].append({"name": "tick", "position": "1/2"})
+        lfo = voice["envelfos"]["clock"]["body"]
+        lfo["markers"].append({"name": "tick", "position": "1/2"})
         voice["envelfos"]["clock"]["body"] = {
             "kind": "stages",
             "initial_stage": "running",
-            "stages": [{"name": "running", "envelfo": cycle}],
+            "stages": [{"name": "running", "envelfo": lfo}],
         }
         voice["event_connections"][0]["every"] = 100
         voice["event_connections"] *= 4096
@@ -1260,7 +1260,7 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
                 "kind": "patch",
                 "envelfos": {
                     "early": {
-                        "kind": "cycle",
+                        "kind": "lfo",
                         "rate": "1",
                         "markers": [{"name": "mark", "position": "1/192000"}],
                     },
@@ -1339,8 +1339,8 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
 @pytest.mark.parametrize(
     ("source_kind", "phase", "first_event"),
     [
-        ("cycle", "0", 6000),
-        ("cycle", "1/7", 2572),
+        ("lfo", "0", 6000),
+        ("lfo", "1/7", 2572),
         ("staged-marker", "0", 6000),
         ("staged-marker", "1/7", 2572),
         ("staged-done", "0", 12000),
@@ -1352,12 +1352,12 @@ def test_patch_child_event_cues_child_stages(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     clock = {
-        "kind": "cycle",
+        "kind": "lfo",
         "rate": "2",
         "phase": phase,
         "markers": [{"name": "peak", "position": "1/4"}],
     }
-    if source_kind != "cycle":
+    if source_kind != "lfo":
         clock = {
             "kind": "stages",
             "initial_stage": "playing",
@@ -1466,7 +1466,7 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     stage_position = "1/4" if stage_first else "3/4"
-    cycle_position = "3/192000" if stage_first else "1/192000"
+    lfo_position = "3/192000" if stage_first else "1/192000"
     voice["envelfos"] = {
         "gesture": {
             "body": {
@@ -1489,9 +1489,9 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
                         ],
                     },
                     "cycling": {
-                        "kind": "cycle",
+                        "kind": "lfo",
                         "rate": "1",
-                        "markers": [{"name": "mark", "position": cycle_position}],
+                        "markers": [{"name": "mark", "position": lfo_position}],
                     },
                     "level": {
                         "kind": "stages",
@@ -1578,7 +1578,7 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
-def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
+def test_beat_lfo_tracks_host_tempo_in_both_offline_backends(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
@@ -1586,7 +1586,7 @@ def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     voice["envelfos"]["envelfo"] = {
         "clock": "beats",
         "body": {
-            "kind": "cycle",
+            "kind": "lfo",
             "rate": "1",
             "delay": "1/4",
             "fade_in": "1/4",
@@ -1620,12 +1620,12 @@ def test_beat_cycle_tracks_host_tempo_in_both_offline_backends(
     expected = np.zeros((48000, 2), dtype=np.float64)
     weight = np.clip((beats - 0.25) / 0.25, 0, 1)
     expected[:, 0] = 1 + weight * (0.625 + 0.375 * np.sin(2 * np.pi * beats) - 1)
-    check_audio(tmp_path / f"beat-cycle-{backend}.wav", actual, expected)
+    check_audio(tmp_path / f"beat-lfo-{backend}.wav", actual, expected)
     if backend == "numpy":
         native = synth.PersistentSynth(
             synth.prepare(document), voices=2, tempo_map=clock
         ).advance(actions, 0, 48000)
-        check_audio(tmp_path / "beat-cycle-persistent.wav", native, expected)
+        check_audio(tmp_path / "beat-lfo-persistent.wav", native, expected)
 
 
 def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
@@ -1675,14 +1675,14 @@ def test_persistent_beat_contour_releases_at_frame_boundary_while_clock_stops(
 
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 @pytest.mark.parametrize("scope", ["voice", "instrument"])
-def test_beat_cycle_pause_preserves_musical_phase(
+def test_beat_lfo_pause_preserves_musical_phase(
     tmp_path: Path, backend: Literal["numpy", "native"], scope: str
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "scope": scope,
         "clock": "beats",
-        "body": {"kind": "cycle", "rate": "1"},
+        "body": {"kind": "lfo", "rate": "1"},
     }
     document = SynthInstrumentScore.model_validate(raw)
     clock = TempoMap.model_validate(
@@ -1730,7 +1730,7 @@ def test_beat_cycle_pause_preserves_musical_phase(
     beats = 2 * np.minimum(seconds, 0.25) + np.maximum(seconds - 0.5, 0)
     expected = np.zeros((48000, 2), dtype=np.float64)
     expected[:, 0] = 0.625 + 0.375 * np.sin(2 * np.pi * beats)
-    check_audio(tmp_path / f"beat-cycle-pause-{backend}-{scope}.wav", actual, expected)
+    check_audio(tmp_path / f"beat-lfo-pause-{backend}-{scope}.wav", actual, expected)
     if backend == "numpy":
         definition = synth.prepare(document)
         native = synth.PersistentSynth(definition, voices=2, tempo_map=clock)
@@ -1744,7 +1744,7 @@ def test_beat_cycle_pause_preserves_musical_phase(
             second,
         )
         check_audio(
-            tmp_path / f"beat-cycle-pause-persistent-{scope}.wav",
+            tmp_path / f"beat-lfo-pause-persistent-{scope}.wav",
             np.vstack((first, second)),
             expected,
         )
@@ -1947,7 +1947,7 @@ def test_library_envelfo_materializes_before_synth_preparation(tmp_path: Path) -
                             unit="hz", default=5, minimum=0.1, maximum=20
                         )
                     },
-                    body=Cycle(
+                    body=LFO(
                         rate=ParameterReference(parameter="speed"),
                         phase=Fraction(1, 4),
                         delay=Fraction(1, 8),
@@ -2268,7 +2268,7 @@ def test_release_free_contour_finishes_after_note_off_and_restores(
 
 
 @pytest.mark.parametrize("interval", [1, 64])
-def test_staged_cycle_fade_remains_exact_across_single_frame_partitions(
+def test_staged_lfo_fade_remains_exact_across_single_frame_partitions(
     tmp_path: Path, backend: Literal["numpy", "native"], interval: int
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
@@ -2279,7 +2279,7 @@ def test_staged_cycle_fade_remains_exact_across_single_frame_partitions(
             {
                 "name": "wave",
                 "envelfo": {
-                    "kind": "cycle",
+                    "kind": "lfo",
                     "rate": "3",
                     "phase": "1/7",
                     "center": 0.3,
@@ -2301,7 +2301,7 @@ def test_staged_cycle_fade_remains_exact_across_single_frame_partitions(
     weights = np.clip((frames - 1.5) / 2400.5, 0, 1)
     values = 0.3 + 0.4 * weights * np.sin(2 * np.pi * (1 / 7 + frames * 3 / 48000))
     expected = np.column_stack((0.625 + 0.375 * values, np.zeros(48000)))
-    check_audio(tmp_path / f"stage-cycle-{backend}-{interval}.wav", whole, expected)
+    check_audio(tmp_path / f"stage-lfo-{backend}-{interval}.wav", whole, expected)
     partitioned = synth.OfflineSynth(prepared, backend, control_interval=interval)
     pieces = [partitioned.advance(actions, 0, 1), partitioned.advance([], 1, 2)]
     saved = partitioned.snapshot()
@@ -2322,7 +2322,7 @@ def test_mixed_staged_cycle_and_looping_contour_keep_scalar_boundary_semantics(
             "wave": {
                 "kind": "stages",
                 "initial_stage": "wave",
-                "stages": [{"name": "wave", "envelfo": {"kind": "cycle", "rate": "2"}}],
+                "stages": [{"name": "wave", "envelfo": {"kind": "lfo", "rate": "2"}}],
             },
             "ramp": {
                 "kind": "stages",
@@ -2387,7 +2387,7 @@ def test_staged_envelfo_renders_and_restores_at_attack_boundary(
             {
                 "name": "sway",
                 "envelfo": {
-                    "kind": "cycle",
+                    "kind": "lfo",
                     "rate": "4",
                     "center": 0.6,
                     "depth": 0.2,
@@ -2577,12 +2577,12 @@ def test_staged_marker_cues_another_envelfo_at_exact_time(
         "clock": {
             "body": {
                 "kind": "stages",
-                "initial_stage": "cycle",
+                "initial_stage": "lfo",
                 "stages": [
                     {
-                        "name": "cycle",
+                        "name": "lfo",
                         "envelfo": {
-                            "kind": "cycle",
+                            "kind": "lfo",
                             "rate": "1",
                             "markers": [{"name": "peak", "position": position}],
                         },
@@ -2705,7 +2705,7 @@ def test_staged_marker_cues_another_envelfo_at_exact_time(
         np.testing.assert_allclose(native_replay, native_second, atol=0)
 
 
-@pytest.mark.parametrize("child_kind", ["cycle", "stages"])
+@pytest.mark.parametrize("child_kind", ["lfo", "stages"])
 @pytest.mark.parametrize("backend", ["numpy", "native"])
 def test_patch_named_event_output_cues_stage(
     tmp_path: Path, backend: Literal["numpy", "native"], child_kind: str
@@ -2713,7 +2713,7 @@ def test_patch_named_event_output_cues_stage(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     pulse = {
-        "kind": "cycle",
+        "kind": "lfo",
         "rate": "1",
         "markers": [{"name": "peak", "position": "1/4"}],
     }
@@ -2727,7 +2727,7 @@ def test_patch_named_event_output_cues_stage(
         "patch": {
             "body": {
                 "kind": "patch",
-                "envelfos": {"carrier": {"kind": "cycle", "rate": "1"}, "pulse": pulse},
+                "envelfos": {"carrier": {"kind": "lfo", "rate": "1"}, "pulse": pulse},
                 "outputs": {"signal": "carrier"},
                 "event_outputs": {"strike": "pulse.peak"},
             }
@@ -2877,7 +2877,7 @@ def test_named_lfo_names_remain_local_to_settings_and_instances(
             "envelfos": {
                 "envelfo": {
                     "scope": scope,
-                    "body": {"kind": "cycle", "rate": "0", "phase": "3/4"},
+                    "body": {"kind": "lfo", "rate": "0", "phase": "3/4"},
                 }
             },
         }

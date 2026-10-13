@@ -149,7 +149,7 @@ struct StageDefinition {
     initial: f64,
     current_initial: bool,
     segments: Vec<Segment>,
-    cycle: Vec<f64>,
+    lfo: Vec<f64>,
     markers: Vec<(f64, String)>,
 }
 
@@ -1030,7 +1030,7 @@ impl SynthRuntime {
                         initial,
                         current_initial,
                         segments,
-                        cycle,
+                        lfo,
                         markers,
                         playback,
                         loop_start,
@@ -1054,19 +1054,19 @@ impl SynthRuntime {
                                 && segments.iter().map(|(frames, _)| frames).sum::<f64>() <= 0.0)
                             || (kind != 1 && !segments.is_empty())
                             || (kind == 2
-                                && (cycle.len() != 8
-                                    || cycle.iter().any(|value| !value.is_finite())
-                                    || !(0.0..=2.0).contains(&cycle[0])
-                                    || cycle[0].fract() != 0.0
-                                    || cycle[1] < 0.0
-                                    || !(0.0..1.0).contains(&cycle[2])
-                                    || !(0.0..=1.0).contains(&cycle[3])
-                                    || cycle[4] < 0.0
-                                    || cycle[5] < 0.0
-                                    || cycle[7] < 0.0
-                                    || cycle[6] - cycle[7] < -1.0
-                                    || cycle[6] + cycle[7] > 1.0))
-                            || (kind != 2 && !cycle.is_empty())
+                                && (lfo.len() != 8
+                                    || lfo.iter().any(|value| !value.is_finite())
+                                    || !(0.0..=2.0).contains(&lfo[0])
+                                    || lfo[0].fract() != 0.0
+                                    || lfo[1] < 0.0
+                                    || !(0.0..1.0).contains(&lfo[2])
+                                    || !(0.0..=1.0).contains(&lfo[3])
+                                    || lfo[4] < 0.0
+                                    || lfo[5] < 0.0
+                                    || lfo[7] < 0.0
+                                    || lfo[6] - lfo[7] < -1.0
+                                    || lfo[6] + lfo[7] > 1.0))
+                            || (kind != 2 && !lfo.is_empty())
                             || (kind == 0 && !markers.is_empty())
                             || markers.iter().any(|(position, name)| {
                                 !position.is_finite()
@@ -1089,7 +1089,7 @@ impl SynthRuntime {
                                 .into_iter()
                                 .map(|(frames, target)| Segment { frames, target })
                                 .collect(),
-                            cycle,
+                            lfo,
                             markers,
                         })
                     },
@@ -2677,7 +2677,7 @@ impl SynthRuntime {
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
                 {
-                    return Err(PyValueError::new_err("Invalid voice Cycle action"));
+                    return Err(PyValueError::new_err("Invalid voice LFO action"));
                 }
                 let definition = &self.lfo_definitions[source];
                 let index = voice * self.lfo_definitions.len() + source;
@@ -4180,29 +4180,29 @@ fn staged_value(definition: &StagedEnvelfoDefinition, state: &StagedEnvelfoState
             envelope_value(state.entry_value, &stage.segments, bounded * duration)
         }
         _ => {
-            let cycle = &stage.cycle;
+            let lfo = &stage.lfo;
             let phase = state.playback.coordinate_at(at).rem_euclid(1.0);
             let age = state.playback.age_at(at);
-            let weight = if age < cycle[4] {
+            let weight = if age < lfo[4] {
                 0.0
-            } else if cycle[5] == 0.0 {
+            } else if lfo[5] == 0.0 {
                 1.0
             } else {
-                ((age - cycle[4]) / cycle[5]).clamp(0.0, 1.0)
+                ((age - lfo[4]) / lfo[5]).clamp(0.0, 1.0)
             };
-            let shape = match cycle[0] as usize {
+            let shape = match lfo[0] as usize {
                 0 => (TAU * phase).sin(),
                 1 => {
-                    if phase < cycle[3] {
+                    if phase < lfo[3] {
                         1.0
                     } else {
                         -1.0
                     }
                 }
-                _ if phase < cycle[3] => 2.0 * phase / cycle[3] - 1.0,
-                _ => (1.0 + cycle[3] - 2.0 * phase) / (1.0 - cycle[3]),
+                _ if phase < lfo[3] => 2.0 * phase / lfo[3] - 1.0,
+                _ => (1.0 + lfo[3] - 2.0 * phase) / (1.0 - lfo[3]),
             };
-            cycle[6] + cycle[7] * weight * shape
+            lfo[6] + lfo[7] * weight * shape
         }
     }
 }
@@ -4211,7 +4211,7 @@ fn stage_playback(stage: &StageDefinition, at: f64, paused: bool, direction: f64
     let (coordinate, rate) = match stage.kind {
         0 => (0.0, 0.0),
         1 => (0.0, 1.0 / total_frames(&stage.segments)),
-        _ => (stage.cycle[2], stage.cycle[1]),
+        _ => (stage.lfo[2], stage.lfo[1]),
     };
     PlaybackState {
         at,

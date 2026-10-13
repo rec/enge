@@ -119,7 +119,7 @@ around Rust. Use the same definitions and conformance inputs for both paths.
 
 The extraction is an import and ownership change, not a redesign. Preserve:
 
-- Cycle shapes, phase, delay, fade, reset, and signal ranges.
+- LFO shapes, phase, delay, fade, reset, and signal ranges.
 - Contour segments, release timing, loops, direction, finite repeats, and
   boundary completion behavior.
 - Stages, transitions, captured entry values, and named outputs.
@@ -160,7 +160,7 @@ between implementations cannot conceal the same mistake in both.
 
 Cover:
 
-1. Hold, ordinary Cycle, and attack/release Contour common cases.
+1. Hold, ordinary LFO, and attack/release Contour common cases.
 2. Fractional boundaries, simultaneous events, named markers, loops, finite
    repeats, reverse/pause/resume/seek, and delayed commands.
 3. Seconds and beat clocks, tempo changes, stops, transport seeks, and
@@ -188,7 +188,7 @@ documented local position and lifecycle.
 Start with a small deterministic composition:
 
 - arpeg emits a hit event that triggers an enveLFO contour.
-- A separate enveLFO Cycle supplies a named expression output for played notes.
+- A separate enveLFO LFO supplies a named expression output for played notes.
 - Explicit mapping delivers that output to arpeg's existing expression path,
   without discarding the note's captured breath, bend, or controller ownership.
 
@@ -237,11 +237,11 @@ Replacing that entire audio-host adapter with the standalone scheduler remains
 consumer integration work, not completed parity.
 
 Step 3 started on 2026-10-12. `crates/envelfo-core` now provides checked signed
-64-bit rational components, exact Cycle playback/commands and portable random
+64-bit rational components, exact LFO playback/commands and portable random
 words, independently of Python, NumPy and enge. Arithmetic reduces i128
 intermediates before checking the final i64 components and returns explicit
-overflow errors; failed Cycle commands preserve the original state. Four shared
-Cycle traces and the portable random vectors run directly in Rust, alongside
+overflow errors; failed LFO commands preserve the original state. Four shared
+LFO traces and the portable random vectors run directly in Rust, alongside
 boundary/overflow tests in debug and optimized builds. enge consumes the extracted
 random-word kernel rather than retaining a duplicate. Native playback still uses
 floating-point event positions. Contours, Stages, marker emission, Patch
@@ -257,14 +257,14 @@ tests also cover irregular advance partitions, cloned continuation, reversal,
 same-time preemption, exact ordering near float precision limits and transactional
 rollback on overflow or the 4096-event capacity limit. enge pins this revision,
 but its native audio adapter still uses the existing floating-point Contour and
-Stage state. Standalone Patch operations/scheduling, top-level Cycle marker
+Stage state. Standalone Patch operations/scheduling, top-level LFO marker
 emission, host tempo maps, serialized Rust snapshots, bindings and exact native
 adapter integration remain unfinished. No new musical policy decisions were
 needed for this slice.
 
 Step 3 continued with Patch orchestration on 2026-10-13. The standalone Rust
 core now executes materialized Patch graphs, all seven signal operators,
-SampleHold children and Cycle markers, named signal/event outputs, Stage cues,
+SampleHold children and LFO markers, named signal/event outputs, Stage cues,
 start/sample/capture connections and delayed deliveries. Exact scheduling keeps
 external commands, natural boundaries, zero-delay cascades and host observations
 in their established phases. Division/offset/chance retain independent stream

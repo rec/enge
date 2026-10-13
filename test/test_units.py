@@ -89,7 +89,7 @@ def test_quantity_authored_instruments_match_canonical_audio(
 def test_quantity_authored_envelfo_preserves_fractional_event_delivery(
     tmp_path: Path, backend: Literal["numpy", "native", "persistent"]
 ) -> None:
-    canonical = latch_score("cycle", 1)
+    canonical = latch_score("lfo", 1)
     raw = canonical.model_dump(mode="json")
     patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
     patch["envelfos"]["clock"]["rate"] = "8 Hz"

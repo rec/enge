@@ -327,7 +327,7 @@ def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(
     voice["envelfos"] = {
         "envelfo": {
             "scope": "instrument",
-            "body": {"kind": "cycle", "shape": "sine", "rate": 2},
+            "body": {"kind": "lfo", "shape": "sine", "rate": 2},
         }
     }
     voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
@@ -793,9 +793,7 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
 
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["envelfos"] = {
-        "color": {"body": {"kind": "cycle", "shape": "sine", "rate": 2}}
-    }
+    voice["envelfos"] = {"color": {"body": {"kind": "lfo", "shape": "sine", "rate": 2}}}
     voice["modulation"]["sources"][0].update(scope="voice", minimum=-1)
     voice["modulation"]["routes"][0]["points"] = [
         {"input": -1, "amount": -1},

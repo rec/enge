@@ -394,9 +394,7 @@ def test_noise_lfo_amplitude_matches_oracle(
         "segments": [{"duration": 0, "to": 1}],
         "release": [{"duration": 0, "to": 0}],
     }
-    voice["envelfos"] = {
-        "pulse": {"body": {"kind": "cycle", "shape": "sine", "rate": 2}}
-    }
+    voice["envelfos"] = {"pulse": {"body": {"kind": "lfo", "shape": "sine", "rate": 2}}}
     voice["modulation"] = {
         "sources": [{"name": "pulse", "scope": "voice", "minimum": -1, "maximum": 1}],
         "parameters": [

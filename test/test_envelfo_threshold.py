@@ -17,7 +17,7 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     envelfos: dict[str, object] = {
-        "clock": {"kind": "cycle", "shape": "square", "rate": "4", "phase": "1/2"},
+        "clock": {"kind": "lfo", "shape": "square", "rate": "4", "phase": "1/2"},
         "edge": {"kind": "threshold", "input": "clock", "lower": -0.25, "upper": 0.25},
         "level": {"kind": "affine", "input": "edge", "scale": 0.5, "offset": 0.5},
     }

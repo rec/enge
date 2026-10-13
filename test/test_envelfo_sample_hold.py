@@ -21,7 +21,7 @@ def sample_hold_score(source_kind: str, probability: float) -> SynthInstrumentSc
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     clock = {
-        "kind": "cycle",
+        "kind": "lfo",
         "rate": "8",
         "markers": [{"name": "pulse", "position": "1/4"}],
     }
@@ -78,7 +78,7 @@ def sample_hold_score(source_kind: str, probability: float) -> SynthInstrumentSc
     return SynthInstrumentScore.model_validate(raw)
 
 
-@pytest.mark.parametrize("source_kind", ["cycle", "stages"])
+@pytest.mark.parametrize("source_kind", ["lfo", "stages"])
 @pytest.mark.parametrize("probability", [0.0, 0.5, 1.0])
 def test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe(
     tmp_path: Path,

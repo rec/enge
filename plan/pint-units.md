@@ -90,7 +90,7 @@ The proposed signal-delay node is not implemented by this units integration.
   magnitudes, such as seconds and frequency.
 - `ufor/segments.py` parses a small set of duration suffixes itself and preserves
   exact rational seconds or beats.
-- `ufor/envelfo.py` separately recognizes a Cycle rate's `Hz` suffix.
+- `ufor/envelfo.py` separately recognizes a LFO rate's `Hz` suffix.
 - Other portable models, including arpeggiation declarations, have additional
   musical-time parsing. An inventory must find these rather than assuming the two
   visible parsers are the complete list.
@@ -140,9 +140,9 @@ with unit suffixes in their names.
 | --- | --- | --- |
 | Physical time | delays, fades, stage durations, smoothing, grain history | Seconds; exact fractions for exact-time models |
 | Musical time | beat durations, positions, quantization, tempo | Exact beats or declared tempo coordinates |
-| Frequency and rate | tuning, filters, Cycles, grain density | Hz or the field's declared rate unit |
+| Frequency and rate | tuning, filters, LFOs, grain density | Hz or the field's declared rate unit |
 | Gain and pitch | dB gain, cents offsets, pitch ratios | Existing logarithmic coordinate or ratio |
-| Phase and angles | radians, Cycle phase, phase offsets | Declared radians or fraction of a turn |
+| Phase and angles | radians, LFO phase, phase offsets | Declared radians or fraction of a turn |
 | Sample-grid time | frame offsets, crossfades, capacities, timebases | Integer frames when the field requires integers |
 | Electrical and declared signal units | volts, seconds-valued signals | Unit declared by the port or parameter |
 | Contextual values | parameter defaults/limits, route points | Unit derived from the relevant declaration; Patch signals stay dimensionless |
@@ -219,7 +219,7 @@ seconds. There is no global fixed beat-to-second or frame-to-second conversion:
 
 Explicit quantity units select seconds versus beats only where the existing
 model permits either. Declared clocks and units must otherwise agree with input.
-Cycle rates in Hz and cycles per beat likewise retain their different clocks.
+LFO rates in Hz and cycles per beat likewise retain their different clocks.
 
 ## Semantic units need more than dimensionality
 

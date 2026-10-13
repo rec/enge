@@ -415,7 +415,7 @@ def test_instrument_lfo_playback_commands_match_offline_and_persistent(
     assert not np.allclose(expected[18000:24000], baseline[18000:24000])
 
 
-@pytest.mark.parametrize("body_kind", ["cycle", "contour", "stages"])
+@pytest.mark.parametrize("body_kind", ["lfo", "contour", "stages"])
 def test_trigger_envelfo_playback_matches_persistent_native(
     tmp_path: Path, body_kind: str
 ) -> None:
@@ -725,7 +725,7 @@ def test_trigger_envelfo_playback_matches_persistent_fm_and_noise(
     )
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
-        "envelfo": {"body": {"kind": "cycle", "rate": "2", "phase": "1/4"}}
+        "envelfo": {"body": {"kind": "lfo", "rate": "2", "phase": "1/4"}}
     }
     voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
     target = (
@@ -982,12 +982,12 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
         "clock": {
             "body": {
                 "kind": "stages",
-                "initial_stage": "cycle",
+                "initial_stage": "lfo",
                 "stages": [
                     {
-                        "name": "cycle",
+                        "name": "lfo",
                         "envelfo": {
-                            "kind": "cycle",
+                            "kind": "lfo",
                             "rate": "1",
                             "phase": "1/2",
                             "markers": [{"name": "quarter", "position": "1/4"}],

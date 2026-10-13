@@ -22,6 +22,10 @@ Envelopes and LFOs share the Envelfo control model. Its Python types use
 use `envelfos`. This is a breaking rename: update existing documents and imports;
 old spellings and compatibility aliases are not supported.
 
+The periodic Envelfo body is named `LFO` and uses `kind = "lfo"`. Update the
+former `Cycle` spelling in authored documents and imports; there is no alias.
+The `cycle` output event still denotes a completed loop traversal.
+
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,
 smooths controls in their declared scopes, preserves phase through pitch changes,

@@ -32,7 +32,7 @@ def test_quantize_grid_matches_across_clocks_partitions_and_snapshots(
     voice["envelfos"]["envelfo"]["body"] = {
         "kind": "patch",
         "envelfos": {
-            "wave": {"kind": "cycle", "shape": "triangle", "rate": "2"},
+            "wave": {"kind": "lfo", "shape": "triangle", "rate": "2"},
             "steps": {
                 "kind": "quantize",
                 "input": "wave",

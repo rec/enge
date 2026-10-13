@@ -11,10 +11,10 @@ import numpy as np
 from envelfo.patch import connection_gate, observe_signals
 from envelfo.runtime import (
     advance_envelfo,
-    cycle_lfo,
     envelfo_at,
     envelfo_event,
     initial_envelfo,
+    lfo_definition,
     next_stage_event,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -22,11 +22,10 @@ from ufor import envelfo_random, instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.control import TempoMap
 from ufor.envelfo import (
+    LFO,
     Affine,
     Contour,
     ContourState,
-    Cycle,
-    CycleState,
     EnterStage,
     EnvelfoEvent,
     EnvelfoOutputEvent,
@@ -34,6 +33,7 @@ from ufor.envelfo import (
     EnvelfoUse,
     Hold,
     Latch,
+    LFOState,
     Patch,
     PlaybackMode,
     Product,
@@ -509,7 +509,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                 EnvelfoUse(
                     scope=parent.scope,
                     clock=parent.clock,
-                    body=cast(Cycle | Contour | Stages | SampleHold, child),
+                    body=cast(LFO | Contour | Stages | SampleHold, child),
                 ),
             )
             if any(
@@ -702,7 +702,7 @@ class ControlRenderer:
         self.cached_lfos: dict[int, np.ndarray] = {}
         self.cached_envelopes: dict[int, np.ndarray] = {}
         self.cached_controls: dict[tuple[int, str, Fraction], np.ndarray] = {}
-        self.cycle_definitions: dict[int, lfo.LFO] = {}
+        self.lfo_definitions: dict[int, lfo.LFO] = {}
         self.sample_rate = sample_rate
         self.tempo_map = tempo_map.model_copy(deep=True) if tempo_map else None
         self.declarations = declarations
@@ -1256,18 +1256,18 @@ class ControlRenderer:
                     continue
                 if index not in self.cached_lfos:
                     state = self.lfos[index].state.runtime
-                    assert isinstance(envelfo.body, Cycle)
-                    assert isinstance(state, CycleState)
+                    assert isinstance(envelfo.body, LFO)
+                    assert isinstance(state, LFOState)
                     position = state.position
                     if (
                         envelfo.clock == "seconds"
                         and not position.paused
                         and position.direction == 1
                     ):
-                        if id(envelfo) not in self.cycle_definitions:
-                            self.cycle_definitions[id(envelfo)] = cycle_lfo(envelfo)
+                        if id(envelfo) not in self.lfo_definitions:
+                            self.lfo_definitions[id(envelfo)] = lfo_definition(envelfo)
                         samples = lfo_samples(
-                            self.cycle_definitions[id(envelfo)],
+                            self.lfo_definitions[id(envelfo)],
                             lfo.LFOState(
                                 at=position.at,
                                 started_at=position.at - position.age,
@@ -1464,7 +1464,7 @@ class ControlRenderer:
             return
         values = {index: np.empty(frames) for index in envelfo_indices}
         bindings = {binding.name: binding for binding in settings.bindings}
-        cycle_ports = list(
+        lfo_ports = list(
             dict.fromkeys(
                 [
                     (connection.source, connection.port)
@@ -1473,7 +1473,7 @@ class ControlRenderer:
                         (binding := bindings[connection.source]),
                         processing.GeneratorBinding,
                     )
-                    and isinstance(settings.envelfos[binding.reference].body, Cycle)
+                    and isinstance(settings.envelfos[binding.reference].body, LFO)
                 ]
                 + [
                     (source, port)
@@ -1482,7 +1482,7 @@ class ControlRenderer:
                         (binding := bindings[source]),
                         processing.GeneratorBinding,
                     )
-                    and isinstance(settings.envelfos[binding.reference].body, Cycle)
+                    and isinstance(settings.envelfos[binding.reference].body, LFO)
                 ]
             )
         )
@@ -1498,14 +1498,14 @@ class ControlRenderer:
             events_seen = 0
             sample_values: dict[int, float] = {}
             pending_starts: list[tuple[Fraction, int, int, str | None]] = []
-            cycle_events: list[tuple[Fraction, int, str, str]] = []
-            for order, (source_name, port) in enumerate(cycle_ports):
+            lfo_events: list[tuple[Fraction, int, str, str]] = []
+            for order, (source_name, port) in enumerate(lfo_ports):
                 binding = bindings[source_name]
                 assert isinstance(binding, processing.GeneratorBinding)
                 envelfo = settings.envelfos[binding.reference]
-                assert isinstance(envelfo.body, Cycle)
+                assert isinstance(envelfo.body, LFO)
                 source = self.lfos[sources[source_name]]
-                assert isinstance(source.state.runtime, CycleState)
+                assert isinstance(source.state.runtime, LFOState)
                 position = source.state.runtime.position
                 origin = position.at
                 previous = max(origin, boundary - Fraction(1, self.sample_rate))
@@ -1518,13 +1518,13 @@ class ControlRenderer:
                 last = position.coordinate + position.rate * (boundary - origin)
                 first_turn = floor(first - marker) + 1
                 last_turn = floor(last - marker)
-                if last_turn - first_turn + 1 > 4096 - len(cycle_events):
+                if last_turn - first_turn + 1 > 4096 - len(lfo_events):
                     raise EngineError("Envelfo event capacity exceeded")
                 for turn in range(first_turn, last_turn + 1):
                     at = origin + (turn + marker - position.coordinate) / position.rate
-                    cycle_events.append((at, order, source_name, port))
-            cycle_events.sort()
-            cycle_event_index = 0
+                    lfo_events.append((at, order, source_name, port))
+            lfo_events.sort()
+            lfo_event_index = 0
             while True:
                 attempts = [
                     (
@@ -1551,9 +1551,9 @@ class ControlRenderer:
                     if settings.event_connections or patch_starts
                     else None
                 )
-                next_cycle_event = (
-                    cycle_events[cycle_event_index][0]
-                    if cycle_event_index < len(cycle_events)
+                next_lfo_event = (
+                    lfo_events[lfo_event_index][0]
+                    if lfo_event_index < len(lfo_events)
                     else None
                 )
                 next_event = min(
@@ -1561,7 +1561,7 @@ class ControlRenderer:
                         at
                         for at in (
                             next_staged_event,
-                            next_cycle_event,
+                            next_lfo_event,
                             min(
                                 (
                                     e.at
@@ -1598,10 +1598,10 @@ class ControlRenderer:
                     )
                     emitted.extend((name, event) for event in result.events)
                 while (
-                    cycle_event_index < len(cycle_events)
-                    and cycle_events[cycle_event_index][0] == next_event
+                    lfo_event_index < len(lfo_events)
+                    and lfo_events[lfo_event_index][0] == next_event
                 ):
-                    at, _, name, port = cycle_events[cycle_event_index]
+                    at, _, name, port = lfo_events[lfo_event_index]
                     emitted.append(
                         (
                             name,
@@ -1613,7 +1613,7 @@ class ControlRenderer:
                             ),
                         )
                     )
-                    cycle_event_index += 1
+                    lfo_event_index += 1
                 events_seen += len(emitted)
                 if events_seen > 4096:
                     raise EngineError("Envelfo event capacity exceeded")
@@ -1689,13 +1689,13 @@ class ControlRenderer:
                     assert isinstance(envelfo.body, Stages)
                     if natural := next_stage_event(envelfo.body, runtime, limit):
                         boundaries.append(natural[0])
-                for source_name, port in cycle_ports:
+                for source_name, port in lfo_ports:
                     binding = bindings[source_name]
                     assert isinstance(binding, processing.GeneratorBinding)
                     envelfo = settings.envelfos[binding.reference]
                     runtime = self.lfos[sources[source_name]].state.runtime
-                    assert isinstance(runtime, CycleState)
-                    assert isinstance(envelfo.body, Cycle)
+                    assert isinstance(runtime, LFOState)
+                    assert isinstance(envelfo.body, LFO)
                     position = runtime.position
                     if position.rate:
                         marker = next(
@@ -1798,10 +1798,10 @@ class ControlRenderer:
             )
         if position.direction != 1:
             return None
-        if isinstance(body, Cycle):
+        if isinstance(body, LFO):
             if not frames:
                 return np.empty(0)
-            definition = cycle_lfo(EnvelfoUse(body=body))
+            definition = lfo_definition(EnvelfoUse(body=body))
             samples = lfo_samples(
                 definition,
                 lfo.LFOState(
@@ -2508,7 +2508,7 @@ class PersistentSynth:
                     if capture
                     else f"patch-{parent_name}-{connection.target}:start-{order}",
                 )
-                if isinstance(child, Cycle):
+                if isinstance(child, LFO):
                     marker = next(m.position for m in child.markers if m.name == port)
                     patch_events.append(
                         (
@@ -2554,7 +2554,7 @@ class PersistentSynth:
             source_binding = bindings[connection.source]
             assert isinstance(source_binding, processing.GeneratorBinding)
             source_envelfo = template.envelfos[source_binding.reference]
-            if not isinstance(source_envelfo.body, Cycle):
+            if not isinstance(source_envelfo.body, LFO):
                 continue
             marker = next(
                 m.position
@@ -3165,7 +3165,7 @@ def validate_generators(
         g.clock != "seconds"
         and not (
             allow_beat_envelfos
-            and isinstance(g.body, (Contour, Cycle, Stages, SampleHold, Patch))
+            and isinstance(g.body, (Contour, LFO, Stages, SampleHold, Patch))
         )
         for g in settings.envelfos.values()
     ):
@@ -3301,7 +3301,7 @@ def _configure_patch_transforms(
         for name in parent.body.signal_order:
             body = parent.body.envelfos[name]
             reference = f"patch-{parent_name}-{name}"
-            if isinstance(body, Cycle) and reference in lfos:
+            if isinstance(body, LFO) and reference in lfos:
                 children[name] = (0, lfos[reference][0], body.center, body.depth)
             elif isinstance(body, (Contour, SampleHold)) and reference in contours:
                 children[name] = (1, contours[reference][0], 0.0, 1.0)
@@ -3841,10 +3841,10 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            assert isinstance(envelfo.body, Cycle)
+            assert isinstance(envelfo.body, LFO)
             intercept += slope * envelfo.body.center
             slope *= envelfo.body.depth
-            generator = cycle_lfo(envelfo)
+            generator = lfo_definition(envelfo)
             index = len(lfo_rows)
             lfo_rows.append(
                 [
@@ -3893,8 +3893,8 @@ def _persistent_modulation(
             envelope_releases.append([])
             envelope_parameters.append((0, 1, 1, 0, False, 0, 0, 1, None, True))
             continue
-        if isinstance(envelfo.body, Cycle):
-            generator = cycle_lfo(envelfo)
+        if isinstance(envelfo.body, LFO):
+            generator = lfo_definition(envelfo)
             source_scopes.add(envelfo.scope)
             if envelfo.scope != "voice":
                 lfo_sources.setdefault(binding.reference, []).append(len(lfo_rows))
@@ -4129,7 +4129,7 @@ def _runtime_staged_envelfo(
                 )
             )
         else:
-            assert isinstance(envelfo, Cycle)
+            assert isinstance(envelfo, LFO)
             assert isinstance(envelfo.rate, Fraction)
             stages.append(
                 (

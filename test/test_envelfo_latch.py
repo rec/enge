@@ -16,12 +16,12 @@ from enge import synth
 
 def latch_score(source_kind: str, probability: float) -> SynthInstrumentScore:
     raw = sample_hold_score(
-        "stages" if source_kind == "stages" else "cycle", probability
+        "stages" if source_kind == "stages" else "lfo", probability
     ).model_dump(mode="json")
     patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
     patch["envelfos"].update(
         {
-            "wave": {"kind": "cycle", "shape": "triangle", "rate": "2"},
+            "wave": {"kind": "lfo", "shape": "triangle", "rate": "2"},
             "pressure": {
                 "kind": "affine",
                 "input": "wave",
@@ -53,7 +53,7 @@ def latch_score(source_kind: str, probability: float) -> SynthInstrumentScore:
 
 
 @pytest.mark.parametrize("backend", ["numpy", "native", "persistent"])
-@pytest.mark.parametrize("source_kind", ["cycle", "stages", "threshold"])
+@pytest.mark.parametrize("source_kind", ["lfo", "stages", "threshold"])
 @pytest.mark.parametrize("probability", [0.0, 0.5, 1.0])
 def test_latch_captures_delivery_frame_with_independent_gates_and_snapshot(
     tmp_path: Path,
@@ -118,7 +118,7 @@ def test_latch_activation_and_same_frame_captures(
     mode: str,
     envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
-    raw = latch_score("cycle", 1).model_dump(mode="json")
+    raw = latch_score("lfo", 1).model_dump(mode="json")
     patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
     if mode != "unconnected":
         for connection in patch["events"]:
@@ -172,7 +172,7 @@ def test_latch_activation_and_same_frame_captures(
 def test_latch_discards_pending_captures_and_initializes_reused_voice_slot(
     tmp_path: Path,
 ) -> None:
-    raw = latch_score("cycle", 1).model_dump(mode="json")
+    raw = latch_score("lfo", 1).model_dump(mode="json")
     patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
     patch["envelfos"]["wave"]["phase"] = "1/4"
     for connection in patch["events"]:

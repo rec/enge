@@ -115,7 +115,7 @@ name = "slow-sine"
 title = "Slow sine"
 
 [body]
-kind = "cycle"
+kind = "lfo"
 shape = "sine"
 rate = "5 Hz"
 ```
@@ -149,7 +149,7 @@ may use that event for voice retirement; an arbitrary modulation envelope must
 not kill the voice just because it finishes.
 
 The musician writes neither a graph nor a state machine for either example.
-`cycle` and `contour` are distinct useful body types with the same external
+`lfo` and `contour` are distinct useful body types with the same external
 contract. A contour without release is an autonomous one-shot: activation
 starts it and reaching its end completes it. An explicit `playback` setting can
 instead loop or reflect it. These defaults are selected by the documented body
@@ -201,7 +201,7 @@ envelfo = { kind = "contour", initial = "current", segments = [
 
 [[body.stages]]
 name = "sway"
-envelfo = { kind = "cycle", shape = "sine", rate = "3 Hz", center = 0.7, depth = 0.2 }
+envelfo = { kind = "lfo", shape = "sine", rate = "3 Hz", center = 0.7, depth = 0.2 }
 
 [[body.stages]]
 name = "release"
@@ -249,7 +249,7 @@ special case in the other.
 
 ## 6. Playback, triggers, and movement through a shape
 
-Separate the shape from the mechanism moving through it. A cycle reads a
+Separate the shape from the mechanism moving through it. An LFO reads a
 periodic shape; a contour reads a bounded trajectory; a recording reads stored
 values. These bodies can share a position driver.
 
@@ -307,7 +307,7 @@ signal output, not the timestamps or traversal meaning of marker events.
 Implemented voice-owned Patch `latch` nodes: capture a named input on activation,
 then hold until an event connection delivers `capture`. Observation occurs on
 the first sample frame at or after delivery, including connection delay; several
-commands on one frame observe the same final input. Existing Cycle, Stages, and
+commands on one frame observe the same final input. Existing LFO, Stages, and
 threshold event sources retain division, probability, delay, and capacity rules.
 Python and native snapshots preserve held values and queued captures; stopping
 invalidates pending commands and voice-slot reuse initializes fresh state.
@@ -341,7 +341,7 @@ Python and native snapshots retain detector state and pending commands.
 Implemented Patch signal transforms: named `sum`, `product`, and `affine`
 children form a preparation-checked dependency DAG. Python and persistent
 native synth evaluate shared child state in dependency order without clipping.
-Output source domains must cover conservative inferred ranges. Cycle onset
+Output source domains must cover conservative inferred ranges. LFO onset
 weights scale transform inputs toward zero; the transformed output has weight
 one. Regression coverage includes envelope-shaped vibrato, seconds and beat
 clocks, tempo changes, release, partitioning, and exact snapshot replay.
@@ -402,7 +402,7 @@ For example, within a proposed compound `patch` body:
 kind = "patch"
 
 [body.envelfos.wobble]
-kind = "cycle"
+kind = "lfo"
 shape = "sine"
 rate = "2 Hz"
 markers = [{ name = "peak", position = 0.25, direction = "forward" }]
@@ -519,7 +519,7 @@ in the first release.
 Distinguish independent voices from intentionally correlated variation. A random
 seed can derive from the score seed, envelfo identity, and stable instance key.
 Implemented the first variation primitive: voice-owned `sample_hold` draws on
-activation and on connected Patch `sample` commands. Cycle markers and Stages
+activation and on connected Patch `sample` commands. LFO markers and Stages
 ports use the existing division, probability, and seconds-delay rules. Each
 named child owns an independent stream; signal transforms can consume held
 values without drawing again. Seeks, reversals, pause/resume, and note-off do
@@ -564,7 +564,7 @@ The host maps physical key presses and retriggers to these stable owners.
 | Body kind | Principal fields | Meaning |
 | --- | --- | --- |
 | `hold` | `value` | Constant signal, also useful as a waiting stage |
-| `cycle` | `shape`, rate or position driver, `phase`, `center`, `depth`, optional markers/playback | Periodic waveform or reusable periodic shape |
+| `lfo` | `shape`, rate or position driver, `phase`, `center`, `depth`, optional markers/playback | Periodic waveform or reusable periodic shape |
 | `contour` | `initial`, `segments`, optional `release`, `start`, `playback`, markers | Traversable finite shape; release makes it a triggered envelope by default |
 | `stages` | `initial_stage`, named child uses, ordered transitions | One active child; events select the behavior |
 | `patch` | Named child uses, signal routes, event connections, output selections | Children run together and interact |
@@ -631,7 +631,7 @@ minimum = 0.1
 maximum = 20.0
 
 [body]
-kind = "cycle"
+kind = "lfo"
 shape = "sine"
 rate = { parameter = "speed" }
 ```
@@ -775,7 +775,7 @@ generator engines.
    ownership, lifecycle, units, completion, and event boundary rules. Have a
    musician read the simple and staged TOML examples without explanatory prose.
 2. **Establish the common contract.** Introduce envelfo definitions and instances
-   for cycle/contour; reuse existing waveform/envelope kernels and routing.
+   for LFO/contour; reuse existing waveform/envelope kernels and routing.
    Preserve current behavior in conformance fixtures. Keep the schema tagged,
    and reject unsupported body kinds explicitly.
 3. **Add library uses and public parameters.** Integrate existing references,
