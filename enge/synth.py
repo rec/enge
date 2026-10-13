@@ -25,10 +25,10 @@ from ufor.envelfo import (
     LFO,
     Affine,
     EnterStage,
+    EnveLFO,
     EnvelfoEvent,
     EnvelfoOutputEvent,
     EnvelfoState,
-    EnvelfoUse,
     Envelope,
     EnvelopeState,
     Hold,
@@ -458,9 +458,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         ):
             continue
         if name not in envelfos:
-            envelfos[name] = EnvelfoUse(
-                scope=parent.scope, clock=parent.clock, body=child
-            )
+            envelfos[name] = EnveLFO(scope=parent.scope, clock=parent.clock, body=child)
         bindings[index] = binding.model_copy(update={"reference": name, "output": None})
         changed = True
     for parent_name, parent in voice.envelfos.items():
@@ -506,7 +504,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             child = parent.body.envelfos[child_name]
             envelfos.setdefault(
                 name,
-                EnvelfoUse(
+                EnveLFO(
                     scope=parent.scope,
                     clock=parent.clock,
                     body=cast(LFO | Envelope | Stages | SampleHold, child),
@@ -715,7 +713,7 @@ class ControlRenderer:
         self.patches: list[PatchState] = []
         self.new_context("instrument", None, None, 0, {})
 
-    def envelfo_time(self, envelfo: EnvelfoUse, seconds: Fraction) -> Fraction:
+    def envelfo_time(self, envelfo: EnveLFO, seconds: Fraction) -> Fraction:
         if envelfo.clock == "seconds":
             return seconds
         if self.tempo_map is None:
@@ -724,7 +722,7 @@ class ControlRenderer:
             return self.tempo_map.beat_at(seconds)
         return self.tempo_map.elapsed_beats(Fraction(0), seconds)
 
-    def envelfo_seconds(self, envelfo: EnvelfoUse, at: Fraction) -> Fraction:
+    def envelfo_seconds(self, envelfo: EnveLFO, at: Fraction) -> Fraction:
         if envelfo.clock == "seconds":
             return at
         assert self.tempo_map is not None
@@ -945,7 +943,7 @@ class ControlRenderer:
         return True
 
     def _envelfo_observation(
-        self, action: instrument_trace.EnvelfoObservation, envelfo: EnvelfoUse
+        self, action: instrument_trace.EnvelfoObservation, envelfo: EnveLFO
     ) -> EnvelfoEvent:
         return EnvelfoEvent(
             at=self.envelfo_time(envelfo, Fraction(action.tick, self.sample_rate)),
@@ -1407,7 +1405,7 @@ class ControlRenderer:
     def _envelfo_event_values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
     ) -> None:
-        staged: list[tuple[str, int, EnvelfoUse]] = []
+        staged: list[tuple[str, int, EnveLFO]] = []
         seen: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding):
@@ -1765,7 +1763,7 @@ class ControlRenderer:
             self.cached_envelopes[index] = np.column_stack((samples, np.ones(frames)))
 
     def _envelfo_span(
-        self, envelfo: EnvelfoUse, state: EnvelfoState, start: int, frames: int
+        self, envelfo: EnveLFO, state: EnvelfoState, start: int, frames: int
     ) -> np.ndarray | None:
         """Render an event-free interval; zero frames checks block support."""
         runtime = state.runtime
@@ -1801,7 +1799,7 @@ class ControlRenderer:
         if isinstance(body, LFO):
             if not frames:
                 return np.empty(0)
-            definition = lfo_definition(EnvelfoUse(body=body))
+            definition = lfo_definition(EnveLFO(body=body))
             samples = lfo_samples(
                 definition,
                 lfo.LFOState(

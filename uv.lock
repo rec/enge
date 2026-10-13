@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-10-06T15:09:02.596718Z"
+exclude-newer = "2026-10-06T15:39:41.937803Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -77,7 +77,7 @@ dev = [
 [[package]]
 name = "envelfo"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#cf44fd231cc0e763a615720df0f8a546849b7c2b" }
+source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#82b9d44db5f8b6d15beb3c6d7c0b8d1a73d134b9" }
 dependencies = [
     { name = "ufor" },
 ]
@@ -474,7 +474,7 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.2.0"
-source = { git = "ssh://git@github.com/rec/ufor.git?branch=main#2644dca402e56fee6dadc501b0bcfa7fff66d4bb" }
+source = { git = "ssh://git@github.com/rec/ufor.git?branch=main#11065fd769a2303bcd3de3a8c38c828bed9c891d" }
 dependencies = [
     { name = "pydantic" },
     { name = "reccy" },

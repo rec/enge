@@ -548,7 +548,7 @@ and lists/dictionaries for collections. Avoid one giant class of optional fields
 | --- | --- |
 | `EnvelfoScore` | Existing score header; `kind="envelfo"`; public `parameters`, `inputs`, `outputs`; one `body` |
 | `EnvelfoBody` | Tagged union of the body types below |
-| `EnvelfoUse` | Exactly one inline body or existing `ScoreReference`; public parameter values and input bindings |
+| `EnveLFO` | Exactly one inline body or existing `ScoreReference`; public parameter values and input bindings |
 | `EnvelfoInstance` | A use plus `scope`, owner identity, clock bindings, and lifecycle bindings |
 | `EnvelfoState` | Definition identity, local position/stage, captured values, direction, paused/completed flags, child states, random state, pending events |
 | `EnvelfoSnapshot` | Instance states, graph delays, clock state, queued commands, evaluation-grid origin, and resolved dependency identities |
