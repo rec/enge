@@ -123,7 +123,7 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
     voice = document.body.voices[0].model_copy(
         update={
             "minimum_hold_seconds": Fraction(1, 10),
-            "envelope": envelope.Envelope(
+            "envelope": envelope.VoiceEnvelope(
                 initial=0.2,
                 segments=[
                     Segment(duration="1/20 s", to=1),

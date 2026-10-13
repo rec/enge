@@ -18,7 +18,7 @@ from envelfo.runtime import (
     next_stage_event,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import envelfo_random, envelope, instrument_trace, lfo, modulation
+from ufor import envelfo_random, instrument_trace, lfo, modulation
 from ufor.base import Model
 from ufor.control import TempoMap
 from ufor.envelfo import (
@@ -46,6 +46,7 @@ from ufor.envelfo import (
     Sum,
     Threshold,
 )
+from ufor.envelope import VoiceEnvelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import (
@@ -170,11 +171,11 @@ class PatchState(Model, frozen=True):
     pending_events: list[DelayedEnvelfoEvent] = Field(default_factory=list)
 
 
-class PreparedEnvelope(Model, frozen=True):
+class PreparedVoiceEnvelope(Model, frozen=True):
     """The shared amplitude lifetime of an oscillator or sample voice."""
 
     sample_rate: int = Field(gt=0)
-    envelope: envelope.Envelope
+    envelope: VoiceEnvelope
     filter_order: processing.FilterOrder = processing.FilterOrder.before_amplitude
     minimum_hold_seconds: Fraction = Field(default=Fraction(0), ge=0)
 
@@ -192,10 +193,10 @@ class PreparedEnvelope(Model, frozen=True):
         return self.minimum_hold_seconds * self.sample_rate
 
 
-class EnvelopeRenderer(BaseModel):
+class VoiceEnvelopeRenderer(BaseModel):
     """Shared release timing; source state remains with the concrete renderer."""
 
-    definition: PreparedEnvelope
+    definition: PreparedVoiceEnvelope
     frame_count: int = 0
     release_frame: Fraction | None = None
 
@@ -224,7 +225,7 @@ class EnvelopeRenderer(BaseModel):
     )
 
 
-class PreparedVoice(PreparedEnvelope, frozen=True):
+class PreparedVoice(PreparedVoiceEnvelope, frozen=True):
     """Resolved voice settings; route rows map oscillators to output channels."""
 
     oscillator: Oscillator
@@ -245,7 +246,7 @@ class PreparedVoice(PreparedEnvelope, frozen=True):
         return self
 
 
-class VoiceRenderer(EnvelopeRenderer):
+class VoiceRenderer(VoiceEnvelopeRenderer):
     """One held voice with explicit oscillator routes and resumable audio state."""
 
     definition: PreparedVoice
@@ -1116,7 +1117,7 @@ class ControlRenderer:
         settings: SoundSettings,
         sources: dict[str, int],
         action: instrument_trace.VoiceRetirement,
-        renderer: EnvelopeRenderer,
+        renderer: VoiceEnvelopeRenderer,
     ) -> None:
         self.clear_cache()
         assert renderer.release_frame is not None
@@ -3096,7 +3097,7 @@ def oscillator_samples(
 
 
 def envelope_samples(
-    envelope: envelope.Envelope,
+    envelope: VoiceEnvelope,
     start: int,
     length: int,
     sample_rate: int,
@@ -3137,7 +3138,7 @@ def envelope_samples(
     return values
 
 
-def validate_envelope(envelope: envelope.Envelope) -> None:
+def validate_envelope(envelope: VoiceEnvelope) -> None:
     """Validate the amplitude-envelope profile shared by both voice renderers."""
     if envelope.clock != "seconds" or envelope.scope != "voice":
         raise EngineError("Envelopes must use the voice seconds clock")

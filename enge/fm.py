@@ -17,7 +17,7 @@ from ufor.synth_trace import VoiceStart
 from . import _native, filters, synth
 
 
-class PreparedVoice(synth.PreparedEnvelope, frozen=True):
+class PreparedVoice(synth.PreparedVoiceEnvelope, frozen=True):
     fm: FM
     pitch_hz: float = Field(gt=0)
     routes: list[list[float]]
@@ -36,7 +36,7 @@ class PreparedVoice(synth.PreparedEnvelope, frozen=True):
         return self
 
 
-class VoiceRenderer(synth.EnvelopeRenderer):
+class VoiceRenderer(synth.VoiceEnvelopeRenderer):
     definition: PreparedVoice
     backend: Literal["numpy", "native"] = "numpy"
     phases: list[list[float]]

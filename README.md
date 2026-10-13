@@ -28,7 +28,9 @@ The `cycle` output event still denotes a completed loop traversal.
 
 The general-purpose Envelfo envelope is `ufor.envelfo.Envelope`, with
 `kind = "envelope"` and state `EnvelopeState`, replacing `Contour` with no aliases.
-The lower-level renderer model `ufor.envelope.Envelope` is unchanged.
+The lower-level renderer model is `ufor.envelope.VoiceEnvelope`, with related
+`VoiceEnvelopeEvent`, `VoiceEnvelopeState`, and `VoiceEnvelopeValue` types.
+The `envelope` field names and their serialized values are unchanged.
 
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,

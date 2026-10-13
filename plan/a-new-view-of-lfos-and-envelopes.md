@@ -40,7 +40,7 @@ points would make the system less expressive and harder to understand.
 
 ## 2. What we already have
 
-The current ufor definitions separate `LFO`, `Envelope`, and autonomous `Curve`.
+The original ufor definitions separate `LFO`, `VoiceEnvelope`, and autonomous `Curve`.
 LFOs already have phase, rate, scope, delay, and fade-in. Envelopes already have
 arbitrary segments, release segments, hold behavior, curves, and retrigger
 policies. The modulation system already separates sources, mappings, units,

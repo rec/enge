@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from test_sample_instrument import sample_score
 from test_synth import check_audio
-from ufor.envelope import Envelope
+from ufor.envelope import VoiceEnvelope
 from ufor.samples.enums import Direction
 from ufor.samples.playback import Loop, Playback, Slice
 from ufor.samples.processing import ResonantFilter
@@ -43,7 +43,7 @@ def test_native_sample_voice_matches_reference_without_python_dsp(
         gain=1.3,
         filters=[ResonantFilter(name="tone", response="notch", cutoff_hz=500, q=2)],
         minimum_hold_seconds=Fraction(48005, 192000),
-        envelope=Envelope(
+        envelope=VoiceEnvelope(
             initial=0.2,
             segments=[
                 Segment(duration=0, to=0.4),

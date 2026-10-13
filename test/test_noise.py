@@ -54,7 +54,7 @@ def scalar_noise(key: int, start: int, count: int) -> np.ndarray:
 def definition() -> noise.PreparedVoice:
     return noise.PreparedVoice(
         sample_rate=48000,
-        envelope=envelope.Envelope(
+        envelope=envelope.VoiceEnvelope(
             segments=[Segment(duration=0, to=1)],
             release=[Segment(duration="1/10 s", to=0)],
         ),

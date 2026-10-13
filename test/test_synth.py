@@ -4,7 +4,7 @@ from typing import Literal
 
 import numpy as np
 import pytest
-from ufor.envelope import Envelope
+from ufor.envelope import VoiceEnvelope
 from ufor.events import Release, Trigger
 from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
@@ -154,7 +154,7 @@ def test_offline_synth_defers_release_until_the_voice_minimum_hold(
     voice = document.body.voices[0].model_copy(
         update={
             "minimum_hold_seconds": 1,
-            "envelope": Envelope(
+            "envelope": VoiceEnvelope(
                 segments=[Segment(duration=1, to=1)],
                 release=[Segment(duration=1, to=0)],
             ),

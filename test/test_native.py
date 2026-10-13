@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from test_dynamic_synth import dynamic_score, onset
 from test_synth import check_audio
-from ufor.envelope import Envelope
+from ufor.envelope import VoiceEnvelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples.processing import ResonantFilter
 from ufor.segments import Segment
@@ -30,7 +30,7 @@ def test_native_matches_reference_without_python_dsp(
     definition = synth.PreparedVoice(
         sample_rate=48000,
         oscillator=Oscillator(waveform=waveform, duty_cycle=duty),
-        envelope=Envelope(
+        envelope=VoiceEnvelope(
             initial=0.2,
             segments=[
                 Segment(duration=0, to=0.4),

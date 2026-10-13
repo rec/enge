@@ -98,7 +98,7 @@ class SampleState(Model, frozen=True):
         )
 
 
-class PreparedSampleVoice(synth.PreparedEnvelope, frozen=True):
+class PreparedSampleVoice(synth.PreparedVoiceEnvelope, frozen=True):
     """Resolved voice settings; decoded audio stays in the prepared sample."""
 
     slice: Slice
@@ -117,7 +117,7 @@ class PreparedSampleVoice(synth.PreparedEnvelope, frozen=True):
         return self
 
 
-class SampleVoiceRenderer(synth.EnvelopeRenderer):
+class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
     """A resumable sample voice, with the same envelope timing as the synth."""
 
     definition: PreparedSampleVoice

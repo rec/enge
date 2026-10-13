@@ -14,7 +14,7 @@ from ufor.synth_trace import VoiceStart
 from . import _native, filters, native, synth
 
 
-class PreparedVoice(synth.PreparedEnvelope, frozen=True):
+class PreparedVoice(synth.PreparedVoiceEnvelope, frozen=True):
     routes: list[list[float]]
     filters: list[ResonantFilter] = Field(default_factory=list)
 
@@ -26,7 +26,7 @@ class PreparedVoice(synth.PreparedEnvelope, frozen=True):
         return self
 
 
-class VoiceRenderer(synth.EnvelopeRenderer):
+class VoiceRenderer(synth.VoiceEnvelopeRenderer):
     definition: PreparedVoice
     backend: Literal["numpy", "native"] = "numpy"
     stream_key: int = Field(strict=True, ge=0, lt=2**64)

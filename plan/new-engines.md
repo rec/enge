@@ -275,7 +275,7 @@ before turning granular processing into an instrument.
 Oscillator/noise amplitude shaping occurs after voice filtering, while FM
 operator envelopes are inside the modulation graph and feed its filter. FM
 voice lifetime follows the selected carrier's envelope. The shared
-EnvelopeRenderer limits active frames at release completion; it does not
+VoiceEnvelopeRenderer limits active frames at release completion; it does not
 independently wait for resonator/filter energy to decay. Immediate stop removes
 the voice.
 

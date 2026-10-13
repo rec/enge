@@ -4,7 +4,7 @@ from fractions import Fraction
 from math import ceil
 
 import numpy as np
-from ufor.envelope import Envelope
+from ufor.envelope import VoiceEnvelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.segments import Segment
 
@@ -42,7 +42,7 @@ def render(
 
 
 def envelope_spans(
-    envelope: Envelope,
+    envelope: VoiceEnvelope,
     start: int,
     frames: int,
     sample_rate: int,
