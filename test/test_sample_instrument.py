@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from test_dynamic_synth import change, dynamic_score, onset
 from test_synth import check_audio, score
-from ufor.envelope import VoiceEnvelope
+from ufor.envelfo import Envelope
 from ufor.events import Release
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
 from ufor.samples import instrument, trace
@@ -64,7 +64,7 @@ def test_zero_duration_curves_jump_between_linear_phases(
     backend: Literal["numpy", "native"], tmp_path: Path, release_seconds: Fraction
 ) -> None:
     raw = sample_score(frames=48000).model_dump(mode="json")
-    raw["body"]["settings"]["envelope"] = VoiceEnvelope(
+    raw["body"]["settings"]["envelope"] = Envelope(
         initial=0.1,
         segments=[
             Segment(duration=0, to=0.25, curve=-5),
@@ -124,7 +124,7 @@ def test_zero_duration_curves_jump_between_linear_phases(
 @pytest.mark.parametrize("phase", ["segments", "release"])
 def test_nonzero_duration_curves_remain_unsupported(phase: str) -> None:
     raw = sample_score(frames=48000).model_dump(mode="json")
-    definition = VoiceEnvelope(
+    definition = Envelope(
         segments=[Segment(duration=Fraction(1, 4), to=1)],
         release=[Segment(duration=Fraction(1, 4), to=0)],
     ).model_dump(mode="json")
@@ -262,7 +262,7 @@ def test_sample_voice_shares_fractional_minimum_hold_with_loop_and_envelope(
         routes=[[1, -0.5, 0]],
         pitch_ratio=2,
         minimum_hold_seconds=Fraction(3, 96000),
-        envelope=VoiceEnvelope(
+        envelope=Envelope(
             segments=[Segment(duration=Fraction(4, 48000), to=1)],
             release=[Segment(duration=Fraction(5, 96000), to=0.25)],
         ),

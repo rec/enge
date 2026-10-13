@@ -7,7 +7,7 @@ import pytest
 from test_filters import matrix_filter
 from test_synth import check_audio
 from test_synth_demo import publish_flac
-from ufor import envelope, synth_trace
+from ufor import envelfo, synth_trace
 from ufor.events import ControlChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
 from ufor.samples.processing import FilterOrder, ResonantFilter
@@ -54,7 +54,7 @@ def scalar_noise(key: int, start: int, count: int) -> np.ndarray:
 def definition() -> noise.PreparedVoice:
     return noise.PreparedVoice(
         sample_rate=48000,
-        envelope=envelope.VoiceEnvelope(
+        envelope=envelfo.Envelope(
             segments=[Segment(duration=0, to=1)],
             release=[Segment(duration="1/10 s", to=0)],
         ),
@@ -221,13 +221,11 @@ def test_persistent_noise_applies_envelope_playback(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "envelfo": {
-            "body": {
-                "kind": "envelope",
-                "playback": playback,
-                "initial": 0,
-                "segments": [{"duration": "1/4 s", "to": 1}],
-                "release": [{"duration": "1/4 s", "to": 0}],
-            }
+            "kind": "envelope",
+            "playback": playback,
+            "initial": 0,
+            "segments": [{"duration": "1/4 s", "to": 1}],
+            "release": [{"duration": "1/4 s", "to": 0}],
         }
     }
     voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
@@ -395,7 +393,7 @@ def test_noise_lfo_amplitude_matches_oracle(
         "segments": [{"duration": 0, "to": 1}],
         "release": [{"duration": 0, "to": 0}],
     }
-    voice["envelfos"] = {"pulse": {"body": {"kind": "lfo", "shape": "sine", "rate": 2}}}
+    voice["envelfos"] = {"pulse": {"kind": "lfo", "shape": "sine", "rate": 2}}
     voice["modulation"] = {
         "sources": [{"name": "pulse", "scope": "voice", "minimum": -1, "maximum": 1}],
         "parameters": [

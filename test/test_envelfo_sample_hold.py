@@ -33,40 +33,38 @@ def sample_hold_score(source_kind: str, probability: float) -> SynthInstrumentSc
         }
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {
-                    "clock": clock,
-                    "left": {"kind": "sample_hold", "minimum": 0, "maximum": 1},
-                    "right": {"kind": "sample_hold", "minimum": 0, "maximum": 1},
-                    "product": {"kind": "product", "inputs": ["left", "right"]},
-                    "level": {
-                        "kind": "affine",
-                        "input": "product",
-                        "scale": 0.5,
-                        "offset": 0.5,
-                    },
+            "kind": "patch",
+            "envelfos": {
+                "clock": clock,
+                "left": {"kind": "sample_hold", "minimum": 0, "maximum": 1},
+                "right": {"kind": "sample_hold", "minimum": 0, "maximum": 1},
+                "product": {"kind": "product", "inputs": ["left", "right"]},
+                "level": {
+                    "kind": "affine",
+                    "input": "product",
+                    "scale": 0.5,
+                    "offset": 0.5,
                 },
-                "outputs": {"level": "level"},
-                "events": [
-                    {
-                        "source": "clock.pulse",
-                        "target": "left",
-                        "action": "sample",
-                        "every": 2,
-                        "offset": 1,
-                        "probability": probability,
-                        "delay": "1/16",
-                    },
-                    {
-                        "source": "clock.pulse",
-                        "target": "right",
-                        "action": "sample",
-                        "every": 3,
-                        "delay": "1/32",
-                    },
-                ],
-            }
+            },
+            "outputs": {"level": "level"},
+            "events": [
+                {
+                    "source": "clock.pulse",
+                    "target": "left",
+                    "action": "sample",
+                    "every": 2,
+                    "offset": 1,
+                    "probability": probability,
+                    "delay": "1/16",
+                },
+                {
+                    "source": "clock.pulse",
+                    "target": "right",
+                    "action": "sample",
+                    "every": 3,
+                    "delay": "1/32",
+                },
+            ],
         }
     }
     voice["bindings"][0].update(reference="gesture", output="level")
@@ -146,7 +144,7 @@ def test_sample_hold_activation_is_seeded_without_any_connections(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["envelfos"] = {"held": {"clock": clock, "body": {"kind": "sample_hold"}}}
+    voice["envelfos"] = {"held": {"kind": "sample_hold", "clock": clock}}
     voice["bindings"][0]["reference"] = "held"
     voice["modulation"]["routes"][0]["points"] = [
         {"input": -1, "amount": 0},
@@ -222,7 +220,7 @@ def test_sample_hold_reinitializes_when_a_native_voice_slot_is_reused(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["envelfos"] = {"held": {"body": {"kind": "sample_hold"}}}
+    voice["envelfos"] = {"held": {"kind": "sample_hold"}}
     voice["bindings"][0]["reference"] = "held"
     voice["modulation"]["routes"][0]["points"] = [
         {"input": -1, "amount": 0},
@@ -282,9 +280,7 @@ def test_unused_sample_hold_does_not_consume_a_native_action_row(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice.update(
-        envelfos={"unused": {"body": {"kind": "sample_hold"}}},
-        bindings=[],
-        modulation={},
+        envelfos={"unused": {"kind": "sample_hold"}}, bindings=[], modulation={}
     )
     document = SynthInstrumentScore.model_validate(raw)
     actions = synth_trace.prepare(
@@ -307,7 +303,7 @@ def test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise(
     )
     voice = raw["body"]["voices"][0]
     voice.update(
-        envelfos={"held": {"body": {"kind": "sample_hold"}}},
+        envelfos={"held": {"kind": "sample_hold"}},
         bindings=[{"name": "held", "kind": "envelfo", "reference": "held"}],
         modulation={
             "sources": [

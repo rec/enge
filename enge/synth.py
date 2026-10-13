@@ -28,6 +28,7 @@ from ufor.envelfo import (
     EnveLFO,
     EnvelfoEvent,
     EnvelfoOutputEvent,
+    EnveLFOReference,
     EnvelfoState,
     Envelope,
     EnvelopeState,
@@ -46,7 +47,6 @@ from ufor.envelfo import (
     Sum,
     Threshold,
 )
-from ufor.envelope import VoiceEnvelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import (
@@ -175,7 +175,7 @@ class PreparedVoiceEnvelope(Model, frozen=True):
     """The shared amplitude lifetime of an oscillator or sample voice."""
 
     sample_rate: int = Field(gt=0)
-    envelope: VoiceEnvelope
+    envelope: Envelope
     filter_order: processing.FilterOrder = processing.FilterOrder.before_amplitude
     minimum_hold_seconds: Fraction = Field(default=Fraction(0), ge=0)
 
@@ -442,27 +442,28 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if not isinstance(binding, processing.GeneratorBinding):
             continue
         parent = envelfos[binding.reference]
-        if not isinstance(parent.body, Patch):
+        if not isinstance(parent, Patch):
             continue
         assert binding.output is not None
-        child_name = parent.body.outputs[binding.output]
+        child_name = parent.outputs[binding.output]
         name = f"patch-{binding.reference}-{child_name}"
         if name in voice.envelfos:
             raise EngineError(f"Patch output Envelfo name collides: {name}")
-        child = parent.body.envelfos[child_name]
+        child = parent.envelfos[child_name]
         if isinstance(
             child, (Sum, Product, Affine, Quantize, Latch, Threshold, Slew)
         ) or any(
-            isinstance(b, (Latch, Threshold, Slew))
-            for b in parent.body.envelfos.values()
+            isinstance(b, (Latch, Threshold, Slew)) for b in parent.envelfos.values()
         ):
             continue
         if name not in envelfos:
-            envelfos[name] = EnveLFO(scope=parent.scope, clock=parent.clock, body=child)
+            envelfos[name] = type(child).model_validate(
+                child.model_dump() | {"scope": parent.scope, "clock": parent.clock}
+            )
         bindings[index] = binding.model_copy(update={"reference": name, "output": None})
         changed = True
     for parent_name, parent in voice.envelfos.items():
-        if not isinstance(parent.body, Patch):
+        if not isinstance(parent, Patch):
             continue
         if not any(
             isinstance(binding, processing.GeneratorBinding)
@@ -472,11 +473,11 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             continue
         children = {
             name
-            for connection in parent.body.events
+            for connection in parent.events
             for name in (connection.source.partition(".")[0], connection.target)
-        } | {source.partition(".")[0] for source in parent.body.event_outputs.values()}
+        } | {source.partition(".")[0] for source in parent.event_outputs.values()}
         pending = [
-            parent.body.outputs[b.output]
+            parent.outputs[b.output]
             for b in voice.bindings
             if isinstance(b, processing.GeneratorBinding)
             and b.reference == parent_name
@@ -490,7 +491,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             if child_name in visited:
                 continue
             visited.add(child_name)
-            child = parent.body.envelfos[child_name]
+            child = parent.envelfos[child_name]
             if isinstance(child, (Sum, Product)):
                 pending.extend(child.inputs)
             elif isinstance(child, (Affine, Quantize, Latch, Threshold, Slew)):
@@ -501,13 +502,12 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             name = f"patch-{parent_name}-{child_name}"
             if name in voice.envelfos:
                 raise EngineError(f"Patch child Envelfo name collides: {name}")
-            child = parent.body.envelfos[child_name]
+            child = parent.envelfos[child_name]
             envelfos.setdefault(
                 name,
-                EnveLFO(
-                    scope=parent.scope,
-                    clock=parent.clock,
-                    body=cast(LFO | Envelope | Stages | SampleHold, child),
+                type(cast(LFO | Envelope | Stages | SampleHold, child)).model_validate(
+                    cast(LFO | Envelope | Stages | SampleHold, child).model_dump()
+                    | {"scope": parent.scope, "clock": parent.clock}
                 ),
             )
             if any(
@@ -528,8 +528,8 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
                             for b in voice.bindings
                             if isinstance(b, processing.GeneratorBinding)
                             and b.reference == parent_name
-                            and b.output is not None
-                            and parent.body.outputs[b.output] == child_name
+                            and (b.output is not None)
+                            and (parent.outputs[b.output] == child_name)
                         ),
                         ReleaseTiming.event,
                     ),
@@ -553,10 +553,10 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         if not isinstance(source_binding, processing.GeneratorBinding):
             continue
         parent = voice.envelfos[source_binding.reference]
-        if not isinstance(parent.body, Patch):
+        if not isinstance(parent, Patch):
             continue
-        child_name, _, port = parent.body.event_outputs[connection.port].partition(".")
-        if isinstance(parent.body.envelfos[child_name], Threshold):
+        child_name, _, port = parent.event_outputs[connection.port].partition(".")
+        if isinstance(parent.envelfos[child_name], Threshold):
             continue
         child_envelfo = f"patch-{source_binding.reference}-{child_name}"
         child_binding = next(
@@ -570,17 +570,17 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
         )
         changed = True
     for parent_name, parent in voice.envelfos.items():
-        if not isinstance(parent.body, Patch) or not any(
+        if not isinstance(parent, Patch) or not any(
             isinstance(binding, processing.GeneratorBinding)
             and binding.reference == parent_name
             for binding in voice.bindings
         ):
             continue
-        for connection in parent.body.events:
+        for connection in parent.events:
             if connection.action != "cue":
                 continue
             child_name, _, port = connection.source.partition(".")
-            if isinstance(parent.body.envelfos[child_name], Threshold):
+            if isinstance(parent.envelfos[child_name], Threshold):
                 continue
             source_envelfo = f"patch-{parent_name}-{child_name}"
             target_envelfo = f"patch-{parent_name}-{connection.target}"
@@ -627,8 +627,8 @@ def _patch_child_names(settings: SoundSettings) -> set[str]:
     return {
         f"patch-{name}-{child}"
         for name, envelfo in settings.envelfos.items()
-        if isinstance(envelfo.body, Patch)
-        for child in envelfo.body.envelfos
+        if isinstance(envelfo, Patch)
+        for child in envelfo.envelfos
     }
 
 
@@ -644,9 +644,9 @@ def _patch_start_connections(
         tuple[str, str, int, int, int, int, float, Fraction, str | None]
     ] = []
     for parent_name, parent in settings.envelfos.items():
-        if not isinstance(parent.body, Patch):
+        if not isinstance(parent, Patch):
             continue
-        for order, connection in enumerate(parent.body.events):
+        for order, connection in enumerate(parent.events):
             if connection.action not in ("start", "sample", "capture"):
                 continue
             child_name, _, port = connection.source.partition(".")
@@ -832,12 +832,14 @@ class ControlRenderer:
                 )
         elif isinstance(action, instrument_trace.EnvelfoObservation):
             if any(
-                action.name in self.patch_children[index]
-                or (
-                    (envelfo := settings.envelfos.get(action.name)) is not None
-                    and isinstance(envelfo.body, Patch)
+                (
+                    action.name in self.patch_children[index]
+                    or (
+                        (envelfo := settings.envelfos.get(action.name)) is not None
+                        and isinstance(envelfo, Patch)
+                    )
+                    for index, settings in enumerate(self.settings)
                 )
-                for index, settings in enumerate(self.settings)
             ):
                 raise EngineError("Patch-level Envelfo commands are not implemented")
             for index, source in enumerate(self.lfos):
@@ -881,7 +883,7 @@ class ControlRenderer:
                             )
                         }
                     )
-                if isinstance(definition.body, Stages):
+                if isinstance(definition, Stages):
                     result = advance_envelfo(definition, source.state, event.at, event)
                     state = result.state
                     emitted = [(source.binding_name, e) for e in result.events]
@@ -966,7 +968,7 @@ class ControlRenderer:
             if isinstance(binding, processing.GeneratorBinding):
                 setting = next(i for i, s in enumerate(self.settings) if s is settings)
                 envelfo = settings.envelfos[binding.reference]
-                if isinstance(envelfo.body, Patch):
+                if isinstance(envelfo, Patch):
                     index = next(
                         (
                             i
@@ -987,7 +989,7 @@ class ControlRenderer:
                         )
                     result[source.name] = -1 - index
                     continue
-                if isinstance(envelfo.body, (Envelope, Stages, SampleHold)):
+                if isinstance(envelfo, (Envelope, Stages, SampleHold)):
                     if envelfo.scope != "voice":
                         raise EngineError(
                             "Staged and envelope Envelfos require voice scope"
@@ -1016,10 +1018,10 @@ class ControlRenderer:
                         ^ envelfo_random.stream_key(
                             0, binding.reference + ":sample-hold"
                         )
-                        if isinstance(envelfo.body, SampleHold)
+                        if isinstance(envelfo, SampleHold)
                         else 0,
                     )
-                    if isinstance(envelfo.body, Stages):
+                    if isinstance(envelfo, Stages):
                         advanced = advance_envelfo(
                             envelfo,
                             initial,
@@ -1036,7 +1038,7 @@ class ControlRenderer:
                         )
                         initial = advanced.state
                         emitted.extend((binding.name, e) for e in advanced.events)
-                    elif isinstance(envelfo.body, Envelope) and envelfo.body.release:
+                    elif isinstance(envelfo, Envelope) and envelfo.release:
                         initial = envelfo_event(
                             envelfo,
                             initial,
@@ -1127,7 +1129,7 @@ class ControlRenderer:
         released: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
-                settings.envelfos[binding.reference].body, (Envelope, Stages)
+                settings.envelfos[binding.reference], (Envelope, Stages)
             ):
                 continue
             index = sources[binding.name]
@@ -1137,7 +1139,7 @@ class ControlRenderer:
             source = self.envelopes[index]
             definition = settings.envelfos[binding.reference]
             if (
-                isinstance(definition.body, Envelope)
+                isinstance(definition, Envelope)
                 and binding.release_timing == ReleaseTiming.voice
                 and voice_release_at > Fraction(action.tick, self.sample_rate)
             ):
@@ -1152,7 +1154,7 @@ class ControlRenderer:
                 ordinal=action.ordinal,
                 action="note_off",
             )
-            if isinstance(definition.body, Stages):
+            if isinstance(definition, Stages):
                 advanced = advance_envelfo(definition, source.state, event.at, event)
                 state = advanced.state
                 emitted.extend((binding.name, e) for e in advanced.events)
@@ -1191,10 +1193,9 @@ class ControlRenderer:
         if key in self.cached_values:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
         if frames > 1 and any(
-            isinstance(m.body, Patch)
+            isinstance(m, Patch)
             and any(
-                isinstance(b, (Latch, Threshold, Slew))
-                for b in m.body.envelfos.values()
+                isinstance(b, (Latch, Threshold, Slew)) for b in m.envelfos.values()
             )
             for m in settings.envelfos.values()
         ):
@@ -1215,13 +1216,13 @@ class ControlRenderer:
             if isinstance(binding, processing.GeneratorBinding):
                 index = sources[binding.name]
                 envelfo = settings.envelfos[binding.reference]
-                if isinstance(envelfo.body, Patch):
+                if isinstance(envelfo, Patch):
                     continue
-                if isinstance(envelfo.body, (Envelope, Stages, SampleHold)):
+                if isinstance(envelfo, (Envelope, Stages, SampleHold)):
                     if index not in self.cached_envelopes:
                         source = self.envelopes[index]
                         state = source.state
-                        assert isinstance(envelfo.body, (Envelope, SampleHold))
+                        assert isinstance(envelfo, (Envelope, SampleHold))
                         values = np.empty(frames)
                         for i in range(frames):
                             at = Fraction(start + i, self.sample_rate)
@@ -1254,7 +1255,7 @@ class ControlRenderer:
                     continue
                 if index not in self.cached_lfos:
                     state = self.lfos[index].state.runtime
-                    assert isinstance(envelfo.body, LFO)
+                    assert isinstance(envelfo, LFO)
                     assert isinstance(state, LFOState)
                     position = state.position
                     if (
@@ -1278,9 +1279,7 @@ class ControlRenderer:
                             self.backend,
                             self.control_interval,
                         )
-                        samples[:, 0] = (
-                            envelfo.body.center + envelfo.body.depth * samples[:, 0]
-                        )
+                        samples[:, 0] = envelfo.center + envelfo.depth * samples[:, 0]
                     else:
                         samples = np.empty((frames, 2))
                         for i in range(frames):
@@ -1313,7 +1312,7 @@ class ControlRenderer:
                 )
             signals[binding.name] = self.cached_controls[source_key]
         for parent_name, parent in settings.envelfos.items():
-            if not isinstance(parent.body, Patch):
+            if not isinstance(parent, Patch):
                 continue
             selected = [
                 b
@@ -1329,18 +1328,18 @@ class ControlRenderer:
             retained = dict(state.values)
             if any(
                 isinstance(b, (Latch, Threshold, Slew))
-                for b in parent.body.envelfos.values()
+                for b in parent.envelfos.values()
             ):
                 assert frames == 1
                 inputs = {
                     n: float(signals[b.name][0, 0] * signals[b.name][0, 1])
-                    for n in parent.body.envelfos
+                    for n in parent.envelfos
                     for b in settings.bindings
                     if isinstance(b, processing.GeneratorBinding)
                     and b.reference == f"patch-{parent_name}-{n}"
                 }
                 values, retained, emitted = observe_signals(
-                    parent.body, inputs, retained, Fraction(1, self.sample_rate)
+                    parent, inputs, retained, Fraction(1, self.sample_rate)
                 )
                 children = {n: np.full(frames, v) for n, v in values.items()}
                 for name, port in emitted:
@@ -1352,10 +1351,10 @@ class ControlRenderer:
                         port,
                         Fraction(start + 1, self.sample_rate),
                     )
-            for name in parent.body.signal_order:
+            for name in parent.signal_order:
                 if name in children:
                     continue
-                body = parent.body.envelfos[name]
+                body = parent.envelfos[name]
                 if isinstance(body, (Sum, Product)):
                     if any(n not in children for n in body.inputs):
                         continue
@@ -1393,7 +1392,7 @@ class ControlRenderer:
             for binding in selected:
                 assert binding.output is not None
                 signals[binding.name] = np.column_stack(
-                    (children[parent.body.outputs[binding.output]], np.ones(frames))
+                    (children[parent.outputs[binding.output]], np.ones(frames))
                 )
             self.patches[patch_index] = self.patches[patch_index].model_copy(
                 update={"values": retained}
@@ -1412,7 +1411,7 @@ class ControlRenderer:
                 continue
             index = sources[binding.name]
             if index in seen or not isinstance(
-                settings.envelfos[binding.reference].body, Stages
+                settings.envelfos[binding.reference], Stages
             ):
                 continue
             seen.add(index)
@@ -1429,13 +1428,12 @@ class ControlRenderer:
             if capture is not None
         }
         for parent_name, parent in settings.envelfos.items():
-            if not isinstance(parent.body, Patch):
+            if not isinstance(parent, Patch):
                 continue
-            for connection in parent.body.events:
+            for connection in parent.events:
                 if (
                     isinstance(
-                        parent.body.envelfos[connection.source.partition(".")[0]],
-                        Threshold,
+                        parent.envelfos[connection.source.partition(".")[0]], Threshold
                     )
                     and connection.action != "cue"
                 ):
@@ -1471,16 +1469,15 @@ class ControlRenderer:
                         (binding := bindings[connection.source]),
                         processing.GeneratorBinding,
                     )
-                    and isinstance(settings.envelfos[binding.reference].body, LFO)
+                    and isinstance(settings.envelfos[binding.reference], LFO)
                 ]
                 + [
                     (source, port)
                     for source, port, _, _, _, _, _, _, _ in patch_starts
                     if isinstance(
-                        (binding := bindings[source]),
-                        processing.GeneratorBinding,
+                        (binding := bindings[source]), processing.GeneratorBinding
                     )
-                    and isinstance(settings.envelfos[binding.reference].body, LFO)
+                    and isinstance(settings.envelfos[binding.reference], LFO)
                 ]
             )
         )
@@ -1501,7 +1498,7 @@ class ControlRenderer:
                 binding = bindings[source_name]
                 assert isinstance(binding, processing.GeneratorBinding)
                 envelfo = settings.envelfos[binding.reference]
-                assert isinstance(envelfo.body, LFO)
+                assert isinstance(envelfo, LFO)
                 source = self.lfos[sources[source_name]]
                 assert isinstance(source.state.runtime, LFOState)
                 position = source.state.runtime.position
@@ -1509,9 +1506,7 @@ class ControlRenderer:
                 previous = max(origin, boundary - Fraction(1, self.sample_rate))
                 if boundary <= previous:
                     continue
-                marker = next(
-                    m.position for m in envelfo.body.markers if m.name == port
-                )
+                marker = next(m.position for m in envelfo.markers if m.name == port)
                 first = position.coordinate + position.rate * (previous - origin)
                 last = position.coordinate + position.rate * (boundary - origin)
                 first_turn = floor(first - marker) + 1
@@ -1684,8 +1679,8 @@ class ControlRenderer:
                 for _, index, envelfo in staged:
                     runtime = self.envelopes[index].state.runtime
                     assert isinstance(runtime, StageState)
-                    assert isinstance(envelfo.body, Stages)
-                    if natural := next_stage_event(envelfo.body, runtime, limit):
+                    assert isinstance(envelfo, Stages)
+                    if natural := next_stage_event(envelfo, runtime, limit):
                         boundaries.append(natural[0])
                 for source_name, port in lfo_ports:
                     binding = bindings[source_name]
@@ -1693,11 +1688,11 @@ class ControlRenderer:
                     envelfo = settings.envelfos[binding.reference]
                     runtime = self.lfos[sources[source_name]].state.runtime
                     assert isinstance(runtime, LFOState)
-                    assert isinstance(envelfo.body, LFO)
+                    assert isinstance(envelfo, LFO)
                     position = runtime.position
                     if position.rate:
                         marker = next(
-                            m.position for m in envelfo.body.markers if m.name == port
+                            m.position for m in envelfo.markers if m.name == port
                         )
                         coordinate = position.coordinate + position.rate * (
                             boundary - position.at
@@ -1767,7 +1762,7 @@ class ControlRenderer:
     ) -> np.ndarray | None:
         """Render an event-free interval; zero frames checks block support."""
         runtime = state.runtime
-        body = envelfo.body
+        body = envelfo
         if isinstance(runtime, StageState):
             assert isinstance(body, Stages)
             if runtime.completed:
@@ -1799,7 +1794,7 @@ class ControlRenderer:
         if isinstance(body, LFO):
             if not frames:
                 return np.empty(0)
-            definition = lfo_definition(EnveLFO(body=body))
+            definition = lfo_definition(body)
             samples = lfo_samples(
                 definition,
                 lfo.LFOState(
@@ -1853,14 +1848,14 @@ class ControlRenderer:
         at: Fraction,
     ) -> None:
         parent = settings.envelfos[parent_name]
-        assert isinstance(parent.body, Patch)
+        assert isinstance(parent, Patch)
         bindings = {
             b.reference: b.name
             for b in settings.bindings
             if isinstance(b, processing.GeneratorBinding)
-            and not isinstance(settings.envelfos[b.reference].body, Patch)
+            and not isinstance(settings.envelfos[b.reference], Patch)
         }
-        for order, connection in enumerate(parent.body.events):
+        for order, connection in enumerate(parent.events):
             if connection.source != f"{child}.{port}":
                 continue
             capture = connection.target if connection.action == "capture" else None
@@ -1893,7 +1888,7 @@ class ControlRenderer:
             if (
                 not isinstance(binding, processing.GeneratorBinding)
                 or binding.reference != parent_name
-                or parent.body.event_outputs.get(connection.port) != f"{child}.{port}"
+                or parent.event_outputs.get(connection.port) != f"{child}.{port}"
             ):
                 continue
             target = sources[connection.destination]
@@ -2095,9 +2090,7 @@ class ControlRenderer:
                 EnvelfoEvent(
                     at=at,
                     ordinal=source.state.runtime.ordinal + 1,
-                    action="sample"
-                    if isinstance(envelfo.body, SampleHold)
-                    else "start",
+                    action="sample" if isinstance(envelfo, SampleHold) else "start",
                 ),
             )
             self.envelopes[index] = source.model_copy(update={"state": state})
@@ -2393,7 +2386,7 @@ class PersistentSynth:
             ),
             float(template.oscillator.duty_cycle),
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            template.envelope.initial,
+            cast(float, template.envelope.initial),
             _runtime_segments(template.envelope.segments, rate),
             _runtime_segments(template.envelope.release, rate),
             float(template.minimum_hold_seconds * rate),
@@ -2472,11 +2465,11 @@ class PersistentSynth:
             tuple[int, str, int, int, int, int, int, int, float, bool]
         ] = []
         for parent_name, parent in template.envelfos.items():
-            if not isinstance(parent.body, Patch):
+            if not isinstance(parent, Patch):
                 continue
             if (
-                parent.body.events
-                and f"patch-{parent_name}-{parent.body.events[0].target}"
+                parent.events
+                and f"patch-{parent_name}-{parent.events[0].target}"
                 not in template.envelfos
                 and not any(
                     isinstance(b, processing.GeneratorBinding)
@@ -2485,11 +2478,11 @@ class PersistentSynth:
                 )
             ):
                 continue
-            for order, connection in enumerate(parent.body.events):
+            for order, connection in enumerate(parent.events):
                 if connection.action not in ("start", "sample", "capture"):
                     continue
                 child_name, _, port = connection.source.partition(".")
-                child = parent.body.envelfos[child_name]
+                child = parent.envelfos[child_name]
                 if isinstance(child, Threshold):
                     continue
                 capture = connection.action == "capture"
@@ -2552,12 +2545,10 @@ class PersistentSynth:
             source_binding = bindings[connection.source]
             assert isinstance(source_binding, processing.GeneratorBinding)
             source_envelfo = template.envelfos[source_binding.reference]
-            if not isinstance(source_envelfo.body, LFO):
+            if not isinstance(source_envelfo, LFO):
                 continue
             marker = next(
-                m.position
-                for m in source_envelfo.body.markers
-                if m.name == connection.port
+                m.position for m in source_envelfo.markers if m.name == connection.port
             )
             target_binding = bindings[connection.destination]
             assert isinstance(target_binding, processing.GeneratorBinding)
@@ -2734,7 +2725,7 @@ class PersistentSynth:
             elif isinstance(action, instrument_trace.EnvelfoObservation):
                 envelfo = self.template.envelfos.get(action.name)
                 if action.name in _patch_child_names(self.template) or (
-                    envelfo is not None and isinstance(envelfo.body, Patch)
+                    envelfo is not None and isinstance(envelfo, Patch)
                 ):
                     raise EngineError(
                         "Patch-level Envelfo commands are not implemented"
@@ -2833,12 +2824,11 @@ class PersistentSynth:
         return (
             any(0 < c.probability < 1 for c in self.template.event_connections)
             or any(
-                isinstance(m.body, Patch)
-                and any(0 < c.probability < 1 for c in m.body.events)
+                isinstance(m, Patch) and any(0 < c.probability < 1 for c in m.events)
                 for m in self.template.envelfos.values()
             )
             or any(
-                isinstance(self.template.envelfos[n].body, SampleHold)
+                isinstance(self.template.envelfos[n], SampleHold)
                 for n in self.named_envelfo_sources
             )
         )
@@ -3095,7 +3085,7 @@ def oscillator_samples(
 
 
 def envelope_samples(
-    envelope: VoiceEnvelope,
+    envelope: Envelope,
     start: int,
     length: int,
     sample_rate: int,
@@ -3107,6 +3097,7 @@ def envelope_samples(
     exact fractional coordinate and captures the level there, even between
     samples. The final authored target is held; voice retirement is separate.
     """
+    assert isinstance(envelope.initial, float)
     values = _envelope_values(
         envelope.initial,
         envelope.segments,
@@ -3136,10 +3127,20 @@ def envelope_samples(
     return values
 
 
-def validate_envelope(envelope: VoiceEnvelope) -> None:
+def validate_envelope(envelope: Envelope) -> None:
     """Validate the amplitude-envelope profile shared by both voice renderers."""
     if envelope.clock != "seconds" or envelope.scope != "voice":
         raise EngineError("Envelopes must use the voice seconds clock")
+    if not isinstance(envelope.initial, float) or envelope.start != "activation":
+        raise EngineError(
+            "Voice amplitude envelopes require a numeric initial and activation start"
+        )
+    if not envelope.release:
+        raise EngineError("Voice amplitude envelopes require an explicit release")
+    if envelope.playback != PlaybackMode.once or envelope.markers:
+        raise EngineError(
+            "Voice amplitude envelopes require once playback without markers"
+        )
     if not envelope.hold or any(
         s.duration != 0 and s.curve != 0
         for s in [*envelope.segments, *envelope.release]
@@ -3151,19 +3152,21 @@ def validate_generators(
     settings: SoundSettings, allow_beat_envelfos: bool = False
 ) -> None:
     """Validate the Envelfo clocks supported by the selected renderer."""
-    if any(g.score is not None for g in settings.envelfos.values()):
+    if any(isinstance(g, EnveLFOReference) for g in settings.envelfos.values()):
         raise EngineError("Library Envelfo uses must be materialized before rendering")
     if any(
         g.scope != "voice"
         for g in settings.envelfos.values()
-        if isinstance(g.body, (Envelope, Stages, SampleHold))
+        if isinstance(g, (Envelope, Stages, SampleHold))
     ):
         raise EngineError("Staged and envelope Envelfos require voice scope")
     if any(
         g.clock != "seconds"
-        and not (
-            allow_beat_envelfos
-            and isinstance(g.body, (Envelope, LFO, Stages, SampleHold, Patch))
+        and (
+            not (
+                allow_beat_envelfos
+                and isinstance(g, (Envelope, LFO, Stages, SampleHold, Patch))
+            )
         )
         for g in settings.envelfos.values()
     ):
@@ -3273,7 +3276,7 @@ def _configure_sample_hold_envelfos(
             body.maximum,
         )
         for name, indices in sources.items()
-        if isinstance(body := settings.envelfos[name].body, SampleHold)
+        if isinstance((body := settings.envelfos[name]), SampleHold)
         for i in indices
     ]
     runtime.set_sample_hold_envelfos(definitions)
@@ -3293,11 +3296,11 @@ def _configure_patch_transforms(
     outputs: dict[tuple[str, str], int] = {}
     detectors: dict[tuple[str, str], int] = {}
     for parent_name, parent in template.envelfos.items():
-        if not isinstance(parent.body, Patch):
+        if not isinstance(parent, Patch):
             continue
         children: dict[str, tuple[int, int, float, float]] = {}
-        for name in parent.body.signal_order:
-            body = parent.body.envelfos[name]
+        for name in parent.signal_order:
+            body = parent.envelfos[name]
             reference = f"patch-{parent_name}-{name}"
             if isinstance(body, LFO) and reference in lfos:
                 children[name] = (0, lfos[reference][0], body.center, body.depth)
@@ -3355,13 +3358,13 @@ def _configure_patch_transforms(
                         body.initial if isinstance(body, Slew) else None,
                     )
                 )
-        for output, name in parent.body.outputs.items():
+        for output, name in parent.outputs.items():
             if (
                 name in children
                 and children[name][0] != 3
                 and any(
                     isinstance(b, (Latch, Threshold, Slew))
-                    for b in parent.body.envelfos.values()
+                    for b in parent.envelfos.values()
                 )
             ):
                 nodes.append((2, [children[name]], 1.0, 0.0, None))
@@ -3412,10 +3415,10 @@ def _threshold_runtime_connections(
     bindings = {b.name: b for b in template.bindings}
     for (parent_name, child), node in nodes.items():
         parent = template.envelfos[parent_name]
-        assert isinstance(parent.body, Patch)
-        if not isinstance(parent.body.envelfos[child], Threshold):
+        assert isinstance(parent, Patch)
+        if not isinstance(parent.envelfos[child], Threshold):
             continue
-        for order, connection in enumerate(parent.body.events):
+        for order, connection in enumerate(parent.events):
             origin, _, port = connection.source.partition(".")
             if origin != child:
                 continue
@@ -3452,7 +3455,7 @@ def _threshold_runtime_connections(
                 or binding.reference != parent_name
             ):
                 continue
-            origin, _, port = parent.body.event_outputs[connection.port].partition(".")
+            origin, _, port = parent.event_outputs[connection.port].partition(".")
             if origin != child:
                 continue
             target_binding = bindings[connection.destination]
@@ -3604,24 +3607,21 @@ def _persistent_modulation(
     patch_children = {
         f"patch-{parent_name}-{child}"
         for parent_name, parent in template.envelfos.items()
-        if isinstance(parent.body, Patch)
+        if isinstance(parent, Patch)
         for child in (
             {
                 name
-                for connection in parent.body.events
+                for connection in parent.events
                 for name in (connection.source.partition(".")[0], connection.target)
             }
-            | {
-                source.partition(".")[0]
-                for source in parent.body.event_outputs.values()
-            }
+            | {source.partition(".")[0] for source in parent.event_outputs.values()}
         )
     }
     event_only_patch_outputs = {
         f"patch-{parent_name}-{child}"
         for parent_name, parent in template.envelfos.items()
-        if isinstance(parent.body, Patch) and parent.body.event_outputs
-        for child in parent.body.outputs.values()
+        if isinstance(parent, Patch) and parent.event_outputs
+        for child in parent.outputs.values()
     }
     patch_children.update(_patch_child_names(template))
     event_sources.update(
@@ -3734,9 +3734,9 @@ def _persistent_modulation(
         else:
             assert isinstance(binding, processing.GeneratorBinding)
             envelfo = template.envelfos[binding.reference]
-            if isinstance(envelfo.body, Patch):
+            if isinstance(envelfo, Patch):
                 continue
-            if isinstance(envelfo.body, SampleHold):
+            if isinstance(envelfo, SampleHold):
                 named_envelfo_sources.setdefault(binding.reference, []).append(
                     len(envelope_initials)
                 )
@@ -3758,8 +3758,8 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            if isinstance(envelfo.body, Envelope):
-                generator = envelfo.body
+            if isinstance(envelfo, Envelope):
+                generator = envelfo
                 assert isinstance(generator.initial, float)
                 if source.scope != "voice" or any(
                     segment.curve != 0
@@ -3822,14 +3822,14 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            if isinstance(envelfo.body, Stages):
+            if isinstance(envelfo, Stages):
                 staged_bindings[binding.name] = len(staged_envelfos)
                 staged_envelfo_sources.setdefault(binding.reference, []).append(
                     len(staged_envelfos)
                 )
                 staged_envelfos.append(
                     _runtime_staged_envelfo(
-                        envelfo.body,
+                        envelfo,
                         definition.sample_rate,
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
@@ -3839,9 +3839,9 @@ def _persistent_modulation(
                     )
                 )
                 continue
-            assert isinstance(envelfo.body, LFO)
-            intercept += slope * envelfo.body.center
-            slope *= envelfo.body.depth
+            assert isinstance(envelfo, LFO)
+            intercept += slope * envelfo.center
+            slope *= envelfo.depth
             generator = lfo_definition(envelfo)
             index = len(lfo_rows)
             lfo_rows.append(
@@ -3880,9 +3880,9 @@ def _persistent_modulation(
             continue
         assert isinstance(binding, processing.GeneratorBinding)
         envelfo = template.envelfos[binding.reference]
-        if isinstance(envelfo.body, Patch):
+        if isinstance(envelfo, Patch):
             continue
-        if isinstance(envelfo.body, SampleHold):
+        if isinstance(envelfo, SampleHold):
             named_envelfo_sources.setdefault(binding.reference, []).append(
                 len(envelope_initials)
             )
@@ -3891,7 +3891,7 @@ def _persistent_modulation(
             envelope_releases.append([])
             envelope_parameters.append((0, 1, 1, 0, False, 0, 0, 1, None, True))
             continue
-        if isinstance(envelfo.body, LFO):
+        if isinstance(envelfo, LFO):
             generator = lfo_definition(envelfo)
             source_scopes.add(envelfo.scope)
             if envelfo.scope != "voice":
@@ -3924,8 +3924,8 @@ def _persistent_modulation(
             ):
                 lfo_rationals.append((value.numerator, value.denominator))
             continue
-        if isinstance(envelfo.body, Envelope):
-            generator = envelfo.body
+        if isinstance(envelfo, Envelope):
+            generator = envelfo
             assert isinstance(generator.initial, float)
             if envelfo.scope != "voice" or any(
                 s.curve != 0 for s in [*generator.segments, *generator.release]
@@ -3978,7 +3978,7 @@ def _persistent_modulation(
                 )
             )
             continue
-        assert isinstance(envelfo.body, Stages)
+        assert isinstance(envelfo, Stages)
         source_scopes.add(envelfo.scope)
         staged_bindings[binding.name] = len(staged_envelfos)
         staged_envelfo_sources.setdefault(binding.reference, []).append(
@@ -3986,13 +3986,7 @@ def _persistent_modulation(
         )
         staged_envelfos.append(
             _runtime_staged_envelfo(
-                envelfo.body,
-                definition.sample_rate,
-                None,
-                0,
-                0,
-                0,
-                envelfo.clock == "beats",
+                envelfo, definition.sample_rate, None, 0, 0, 0, envelfo.clock == "beats"
             )
         )
     event_connections = [
@@ -4013,7 +4007,7 @@ def _persistent_modulation(
         )
         for order, c in enumerate(template.event_connections)
         if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)
-        if isinstance(template.envelfos[binding.reference].body, Stages)
+        if isinstance(template.envelfos[binding.reference], Stages)
     ]
     for target, index, _, _, _, _ in source_parameters:
         if (parameter := parameters.get(target)) is not None:

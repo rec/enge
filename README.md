@@ -28,9 +28,14 @@ The `cycle` output event still denotes a completed loop traversal.
 
 The general-purpose Envelfo envelope is `ufor.envelfo.Envelope`, with
 `kind = "envelope"` and state `EnvelopeState`, replacing `Contour` with no aliases.
-The lower-level renderer model is `ufor.envelope.VoiceEnvelope`, with related
-`VoiceEnvelopeEvent`, `VoiceEnvelopeState`, and `VoiceEnvelopeValue` types.
-The `envelope` field names and their serialized values are unchanged.
+`ufor.envelfo.Envelope` is also the voice-amplitude envelope model. Generators
+inherit clock and scope from `EnveLFO` without a `body` wrapper; Patch and Stage
+children inherit those settings from their parent. Library references use
+`EnveLFOReference`. The `envelope` field name is unchanged.
+
+enge owns minimum hold, release timing and voice retirement. Amplitude envelopes
+currently require numeric initial values, activation start, voice seconds, held
+linear segments, an explicit release, and once playback without markers.
 
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,

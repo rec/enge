@@ -9,7 +9,7 @@ from test_dynamic_synth import change, dynamic_score, onset
 from test_filter_instrument import filter_score
 from test_lfo_instrument import lfo_score
 from test_synth import check_audio, score
-from ufor import envelope
+from ufor import envelfo
 from ufor.control import TempoMap
 from ufor.events import EnvelfoChange, LFOChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
@@ -123,7 +123,7 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
     voice = document.body.voices[0].model_copy(
         update={
             "minimum_hold_seconds": Fraction(1, 10),
-            "envelope": envelope.VoiceEnvelope(
+            "envelope": envelfo.Envelope(
                 initial=0.2,
                 segments=[
                     Segment(duration="1/20 s", to=1),
@@ -306,7 +306,7 @@ def test_persistent_synth_evolves_scoped_lfos_in_rust(
     tmp_path: Path, scope: str, waveform: str, duty: str
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
-    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"].update(
+    raw["body"]["voices"][0]["envelfos"]["envelfo"].update(
         shape=waveform, duty_cycle=duty, center=0.2, depth=0.7
     )
     document = SynthInstrumentScore.model_validate(raw)
@@ -433,8 +433,8 @@ def test_trigger_envelfo_playback_matches_persistent_native(
             "stages": [{"name": "rise", "envelfo": envelope}],
         }
     else:
-        body = raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"]
-    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = body
+        body = raw["body"]["voices"][0]["envelfos"]["envelfo"]
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = body
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         onset(0, pitch=0.1).model_copy(update={"controls": {}}),
@@ -528,14 +528,14 @@ def test_envelope_playback_and_immediate_release_match_persistent_native(
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["envelfos"]["envelfo"]["body"] = {
+    voice["envelfos"]["envelfo"] = {
         "kind": "envelope",
         "playback": playback,
         "segments": [{"duration": "1/2 s", "to": 1}],
         "release": [{"duration": "1/4 s", "to": 0}],
     }
     if named:
-        voice["envelfos"]["envelfo"]["body"].update(
+        voice["envelfos"]["envelfo"].update(
             {
                 "markers": [
                     {"name": "start", "position": "1/4"},
@@ -596,7 +596,7 @@ def test_staged_envelope_playback_and_release_match_persistent_native(
     tmp_path: Path, playback: str, named: bool
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
-    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "kind": "stages",
         "initial_stage": "sweep",
         "stages": [
@@ -627,9 +627,7 @@ def test_staged_envelope_playback_and_release_match_persistent_native(
         ],
     }
     if named:
-        raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"]["stages"][0][
-            "envelfo"
-        ].update(
+        raw["body"]["voices"][0]["envelfos"]["envelfo"]["stages"][0]["envelfo"].update(
             {
                 "markers": [
                     {"name": "start", "position": "1/4"},
@@ -681,7 +679,7 @@ def test_staged_envelope_cycle_enters_next_stage_in_native_runtime(
     tmp_path: Path, playback: str, boundary: int
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
-    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "kind": "stages",
         "initial_stage": "sweep",
         "stages": [
@@ -724,9 +722,7 @@ def test_trigger_envelfo_playback_matches_persistent_fm_and_noise(
         mode="json"
     )
     voice = raw["body"]["voices"][0]
-    voice["envelfos"] = {
-        "envelfo": {"body": {"kind": "lfo", "rate": "2", "phase": "1/4"}}
-    }
+    voice["envelfos"] = {"envelfo": {"kind": "lfo", "rate": "2", "phase": "1/4"}}
     voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
     target = (
         {"name": "fm", "parameter": "carrier_level"}
@@ -882,7 +878,7 @@ def test_finite_envelope_repeats_match_persistent_native(
                 "loop_end": "end",
             }
         )
-    voice["envelfos"]["envelfo"]["body"] = (
+    voice["envelfos"]["envelfo"] = (
         {
             "kind": "stages",
             "initial_stage": "sweep",
@@ -929,7 +925,7 @@ def test_finite_envelope_repeats_match_persistent_native(
 def test_host_tempo_quantizes_envelfo_change_for_both_renderers(tmp_path: Path) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["envelfos"]["envelfo"]["body"] = {
+    voice["envelfos"]["envelfo"] = {
         "kind": "envelope",
         "segments": [{"duration": "1 s", "to": 1}],
     }
@@ -980,38 +976,34 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "clock": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "lfo",
-                "stages": [
-                    {
-                        "name": "lfo",
-                        "envelfo": {
-                            "kind": "lfo",
-                            "rate": "1",
-                            "phase": "1/2",
-                            "markers": [{"name": "quarter", "position": "1/4"}],
-                        },
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "lfo",
+            "stages": [
+                {
+                    "name": "lfo",
+                    "envelfo": {
+                        "kind": "lfo",
+                        "rate": "1",
+                        "phase": "1/2",
+                        "markers": [{"name": "quarter", "position": "1/4"}],
+                    },
+                }
+            ],
         },
         "level": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "waiting",
-                "stages": [
-                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
-                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
-                ],
-                "transitions": [
-                    {
-                        "from": ["waiting"],
-                        "event": "cue.brighten",
-                        "action": {"kind": "enter", "stage": "bright"},
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [
+                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+            ],
+            "transitions": [
+                {
+                    "from": ["waiting"],
+                    "event": "cue.brighten",
+                    "action": {"kind": "enter", "stage": "bright"},
+                }
+            ],
         },
     }
     voice["bindings"] = [
@@ -1070,43 +1062,39 @@ def test_staged_envelope_events_cue_another_envelfo_in_native_runtime(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "clock": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "sweep",
-                "stages": [
-                    {
-                        "name": "sweep",
-                        "envelfo": {
-                            "kind": "envelope",
-                            "playback": playback,
-                            "segments": [{"duration": "1/4 s", "to": 1}],
-                        },
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "sweep",
+            "stages": [
+                {
+                    "name": "sweep",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "playback": playback,
+                        "segments": [{"duration": "1/4 s", "to": 1}],
+                    },
+                }
+            ],
         },
         "level": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "waiting",
-                "stages": [
-                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
-                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
-                ],
-                "transitions": [
-                    {
-                        "from": ["waiting"],
-                        "event": "cue.brighten",
-                        "action": {"kind": "enter", "stage": "bright"},
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [
+                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+            ],
+            "transitions": [
+                {
+                    "from": ["waiting"],
+                    "event": "cue.brighten",
+                    "action": {"kind": "enter", "stage": "bright"},
+                }
+            ],
         },
     }
     if port == "stage.done":
-        voice["envelfos"]["clock"]["body"]["stages"][0]["envelfo"]["repeat_count"] = 1
+        voice["envelfos"]["clock"]["stages"][0]["envelfo"]["repeat_count"] = 1
     if named:
-        voice["envelfos"]["clock"]["body"]["stages"][0]["envelfo"].update(
+        voice["envelfos"]["clock"]["stages"][0]["envelfo"].update(
             {
                 "markers": [
                     {"name": "start", "position": "1/4"},
@@ -1117,7 +1105,7 @@ def test_staged_envelope_events_cue_another_envelfo_in_native_runtime(
             }
         )
         if boundary == 9000:
-            level = voice["envelfos"]["level"]["body"]
+            level = voice["envelfos"]["level"]
             level["stages"].insert(
                 1, {"name": "middle", "envelfo": {"kind": "hold", "value": 0}}
             )
@@ -1176,56 +1164,52 @@ def test_reversed_envelope_markers_repeat_across_native_snapshot(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "clock": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "sweep",
-                "stages": [
-                    {
-                        "name": "sweep",
-                        "envelfo": {
-                            "kind": "envelope",
-                            "playback": "loop",
-                            "segments": [{"duration": "1/4 s", "to": 1}],
-                            "markers": [
-                                {"name": "quarter", "position": "1/4"},
-                                {"name": "threequarter", "position": "3/4"},
-                            ],
-                        },
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "sweep",
+            "stages": [
+                {
+                    "name": "sweep",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "playback": "loop",
+                        "segments": [{"duration": "1/4 s", "to": 1}],
+                        "markers": [
+                            {"name": "quarter", "position": "1/4"},
+                            {"name": "threequarter", "position": "3/4"},
+                        ],
+                    },
+                }
+            ],
         },
         "level": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "quiet",
-                "stages": [
-                    {"name": "quiet", "envelfo": {"kind": "hold", "value": 0}},
-                    {"name": "loud", "envelfo": {"kind": "hold", "value": 1}},
-                ],
-                "transitions": [
-                    {
-                        "from": ["quiet"],
-                        "event": "cue.raise",
-                        "action": {"kind": "enter", "stage": "loud"},
-                    },
-                    {
-                        "from": ["loud"],
-                        "event": "cue.lower",
-                        "action": {"kind": "enter", "stage": "quiet"},
-                    },
-                    {
-                        "from": ["loud"],
-                        "event": "cue.raise",
-                        "action": {"kind": "enter", "stage": "quiet"},
-                    },
-                    {
-                        "from": ["quiet"],
-                        "event": "cue.lower",
-                        "action": {"kind": "enter", "stage": "loud"},
-                    },
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "quiet",
+            "stages": [
+                {"name": "quiet", "envelfo": {"kind": "hold", "value": 0}},
+                {"name": "loud", "envelfo": {"kind": "hold", "value": 1}},
+            ],
+            "transitions": [
+                {
+                    "from": ["quiet"],
+                    "event": "cue.raise",
+                    "action": {"kind": "enter", "stage": "loud"},
+                },
+                {
+                    "from": ["loud"],
+                    "event": "cue.lower",
+                    "action": {"kind": "enter", "stage": "quiet"},
+                },
+                {
+                    "from": ["loud"],
+                    "event": "cue.raise",
+                    "action": {"kind": "enter", "stage": "quiet"},
+                },
+                {
+                    "from": ["quiet"],
+                    "event": "cue.lower",
+                    "action": {"kind": "enter", "stage": "loud"},
+                },
+            ],
         },
     }
     voice["bindings"] = [

@@ -2,7 +2,7 @@
 
 from hashlib import sha256
 from math import isfinite
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 from pydantic import Field
@@ -528,7 +528,7 @@ class PersistentSampler(OfflineSampler):
                 state,
                 self.definition.sample_rate,
                 routes,
-                envelope.initial,
+                cast(float, envelope.initial),
                 synth._runtime_segments(envelope.segments, self.definition.sample_rate),
                 synth._runtime_segments(envelope.release, self.definition.sample_rate),
                 0,

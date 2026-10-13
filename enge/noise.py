@@ -411,7 +411,7 @@ class PersistentNoise(synth.PersistentSynth):
         self.runtime = _native.SynthRuntime.noise(
             rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            template.envelope.initial,
+            cast(float, template.envelope.initial),
             synth._runtime_segments(template.envelope.segments, rate),
             synth._runtime_segments(template.envelope.release, rate),
             float(template.minimum_hold_seconds * rate),

@@ -99,12 +99,10 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
         events = [{"source": "edge.rising", "target": "attack"}]
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": envelfos,
-                "outputs": {"value": output},
-                "events": events,
-            }
+            "kind": "patch",
+            "envelfos": envelfos,
+            "outputs": {"value": output},
+            "events": events,
         }
     }
     voice["bindings"][0].update(reference="gesture", output="value")
@@ -121,11 +119,11 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
             "scale": 0.5,
             "offset": 0.5,
         }
-        patch = voice["envelfos"]["gesture"]["body"]
+        patch = voice["envelfos"]["gesture"]
         patch.update(
             events=[], event_outputs={"up": "edge.rising", "down": "edge.falling"}
         )
-        voice["envelfos"]["receiver"] = {"body": receiver}
+        voice["envelfos"]["receiver"] = receiver | {}
         voice["bindings"].append(
             {"name": "receiver", "kind": "envelfo", "reference": "receiver"}
         )
@@ -171,7 +169,7 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
     document = threshold_score(target, probability)
     if initial_high:
         raw = document.model_dump(mode="json")
-        raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]["envelfos"]["clock"][
+        raw["body"]["voices"][0]["envelfos"]["gesture"]["envelfos"]["clock"][
             "phase"
         ] = "0"
         document = SynthInstrumentScore.model_validate(raw)
@@ -226,7 +224,7 @@ def test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots
 
 def test_threshold_hysteresis_resets_on_voice_slot_reuse(tmp_path: Path) -> None:
     raw = threshold_score("gate").model_dump(mode="json")
-    children = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]["envelfos"]
+    children = raw["body"]["voices"][0]["envelfos"]["gesture"]["envelfos"]
     children["clock"].update(shape="sine", rate="2", phase="0")
     children["edge"].update(lower=-0.35, upper=0.45)
     document = SynthInstrumentScore.model_validate(raw)

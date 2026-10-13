@@ -18,7 +18,7 @@ def latch_score(source_kind: str, probability: float) -> SynthInstrumentScore:
     raw = sample_hold_score(
         "stages" if source_kind == "stages" else "lfo", probability
     ).model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]
     patch["envelfos"].update(
         {
             "wave": {"kind": "lfo", "shape": "triangle", "rate": "2"},
@@ -119,7 +119,7 @@ def test_latch_activation_and_same_frame_captures(
     envelfo_baseline: Callable[[int], np.ndarray],
 ) -> None:
     raw = latch_score("lfo", 1).model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]
     if mode != "unconnected":
         for connection in patch["events"]:
             connection.update(every=1, offset=0, delay="0")
@@ -173,7 +173,7 @@ def test_latch_discards_pending_captures_and_initializes_reused_voice_slot(
     tmp_path: Path,
 ) -> None:
     raw = latch_score("lfo", 1).model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]
     patch["envelfos"]["wave"]["phase"] = "1/4"
     for connection in patch["events"]:
         connection.update(every=1, offset=0, delay="1/8")

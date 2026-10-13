@@ -34,7 +34,7 @@ Existing control-clip placement and source offsets retain their meaning.
   interpolation contract that preserves existing held, curved-envelope, and
   equal-power gain behavior. Keep restrictions on the consuming quantity:
   logical gates use held segments; equal-power interpolation applies to gains.
-- Use this type for `VoiceEnvelope.segments`, `VoiceEnvelope.release`, and `Curve.segments`.
+- Use this type for `Envelope.segments`, `Envelope.release`, and `Curve.segments`.
   Replace `Segment.target` with `Segment.to` everywhere. Preserve envelope
   polarity, hold, retrigger, and release semantics.
 - Change `ufor/automation.py`'s authored `TimelineCurve` from `knots` to a start

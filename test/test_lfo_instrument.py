@@ -27,14 +27,12 @@ def lfo_settings(scope: str = "voice") -> processing.SoundSettings:
         {
             "envelfos": {
                 "envelfo": {
+                    "kind": "lfo",
+                    "rate": "4",
+                    "phase": "1/4",
+                    "delay": "1/8",
+                    "fade_in": "1/8",
                     "scope": scope,
-                    "body": {
-                        "kind": "lfo",
-                        "rate": "4",
-                        "phase": "1/4",
-                        "delay": "1/8",
-                        "fade_in": "1/8",
-                    },
                 }
             },
             "bindings": [
@@ -81,54 +79,48 @@ def test_patch_transforms_share_children_and_match_native_runtime(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "gesture": {
-            "clock": clock,
-            "body": {
-                "kind": "patch",
-                "envelfos": {
-                    "output": {
-                        "kind": "affine",
-                        "input": "sum",
-                        "scale": 0.25,
-                        "offset": 0.5,
-                    },
-                    "sum": {"kind": "sum", "inputs": ["shaped", "vib"]},
-                    "shaped": {"kind": "product", "inputs": ["vib", "env"]},
-                    "vib": {
-                        "kind": "lfo",
-                        "shape": "triangle",
-                        "rate": "2",
-                        "phase": "1/4",
-                        "delay": "1/8",
-                        "fade_in": "1/8",
-                    },
-                    "env": {
-                        "kind": "envelope",
-                        "segments": [
-                            {
-                                "duration": "1/2 s"
-                                if clock == "seconds"
-                                else "1/2 beats",
-                                "to": 1,
-                            }
-                        ],
-                        "release": [
-                            {
-                                "duration": "1/4 s"
-                                if clock == "seconds"
-                                else "1/4 beats",
-                                "to": 0,
-                            }
-                        ],
-                    },
+            "kind": "patch",
+            "envelfos": {
+                "output": {
+                    "kind": "affine",
+                    "input": "sum",
+                    "scale": 0.25,
+                    "offset": 0.5,
                 },
-                "outputs": {"level": "output", "same": "output"},
+                "sum": {"kind": "sum", "inputs": ["shaped", "vib"]},
+                "shaped": {"kind": "product", "inputs": ["vib", "env"]},
+                "vib": {
+                    "kind": "lfo",
+                    "shape": "triangle",
+                    "rate": "2",
+                    "phase": "1/4",
+                    "delay": "1/8",
+                    "fade_in": "1/8",
+                },
+                "env": {
+                    "kind": "envelope",
+                    "segments": [
+                        {
+                            "duration": "1/2 s" if clock == "seconds" else "1/2 beats",
+                            "to": 1,
+                        }
+                    ],
+                    "release": [
+                        {
+                            "duration": "1/4 s" if clock == "seconds" else "1/4 beats",
+                            "to": 0,
+                        }
+                    ],
+                },
             },
+            "outputs": {"level": "output", "same": "output"},
+            "clock": clock,
         }
     }
     voice["bindings"][0].update(reference="gesture", output="level")
     if release_timing == "voice":
         voice["minimum_hold_seconds"] = "1"
-        voice["envelfos"]["gesture"]["body"]["outputs"]["envelope"] = "env"
+        voice["envelfos"]["gesture"]["outputs"]["envelope"] = "env"
         voice["bindings"].append(
             {
                 "name": "envelope",
@@ -255,8 +247,9 @@ def test_patch_lfo_transforms_use_shared_absolute_clocks(
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["envelfos"]["envelfo"]["body"] = {
+    voice["envelfos"]["envelfo"] = {
         "kind": "patch",
+        "scope": scope,
         "envelfos": {
             "lfo": {"kind": "lfo", "rate": "4", "phase": "1/4"},
             "sum": {"kind": "sum", "inputs": ["lfo", "lfo"]},
@@ -323,11 +316,9 @@ def test_beat_envelope_follows_tempo_without_following_transport_seek(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelfos"]["envelfo"] = {
+        "kind": "envelope",
+        "segments": [{"duration": "2 beats", "to": 1}],
         "clock": "beats",
-        "body": {
-            "kind": "envelope",
-            "segments": [{"duration": "2 beats", "to": 1}],
-        },
     }
     voice["modulation"]["sources"][0]["minimum"] = 0
     voice["modulation"]["routes"][0]["points"][0]["input"] = 0
@@ -409,28 +400,26 @@ def test_beat_stages_follow_tempo_and_stop_across_restore(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelfos"]["envelfo"] = {
-        "clock": "beats",
-        "body": {
-            "kind": "stages",
-            "initial_stage": "attack",
-            "stages": [
-                {
-                    "name": "attack",
-                    "envelfo": {
-                        "kind": "envelope",
-                        "segments": [{"duration": "1 beat", "to": 1}],
-                    },
+        "kind": "stages",
+        "initial_stage": "attack",
+        "stages": [
+            {
+                "name": "attack",
+                "envelfo": {
+                    "kind": "envelope",
+                    "segments": [{"duration": "1 beat", "to": 1}],
                 },
-                {"name": "sustain", "envelfo": {"kind": "hold", "value": 1}},
-            ],
-            "transitions": [
-                {
-                    "from": ["attack"],
-                    "event": "stage.done",
-                    "action": {"kind": "enter", "stage": "sustain"},
-                }
-            ],
-        },
+            },
+            {"name": "sustain", "envelfo": {"kind": "hold", "value": 1}},
+        ],
+        "transitions": [
+            {
+                "from": ["attack"],
+                "event": "stage.done",
+                "action": {"kind": "enter", "stage": "sustain"},
+            }
+        ],
+        "clock": "beats",
     }
     document = SynthInstrumentScore.model_validate(raw)
     clock = TempoMap.model_validate(
@@ -486,14 +475,12 @@ def test_transport_position_cycle_follows_seek_without_crossing_history(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
+        "kind": "lfo",
+        "shape": "triangle",
+        "rate": "1/4",
+        "reset": "transport",
         "clock": "beats",
         "position_driver": "transport",
-        "body": {
-            "kind": "lfo",
-            "shape": "triangle",
-            "rate": "1/4",
-            "reset": "transport",
-        },
     }
     document = SynthInstrumentScore.model_validate(raw)
     clock = TempoMap.model_validate(
@@ -605,9 +592,9 @@ def test_patch_named_outputs_match_separate_envelfos(
     vibrato = {"kind": "lfo", "rate": "5"}
     envelope = {"kind": "envelope", "segments": [{"duration": "1 s", "to": 1}]}
     child = {"stages": stages, "lfo": vibrato, "envelope": envelope}[shared_body]
-    voice["envelfos"] = {"amp": {"body": child}}
+    voice["envelfos"] = {"amp": child | {}}
     if not shared_child:
-        voice["envelfos"]["vib"] = {"body": vibrato}
+        voice["envelfos"]["vib"] = vibrato | {}
     voice["bindings"] = [
         {"name": "level", "kind": "envelfo", "reference": "amp"},
         {
@@ -698,13 +685,11 @@ def test_patch_named_outputs_match_separate_envelfos(
     )
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {"amp": child}
-                if shared_child
-                else {"amp": stages, "vib": vibrato},
-                "outputs": {"level": "amp", "pitch": "amp" if shared_child else "vib"},
-            }
+            "kind": "patch",
+            "envelfos": {"amp": child}
+            if shared_child
+            else {"amp": stages, "vib": vibrato},
+            "outputs": {"level": "amp", "pitch": "amp" if shared_child else "vib"},
         }
     }
     voice["bindings"][0].update(reference="gesture", output="level")
@@ -820,31 +805,29 @@ def test_patch_child_event_starts_unexposed_envelope(
         }
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {
-                    "clock": clock,
-                    "accent": {
-                        "kind": "envelope",
-                        "start": "event",
-                        "segments": [
-                            {"duration": "1/8 s", "to": 1},
-                            {"duration": "1/8 s", "to": 0},
-                        ],
-                    },
+            "kind": "patch",
+            "envelfos": {
+                "clock": clock,
+                "accent": {
+                    "kind": "envelope",
+                    "start": "event",
+                    "segments": [
+                        {"duration": "1/8 s", "to": 1},
+                        {"duration": "1/8 s", "to": 0},
+                    ],
                 },
-                "events": [
-                    {
-                        "source": {
-                            "staged-done": "clock.stage.done",
-                            "staged-action": "clock.done",
-                        }.get(source_kind, "clock.peak"),
-                        "target": "accent",
-                        "action": "start",
-                    }
-                ],
-                "outputs": {"value": "accent"},
-            }
+            },
+            "events": [
+                {
+                    "source": {
+                        "staged-done": "clock.stage.done",
+                        "staged-action": "clock.done",
+                    }.get(source_kind, "clock.peak"),
+                    "target": "accent",
+                    "action": "start",
+                }
+            ],
+            "outputs": {"value": "accent"},
         }
     }
     voice["envelfos"]["unused"] = voice["envelfos"]["gesture"]
@@ -987,24 +970,22 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
         }
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {"clock": clock, "accent": target},
-                "outputs": {"value": "accent"},
-                "events": [
-                    {
-                        "source": "clock.pulse",
-                        "target": "accent",
-                        "action": command,
-                        "every": d,
-                        "offset": offset,
-                        "probability": probability,
-                        "delay": delay,
-                        **({"cue": "hit"} if command == "cue" else {}),
-                    }
-                    for d in divisors
-                ],
-            }
+            "kind": "patch",
+            "envelfos": {"clock": clock, "accent": target},
+            "outputs": {"value": "accent"},
+            "events": [
+                {
+                    "source": "clock.pulse",
+                    "target": "accent",
+                    "action": command,
+                    "every": d,
+                    "offset": offset,
+                    "probability": probability,
+                    "delay": delay,
+                    **({"cue": "hit"} if command == "cue" else {}),
+                }
+                for d in divisors
+            ],
         }
     }
     voice["bindings"] = [
@@ -1157,27 +1138,21 @@ def test_delayed_envelfo_events_report_queue_and_clock_limits(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "clock": {
-            "body": {
-                "kind": "lfo",
-                "rate": "48000",
-                "markers": [{"name": "pulse", "position": "1/4"}],
-            }
+            "kind": "lfo",
+            "rate": "48000",
+            "markers": [{"name": "pulse", "position": "1/4"}],
         },
         "target": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "waiting",
-                "stages": [
-                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}}
-                ],
-                "transitions": [
-                    {
-                        "from": ["waiting"],
-                        "event": "cue.hit",
-                        "action": {"kind": "enter", "stage": "waiting"},
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [{"name": "waiting", "envelfo": {"kind": "hold", "value": 0}}],
+            "transitions": [
+                {
+                    "from": ["waiting"],
+                    "event": "cue.hit",
+                    "action": {"kind": "enter", "stage": "waiting"},
+                }
+            ],
         },
     }
     voice["bindings"] = [
@@ -1199,9 +1174,9 @@ def test_delayed_envelfo_events_report_queue_and_clock_limits(
         }
     ]
     if burst:
-        lfo = voice["envelfos"]["clock"]["body"]
+        lfo = voice["envelfos"]["clock"]
         lfo["markers"].append({"name": "tick", "position": "1/2"})
-        voice["envelfos"]["clock"]["body"] = {
+        voice["envelfos"]["clock"] = {
             "kind": "stages",
             "initial_stage": "running",
             "stages": [{"name": "running", "envelfo": lfo}],
@@ -1260,37 +1235,35 @@ def test_patch_child_starts_follow_event_time_within_one_sample(
         connections.reverse()
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {
-                    "early": {
-                        "kind": "lfo",
-                        "rate": "1",
-                        "markers": [{"name": "mark", "position": "1/192000"}],
-                    },
-                    "late": {
-                        "kind": "stages",
-                        "initial_stage": "playing",
-                        "stages": [
-                            {
-                                "name": "playing",
-                                "envelfo": {
-                                    "kind": "envelope",
-                                    "segments": [{"duration": "1/48000 s", "to": 1}],
-                                    "markers": [{"name": "mark", "position": "3/4"}],
-                                },
-                            }
-                        ],
-                    },
-                    "accent": {
-                        "kind": "envelope",
-                        "start": "event",
-                        "segments": [{"duration": "1/1000 s", "to": 1}],
-                    },
+            "kind": "patch",
+            "envelfos": {
+                "early": {
+                    "kind": "lfo",
+                    "rate": "1",
+                    "markers": [{"name": "mark", "position": "1/192000"}],
                 },
-                "events": connections,
-                "outputs": {"value": "accent"},
-            }
+                "late": {
+                    "kind": "stages",
+                    "initial_stage": "playing",
+                    "stages": [
+                        {
+                            "name": "playing",
+                            "envelfo": {
+                                "kind": "envelope",
+                                "segments": [{"duration": "1/48000 s", "to": 1}],
+                                "markers": [{"name": "mark", "position": "3/4"}],
+                            },
+                        }
+                    ],
+                },
+                "accent": {
+                    "kind": "envelope",
+                    "start": "event",
+                    "segments": [{"duration": "1/1000 s", "to": 1}],
+                },
+            },
+            "events": connections,
+            "outputs": {"value": "accent"},
         }
     }
     voice["bindings"] = [
@@ -1379,41 +1352,36 @@ def test_patch_child_event_cues_child_stages(
         }
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {
-                    "clock": clock,
-                    "level": {
-                        "kind": "stages",
-                        "initial_stage": "waiting",
-                        "stages": [
-                            {
-                                "name": "waiting",
-                                "envelfo": {"kind": "hold", "value": -1},
-                            },
-                            {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
-                        ],
-                        "transitions": [
-                            {
-                                "from": ["waiting"],
-                                "event": "cue.brighten",
-                                "action": {"kind": "enter", "stage": "bright"},
-                            }
-                        ],
-                    },
+            "kind": "patch",
+            "envelfos": {
+                "clock": clock,
+                "level": {
+                    "kind": "stages",
+                    "initial_stage": "waiting",
+                    "stages": [
+                        {"name": "waiting", "envelfo": {"kind": "hold", "value": -1}},
+                        {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+                    ],
+                    "transitions": [
+                        {
+                            "from": ["waiting"],
+                            "event": "cue.brighten",
+                            "action": {"kind": "enter", "stage": "bright"},
+                        }
+                    ],
                 },
-                "outputs": {"value": "level"},
-                "events": [
-                    {
-                        "source": "clock.stage.done"
-                        if source_kind == "staged-done"
-                        else "clock.peak",
-                        "target": "level",
-                        "action": "cue",
-                        "cue": "brighten",
-                    }
-                ],
-            }
+            },
+            "outputs": {"value": "level"},
+            "events": [
+                {
+                    "source": "clock.stage.done"
+                    if source_kind == "staged-done"
+                    else "clock.peak",
+                    "target": "level",
+                    "action": "cue",
+                    "cue": "brighten",
+                }
+            ],
         }
     }
     voice["bindings"] = [
@@ -1473,70 +1441,65 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
     lfo_position = "3/192000" if stage_first else "1/192000"
     voice["envelfos"] = {
         "gesture": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {
-                    "staged": {
-                        "kind": "stages",
-                        "initial_stage": "playing",
-                        "stages": [
-                            {
-                                "name": "playing",
-                                "envelfo": {
-                                    "kind": "envelope",
-                                    "segments": [{"duration": "1/48000 s", "to": 1}],
-                                    "markers": [
-                                        {"name": "mark", "position": stage_position}
-                                    ],
-                                },
-                            }
-                        ],
-                    },
-                    "cycling": {
-                        "kind": "lfo",
-                        "rate": "1",
-                        "markers": [{"name": "mark", "position": lfo_position}],
-                    },
-                    "level": {
-                        "kind": "stages",
-                        "initial_stage": "waiting",
-                        "stages": [
-                            {
-                                "name": "waiting",
-                                "envelfo": {"kind": "hold", "value": -1},
+            "kind": "patch",
+            "envelfos": {
+                "staged": {
+                    "kind": "stages",
+                    "initial_stage": "playing",
+                    "stages": [
+                        {
+                            "name": "playing",
+                            "envelfo": {
+                                "kind": "envelope",
+                                "segments": [{"duration": "1/48000 s", "to": 1}],
+                                "markers": [
+                                    {"name": "mark", "position": stage_position}
+                                ],
                             },
-                            {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
-                        ],
-                        "transitions": [
-                            {
-                                "from": ["waiting"],
-                                "event": "cue.brighten",
-                                "action": {"kind": "enter", "stage": "bright"},
-                            },
-                            {
-                                "from": ["bright"],
-                                "event": "cue.dim",
-                                "action": {"kind": "enter", "stage": "waiting"},
-                            },
-                        ],
-                    },
+                        }
+                    ],
                 },
-                "outputs": {"value": "level"},
-                "events": [
-                    {
-                        "source": "staged.mark" if stage_first else "cycling.mark",
-                        "target": "level",
-                        "action": "cue",
-                        "cue": "brighten",
-                    },
-                    {
-                        "source": "cycling.mark" if stage_first else "staged.mark",
-                        "target": "level",
-                        "action": "cue",
-                        "cue": "dim",
-                    },
-                ],
-            }
+                "cycling": {
+                    "kind": "lfo",
+                    "rate": "1",
+                    "markers": [{"name": "mark", "position": lfo_position}],
+                },
+                "level": {
+                    "kind": "stages",
+                    "initial_stage": "waiting",
+                    "stages": [
+                        {"name": "waiting", "envelfo": {"kind": "hold", "value": -1}},
+                        {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+                    ],
+                    "transitions": [
+                        {
+                            "from": ["waiting"],
+                            "event": "cue.brighten",
+                            "action": {"kind": "enter", "stage": "bright"},
+                        },
+                        {
+                            "from": ["bright"],
+                            "event": "cue.dim",
+                            "action": {"kind": "enter", "stage": "waiting"},
+                        },
+                    ],
+                },
+            },
+            "outputs": {"value": "level"},
+            "events": [
+                {
+                    "source": "staged.mark" if stage_first else "cycling.mark",
+                    "target": "level",
+                    "action": "cue",
+                    "cue": "brighten",
+                },
+                {
+                    "source": "cycling.mark" if stage_first else "staged.mark",
+                    "target": "level",
+                    "action": "cue",
+                    "cue": "dim",
+                },
+            ],
         }
     }
     voice["bindings"] = [
@@ -1588,13 +1551,11 @@ def test_beat_lfo_tracks_host_tempo_in_both_offline_backends(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelfos"]["envelfo"] = {
+        "kind": "lfo",
+        "rate": "1",
+        "delay": "1/4",
+        "fade_in": "1/4",
         "clock": "beats",
-        "body": {
-            "kind": "lfo",
-            "rate": "1",
-            "delay": "1/4",
-            "fade_in": "1/4",
-        },
     }
     document = SynthInstrumentScore.model_validate(raw)
     clock = TempoMap.model_validate(
@@ -1639,13 +1600,11 @@ def test_persistent_beat_envelope_releases_at_frame_boundary_while_clock_stops(
     voice = raw["body"]["voices"][0]
     voice["envelope"]["release"] = [{"duration": "1 s", "to": 0}]
     voice["envelfos"]["envelfo"] = {
+        "kind": "envelope",
+        "initial": 1,
+        "segments": [{"duration": "1 beat", "to": 1}],
+        "release": [{"duration": "1 beat", "to": 0}],
         "clock": "beats",
-        "body": {
-            "kind": "envelope",
-            "initial": 1,
-            "segments": [{"duration": "1 beat", "to": 1}],
-            "release": [{"duration": "1 beat", "to": 0}],
-        },
     }
     voice["modulation"]["sources"][0]["minimum"] = 0
     voice["modulation"]["routes"][0]["points"][0]["input"] = 0
@@ -1684,9 +1643,10 @@ def test_beat_lfo_pause_preserves_musical_phase(
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
+        "kind": "lfo",
+        "rate": "1",
         "scope": scope,
         "clock": "beats",
-        "body": {"kind": "lfo", "rate": "1"},
     }
     document = SynthInstrumentScore.model_validate(raw)
     clock = TempoMap.model_validate(
@@ -1771,7 +1731,7 @@ def test_trigger_addressed_envelfo_changes_only_matching_voice(
             "stages": [{"name": "rise", "envelfo": envelope}],
         }
     )
-    voice["envelfos"]["envelfo"]["body"] = body
+    voice["envelfos"]["envelfo"] = body
     if body_kind == "envelope":
         modulation = voice["modulation"]
         modulation["sources"][0]["minimum"] = 0
@@ -1850,7 +1810,7 @@ def test_sampler_envelope_playback_and_release_survive_restore(
 ) -> None:
     raw = lfo_score("sampler", "voice").model_dump(mode="json")
     slot = raw["body"]["slots"][0]
-    slot["envelfos"]["envelfo"]["body"] = {
+    slot["envelfos"]["envelfo"] = {
         "kind": "envelope",
         "playback": playback,
         "segments": [{"duration": "1/2 s", "to": 1}],
@@ -1929,6 +1889,7 @@ def test_trigger_envelfo_change_reaches_every_started_voice(
 def test_library_envelfo_materializes_before_synth_preparation(tmp_path: Path) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
+        "kind": "reference",
         "scope": "voice",
         "score": {"selector": "envelfos:vibrato"},
         "parameters": {"speed": 6},
@@ -1967,7 +1928,7 @@ def test_library_envelfo_materializes_before_synth_preparation(tmp_path: Path) -
     materialized = library.materialize("envelfos:patch")
     assert isinstance(materialized, SynthInstrumentScore)
     inline = lfo_score("synth").model_dump(mode="json")
-    inline["body"]["voices"][0]["envelfos"]["envelfo"]["body"]["rate"] = "6"
+    inline["body"]["voices"][0]["envelfos"]["envelfo"]["rate"] = "6"
     expected = SynthInstrumentScore.model_validate(inline)
     events = [onset(0, pitch=0.1).model_copy(update={"controls": {}})]
     actions = synth_trace.prepare(
@@ -2005,12 +1966,10 @@ def test_named_envelope_modulates_synth_and_releases(
         {
             "envelfos": {
                 "envelfo": {
-                    "body": {
-                        "kind": "envelope",
-                        "initial": 0,
-                        "segments": [{"duration": "1/4 s", "to": 1}],
-                        "release": [{"duration": "1/4 s", "to": 0}],
-                    }
+                    "kind": "envelope",
+                    "initial": 0,
+                    "segments": [{"duration": "1/4 s", "to": 1}],
+                    "release": [{"duration": "1/4 s", "to": 0}],
                 }
             },
             "bindings": [
@@ -2105,12 +2064,10 @@ def test_named_envelope_releases_before_voice_minimum_hold(
     voice["envelope"]["release"] = [{"duration": "1/4 s", "to": 0}]
     voice["envelfos"] = {
         "envelfo": {
-            "body": {
-                "kind": "envelope",
-                "initial": 1,
-                "segments": [{"duration": "1/4 s", "to": 1}],
-                "release": [{"duration": release_duration, "to": 0}],
-            }
+            "kind": "envelope",
+            "initial": 1,
+            "segments": [{"duration": "1/4 s", "to": 1}],
+            "release": [{"duration": release_duration, "to": 0}],
         }
     }
     voice["bindings"] = [
@@ -2211,7 +2168,7 @@ def test_release_free_envelope_finishes_after_note_off_and_restores(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
-    voice["envelfos"]["envelfo"]["body"] = {
+    voice["envelfos"]["envelfo"] = {
         "kind": "envelope",
         "initial": 0,
         "segments": [{"duration": "1/2 s", "to": 1}],
@@ -2276,7 +2233,7 @@ def test_staged_lfo_fade_remains_exact_across_single_frame_partitions(
     tmp_path: Path, backend: Literal["numpy", "native"], interval: int
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
-    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "kind": "stages",
         "initial_stage": "wave",
         "stages": [
@@ -2320,7 +2277,7 @@ def test_mixed_staged_cycle_and_looping_envelope_keep_scalar_boundary_semantics(
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     raw["body"]["voices"][0]["bindings"][0]["output"] = "value"
-    raw["body"]["voices"][0]["envelfos"]["envelfo"]["body"] = {
+    raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
         "kind": "patch",
         "envelfos": {
             "wave": {
@@ -2368,7 +2325,7 @@ def test_staged_envelfo_renders_and_restores_at_attack_boundary(
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     voice["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
-    voice["envelfos"]["envelfo"]["body"] = {
+    voice["envelfos"]["envelfo"] = {
         "kind": "stages",
         "initial_stage": "waiting",
         "stages": [
@@ -2495,7 +2452,7 @@ def test_staged_sampler_envelfo_releases_and_restores(
     raw = lfo_score("sampler").model_dump(mode="json")
     slot = raw["body"]["slots"][0]
     slot["envelope"]["release"] = [{"duration": "1 s", "to": 1}]
-    slot["envelfos"]["envelfo"]["body"] = {
+    slot["envelfos"]["envelfo"] = {
         "kind": "stages",
         "initial_stage": "waiting",
         "stages": [
@@ -2579,37 +2536,33 @@ def test_staged_marker_cues_another_envelfo_at_exact_time(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "clock": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "lfo",
-                "stages": [
-                    {
-                        "name": "lfo",
-                        "envelfo": {
-                            "kind": "lfo",
-                            "rate": "1",
-                            "markers": [{"name": "peak", "position": position}],
-                        },
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "lfo",
+            "stages": [
+                {
+                    "name": "lfo",
+                    "envelfo": {
+                        "kind": "lfo",
+                        "rate": "1",
+                        "markers": [{"name": "peak", "position": position}],
+                    },
+                }
+            ],
         },
         "level": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "waiting",
-                "stages": [
-                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
-                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1.0}},
-                ],
-                "transitions": [
-                    {
-                        "from": ["waiting"],
-                        "event": "cue.brighten",
-                        "action": {"kind": "enter", "stage": "bright"},
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [
+                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
+                {"name": "bright", "envelfo": {"kind": "hold", "value": 1.0}},
+            ],
+            "transitions": [
+                {
+                    "from": ["waiting"],
+                    "event": "cue.brighten",
+                    "action": {"kind": "enter", "stage": "bright"},
+                }
+            ],
         },
     }
     voice["bindings"] = [
@@ -2631,20 +2584,12 @@ def test_staged_marker_cues_another_envelfo_at_exact_time(
     ]
     if cascade:
         voice["envelfos"]["relay"] = {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "waiting",
-                "stages": [
-                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}}
-                ],
-                "transitions": [
-                    {
-                        "from": ["waiting"],
-                        "event": "cue.fire",
-                        "action": {"kind": "finish"},
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [{"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}}],
+            "transitions": [
+                {"from": ["waiting"], "event": "cue.fire", "action": {"kind": "finish"}}
+            ],
         }
         voice["bindings"].append(
             {"name": "relay", "kind": "envelfo", "reference": "relay"}
@@ -2729,29 +2674,25 @@ def test_patch_named_event_output_cues_stage(
         }
     voice["envelfos"] = {
         "patch": {
-            "body": {
-                "kind": "patch",
-                "envelfos": {"carrier": {"kind": "lfo", "rate": "1"}, "pulse": pulse},
-                "outputs": {"signal": "carrier"},
-                "event_outputs": {"strike": "pulse.peak"},
-            }
+            "kind": "patch",
+            "envelfos": {"carrier": {"kind": "lfo", "rate": "1"}, "pulse": pulse},
+            "outputs": {"signal": "carrier"},
+            "event_outputs": {"strike": "pulse.peak"},
         },
         "level": {
-            "body": {
-                "kind": "stages",
-                "initial_stage": "waiting",
-                "stages": [
-                    {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
-                    {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
-                ],
-                "transitions": [
-                    {
-                        "from": ["waiting"],
-                        "event": "cue.brighten",
-                        "action": {"kind": "enter", "stage": "bright"},
-                    }
-                ],
-            }
+            "kind": "stages",
+            "initial_stage": "waiting",
+            "stages": [
+                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+            ],
+            "transitions": [
+                {
+                    "from": ["waiting"],
+                    "event": "cue.brighten",
+                    "action": {"kind": "enter", "stage": "bright"},
+                }
+            ],
         },
     }
     voice["bindings"] = [
@@ -2879,10 +2820,7 @@ def test_named_lfo_names_remain_local_to_settings_and_instances(
             **entries[0],
             "name": "second",
             "envelfos": {
-                "envelfo": {
-                    "scope": scope,
-                    "body": {"kind": "lfo", "rate": "0", "phase": "3/4"},
-                }
+                "envelfo": {"kind": "lfo", "rate": "0", "phase": "3/4", "scope": scope}
             },
         }
     )

@@ -4,7 +4,7 @@ from fractions import Fraction
 from math import ceil
 
 import numpy as np
-from ufor.envelope import VoiceEnvelope
+from ufor.envelfo import Envelope
 from ufor.oscillator import Oscillator, Waveform
 from ufor.segments import Segment
 
@@ -42,7 +42,7 @@ def render(
 
 
 def envelope_spans(
-    envelope: VoiceEnvelope,
+    envelope: Envelope,
     start: int,
     frames: int,
     sample_rate: int,
@@ -54,6 +54,7 @@ def envelope_spans(
     local index origin. Rust evaluates the linear arithmetic for each sample.
     Later rows overwrite earlier rows, including the release's terminal level.
     """
+    assert isinstance(envelope.initial, float)
     spans = _spans(
         envelope.initial,
         envelope.segments,

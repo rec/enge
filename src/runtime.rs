@@ -2600,8 +2600,11 @@ impl SynthRuntime {
                     return Ok(());
                 }
                 let at = self.named_time(definition, self.frame as f64);
-                let mut state =
-                    named_envelope_settled(definition, &self.named_states[index], self.frame as f64);
+                let mut state = named_envelope_settled(
+                    definition,
+                    &self.named_states[index],
+                    self.frame as f64,
+                );
                 if let Some(count) = definition.repeat_count.filter(|_| !state.released) {
                     if state.complete_coordinate.is_none() {
                         let (crossed, boundary) = repeat_crossings(

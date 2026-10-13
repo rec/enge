@@ -594,7 +594,7 @@ class PersistentFM(synth.PersistentSynth):
         self.runtime = _native.SynthRuntime.fm_graph(
             rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            operators[carrier].envelope.initial,
+            cast(float, operators[carrier].envelope.initial),
             synth._runtime_segments(operators[carrier].envelope.segments, rate),
             synth._runtime_segments(operators[carrier].envelope.release, rate),
             [
@@ -605,7 +605,7 @@ class PersistentFM(synth.PersistentSynth):
                 }[operator.waveform]
                 for operator in operators
             ],
-            [operator.envelope.initial for operator in operators],
+            [cast(float, o.envelope.initial) for o in operators],
             [
                 [
                     tuple(segment)
@@ -743,6 +743,8 @@ def prepare(score: SynthInstrumentScore) -> PreparedFM:
         if not isinstance(voice, FMVoice):
             raise synth.EngineError("FM engine requires FM voice templates")
         synth.validate_generators(voice)
+        for operator in voice.fm.operators:
+            synth.validate_envelope(operator.envelope)
         if voice.processing != Processing(
             tuning_cents=voice.processing.tuning_cents,
             volume_db=voice.processing.volume_db,

@@ -21,33 +21,31 @@ def slew_score(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "gesture": {
-            "clock": clock,
-            "body": {
-                "kind": "patch",
-                "envelfos": {
-                    "clock": {
-                        "kind": "lfo",
-                        "shape": "square",
-                        "rate": "2",
-                        "phase": "1/2",
-                    },
-                    "smooth": {
-                        "kind": "slew",
-                        "input": "clock",
-                        "rise": rise,
-                        "fall": fall,
-                        "initial": initial,
-                    },
-                    "shared": {"kind": "sum", "inputs": ["smooth", "smooth"]},
-                    "level": {
-                        "kind": "affine",
-                        "input": "shared",
-                        "scale": 0.25,
-                        "offset": 0.5,
-                    },
+            "kind": "patch",
+            "envelfos": {
+                "clock": {
+                    "kind": "lfo",
+                    "shape": "square",
+                    "rate": "2",
+                    "phase": "1/2",
                 },
-                "outputs": {"value": "level"},
+                "smooth": {
+                    "kind": "slew",
+                    "input": "clock",
+                    "rise": rise,
+                    "fall": fall,
+                    "initial": initial,
+                },
+                "shared": {"kind": "sum", "inputs": ["smooth", "smooth"]},
+                "level": {
+                    "kind": "affine",
+                    "input": "shared",
+                    "scale": 0.25,
+                    "offset": 0.5,
+                },
             },
+            "outputs": {"value": "level"},
+            "clock": clock,
         }
     }
     voice["bindings"][0].update(reference="gesture", output="value")
@@ -171,7 +169,7 @@ def test_slew_initializes_fresh_when_a_voice_slot_is_reused(tmp_path: Path) -> N
 
 def test_slew_drives_threshold_cues_on_the_following_frame(tmp_path: Path) -> None:
     raw = threshold_score("cue").model_dump(mode="json")
-    children = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]["envelfos"]
+    children = raw["body"]["voices"][0]["envelfos"]["gesture"]["envelfos"]
     children["smooth"] = {"kind": "slew", "input": "clock", "rise": 16, "fall": 8}
     children["edge"].update(input="smooth", lower=-0.3113, upper=0.2313)
     document = SynthInstrumentScore.model_validate(raw)

@@ -36,9 +36,7 @@ def filter_score(kind: str) -> SynthInstrumentScore | instrument.SampleInstrumen
         "segments": [{"duration": "1/100 s", "to": 0.2}],
         "release": [{"duration": "1/8 s", "to": 0}],
     }
-    voice["envelfos"] = {
-        "envelfo": {"scope": "voice", "body": {"kind": "lfo", "rate": "4"}}
-    }
+    voice["envelfos"] = {"envelfo": {"kind": "lfo", "rate": "4", "scope": "voice"}}
     voice["bindings"] = [
         {"name": "tone", "kind": "control", "control": "tone", "smoothing": "1/200"},
         {"name": "envelfo", "kind": "envelfo", "reference": "envelfo"},

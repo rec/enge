@@ -230,13 +230,11 @@ def test_envelope_playback_modulates_fm_and_survives_restore(
     voice = raw["body"]["voices"][0]
     voice["envelfos"] = {
         "envelfo": {
-            "body": {
-                "kind": "envelope",
-                "playback": playback,
-                "initial": 0,
-                "segments": [{"duration": "1/4 s", "to": 1}],
-                "release": [{"duration": "1/4 s", "to": 0}],
-            }
+            "kind": "envelope",
+            "playback": playback,
+            "initial": 0,
+            "segments": [{"duration": "1/4 s", "to": 1}],
+            "release": [{"duration": "1/4 s", "to": 0}],
         }
     }
     voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
@@ -325,10 +323,7 @@ def test_instrument_lfo_rate_and_reset_modulate_fm_across_restore(
     voice = raw["body"]["voices"][0]
     target = {"name": "edge-modulator-carrier", "parameter": "index"}
     voice["envelfos"] = {
-        "envelfo": {
-            "scope": "instrument",
-            "body": {"kind": "lfo", "shape": "sine", "rate": 2},
-        }
+        "envelfo": {"kind": "lfo", "shape": "sine", "rate": 2, "scope": "instrument"}
     }
     voice["bindings"] = [{"name": "envelfo", "kind": "envelfo", "reference": "envelfo"}]
     voice["modulation"] = {
@@ -793,7 +788,7 @@ def test_fm_lfo_filter_and_immediate_stop_share_existing_processing(
 
     raw = score().model_dump()
     voice = raw["body"]["voices"][0]
-    voice["envelfos"] = {"color": {"body": {"kind": "lfo", "shape": "sine", "rate": 2}}}
+    voice["envelfos"] = {"color": {"kind": "lfo", "shape": "sine", "rate": 2}}
     voice["modulation"]["sources"][0].update(scope="voice", minimum=-1)
     voice["modulation"]["routes"][0]["points"] = [
         {"input": -1, "amount": -1},

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from test_synth import check_audio, score
 from ufor import synth_trace
-from ufor.envelope import VoiceEnvelope
+from ufor.envelfo import Envelope
 from ufor.events import ControlChange, Release, Trigger
 from ufor.instrument_trace import TraceAction, VoiceRetirement
 from ufor.segments import Segment
@@ -357,7 +357,7 @@ def test_fractional_release_boundary_and_nonzero_terminal_level(
     document = dynamic_score(waveform="square")
     raw = document.model_dump(mode="json")
     raw["body"]["voices"][0]["minimum_hold_seconds"] = "1/32000"
-    raw["body"]["voices"][0]["envelope"] = VoiceEnvelope(
+    raw["body"]["voices"][0]["envelope"] = Envelope(
         segments=[Segment(duration=Fraction(0), to=1)],
         release=[Segment(duration=Fraction(1, 32000), to=0.5)],
     ).model_dump(mode="json")
@@ -413,13 +413,11 @@ def test_preparation_rejects_unsupported_features(feature: str) -> None:
     elif feature == "generator":
         voice["envelfos"] = {
             "vibrato": {
+                "kind": "stages",
+                "initial_stage": "hold",
+                "stages": [{"name": "hold", "envelfo": {"kind": "hold"}}],
                 "scope": "instrument",
                 "clock": "beats",
-                "body": {
-                    "kind": "stages",
-                    "initial_stage": "hold",
-                    "stages": [{"name": "hold", "envelfo": {"kind": "hold"}}],
-                },
             }
         }
     elif feature == "curve":

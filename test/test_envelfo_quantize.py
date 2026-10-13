@@ -29,8 +29,9 @@ def test_quantize_grid_matches_across_clocks_partitions_and_snapshots(
 ) -> None:
     raw = lfo_score("synth", scope).model_dump(mode="json")
     voice = raw["body"]["voices"][0]
-    voice["envelfos"]["envelfo"]["body"] = {
+    voice["envelfos"]["envelfo"] = {
         "kind": "patch",
+        "scope": scope,
         "envelfos": {
             "wave": {"kind": "lfo", "shape": "triangle", "rate": "2"},
             "steps": {

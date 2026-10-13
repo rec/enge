@@ -91,7 +91,7 @@ def test_quantity_authored_envelfo_preserves_fractional_event_delivery(
 ) -> None:
     canonical = latch_score("lfo", 1)
     raw = canonical.model_dump(mode="json")
-    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]["body"]
+    patch = raw["body"]["voices"][0]["envelfos"]["gesture"]
     patch["envelfos"]["clock"]["rate"] = "8 Hz"
     patch["envelfos"]["wave"]["rate"] = "2 Hz"
     patch["events"][0]["delay"] = "12001/192 ms"
