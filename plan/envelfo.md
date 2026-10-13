@@ -248,6 +248,20 @@ floating-point event positions. Contours, Stages, marker emission, Patch
 operations/scheduling, host tempo maps and bindings remain Rust extraction work;
 the full parity matrix is not complete.
 
+Step 3 continued on 2026-10-13. The standalone Rust core now owns Contour and
+Stages playback, including zero-duration and curved segments, release capture,
+retrigger policies, pause/reverse/seek/shift, named loops, finite-repeat crossing
+counts, captured Stage entry levels, exact marker times and ordered transitions.
+All ten shared runtime traces now execute directly in Rust. Debug and optimized
+tests also cover irregular advance partitions, cloned continuation, reversal,
+same-time preemption, exact ordering near float precision limits and transactional
+rollback on overflow or the 4096-event capacity limit. enge pins this revision,
+but its native audio adapter still uses the existing floating-point Contour and
+Stage state. Standalone Patch operations/scheduling, top-level Cycle marker
+emission, host tempo maps, serialized Rust snapshots, bindings and exact native
+adapter integration remain unfinished. No new musical policy decisions were
+needed for this slice.
+
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline
    conformance cases. Record Rust gaps without treating them as completed work.

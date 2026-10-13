@@ -26,6 +26,19 @@ kernel. Contours, Stages, markers, composition and native exact-time adapter
 integration are still missing from the standalone Rust core; the matrix's
 native column continues to describe enge, not completed standalone parity.
 
+Rust extraction update, 2026-10-13: `envelfo-core` now also provides normalized
+Contour/Stages definitions and exact playback. Curved segments, current-level
+release/retrigger and Stage entry capture, named-loop finite repeats, markers
+and transitions pass direct Rust tests; all ten shared body traces now run in
+both languages. Clone continuation and failed-update rollback are covered.
+Hosts resolve Pint quantities and named loop bounds before entering the core;
+seconds/beat positions use the same checked rational time type, without implicit
+conversion. Rust Stage advancement returns ordered events and explicitly errors
+above 4096 events per advance. enge pins the new core, but its existing native
+audio adapter has not been replaced: its float event positions and curved-segment
+preparation restriction still apply. Patch scheduling, host tempo maps, top-level
+Cycle marker emission, serialized Rust snapshots and bindings remain gaps.
+
 ## Capability and evidence matrix
 
 Python reference means enveLFO scalar semantics unless the row explicitly names
