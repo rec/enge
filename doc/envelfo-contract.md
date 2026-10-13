@@ -39,6 +39,27 @@ audio adapter has not been replaced: its float event positions and curved-segmen
 preparation restriction still apply. Patch scheduling, host tempo maps, top-level
 Cycle marker emission, serialized Rust snapshots and bindings remain gaps.
 
+Patch extraction update, 2026-10-13: the standalone Rust core now evaluates
+materialized Patch graphs and their exact connection queues. Sum, Product,
+Affine, Quantize, Latch, Threshold, Slew and SampleHold execute without Python.
+Named outputs, Cycle markers, Stage events/cues and start/sample/capture actions
+use the existing ordering, division/offset/chance and 4096 capacity contracts.
+Commands do not insert observations; Threshold edges use host-supplied delivery
+times, and captures read the next observation after delivery. Failed calls
+restore the entire prior state, including retained values and random streams.
+`ClockMapping` accepts host seconds and monotonic elapsed local time; delays and
+Slew stay in seconds even during stopped beat clocks. It does not implement a
+tempo map or use seekable song positions as elapsed beats.
+
+Four shared Patch traces now pass directly in Python and Rust, including
+first-encountered graph dependency ordering and retained signal observations.
+`conformance/envelfo-streams.json` in enveLFO checks portable SHA-256 stream keys
+against independently computed vectors in both languages. enge's locked core
+revision includes this scheduler, but its audio adapter still has separate
+orchestration and floating-point native event positions. Consumer replacement,
+built-in tempo maps, serialized Rust snapshots, bindings and combined arpeg
+expression traces remain integration work.
+
 ## Capability and evidence matrix
 
 Python reference means enveLFO scalar semantics unless the row explicitly names
@@ -240,8 +261,9 @@ boundary without NumPy or an enge import. The future
 Rust runner must read the same cases directly; the current native audio tests
 remain supporting evidence, not a shared standalone conformance runner.
 
-Two shared Patch traces now anchor exact Cycle-to-Contour starts and explicit
-Threshold delivery, without importing enge or NumPy. Standalone unit cases also
+Four shared Patch traces now anchor exact Cycle-to-Contour starts, explicit
+Threshold delivery, retained signal observations and graph ordering, without
+importing enge or NumPy. Standalone unit cases also
 exercise staged cues, elapsed beat clocks, stop/seek maps, seconds delays,
 division/offset/chance, retained observations, bounded queues, and restoration.
 The host must supply matching observations and random stream identities when

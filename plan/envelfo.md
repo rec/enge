@@ -262,6 +262,30 @@ emission, host tempo maps, serialized Rust snapshots, bindings and exact native
 adapter integration remain unfinished. No new musical policy decisions were
 needed for this slice.
 
+Step 3 continued with Patch orchestration on 2026-10-13. The standalone Rust
+core now executes materialized Patch graphs, all seven signal operators,
+SampleHold children and Cycle markers, named signal/event outputs, Stage cues,
+start/sample/capture connections and delayed deliveries. Exact scheduling keeps
+external commands, natural boundaries, zero-delay cascades and host observations
+in their established phases. Division/offset/chance retain independent stream
+identities and draw only for eligible nonconstant probability gates. Rust uses
+SHA-256 for the same identity bytes as uFor, and shared identity vectors check
+both implementations. Signal topological ordering preserves Python's
+first-encountered prerequisites, not a sorted-name order.
+
+Hosts supply monotonic local-clock mappings and inverse boundary times through
+the Rust `ClockMapping` contract. Observations, explicit next deliveries and
+connection delays remain in seconds; Slew advances while a beat clock is stopped,
+and externally commanded events retain their host timestamp. This provides
+beat-clock orchestration without adding a built-in tempo-map implementation.
+All ten body traces and four Patch traces pass directly in both languages.
+Rust tests cover random gates, delayed/cascaded cues, irregular partitions,
+retained observation state, bounded queues, overflow and full-call rollback.
+enge pins the extracted scheduler revision but does not yet execute it in the
+audio adapter. Consumer replacement, built-in tempo maps, serialized Rust
+snapshots, bindings and arpeg integration remain unfinished. No new musical
+policy decision was required.
+
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline
    conformance cases. Record Rust gaps without treating them as completed work.
