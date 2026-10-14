@@ -115,7 +115,11 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
             for index, operator in enumerate(operators):
                 end = (
                     self.release_frame
-                    + sum(segment.duration for segment in operator.envelope.release)
+                    + sum(
+                        s.duration
+                        for s in operator.envelope.release
+                        if s.duration is not None
+                    )
                     * rate
                 )
                 envelopes[max(0, ceil(end) - self.frame_count) :, index] = 0

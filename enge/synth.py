@@ -32,7 +32,6 @@ from ufor.envelfo import (
     EnvelfoState,
     Envelope,
     EnvelopeState,
-    Hold,
     Latch,
     LFOState,
     Patch,
@@ -55,7 +54,7 @@ from ufor.samples.processing import (
     ReleaseTiming,
     SoundSettings,
 )
-from ufor.segments import Segment
+from ufor.segments import IndefiniteSegment, Segment
 from ufor.streams import AudioType
 from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, frequency
 from ufor.synth_trace import VoiceStart
@@ -1781,8 +1780,20 @@ class ControlRenderer:
             return np.full(frames, runtime.value)
         else:
             return None
-        if isinstance(body, Hold):
-            return np.full(frames, body.value)
+        if isinstance(body, Envelope) and any(
+            s.duration is None for s in [*body.segments, *body.release]
+        ):
+            observed = envelfo_at(envelfo, state, Fraction(start, self.sample_rate))
+            if observed.status == "held" and (
+                runtime.position.direction == 1
+                or envelfo_at(
+                    envelfo,
+                    state,
+                    Fraction(start + max(0, frames - 1), self.sample_rate),
+                ).status
+                == "held"
+            ):
+                return np.full(frames, observed.value)
         position = runtime.position
         if position.paused:
             return np.full(
@@ -1818,21 +1829,27 @@ class ControlRenderer:
             if isinstance(runtime, EnvelopeState) and runtime.phase == "release"
             else body.segments
         )
-        if any(s.curve for s in segments):
+        if any(s.curve for s in segments if isinstance(s, Segment)):
             return None
         if not frames:
             return np.empty(0)
-        speed = position.rate * _duration(segments)
+        indefinite = any(s.duration is None for s in [*body.segments, *body.release])
+        if indefinite:
+            segments = segments[runtime.segment_index :]
+        speed = position.rate if indefinite else position.rate * _duration(segments)
         if not speed:
             return np.full(
                 frames,
                 envelfo_at(envelfo, state, Fraction(start, self.sample_rate)).value,
             )
         scaled = [
-            s.model_copy(update={"duration": s.duration / speed}) for s in segments
+            s.model_copy(update={"duration": s.duration / speed})
+            if isinstance(s, Segment)
+            else s
+            for s in segments
         ]
         elapsed = (
-            position.coordinate * _duration(segments) / speed
+            position.coordinate * (1 if indefinite else _duration(segments)) / speed
             + Fraction(start, self.sample_rate)
             - position.at
         )
@@ -2730,9 +2747,14 @@ class PersistentSynth:
                     raise EngineError(
                         "Patch-level Envelfo commands are not implemented"
                     )
-                command = ("pause", "resume", "reverse", "seek", "shift").index(
-                    action.action
-                )
+                command = (
+                    "pause",
+                    "resume",
+                    "reverse",
+                    "seek",
+                    "shift",
+                    "advance",
+                ).index(action.action)
                 for voice_id, slot in self.voices.items():
                     if self.voice_triggers[voice_id] != VoiceAddress(
                         part=action.part, trigger_id=action.trigger_id
@@ -3137,12 +3159,14 @@ def validate_envelope(envelope: Envelope) -> None:
         )
     if not envelope.release:
         raise EngineError("Voice amplitude envelopes require an explicit release")
+    if any(s.duration is None for s in [*envelope.segments, *envelope.release]):
+        raise EngineError("Voice amplitude envelopes require finite segments")
     if envelope.playback != PlaybackMode.once or envelope.markers:
         raise EngineError(
             "Voice amplitude envelopes require once playback without markers"
         )
     if not envelope.hold or any(
-        s.duration != 0 and s.curve != 0
+        isinstance(s, Segment) and s.duration != 0 and s.curve != 0
         for s in [*envelope.segments, *envelope.release]
     ):
         raise EngineError("Only held linear envelopes are implemented")
@@ -3221,15 +3245,19 @@ def _validate_voice(voice: SynthVoice) -> None:
 
 def _envelope_values(
     initial: float,
-    segments: list[Segment],
+    segments: list[Segment | IndefiniteSegment],
     elapsed: Fraction,
     frames: int,
     sample_rate: int,
 ) -> np.ndarray:
-    values = np.full(frames, segments[-1].to)
+    values = np.full(frames, initial)
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
+        if isinstance(segment, IndefiniteSegment):
+            first = max(0, ceil((boundary - elapsed) * sample_rate))
+            values[first:] = entry
+            return values
         end = boundary + segment.duration
         first = max(0, ceil((boundary - elapsed) * sample_rate))
         last = min(frames, ceil((end - elapsed) * sample_rate))
@@ -3239,16 +3267,26 @@ def _envelope_values(
             ) / float(segment.duration * sample_rate)
             values[first:last] = entry + (segment.to - entry) * progress
         boundary, entry = end, segment.to
+    values[max(0, ceil((boundary - elapsed) * sample_rate)) :] = entry
     return values
 
 
-def _duration(segments: list[Segment]) -> Fraction:
-    return sum((s.duration for s in segments), Fraction(0))
+def _duration(segments: list[Segment | IndefiniteSegment]) -> Fraction:
+    if any(s.duration is None for s in segments):
+        raise EngineError("An indefinite Envelope has no finite duration")
+    return sum((s.duration for s in segments if isinstance(s, Segment)), Fraction(0))
 
 
-def _runtime_segments(segments: list[Segment], sample_rate: int) -> np.ndarray:
+def _runtime_segments(
+    segments: list[Segment | IndefiniteSegment], sample_rate: int
+) -> np.ndarray:
     return np.asarray(
-        [[float(s.duration * sample_rate), s.to] for s in segments],
+        [
+            [float(s.duration * sample_rate), s.to]
+            if isinstance(s, Segment)
+            else [-1.0, 0.0]
+            for s in segments
+        ],
         dtype=np.float64,
     )
 
@@ -3762,7 +3800,7 @@ def _persistent_modulation(
                 generator = envelfo
                 assert isinstance(generator.initial, float)
                 if source.scope != "voice" or any(
-                    segment.curve != 0
+                    isinstance(segment, Segment) and segment.curve != 0
                     for segment in [*generator.segments, *generator.release]
                 ):
                     raise EngineError(
@@ -3778,12 +3816,16 @@ def _persistent_modulation(
                 envelope_attacks.append(
                     [
                         (float(segment.duration * duration_scale), segment.to)
+                        if isinstance(segment, Segment)
+                        else (-1.0, 0.0)
                         for segment in generator.segments
                     ]
                 )
                 envelope_releases.append(
                     [
                         (float(segment.duration * duration_scale), segment.to)
+                        if isinstance(segment, Segment)
+                        else (-1.0, 0.0)
                         for segment in generator.release
                     ]
                 )
@@ -3928,7 +3970,8 @@ def _persistent_modulation(
             generator = envelfo
             assert isinstance(generator.initial, float)
             if envelfo.scope != "voice" or any(
-                s.curve != 0 for s in [*generator.segments, *generator.release]
+                isinstance(s, Segment) and s.curve != 0
+                for s in [*generator.segments, *generator.release]
             ):
                 raise EngineError(
                     "Persistent named envelopes require linear voice segments"
@@ -3941,11 +3984,18 @@ def _persistent_modulation(
             envelope_attacks.append(
                 [
                     (float(segment.duration * duration_scale), segment.to)
+                    if isinstance(segment, Segment)
+                    else (-1.0, 0.0)
                     for segment in generator.segments
                 ]
             )
             envelope_releases.append(
-                [(float(s.duration * duration_scale), s.to) for s in generator.release]
+                [
+                    (float(s.duration * duration_scale), s.to)
+                    if isinstance(s, Segment)
+                    else (-1.0, 0.0)
+                    for s in generator.release
+                ]
             )
             envelope_parameters.append(
                 (
@@ -4078,10 +4128,8 @@ def _runtime_staged_envelfo(
     ] = []
     for stage in body.stages:
         envelfo = stage.envelfo
-        if isinstance(envelfo, Hold):
-            stages.append((0, envelfo.value, False, [], [], [], 0, 0.0, 1.0, None))
-        elif isinstance(envelfo, Envelope):
-            if any(s.curve != 0 for s in envelfo.segments):
+        if isinstance(envelfo, Envelope):
+            if any(s.curve != 0 for s in envelfo.segments if isinstance(s, Segment)):
                 raise EngineError("Persistent staged envelopes require linear segments")
             stages.append(
                 (
@@ -4090,6 +4138,8 @@ def _runtime_staged_envelfo(
                     envelfo.initial == "current",
                     [
                         (float(s.duration * (1 if beat_clock else sample_rate)), s.to)
+                        if isinstance(s, Segment)
+                        else (-1.0, 0.0)
                         for s in envelfo.segments
                     ],
                     [],

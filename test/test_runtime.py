@@ -691,7 +691,15 @@ def test_staged_envelope_cycle_enters_next_stage_in_native_runtime(
                     "segments": [{"duration": "1/4 s", "to": 1}],
                 },
             },
-            {"name": "held", "envelfo": {"kind": "hold", "value": 0.5}},
+            {
+                "name": "held",
+                "envelfo": {
+                    "kind": "envelope",
+                    "initial": 0.5,
+                    "polarity": "bipolar",
+                    "segments": [{"duration": None}],
+                },
+            },
         ],
         "transitions": [
             {
@@ -994,8 +1002,24 @@ def test_reversed_stage_marker_cues_same_trigger_in_native_runtime(
             "kind": "stages",
             "initial_stage": "waiting",
             "stages": [
-                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
-                {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+                {
+                    "name": "waiting",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
+                {
+                    "name": "bright",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 1,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
             ],
             "transitions": [
                 {
@@ -1079,8 +1103,24 @@ def test_staged_envelope_events_cue_another_envelfo_in_native_runtime(
             "kind": "stages",
             "initial_stage": "waiting",
             "stages": [
-                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
-                {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+                {
+                    "name": "waiting",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
+                {
+                    "name": "bright",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 1,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
             ],
             "transitions": [
                 {
@@ -1107,7 +1147,16 @@ def test_staged_envelope_events_cue_another_envelfo_in_native_runtime(
         if boundary == 9000:
             level = voice["envelfos"]["level"]
             level["stages"].insert(
-                1, {"name": "middle", "envelfo": {"kind": "hold", "value": 0}}
+                1,
+                {
+                    "name": "middle",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
             )
             level["transitions"][0]["from"] = ["middle"]
             level["transitions"].insert(
@@ -1185,8 +1234,24 @@ def test_reversed_envelope_markers_repeat_across_native_snapshot(
             "kind": "stages",
             "initial_stage": "quiet",
             "stages": [
-                {"name": "quiet", "envelfo": {"kind": "hold", "value": 0}},
-                {"name": "loud", "envelfo": {"kind": "hold", "value": 1}},
+                {
+                    "name": "quiet",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
+                {
+                    "name": "loud",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 1,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
             ],
             "transitions": [
                 {

@@ -191,7 +191,7 @@ initial_stage = "waiting"
 
 [[body.stages]]
 name = "waiting"
-envelfo = { kind = "hold", value = 0.0 }
+envelfo = { kind = "envelope", initial = 0.0, segments = [{}] }
 
 [[body.stages]]
 name = "attack"

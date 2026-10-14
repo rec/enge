@@ -415,7 +415,15 @@ def test_preparation_rejects_unsupported_features(feature: str) -> None:
             "vibrato": {
                 "kind": "stages",
                 "initial_stage": "hold",
-                "stages": [{"name": "hold", "envelfo": {"kind": "hold"}}],
+                "stages": [
+                    {
+                        "name": "hold",
+                        "envelfo": {
+                            "kind": "envelope",
+                            "segments": [{"duration": None}],
+                        },
+                    }
+                ],
                 "scope": "instrument",
                 "clock": "beats",
             }

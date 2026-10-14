@@ -160,7 +160,7 @@ between implementations cannot conceal the same mistake in both.
 
 Cover:
 
-1. Hold, ordinary LFO, and attack/release Envelope common cases.
+1. Constant indefinite Envelope, ordinary LFO, and attack/release Envelope common cases.
 2. Fractional boundaries, simultaneous events, named markers, loops, finite
    repeats, reverse/pause/resume/seek, and delayed commands.
 3. Seconds and beat clocks, tempo changes, stops, transport seeks, and
@@ -216,6 +216,14 @@ cores without making either library depend on the other. Update arpeg's old
 Envelfo terminology and integration notes when that integration is implemented.
 
 ## Implementation sequence
+
+The Envelope model now supports indefinite segments in place of a separate
+constant generator. `duration: null` holds the incoming value, and `advance`
+leaves the currently reached hold. Note-off enters release directly. These
+Envelopes use segment-local elapsed coordinates, not normalized total positions;
+normalized seek/shift, markers and repeated playback are rejected. Finite
+Envelope behavior remains unchanged. Python/Rust continuation state retains the
+segment cursor. Enge keeps its finite voice-amplitude preparation policy.
 
 Step 1 is complete as of 2026-10-11: see the
 [inventory and baseline contract](../doc/envelfo-contract.md), the shared

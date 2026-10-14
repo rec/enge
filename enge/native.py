@@ -6,7 +6,7 @@ from math import ceil
 import numpy as np
 from ufor.envelfo import Envelope
 from ufor.oscillator import Oscillator, Waveform
-from ufor.segments import Segment
+from ufor.segments import IndefiniteSegment, Segment
 
 
 def render(
@@ -70,6 +70,7 @@ def envelope_spans(
             boundary = Fraction(0)
             level = envelope.initial
             for segment in envelope.segments:
+                assert isinstance(segment, Segment)
                 end = boundary + segment.duration
                 if elapsed < end:
                     level += (segment.to - level) * float(
@@ -92,16 +93,18 @@ def envelope_spans(
 
 def _spans(
     initial: float,
-    segments: list[Segment],
+    segments: list[Segment | IndefiniteSegment],
     elapsed: Fraction,
     frames: int,
     sample_rate: int,
     offset: int,
 ) -> list[list[float]]:
+    assert isinstance(segments[-1], Segment)
     spans = [[offset, offset + frames, segments[-1].to, 0, 0, 1, offset]]
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
+        assert isinstance(segment, Segment)
         end = boundary + segment.duration
         first = max(0, ceil((boundary - elapsed) * sample_rate))
         last = min(frames, ceil((end - elapsed) * sample_rate))

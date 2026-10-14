@@ -33,6 +33,13 @@ inherit clock and scope from `EnveLFO` without a `body` wrapper; Patch and Stage
 children inherit those settings from their parent. Library references use
 `EnveLFOReference`. The `envelope` field name is unchanged.
 
+General Envelopes can contain indefinite segments (`duration: null` in JSON,
+an empty segment table in TOML). They hold their incoming value until `advance`
+enters the next segment, or note-off enters release. Stages use these Envelopes
+instead of a separate constant generator. Indefinite Envelopes do not accept
+normalized seek/shift, markers or looping. Enge's voice-amplitude profile still
+requires finite segments; named control Envelopes and Stages support waits.
+
 enge owns minimum hold, release timing and voice retirement. Amplitude envelopes
 currently require numeric initial values, activation start, voice seconds, held
 linear segments, an explicit release, and once playback without markers.

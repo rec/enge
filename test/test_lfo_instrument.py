@@ -410,7 +410,15 @@ def test_beat_stages_follow_tempo_and_stop_across_restore(
                     "segments": [{"duration": "1 beat", "to": 1}],
                 },
             },
-            {"name": "sustain", "envelfo": {"kind": "hold", "value": 1}},
+            {
+                "name": "sustain",
+                "envelfo": {
+                    "kind": "envelope",
+                    "initial": 1,
+                    "polarity": "bipolar",
+                    "segments": [{"duration": None}],
+                },
+            },
         ],
         "transitions": [
             {
@@ -778,7 +786,12 @@ def test_patch_child_event_starts_unexposed_envelope(
         clock = {
             "kind": "stages",
             "initial_stage": "waiting",
-            "stages": [{"name": "waiting", "envelfo": {"kind": "hold"}}],
+            "stages": [
+                {
+                    "name": "waiting",
+                    "envelfo": {"kind": "envelope", "segments": [{"duration": None}]},
+                }
+            ],
             "transitions": [
                 {
                     "from": ["waiting"],
@@ -952,7 +965,15 @@ def test_patch_division_is_first_aligned_independent_and_snapshot_safe(
             "kind": "stages",
             "initial_stage": "waiting",
             "stages": [
-                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
+                {
+                    "name": "waiting",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
                 {"name": "accent", "envelfo": envelope},
             ],
             "transitions": [
@@ -1145,7 +1166,17 @@ def test_delayed_envelfo_events_report_queue_and_clock_limits(
         "target": {
             "kind": "stages",
             "initial_stage": "waiting",
-            "stages": [{"name": "waiting", "envelfo": {"kind": "hold", "value": 0}}],
+            "stages": [
+                {
+                    "name": "waiting",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                }
+            ],
             "transitions": [
                 {
                     "from": ["waiting"],
@@ -1359,8 +1390,24 @@ def test_patch_child_event_cues_child_stages(
                     "kind": "stages",
                     "initial_stage": "waiting",
                     "stages": [
-                        {"name": "waiting", "envelfo": {"kind": "hold", "value": -1}},
-                        {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+                        {
+                            "name": "waiting",
+                            "envelfo": {
+                                "kind": "envelope",
+                                "initial": -1,
+                                "polarity": "bipolar",
+                                "segments": [{"duration": None}],
+                            },
+                        },
+                        {
+                            "name": "bright",
+                            "envelfo": {
+                                "kind": "envelope",
+                                "initial": 1,
+                                "polarity": "bipolar",
+                                "segments": [{"duration": None}],
+                            },
+                        },
                     ],
                     "transitions": [
                         {
@@ -1468,8 +1515,24 @@ def test_patch_child_cues_follow_event_time_within_one_sample(
                     "kind": "stages",
                     "initial_stage": "waiting",
                     "stages": [
-                        {"name": "waiting", "envelfo": {"kind": "hold", "value": -1}},
-                        {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+                        {
+                            "name": "waiting",
+                            "envelfo": {
+                                "kind": "envelope",
+                                "initial": -1,
+                                "polarity": "bipolar",
+                                "segments": [{"duration": None}],
+                            },
+                        },
+                        {
+                            "name": "bright",
+                            "envelfo": {
+                                "kind": "envelope",
+                                "initial": 1,
+                                "polarity": "bipolar",
+                                "segments": [{"duration": None}],
+                            },
+                        },
                     ],
                     "transitions": [
                         {
@@ -2329,7 +2392,15 @@ def test_staged_envelfo_renders_and_restores_at_attack_boundary(
         "kind": "stages",
         "initial_stage": "waiting",
         "stages": [
-            {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
+            {
+                "name": "waiting",
+                "envelfo": {
+                    "kind": "envelope",
+                    "initial": 0.0,
+                    "polarity": "bipolar",
+                    "segments": [{"duration": None}],
+                },
+            },
             {
                 "name": "attack",
                 "envelfo": {
@@ -2456,7 +2527,15 @@ def test_staged_sampler_envelfo_releases_and_restores(
         "kind": "stages",
         "initial_stage": "waiting",
         "stages": [
-            {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
+            {
+                "name": "waiting",
+                "envelfo": {
+                    "kind": "envelope",
+                    "initial": 0.0,
+                    "polarity": "bipolar",
+                    "segments": [{"duration": None}],
+                },
+            },
             {
                 "name": "attack",
                 "envelfo": {
@@ -2553,8 +2632,24 @@ def test_staged_marker_cues_another_envelfo_at_exact_time(
             "kind": "stages",
             "initial_stage": "waiting",
             "stages": [
-                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}},
-                {"name": "bright", "envelfo": {"kind": "hold", "value": 1.0}},
+                {
+                    "name": "waiting",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0.0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
+                {
+                    "name": "bright",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 1.0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
             ],
             "transitions": [
                 {
@@ -2586,7 +2681,17 @@ def test_staged_marker_cues_another_envelfo_at_exact_time(
         voice["envelfos"]["relay"] = {
             "kind": "stages",
             "initial_stage": "waiting",
-            "stages": [{"name": "waiting", "envelfo": {"kind": "hold", "value": 0.0}}],
+            "stages": [
+                {
+                    "name": "waiting",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0.0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                }
+            ],
             "transitions": [
                 {"from": ["waiting"], "event": "cue.fire", "action": {"kind": "finish"}}
             ],
@@ -2683,8 +2788,24 @@ def test_patch_named_event_output_cues_stage(
             "kind": "stages",
             "initial_stage": "waiting",
             "stages": [
-                {"name": "waiting", "envelfo": {"kind": "hold", "value": 0}},
-                {"name": "bright", "envelfo": {"kind": "hold", "value": 1}},
+                {
+                    "name": "waiting",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
+                {
+                    "name": "bright",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 1,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
             ],
             "transitions": [
                 {

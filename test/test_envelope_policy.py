@@ -16,6 +16,7 @@ from enge.synth import PreparedVoiceEnvelope
         {"start": "event"},
         {"scope": "instrument"},
         {"segments": [Segment(duration=1, to=1, curve=2)]},
+        {"segments": [{"duration": None}]},
     ],
 )
 def test_general_envelope_features_are_rejected_by_voice_preparation(

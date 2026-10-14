@@ -47,8 +47,24 @@ def threshold_score(target: str, probability: float = 1.0) -> SynthInstrumentSco
             "kind": "stages",
             "initial_stage": "low",
             "stages": [
-                {"name": "low", "envelfo": {"kind": "hold", "value": 0.5}},
-                {"name": "high", "envelfo": {"kind": "hold", "value": 1}},
+                {
+                    "name": "low",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 0.5,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
+                {
+                    "name": "high",
+                    "envelfo": {
+                        "kind": "envelope",
+                        "initial": 1,
+                        "polarity": "bipolar",
+                        "segments": [{"duration": None}],
+                    },
+                },
             ],
             "transitions": [
                 {

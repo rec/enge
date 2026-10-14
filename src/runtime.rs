@@ -91,6 +91,7 @@ struct NamedEnvelopeDefinition {
 
 #[derive(Clone)]
 struct NamedEnvelopeState {
+    segment_index: usize,
     random_state: u64,
     playback: PlaybackState,
     start_value: f64,
@@ -167,6 +168,8 @@ struct StagedEnvelfoDefinition {
 
 #[derive(Clone)]
 struct StagedEnvelfoState {
+    segment_index: usize,
+    stage_done: bool,
     stage: usize,
     playback: PlaybackState,
     entry_value: f64,
@@ -896,11 +899,18 @@ impl SynthRuntime {
                 )| {
                     if !initial.is_finite()
                         || attack.iter().chain(&release).any(|(frames, target)| {
-                            !frames.is_finite() || *frames < 0.0 || !target.is_finite()
+                            !frames.is_finite()
+                                || (*frames < 0.0 && *frames != -1.0)
+                                || !target.is_finite()
                         })
                         || parameter >= self.parameter_definitions.len() / 3
                         || operation > 1
                         || playback > 2
+                        || (playback != 0
+                            && attack
+                                .iter()
+                                .chain(&release)
+                                .any(|(frames, _)| *frames == -1.0))
                         || !(0.0..1.0).contains(&loop_start)
                         || !(loop_start..=1.0).contains(&loop_end)
                         || loop_start == loop_end
@@ -1037,7 +1047,7 @@ impl SynthRuntime {
                         loop_end,
                         repeat_count,
                     )| {
-                        if kind > 2
+                        if !matches!(kind, 1 | 2)
                             || playback > 2
                             || (kind != 1 && playback != 0)
                             || !(0.0..1.0).contains(&loop_start)
@@ -1048,9 +1058,12 @@ impl SynthRuntime {
                             || !initial.is_finite()
                             || (kind != 1 && current_initial)
                             || segments.iter().any(|(frames, target)| {
-                                !frames.is_finite() || *frames < 0.0 || !target.is_finite()
+                                !frames.is_finite()
+                                    || (*frames < 0.0 && *frames != -1.0)
+                                    || !target.is_finite()
                             })
                             || (kind == 1
+                                && !segments.iter().any(|(frames, _)| *frames == -1.0)
                                 && segments.iter().map(|(frames, _)| frames).sum::<f64>() <= 0.0)
                             || (kind != 1 && !segments.is_empty())
                             || (kind == 2
@@ -1067,7 +1080,8 @@ impl SynthRuntime {
                                     || lfo[6] - lfo[7] < -1.0
                                     || lfo[6] + lfo[7] > 1.0))
                             || (kind != 2 && !lfo.is_empty())
-                            || (kind == 0 && !markers.is_empty())
+                            || (segments.iter().any(|(frames, _)| *frames == -1.0)
+                                && (playback != 0 || !markers.is_empty()))
                             || markers.iter().any(|(position, name)| {
                                 !position.is_finite()
                                     || !(0.0..=1.0).contains(position)
@@ -1128,6 +1142,8 @@ impl SynthRuntime {
         self.staged_states = (0..self.frequencies.len())
             .flat_map(|_| {
                 definitions.iter().map(|definition| StagedEnvelfoState {
+                    segment_index: 0,
+                    stage_done: false,
                     stage: definition.initial_stage,
                     playback: stage_playback(
                         &definition.stages[definition.initial_stage],
@@ -2295,6 +2311,8 @@ impl SynthRuntime {
                     let index = voice * self.staged_envelfos.len() + source;
                     let at = self.staged_time(definition, self.frame as f64);
                     self.staged_states[index] = StagedEnvelfoState {
+                        segment_index: 0,
+                        stage_done: false,
                         stage: definition.initial_stage,
                         playback: stage_playback(
                             &definition.stages[definition.initial_stage],
@@ -2587,7 +2605,7 @@ impl SynthRuntime {
                     || action[3] != source as f64
                     || source >= self.named_envelopes.len()
                     || action[4] != command as f64
-                    || command > 4
+                    || command > 5
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
@@ -2605,6 +2623,36 @@ impl SynthRuntime {
                     &self.named_states[index],
                     self.frame as f64,
                 );
+                let indefinite = indefinite_segments(&definition.attack)
+                    || indefinite_segments(&definition.release);
+                if indefinite && matches!(command, 3 | 4) {
+                    return Err(PyValueError::new_err(
+                        "Indefinite Envelope cannot use normalized positions",
+                    ));
+                }
+                if command == 5 {
+                    if state.idle || !indefinite {
+                        return Err(PyValueError::new_err(
+                            "Advance requires an active indefinite segment",
+                        ));
+                    }
+                    let parts = if state.released {
+                        &definition.release
+                    } else {
+                        &definition.attack
+                    };
+                    state.playback.advance(at);
+                    let (next_segment, value) = advance_indefinite_segment(
+                        state.start_value,
+                        &parts[state.segment_index..],
+                        state.playback.coordinate,
+                    )?;
+                    state.segment_index += next_segment;
+                    state.start_value = value;
+                    state.playback.coordinate = 0.0;
+                    self.named_states[index] = state;
+                    return Ok(());
+                }
                 if let Some(count) = definition.repeat_count.filter(|_| !state.released) {
                     if state.complete_coordinate.is_none() {
                         let (crossed, boundary) = repeat_crossings(
@@ -2641,7 +2689,7 @@ impl SynthRuntime {
                     || action[3] != source as f64
                     || source >= self.staged_envelfos.len()
                     || action[4] != command as f64
-                    || command > 4
+                    || command > 5
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
@@ -2650,13 +2698,32 @@ impl SynthRuntime {
                 }
                 let index = voice * self.staged_envelfos.len() + source;
                 let at = self.staged_time(&self.staged_envelfos[source], self.frame as f64);
-                let state = &mut self.staged_states[index];
-                if (command == 3 || command == 4)
-                    && self.staged_envelfos[source].stages[state.stage].kind == 0
-                {
-                    return Err(PyValueError::new_err("Hold stage cannot change position"));
+                let mut state = self.staged_states[index].clone();
+                let stage = &self.staged_envelfos[source].stages[state.stage];
+                if (command == 3 || command == 4) && indefinite_segments(&stage.segments) {
+                    return Err(PyValueError::new_err(
+                        "Indefinite Envelope cannot use normalized positions",
+                    ));
                 }
-                state.playback.command(command, action[5], at);
+                if command == 5 {
+                    if state.completed || !indefinite_segments(&stage.segments) {
+                        return Err(PyValueError::new_err(
+                            "Advance requires an active indefinite segment",
+                        ));
+                    }
+                    state.playback.advance(at);
+                    let (index, value) = advance_indefinite_segment(
+                        state.entry_value,
+                        &stage.segments[state.segment_index..],
+                        state.playback.coordinate,
+                    )?;
+                    state.segment_index += index;
+                    state.stage_done = false;
+                    state.entry_value = value;
+                    state.playback.coordinate = 0.0;
+                } else {
+                    state.playback.command(command, action[5], at);
+                }
                 if command == 4
                     && self.staged_envelfos[source].stages[state.stage].kind == 1
                     && self.staged_envelfos[source].stages[state.stage].playback == 0
@@ -2665,6 +2732,7 @@ impl SynthRuntime {
                 }
                 state.cursor_at = at;
                 state.cursor_order = usize::MAX;
+                self.staged_states[index] = state;
             }
             11 => {
                 let source = action[3] as usize;
@@ -2821,8 +2889,13 @@ impl SynthRuntime {
                 let stage_index = state.stage;
                 let stage = &definition.stages[state.stage];
                 if port == "done" {
+                    state.stage_done = true;
                     if stage.repeat_count.is_none() {
-                        state.playback.coordinate = 1.0;
+                        state.playback.coordinate = if indefinite_segments(&stage.segments) {
+                            total_frames(&stage.segments[state.segment_index..])
+                        } else {
+                            1.0
+                        };
                     }
                 } else if stage.kind == 1 {
                     if stage.loop_start != 0.0 || stage.loop_end != 1.0 {
@@ -3924,10 +3997,39 @@ pub(crate) fn total_frames(segments: &[Segment]) -> f64 {
     segments.iter().map(|s| s.frames).sum()
 }
 
+fn indefinite_segments(segments: &[Segment]) -> bool {
+    segments.iter().any(|s| s.frames == -1.0)
+}
+
+fn advance_indefinite_segment(
+    initial: f64,
+    segments: &[Segment],
+    mut elapsed: f64,
+) -> PyResult<(usize, f64)> {
+    let mut value = initial;
+    elapsed = elapsed.max(0.0);
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.frames == -1.0 {
+            return Ok((index + 1, value));
+        }
+        if elapsed < segment.frames {
+            break;
+        }
+        elapsed -= segment.frames;
+        value = segment.target;
+    }
+    Err(PyValueError::new_err(
+        "Advance requires an active indefinite segment",
+    ))
+}
+
 pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -> f64 {
     let mut boundary = 0.0;
     let mut entry = initial;
     for segment in segments {
+        if segment.frames == -1.0 {
+            return entry;
+        }
         let end = boundary + segment.frames;
         if elapsed < end {
             return entry + (segment.target - entry) * (elapsed - boundary) / segment.frames;
@@ -3940,12 +4042,25 @@ pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -
 
 fn named_envelope_initial(definition: &NamedEnvelopeDefinition, at: f64) -> NamedEnvelopeState {
     let duration = total_frames(&definition.attack);
+    let indefinite =
+        indefinite_segments(&definition.attack) || indefinite_segments(&definition.release);
     NamedEnvelopeState {
+        segment_index: 0,
         random_state: 0,
         playback: PlaybackState {
             at,
-            coordinate: if duration == 0.0 { 1.0 } else { 0.0 },
-            rate: if duration == 0.0 { 0.0 } else { 1.0 / duration },
+            coordinate: if !indefinite && duration == 0.0 {
+                1.0
+            } else {
+                0.0
+            },
+            rate: if indefinite {
+                1.0
+            } else if duration == 0.0 {
+                0.0
+            } else {
+                1.0 / duration
+            },
             direction: 1.0,
             paused: false,
             age: 0.0,
@@ -3969,22 +4084,35 @@ fn named_envelope_settled(
         .pending_release
         .filter(|(release_frame, _)| *release_frame <= frame)
     {
-        let duration = total_frames(&definition.attack);
+        let indefinite =
+            indefinite_segments(&definition.attack) || indefinite_segments(&definition.release);
         let value = envelope_value(
             state.start_value,
-            &definition.attack,
-            named_envelope_coordinate(definition, state, release_at) * duration,
+            &definition.attack[state.segment_index..],
+            if indefinite {
+                state.playback.coordinate_at(release_at).max(0.0)
+            } else {
+                named_envelope_coordinate(definition, state, release_at)
+                    * total_frames(&definition.attack)
+            },
         );
         let release_duration = total_frames(&definition.release);
         settled.start_value = value;
+        settled.segment_index = 0;
         settled.released = true;
         settled.pending_release = None;
         settled.traversals = 0;
         settled.complete_coordinate = None;
         settled.playback = PlaybackState {
             at: release_at,
-            coordinate: if release_duration == 0.0 { 1.0 } else { 0.0 },
-            rate: if release_duration == 0.0 {
+            coordinate: if !indefinite && release_duration == 0.0 {
+                1.0
+            } else {
+                0.0
+            },
+            rate: if indefinite {
+                1.0
+            } else if release_duration == 0.0 {
                 0.0
             } else {
                 1.0 / release_duration
@@ -4016,6 +4144,13 @@ fn named_envelope_value(
         &definition.attack
     };
     let duration = total_frames(segments);
+    if indefinite_segments(&definition.attack) || indefinite_segments(&definition.release) {
+        return envelope_value(
+            settled.start_value,
+            &segments[settled.segment_index..],
+            settled.playback.coordinate_at(at).max(0.0),
+        );
+    }
     envelope_value(
         settled.start_value,
         segments,
@@ -4162,10 +4297,16 @@ fn staged_value(definition: &StagedEnvelfoDefinition, state: &StagedEnvelfoState
     }
     let stage = &definition.stages[state.stage];
     match stage.kind {
-        0 => stage.initial,
         1 => {
             let duration = total_frames(&stage.segments);
             let coordinate = state.playback.coordinate_at(at);
+            if indefinite_segments(&stage.segments) {
+                return envelope_value(
+                    state.entry_value,
+                    &stage.segments[state.segment_index..],
+                    coordinate.max(0.0),
+                );
+            }
             let bounded = if stage
                 .repeat_count
                 .is_some_and(|count| state.traversals >= count)
@@ -4212,8 +4353,14 @@ fn staged_value(definition: &StagedEnvelfoDefinition, state: &StagedEnvelfoState
 
 fn stage_playback(stage: &StageDefinition, at: f64, paused: bool, direction: f64) -> PlaybackState {
     let (coordinate, rate) = match stage.kind {
-        0 => (0.0, 0.0),
-        1 => (0.0, 1.0 / total_frames(&stage.segments)),
+        1 => (
+            0.0,
+            if indefinite_segments(&stage.segments) {
+                1.0
+            } else {
+                1.0 / total_frames(&stage.segments)
+            },
+        ),
         _ => (stage.lfo[2], stage.lfo[1]),
     };
     PlaybackState {
@@ -4243,13 +4390,37 @@ fn next_staged_event(
     }
     let stage = &definition.stages[state.stage];
     let playback = &state.playback;
+    if indefinite_segments(&stage.segments)
+        && !state.stage_done
+        && stage.segments[state.segment_index..]
+            .iter()
+            .all(|s| s.frames == 0.0)
+    {
+        return if if inclusive {
+            playback.at <= limit
+        } else {
+            playback.at < limit
+        } {
+            Some((playback.at, 0, "done".to_owned()))
+        } else {
+            None
+        };
+    }
     if playback.paused || playback.rate == 0.0 {
         return None;
     }
     let start = playback.coordinate;
     let forward = playback.direction > 0.0;
     let mut candidates = Vec::new();
-    if stage.kind == 1 && stage.playback == 0 {
+    if indefinite_segments(&stage.segments) {
+        let parts = &stage.segments[state.segment_index..];
+        if !indefinite_segments(parts) && forward {
+            let target = total_frames(parts);
+            if start < target || start == target && !state.stage_done {
+                candidates.push((staged_event_time(playback, target), 0, "done".to_owned()));
+            }
+        }
+    } else if stage.kind == 1 && stage.playback == 0 {
         for (order, (position, name)) in stage.markers.iter().enumerate() {
             if (if forward {
                 *position > start
@@ -4500,6 +4671,8 @@ fn staged_transition(
     } else {
         let stage = &definition.stages[*target];
         *state = StagedEnvelfoState {
+            segment_index: 0,
+            stage_done: false,
             stage: *target,
             playback: stage_playback(stage, at, state.playback.paused, state.playback.direction),
             entry_value: if stage.current_initial {
