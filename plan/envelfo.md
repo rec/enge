@@ -319,6 +319,23 @@ audio-host Envelopes. Ordinary native LFO signal playback and retained Patch
 operators/orchestration still use enge adapters, so the full scheduler replacement
 and removal of all duplicated execution are not finished.
 
+Step 4 continued with native LFO playback. enge now stores the shared Rust
+`LFOState` for instrument/part and voice-owned clocks, using core waveform,
+activation-weight and command evaluation instead of its separate phase and
+fade implementations. Voice starts initialize their owning clock; instrument
+and part signals retain the existing absolute clock. Transport-position LFOs
+read exact song beats, including negative positions and integers beyond float
+precision. Snapshot continuation retains core state and host delivery cursors.
+
+The core's non-mutating `LFO::next_marker` query is shared by standalone Patch
+scheduling and native marker routing. Pause, resume, reversal and phase changes
+therefore affect routed crossings through the same state used for signals.
+Numeric LFO command payloads use their decimal value, matching Python
+`Fraction(str(value))`, with checked rational overflow rather than binary-float
+denominator expansion. Existing Patch-level command restrictions remain.
+Native retained Patch operators/orchestration and Python host scheduler
+replacement are still unfinished; this does not claim complete extraction.
+
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline
    conformance cases. Record Rust gaps without treating them as completed work.

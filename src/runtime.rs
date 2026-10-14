@@ -40,36 +40,23 @@ struct ControlState {
 #[derive(Clone, PartialEq)]
 struct LfoDefinition {
     scope: usize,
-    waveform: usize,
+    body: lfo::LFO,
     parameter: usize,
     operation: usize,
     intercept: f64,
     slope: f64,
-    duty: (u64, u64),
-    rate: (u64, u64),
-    phase: (u64, u64),
-    delay: (u64, u64),
-    fade: (u64, u64),
-    beat_clock: bool,
-    transport_position: bool,
 }
 
 #[derive(Clone)]
-struct LfoEventState {
-    at: usize,
-    age: f64,
-    phase: f64,
-    rate: f64,
-    direction: f64,
-    paused: bool,
+struct LfoPlayback {
+    core: lfo::LFOState,
+    ordinal: u64,
+    cursor: usize,
 }
 
 #[derive(Clone, PartialEq)]
 struct BeatPoint {
-    frame: f64,
-    beat: f64,
-    song_beat: f64,
-    rate: f64,
+    song_beat: Time,
     clock_frame: Time,
     clock_beat: Time,
     clock_rate: Time,
@@ -311,8 +298,8 @@ pub struct SynthRuntimeSnapshot {
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_owners: Vec<usize>,
-    lfo_event_states: Vec<Option<LfoEventState>>,
-    voice_lfo_event_states: Vec<Option<LfoEventState>>,
+    lfo_event_states: Vec<LfoPlayback>,
+    voice_lfo_event_states: Vec<LfoPlayback>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
@@ -386,8 +373,8 @@ pub struct SynthRuntime {
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_owners: Vec<usize>,
-    lfo_event_states: Vec<Option<LfoEventState>>,
-    voice_lfo_event_states: Vec<Option<LfoEventState>>,
+    lfo_event_states: Vec<LfoPlayback>,
+    voice_lfo_event_states: Vec<LfoPlayback>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
@@ -464,7 +451,7 @@ impl SynthRuntime {
         let amplitude = Amplitude::new(initial, attack, release)?;
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
-        let lfo_definitions = lfo_definitions(lfos, &lfo_rationals)?;
+        let lfo_definitions = lfo_definitions(lfos, &lfo_rationals, rate)?;
         let filter_definitions = filter_definitions(filters)?;
         if !rate.is_finite()
             || rate <= 0.0
@@ -494,9 +481,6 @@ impl SynthRuntime {
                 .any(|definition| definition.parameter >= parameters.len() / 3)
             || context_capacity == 0
             || (!lfo_definitions.is_empty() && rate != rate as u64 as f64)
-            || lfo_definitions.iter().any(|definition| {
-                !definition.beat_clock && lfo_phase_denominator(definition, rate as u64).is_none()
-            })
         {
             return Err(PyValueError::new_err("Invalid synth runtime definition"));
         }
@@ -504,6 +488,11 @@ impl SynthRuntime {
         let channels = routes.shape()[1];
         let filter_stages = filter_definitions.iter().map(|v| v.stages).sum();
         let lfo_count = lfo_definitions.len();
+        let lfo_states = lfo_definitions
+            .iter()
+            .map(|d| initial_lfo(d, Time::ZERO, 0))
+            .collect::<PyResult<Vec<_>>>()?;
+        let voice_lfo_states = (0..slots).flat_map(|_| lfo_states.clone()).collect();
         let context_states = (0..context_capacity)
             .flat_map(|_| control_states.clone())
             .collect();
@@ -534,8 +523,8 @@ impl SynthRuntime {
             control_states,
             lfo_definitions,
             lfo_owners: (0..lfo_count).collect(),
-            lfo_event_states: vec![None; lfo_count],
-            voice_lfo_event_states: vec![None; slots * lfo_count],
+            lfo_event_states: lfo_states,
+            voice_lfo_event_states: voice_lfo_states,
             named_envelopes: Vec::new(),
             named_owners: Vec::new(),
             patch_events: Vec::new(),
@@ -944,10 +933,7 @@ impl SynthRuntime {
                 let clock_rate = Time::new(rate.0, rate.1).map_err(core_error)?;
                 let song_beat = Time::new(song.0, song.1).map_err(core_error)?;
                 Ok(BeatPoint {
-                    frame: clock_frame.as_f64(),
-                    beat: clock_beat.as_f64(),
-                    song_beat: song_beat.as_f64(),
-                    rate: clock_rate.as_f64(),
+                    song_beat,
                     clock_frame,
                     clock_beat,
                     clock_rate,
@@ -1303,9 +1289,9 @@ impl SynthRuntime {
                         || ratio_time(*delay).is_ok_and(|d| d < Time::ZERO)
                         || *source >= self.lfo_definitions.len()
                         || self.lfo_definitions[*source].scope != 3
-                        || self.lfo_definitions[*source].rate.0 == 0
-                        || self.lfo_definitions[*source].beat_clock
-                        || self.lfo_definitions[*source].transport_position
+                        || self.lfo_definitions[*source].body.rate == Time::ZERO
+                        || self.lfo_definitions[*source].body.clock == lfo::Clock::Beats
+                        || self.lfo_definitions[*source].body.driver == lfo::Driver::Transport
                         || ratio_time(*marker).is_err()
                         || ratio_time(*marker).is_ok_and(|m| m < Time::ZERO || m >= Time::ONE)
                         || if *capture {
@@ -1850,20 +1836,18 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn local_beat_at(&self, frame: f64) -> f64 {
-        let index = self
-            .beat_points
-            .partition_point(|point| point.frame <= frame);
+    fn song_beat_at(&self, frame: Time) -> PyResult<Time> {
+        let index = self.beat_points.partition_point(|p| p.clock_frame <= frame);
         let point = &self.beat_points[index - 1];
-        point.beat + (frame - point.frame) * point.rate
-    }
-
-    fn song_beat_at(&self, frame: f64) -> f64 {
-        let index = self
-            .beat_points
-            .partition_point(|point| point.frame <= frame);
-        let point = &self.beat_points[index - 1];
-        point.song_beat + (frame - point.frame) * point.rate
+        point
+            .song_beat
+            .checked_add(
+                frame
+                    .checked_sub(point.clock_frame)
+                    .and_then(|d| d.checked_mul(point.clock_rate))
+                    .map_err(core_error)?,
+            )
+            .map_err(core_error)
     }
 
     fn exact_beat_at(&self, frame: Time) -> PyResult<Time> {
@@ -1919,19 +1903,13 @@ impl SynthRuntime {
         }
     }
 
-    fn lfo_elapsed(&self, definition: &LfoDefinition, from: usize, to: usize) -> f64 {
-        if definition.beat_clock {
-            self.local_beat_at(to as f64) - self.local_beat_at(from as f64)
+    fn lfo_time(&self, definition: &LfoDefinition, frame: Time) -> PyResult<Time> {
+        if definition.body.driver == lfo::Driver::Transport {
+            self.song_beat_at(frame)
+        } else if definition.body.clock == lfo::Clock::Beats {
+            self.exact_beat_at(frame)
         } else {
-            (to - from) as f64
-        }
-    }
-
-    fn lfo_divisor(&self, definition: &LfoDefinition) -> f64 {
-        if definition.beat_clock {
-            1.0
-        } else {
-            self.rate
+            Ok(frame)
         }
     }
 
@@ -1976,7 +1954,7 @@ impl SynthRuntime {
                 && self
                     .lfo_definitions
                     .iter()
-                    .any(|definition| definition.beat_clock))
+                    .any(|definition| definition.body.clock == lfo::Clock::Beats))
             || !cutoff_hz.is_finite()
             || cutoff_hz < 0.0
             || cutoff_hz >= self.rate / 2.0
@@ -2312,8 +2290,11 @@ impl SynthRuntime {
                 self.active[voice] = true;
                 self.reset_voice_event_counts(voice);
                 let lfo_base = voice * self.lfo_definitions.len();
-                self.voice_lfo_event_states[lfo_base..lfo_base + self.lfo_definitions.len()]
-                    .fill(None);
+                for (source, definition) in self.lfo_definitions.iter().enumerate() {
+                    let at = self.lfo_time(definition, frame_position(self.frame)?)?;
+                    self.voice_lfo_event_states[lfo_base + source] =
+                        initial_lfo(definition, at, self.frame)?;
+                }
                 for (source, definition) in self.staged_envelfos.iter().enumerate() {
                     let index = voice * self.staged_envelfos.len() + source;
                     let frame = frame_position(self.frame)?;
@@ -2541,58 +2522,33 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid synth LFO action"));
                 }
                 let definition = &self.lfo_definitions[lfo];
-                if definition.scope != 0 || definition.transport_position {
+                if definition.scope != 0 || definition.body.driver == lfo::Driver::Transport {
                     return Err(PyValueError::new_err("Invalid synth LFO scope"));
                 }
-                let state = self.lfo_event_states[lfo].clone().unwrap_or(LfoEventState {
-                    at: 0,
-                    age: 0.0,
-                    phase: definition.phase.0 as f64 / definition.phase.1 as f64,
-                    rate: definition.rate.0 as f64 / definition.rate.1 as f64,
-                    direction: 1.0,
-                    paused: false,
-                });
-                let elapsed = if state.paused {
-                    0.0
-                } else {
-                    self.lfo_elapsed(definition, state.at, self.frame)
+                let at = self.lfo_time(definition, frame_position(self.frame)?)?;
+                let command = match action_kind {
+                    0 => Command::Reset,
+                    1 => Command::Rate(if definition.body.clock == lfo::Clock::Beats {
+                        control_time(action[4])?
+                    } else {
+                        control_time(action[4])?
+                            .checked_div(frame_time(self.rate)?)
+                            .map_err(core_error)?
+                    }),
+                    2 => Command::Pause,
+                    3 => Command::Resume,
+                    4 => Command::Reverse,
+                    5 => Command::Seek(control_time(action[4])?),
+                    6 => Command::Shift(control_time(action[4])?),
+                    _ => unreachable!(),
                 };
-                let phase = state.phase
-                    + state.direction * state.rate * elapsed / self.lfo_divisor(definition);
-                self.lfo_event_states[lfo] = Some(LfoEventState {
-                    at: self.frame,
-                    age: if action_kind == 0 {
-                        0.0
-                    } else {
-                        state.age + elapsed
-                    },
-                    phase: if action_kind == 0 {
-                        definition.phase.0 as f64 / definition.phase.1 as f64
-                    } else if action_kind == 5 {
-                        action[4]
-                    } else if action_kind == 6 {
-                        phase + action[4]
-                    } else {
-                        phase
-                    },
-                    rate: if action_kind == 1 {
-                        action[4]
-                    } else {
-                        state.rate
-                    },
-                    direction: if action_kind == 4 {
-                        -state.direction
-                    } else {
-                        state.direction
-                    },
-                    paused: if action_kind == 2 {
-                        true
-                    } else if action_kind == 3 {
-                        false
-                    } else {
-                        state.paused
-                    },
-                });
+                lfo_command(
+                    definition,
+                    &mut self.lfo_event_states[lfo],
+                    at,
+                    self.frame,
+                    command,
+                )?;
             }
             9 => {
                 let source = action[3] as usize;
@@ -2677,7 +2633,7 @@ impl SynthRuntime {
                     || action[3] != source as f64
                     || source >= self.lfo_definitions.len()
                     || self.lfo_definitions[source].scope != 3
-                    || self.lfo_definitions[source].transport_position
+                    || self.lfo_definitions[source].body.driver == lfo::Driver::Transport
                     || action[4] != command as f64
                     || command > 4
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
@@ -2688,47 +2644,22 @@ impl SynthRuntime {
                 }
                 let definition = &self.lfo_definitions[source];
                 let index = voice * self.lfo_definitions.len() + source;
-                let state = self.voice_lfo_event_states[index]
-                    .clone()
-                    .unwrap_or(LfoEventState {
-                        at: self.frame - self.ages[voice],
-                        age: 0.0,
-                        phase: definition.phase.0 as f64 / definition.phase.1 as f64,
-                        rate: definition.rate.0 as f64 / definition.rate.1 as f64,
-                        direction: 1.0,
-                        paused: false,
-                    });
-                let elapsed = if state.paused {
-                    0.0
-                } else {
-                    self.lfo_elapsed(definition, state.at, self.frame)
+                let at = self.lfo_time(definition, frame_position(self.frame)?)?;
+                let command = match command {
+                    0 => Command::Pause,
+                    1 => Command::Resume,
+                    2 => Command::Reverse,
+                    3 => Command::Seek(control_time(action[5])?),
+                    4 => Command::Shift(control_time(action[5])?),
+                    _ => unreachable!(),
                 };
-                let phase = state.phase
-                    + state.direction * state.rate * elapsed / self.lfo_divisor(definition);
-                self.voice_lfo_event_states[index] = Some(LfoEventState {
-                    at: self.frame,
-                    age: state.age + elapsed,
-                    phase: if command == 3 {
-                        action[5]
-                    } else if command == 4 {
-                        phase + action[5]
-                    } else {
-                        phase
-                    },
-                    rate: state.rate,
-                    direction: if command == 2 {
-                        -state.direction
-                    } else {
-                        state.direction
-                    },
-                    paused: if command == 0 {
-                        true
-                    } else if command == 1 {
-                        false
-                    } else {
-                        state.paused
-                    },
-                });
+                lfo_command(
+                    definition,
+                    &mut self.voice_lfo_event_states[index],
+                    at,
+                    self.frame,
+                    command,
+                )?;
             }
             _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
         }
@@ -2942,64 +2873,33 @@ impl SynthRuntime {
             if !self.active[voice] || self.ages[voice] == 0 {
                 continue;
             }
-            let age = frame_position(self.ages[voice])?;
             let frame = frame_position(self.frame)?;
-            let sample_rate = frame_time(self.rate)?;
             for (order, connection) in self.patch_events.iter().enumerate() {
                 if connection.threshold {
                     continue;
                 }
                 let definition = &self.lfo_definitions[connection.source];
-                let rate = Time::new(
-                    i64::try_from(definition.rate.0)
-                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
-                    i64::try_from(definition.rate.1)
-                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
-                )
-                .map_err(core_error)?;
-                let phase = Time::new(
-                    i64::try_from(definition.phase.0)
-                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
-                    i64::try_from(definition.phase.1)
-                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
-                )
-                .map_err(core_error)?;
-                let position = |age: Time| -> PyResult<Time> {
-                    phase
-                        .checked_add(
-                            rate.checked_mul(age)
-                                .and_then(|v| v.checked_div(sample_rate))
-                                .map_err(core_error)?,
-                        )
-                        .and_then(|v| v.checked_sub(connection.marker))
-                        .map_err(core_error)
-                };
-                let before = position(age.checked_sub(Time::ONE).map_err(core_error)?)?.floor();
-                let after = position(age)?.floor();
-                if i128::from(after) - i128::from(before) > (4096 - events.len()) as i128 {
-                    return Err(PyValueError::new_err("Patch event capacity exceeded"));
-                }
-                let first = before
-                    .checked_add(1)
-                    .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
-                for turn in first..=after {
-                    let event_age = Time::from_integer(turn)
-                        .checked_add(connection.marker)
-                        .and_then(|v| v.checked_sub(phase))
-                        .and_then(|v| v.checked_mul(sample_rate))
-                        .and_then(|v| v.checked_div(rate))
-                        .map_err(core_error)?;
-                    let at = frame
-                        .checked_sub(age.checked_sub(event_age).map_err(core_error)?)
-                        .map_err(core_error)?;
+                let state = &self.voice_lfo_event_states
+                    [voice * self.lfo_definitions.len() + connection.source];
+                let mut after = self.lfo_time(definition, frame_position(state.cursor)?)?;
+                let limit = self.lfo_time(definition, frame)?;
+                while let Some(at) = definition
+                    .body
+                    .next_marker(&state.core, connection.marker, after, limit, at_boundary)
+                    .map_err(core_error)?
+                {
+                    if events.len() == 4096 {
+                        return Err(PyValueError::new_err("Patch event capacity exceeded"));
+                    }
                     events.push((at, order, voice));
+                    after = at;
                 }
             }
         }
         events.sort();
         let mut previous_at = None;
         for (at, order, voice) in events {
-            if (at >= frame_position(self.frame)?) != at_boundary {
+            if at_boundary && at < frame_position(self.frame)? {
                 continue;
             }
             if previous_at != Some(at) {
@@ -3060,6 +2960,19 @@ impl SynthRuntime {
                 voice,
                 destination,
             });
+        }
+        if at_boundary {
+            for voice in 0..self.frequencies.len() {
+                if !self.active[voice] {
+                    continue;
+                }
+                let base = voice * self.lfo_definitions.len();
+                for state in
+                    &mut self.voice_lfo_event_states[base..base + self.lfo_definitions.len()]
+                {
+                    state.cursor = self.frame;
+                }
+            }
         }
         self.dispatch_staged_events()?;
         Ok(())
@@ -3162,69 +3075,17 @@ impl SynthRuntime {
     fn lfo_signal(&self, voice: usize, source: usize) -> PyResult<(f64, f64)> {
         let definition = &self.lfo_definitions[source];
         let owner = self.lfo_owners[source];
-        let elapsed = match definition.scope {
-            0 => self.frame,
-            1 => {
-                self.context_kind(self.voice_part_contexts[voice], 1)?;
-                self.frame
-            }
-            _ => self.ages[voice],
-        };
-        let event_state = if definition.scope == 3 {
+        if definition.scope == 1 {
+            self.context_kind(self.voice_part_contexts[voice], 1)?;
+        }
+        let state = if definition.scope == 3 {
             &self.voice_lfo_event_states[voice * self.lfo_definitions.len() + owner]
         } else {
             &self.lfo_event_states[owner]
         };
-        let (value, weight) = if definition.transport_position {
-            let state = LfoEventState {
-                at: 0,
-                age: 0.0,
-                phase: definition.phase.0 as f64 / definition.phase.1 as f64,
-                rate: definition.rate.0 as f64 / definition.rate.1 as f64,
-                direction: 1.0,
-                paused: false,
-            };
-            lfo_event_value(
-                definition,
-                &state,
-                self.song_beat_at(self.frame as f64),
-                1.0,
-            )
-        } else if let Some(state) = event_state {
-            lfo_event_value(
-                definition,
-                state,
-                if state.paused {
-                    0.0
-                } else {
-                    self.lfo_elapsed(definition, state.at, self.frame)
-                },
-                self.lfo_divisor(definition),
-            )
-        } else if definition.beat_clock {
-            let start = if definition.scope == 3 {
-                self.frame - self.ages[voice]
-            } else {
-                0
-            };
-            let state = LfoEventState {
-                at: start,
-                age: 0.0,
-                phase: definition.phase.0 as f64 / definition.phase.1 as f64,
-                rate: definition.rate.0 as f64 / definition.rate.1 as f64,
-                direction: 1.0,
-                paused: false,
-            };
-            lfo_event_value(
-                definition,
-                &state,
-                self.lfo_elapsed(definition, start, self.frame),
-                1.0,
-            )
-        } else {
-            lfo_value(definition, elapsed, self.rate as u64)?
-        };
-        Ok((value, weight))
+        let at = self.lfo_time(definition, frame_position(self.frame)?)?;
+        let value = definition.body.value(&state.core, at).map_err(core_error)?;
+        Ok((value.value, value.weight))
     }
 
     fn evaluate_envelfo_transforms(&mut self, voice: usize) -> PyResult<()> {
@@ -3614,6 +3475,7 @@ fn control_value(definition: &ControlDefinition, state: &ControlState) -> f64 {
 fn lfo_definitions(
     values: PyReadonlyArray2<'_, f64>,
     rationals: &[(u64, u64)],
+    sample_rate: f64,
 ) -> PyResult<Vec<LfoDefinition>> {
     if values.shape()[1] != 7
         || rationals.len() != values.shape()[0] * 5
@@ -3642,20 +3504,56 @@ fn lfo_definitions(
         {
             return Err(PyValueError::new_err("Invalid synth runtime LFO"));
         }
+        let exact = exact
+            .iter()
+            .map(|(n, d)| {
+                Time::new(
+                    i64::try_from(*n).map_err(|_| core_error(envelfo_core::Error::Overflow))?,
+                    i64::try_from(*d).map_err(|_| core_error(envelfo_core::Error::Overflow))?,
+                )
+                .map_err(core_error)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let beat_clock = row[6] != 0.0;
+        let mut body = lfo::LFO::new(if beat_clock {
+            exact[1]
+        } else {
+            exact[1]
+                .checked_div(frame_time(sample_rate)?)
+                .map_err(core_error)?
+        })
+        .map_err(core_error)?;
+        body.shape = match waveform {
+            0 => lfo::Shape::Sine,
+            1 => lfo::Shape::Square,
+            _ => lfo::Shape::Triangle,
+        };
+        body.duty = exact[0];
+        body.phase = exact[2];
+        body.delay = exact[3];
+        body.fade = exact[4];
+        body.clock = if beat_clock {
+            lfo::Clock::Beats
+        } else {
+            lfo::Clock::Seconds
+        };
+        body.reset = if scope == 3 {
+            lfo::Reset::Trigger
+        } else {
+            lfo::Reset::Free
+        };
+        if row[6] == 2.0 {
+            body.driver = lfo::Driver::Transport;
+            body.reset = lfo::Reset::Transport;
+        }
+        body.validate().map_err(core_error)?;
         definitions.push(LfoDefinition {
             scope,
-            waveform,
+            body,
             parameter,
             operation,
             intercept: row[4],
             slope: row[5],
-            duty: exact[0],
-            rate: exact[1],
-            phase: exact[2],
-            delay: exact[3],
-            fade: exact[4],
-            beat_clock: row[6] != 0.0,
-            transport_position: row[6] == 2.0,
         });
     }
     Ok(definitions)
@@ -3701,125 +3599,46 @@ fn filter_definitions(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<FilterD
         .collect()
 }
 
-fn lfo_value(definition: &LfoDefinition, elapsed: usize, sample_rate: u64) -> PyResult<(f64, f64)> {
-    let Some(phase_denominator) = lfo_phase_denominator(definition, sample_rate) else {
-        return Err(PyValueError::new_err("Invalid synth runtime LFO phase"));
-    };
-    let base = modular_multiply(
-        modular_multiply(
-            definition.phase.0 as u128,
-            definition.rate.1 as u128,
-            phase_denominator,
-        ),
-        sample_rate as u128,
-        phase_denominator,
-    );
-    let step = modular_multiply(
-        definition.rate.0 as u128,
-        definition.phase.1 as u128,
-        phase_denominator,
-    );
-    let phase_numerator = modular_add(
-        base,
-        modular_multiply(elapsed as u128, step, phase_denominator),
-        phase_denominator,
-    );
-    let rising = phase_numerator * (definition.duty.1 as u128)
-        < definition.duty.0 as u128 * phase_denominator;
-    let phase = phase_numerator as f64 / phase_denominator as f64;
-    let value = match definition.waveform {
-        0 => (TAU * phase).sin(),
-        1 => {
-            if rising {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        _ if definition.duty.0 == 0 => 1.0 - 2.0 * phase,
-        _ if definition.duty.0 == definition.duty.1 => 2.0 * phase - 1.0,
-        _ if rising => 2.0 * phase / (definition.duty.0 as f64 / definition.duty.1 as f64) - 1.0,
-        _ => {
-            let duty = definition.duty.0 as f64 / definition.duty.1 as f64;
-            (1.0 + duty - 2.0 * phase) / (1.0 - duty)
-        }
-    };
-    let delayed =
-        (elapsed as u128) < (definition.delay.0 as u128).div_ceil(definition.delay.1 as u128);
-    let weight = if delayed {
-        0.0
-    } else if definition.fade.0 == 0 {
-        1.0
-    } else {
-        ((elapsed as f64 - definition.delay.0 as f64 / definition.delay.1 as f64)
-            / (definition.fade.0 as f64 / definition.fade.1 as f64))
-            .clamp(0.0, 1.0)
-    };
-    Ok((value.clamp(-1.0, 1.0), weight))
+fn initial_lfo(definition: &LfoDefinition, at: Time, frame: usize) -> PyResult<LfoPlayback> {
+    Ok(LfoPlayback {
+        core: definition.body.initial(at).map_err(core_error)?,
+        ordinal: 0,
+        cursor: frame,
+    })
 }
 
-fn lfo_event_value(
+fn lfo_command(
     definition: &LfoDefinition,
-    state: &LfoEventState,
-    elapsed: f64,
-    divisor: f64,
-) -> (f64, f64) {
-    let phase = (state.phase + state.direction * state.rate * elapsed / divisor).rem_euclid(1.0);
-    let duty = definition.duty.0 as f64 / definition.duty.1 as f64;
-    let value = match definition.waveform {
-        0 => (TAU * phase).sin(),
-        1 => {
-            if phase < duty {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        _ if duty == 0.0 => 1.0 - 2.0 * phase,
-        _ if duty == 1.0 => 2.0 * phase - 1.0,
-        _ if phase < duty => 2.0 * phase / duty - 1.0,
-        _ => (1.0 + duty - 2.0 * phase) / (1.0 - duty),
-    };
-    let age = state.age + elapsed;
-    let delay = definition.delay.0 as f64 / definition.delay.1 as f64;
-    let fade = definition.fade.0 as f64 / definition.fade.1 as f64;
-    let weight = if age < delay {
-        0.0
-    } else if fade == 0.0 {
-        1.0
-    } else {
-        ((age - delay) / fade).clamp(0.0, 1.0)
-    };
-    (value, weight)
+    state: &mut LfoPlayback,
+    at: Time,
+    frame: usize,
+    command: Command,
+) -> PyResult<()> {
+    let ordinal = state
+        .ordinal
+        .checked_add(1)
+        .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
+    definition
+        .body
+        .command(&mut state.core, at, ordinal, command)
+        .map_err(core_error)?;
+    state.ordinal = ordinal;
+    state.cursor = frame;
+    Ok(())
 }
 
-fn lfo_phase_denominator(definition: &LfoDefinition, sample_rate: u64) -> Option<u128> {
-    let denominator = (definition.phase.1 as u128)
-        .checked_mul(definition.rate.1 as u128)?
-        .checked_mul(sample_rate as u128)?;
-    denominator.checked_mul(definition.duty.0.max(definition.duty.1) as u128)?;
-    Some(denominator)
-}
-
-fn modular_add(first: u128, second: u128, modulus: u128) -> u128 {
-    if first >= modulus - second {
-        first - (modulus - second)
-    } else {
-        first + second
-    }
-}
-
-fn modular_multiply(mut first: u128, mut second: u128, modulus: u128) -> u128 {
-    first %= modulus;
-    let mut result = 0;
-    while second != 0 {
-        if second & 1 != 0 {
-            result = modular_add(result, first, modulus);
-        }
-        first = modular_add(first, first, modulus);
-        second >>= 1;
-    }
-    result
+fn control_time(value: f64) -> PyResult<Time> {
+    // Public numeric commands use the same decimal value as Python Fraction(str(value)).
+    let text = value.to_string();
+    let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
+    let denominator = 10_i64
+        .checked_pow(fraction.len() as u32)
+        .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
+    let digits = format!("{whole}{fraction}");
+    let numerator = digits
+        .parse::<i64>()
+        .map_err(|_| core_error(envelfo_core::Error::Overflow))?;
+    Time::new(numerator, denominator).map_err(core_error)
 }
 
 fn core_error(error: envelfo_core::Error) -> PyErr {

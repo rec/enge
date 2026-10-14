@@ -72,6 +72,15 @@ Ordinary native LFO signal state and retained Patch operators/orchestration are
 still separate adapters; this does not claim that the entire native scheduler
 uses the standalone Patch runtime.
 
+Native LFO adapter update: ordinary playback now also consumes shared Rust
+`LFO`/`LFOState` for shapes, activation weight, commands and continuation.
+The duplicate floating-point event state and modular phase/fade evaluator have
+been removed. `LFO::next_marker` supplies exact routed crossings from that
+same state and is also used by the standalone Rust Patch scheduler.
+`test_native_lfo_core.py` covers decimal commands and paused resets, exact large
+and negative transport positions, and pause-retimed markers across restoration.
+Scope ownership and retained Patch orchestration remain host responsibilities.
+
 ## Capability and evidence matrix
 
 Python reference means enveLFO scalar semantics unless the row explicitly names
@@ -85,7 +94,7 @@ Neither kind proves an independent Rust library exists.
 | Definitions, units, library references | uFor `envelfo.py`, `library.py`, `segments.py`, `score_types.py` | Prepared tuples supplied by Python, not equivalent authored-document validation | uFor `test_envelfo_score_round_trips_simple_bodies`, `test_example_envelfo_library_resolves_all_scores`, `test_units.py`; normalized Rust definition boundary still to extract |
 | Indefinite Envelope segments | Scalar and staged Envelope playback, explicit `advance` | Scalar/staged core and native Envelope cursors | Shared `indefinite-segments-advance-and-restore` and `indefinite-envelope-is-a-stage` traces; no separate constant generator |
 | Voice-amplitude Envelope waits | Shared scalar state plus enge minimum-hold and completion policy | Shared Rust Envelope state per voice/operator; native sample state | `test_amplitude_envelope.py` covers attack/release waits, FM carrier/operator addressing, continuation and sample exhaustion; `test_envelope_policy.py` covers minimum hold and paused release |
-| LFO signals and commands | `initial_envelfo`, `envelfo_at`, `envelfo_event`; uFor shape mathematics | `src/lfo.rs`, `LfoDefinition`, `LfoEventState`, staged LFO evaluation | uFor `test_cycle_pause_reverse_and_seek_preserve_seconds_position`; enge `test_instrument_lfo_playback_commands_match_offline_and_persistent`; no standalone state API yet |
+| LFO signals and commands | enveLFO `initial_envelfo`, `envelfo_at`, `envelfo_event` | Shared Rust `LFO` and `LFOState`; enge owns scope and delivery cursors | `test_native_lfo_core.py` and existing scoped/playback audio tests; no duplicate native persistent phase/fade evaluator; stateless block acceleration remains an audio adapter |
 | Envelope attacks, release, loops, reversal, finite repeats | enveLFO scalar Envelope execution | Shared Rust `EnvelopeState`; enge owns queued voice release and routes | enge `test_finite_envelope_repeats_match_persistent_native` and `test_native_named_envelope.py`; no duplicate native named Envelope evaluator |
 | Curved Envelope segments | Shared scalar curve mathematics used by Envelopes and Stages | Standalone core supports curves; enge named/staged preparation still rejects them | enge `_persistent_modulation` and `_runtime_staged_envelfo`; removing audio-host restrictions is separate work |
 | Stage transition events and entry capture | enveLFO `advance_envelfo`, `next_stage_event` | Shared Rust `Stages` and `StageState`; exact routed timestamps | enge `test_staged_envelope_events_cue_another_envelfo_in_native_runtime` and fractional routed delivery tests; native Stage playback/boundary helpers removed |
