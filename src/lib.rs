@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "rubberband"), forbid(unsafe_code))]
 
+mod amplitude;
 mod effects;
 mod filters;
 mod fm;

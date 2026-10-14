@@ -37,8 +37,14 @@ General Envelopes can contain indefinite segments (`duration: null` in JSON,
 an empty segment table in TOML). They hold their incoming value until `advance`
 enters the next segment, or note-off enters release. Stages use these Envelopes
 instead of a separate constant generator. Indefinite Envelopes do not accept
-normalized seek/shift, markers or looping. Enge's voice-amplitude profile still
-requires finite segments; named control Envelopes and Stages support waits.
+normalized seek/shift, markers or looping. Voice-amplitude envelopes, named
+control Envelopes and Stages all support these waits.
+
+Send `EnvelfoChange(target="envelope", action="advance", part=..., trigger_id=...)`
+to leave an amplitude hold. Optional `op` selects an FM operator; without it,
+the command addresses voice amplitude, which is the carrier for FM. Explicit
+carrier commands address that same state. Indefinite releases retain the voice
+until completion, stop, choke or stealing; exhausted sample sources still end.
 
 enge owns minimum hold, release timing and voice retirement. Amplitude envelopes
 currently require numeric initial values, activation start, voice seconds, held

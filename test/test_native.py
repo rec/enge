@@ -67,7 +67,8 @@ def test_native_matches_reference_without_python_dsp(
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("Native rendering delegated DSP to the NumPy reference")
 
-    for name in ("oscillator_samples", "envelope_samples", "route_samples"):
+    monkeypatch.setattr(synth.VoiceEnvelopeRenderer, "amplitude_samples", forbidden)
+    for name in ("oscillator_samples", "route_samples"):
         monkeypatch.setattr(synth, name, forbidden)
     monkeypatch.setattr(filters, "filter_samples", forbidden)
     chunks: list[np.ndarray] = []

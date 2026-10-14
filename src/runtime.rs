@@ -1,5 +1,6 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
+use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState};
 use envelfo_core::random::random_word;
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
@@ -336,9 +337,6 @@ struct FilterDefinition {
 #[derive(Clone, PartialEq)]
 struct GraphOperator {
     waveform: u8,
-    initial: f64,
-    attack: Vec<Segment>,
-    release: Vec<Segment>,
     phase_offset: f64,
     ratio_parameter: usize,
     tuning_parameter: usize,
@@ -362,18 +360,12 @@ pub struct SynthRuntimeSnapshot {
     waveform: u8,
     source_kind: u8,
     duty: f64,
-    mod_initial: f64,
-    mod_attack: Vec<Segment>,
-    mod_release: Vec<Segment>,
     fm_phase_offsets: [f64; 2],
     graph_operators: Vec<GraphOperator>,
     graph_edges: Vec<GraphEdge>,
     graph_order: Vec<usize>,
     graph_carrier: usize,
     graph_carrier_parameter: usize,
-    initial: f64,
-    attack: Vec<Segment>,
-    release: Vec<Segment>,
     minimum_hold_frames: f64,
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
@@ -407,20 +399,17 @@ pub struct SynthRuntimeSnapshot {
     mod_phases: Vec<f64>,
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
-    mod_release_levels: Vec<f64>,
     named_states: Vec<NamedEnvelopeState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
     graph_history: Vec<f64>,
-    graph_release_levels: Vec<f64>,
     noise_keys: Vec<u64>,
     noise_counters: Vec<u64>,
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
     release_frames: Vec<Option<f64>>,
-    release_levels: Vec<f64>,
     frequency_steps: Vec<f64>,
     frequency_remaining: Vec<usize>,
     gain_steps: Vec<f64>,
@@ -430,6 +419,8 @@ pub struct SynthRuntimeSnapshot {
     filter_states: Array2<f64>,
     voice_filter_states: Array3<f64>,
     frame: usize,
+    amplitude_definitions: Vec<Amplitude>,
+    amplitude_states: Vec<Vec<AmplitudeState>>,
 }
 
 #[pyclass(skip_from_py_object)]
@@ -444,18 +435,12 @@ pub struct SynthRuntime {
     waveform: u8,
     source_kind: u8,
     duty: f64,
-    mod_initial: f64,
-    mod_attack: Vec<Segment>,
-    mod_release: Vec<Segment>,
     fm_phase_offsets: [f64; 2],
     graph_operators: Vec<GraphOperator>,
     graph_edges: Vec<GraphEdge>,
     graph_order: Vec<usize>,
     graph_carrier: usize,
     graph_carrier_parameter: usize,
-    initial: f64,
-    attack: Vec<Segment>,
-    release: Vec<Segment>,
     minimum_hold_frames: f64,
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
@@ -489,20 +474,17 @@ pub struct SynthRuntime {
     mod_phases: Vec<f64>,
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
-    mod_release_levels: Vec<f64>,
     named_states: Vec<NamedEnvelopeState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
     graph_history: Vec<f64>,
-    graph_release_levels: Vec<f64>,
     noise_keys: Vec<u64>,
     noise_counters: Vec<u64>,
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
     release_frames: Vec<Option<f64>>,
-    release_levels: Vec<f64>,
     frequency_steps: Vec<f64>,
     frequency_remaining: Vec<usize>,
     gain_steps: Vec<f64>,
@@ -512,6 +494,8 @@ pub struct SynthRuntime {
     filter_states: Array2<f64>,
     voice_filter_states: Array3<f64>,
     frame: usize,
+    amplitude_definitions: Vec<Amplitude>,
+    amplitude_states: Vec<Vec<AmplitudeState>>,
 }
 
 #[pymethods]
@@ -525,8 +509,8 @@ impl SynthRuntime {
         duty: f64,
         routes: PyReadonlyArray2<'_, f64>,
         initial: f64,
-        attack: PyReadonlyArray2<'_, f64>,
-        release: PyReadonlyArray2<'_, f64>,
+        attack: AmplitudeSegments,
+        release: AmplitudeSegments,
         minimum_hold_frames: f64,
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
@@ -537,8 +521,7 @@ impl SynthRuntime {
         context_capacity: usize,
         filter_after_amplitude: bool,
     ) -> PyResult<Self> {
-        let attack = segments(attack)?;
-        let release = segments(release)?;
+        let amplitude = Amplitude::new(initial, attack, release)?;
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
         let lfo_definitions = lfo_definitions(lfos, &lfo_rationals)?;
@@ -585,6 +568,9 @@ impl SynthRuntime {
         let context_states = (0..context_capacity)
             .flat_map(|_| control_states.clone())
             .collect();
+        let amplitude_states = (0..slots)
+            .map(|_| Ok(vec![amplitude.start()?]))
+            .collect::<PyResult<_>>()?;
         Ok(Self {
             envelfo_transforms: Vec::new(),
             envelfo_transform_routes: Vec::new(),
@@ -593,20 +579,16 @@ impl SynthRuntime {
             rate,
             waveform,
             source_kind: 0,
+            amplitude_definitions: vec![amplitude],
+            amplitude_states,
             filter_after_amplitude,
             duty,
-            mod_initial: 0.0,
-            mod_attack: Vec::new(),
-            mod_release: Vec::new(),
             fm_phase_offsets: [0.0; 2],
             graph_operators: Vec::new(),
             graph_edges: Vec::new(),
             graph_order: Vec::new(),
             graph_carrier: 0,
             graph_carrier_parameter: 0,
-            initial,
-            attack,
-            release,
             minimum_hold_frames,
             routes: routes.as_array().to_owned(),
             control_definitions,
@@ -640,20 +622,17 @@ impl SynthRuntime {
             mod_phases: vec![0.0; slots],
             mod_errors: vec![0.0; slots],
             previous_modulators: vec![0.0; slots],
-            mod_release_levels: vec![0.0; slots],
             named_states: Vec::new(),
             graph_phases: Vec::new(),
             graph_errors: Vec::new(),
             graph_outputs: Vec::new(),
             graph_history: Vec::new(),
-            graph_release_levels: Vec::new(),
             noise_keys: vec![0; slots],
             noise_counters: vec![0; slots],
             gains: vec![0.0; slots],
             active: vec![false; slots],
             ages: vec![0; slots],
             release_frames: vec![None; slots],
-            release_levels: vec![0.0; slots],
             frequency_steps: vec![0.0; slots],
             frequency_remaining: vec![0; slots],
             gain_steps: vec![0.0; slots],
@@ -673,11 +652,11 @@ impl SynthRuntime {
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
         carrier_initial: f64,
-        carrier_attack: PyReadonlyArray2<'_, f64>,
-        carrier_release: PyReadonlyArray2<'_, f64>,
+        carrier_attack: AmplitudeSegments,
+        carrier_release: AmplitudeSegments,
         mod_initial: f64,
-        mod_attack: PyReadonlyArray2<'_, f64>,
-        mod_release: PyReadonlyArray2<'_, f64>,
+        mod_attack: AmplitudeSegments,
+        mod_release: AmplitudeSegments,
         phase_offsets: Vec<f64>,
         minimum_hold_frames: f64,
         controls: PyReadonlyArray2<'_, f64>,
@@ -695,8 +674,7 @@ impl SynthRuntime {
         {
             return Err(PyValueError::new_err("Invalid FM runtime definition"));
         }
-        let mod_attack = segments(mod_attack)?;
-        let mod_release = segments(mod_release)?;
+        let mod_envelope = Amplitude::new(mod_initial, mod_attack, mod_release)?;
         let mut runtime = Self::new(
             rate,
             0,
@@ -716,9 +694,16 @@ impl SynthRuntime {
             filter_after_amplitude,
         )?;
         runtime.source_kind = 1;
-        runtime.mod_initial = mod_initial;
-        runtime.mod_attack = mod_attack;
-        runtime.mod_release = mod_release;
+        runtime.amplitude_definitions.push(mod_envelope);
+        runtime.amplitude_states = (0..runtime.frequencies.len())
+            .map(|_| {
+                runtime
+                    .amplitude_definitions
+                    .iter()
+                    .map(Amplitude::start)
+                    .collect()
+            })
+            .collect::<PyResult<_>>()?;
         runtime.fm_phase_offsets = [phase_offsets[0], phase_offsets[1]];
         Ok(runtime)
     }
@@ -730,12 +715,12 @@ impl SynthRuntime {
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
         carrier_initial: f64,
-        carrier_attack: PyReadonlyArray2<'_, f64>,
-        carrier_release: PyReadonlyArray2<'_, f64>,
+        carrier_attack: AmplitudeSegments,
+        carrier_release: AmplitudeSegments,
         waveforms: Vec<u8>,
         initials: Vec<f64>,
-        attacks: Vec<Vec<(f64, f64)>>,
-        releases: Vec<Vec<(f64, f64)>>,
+        attacks: Vec<AmplitudeSegments>,
+        releases: Vec<AmplitudeSegments>,
         phase_offsets: Vec<f64>,
         parameters: Vec<(usize, usize)>,
         edges: Vec<(usize, usize, bool, usize)>,
@@ -778,6 +763,7 @@ impl SynthRuntime {
             }
             positions[*operator] = position;
         }
+        let mut amplitude_definitions = Vec::with_capacity(operators);
         let graph_operators: Vec<GraphOperator> = waveforms
             .into_iter()
             .zip(initials)
@@ -787,24 +773,14 @@ impl SynthRuntime {
             .zip(parameters)
             .map(
                 |(((((waveform, initial), attack), release), phase_offset), parameters)| {
-                    if attack.iter().chain(&release).any(|(frames, target)| {
-                        !frames.is_finite() || *frames < 0.0 || !target.is_finite()
-                    }) || parameters.0 >= parameter_definitions.len() / 3
+                    if parameters.0 >= parameter_definitions.len() / 3
                         || parameters.1 >= parameter_definitions.len() / 3
                     {
                         return Err(PyValueError::new_err("Invalid graph FM operator"));
                     }
+                    amplitude_definitions.push(Amplitude::new(initial, attack, release)?);
                     Ok(GraphOperator {
                         waveform,
-                        initial,
-                        attack: attack
-                            .into_iter()
-                            .map(|(frames, target)| Segment { frames, target })
-                            .collect(),
-                        release: release
-                            .into_iter()
-                            .map(|(frames, target)| Segment { frames, target })
-                            .collect(),
                         phase_offset,
                         ratio_parameter: parameters.0,
                         tuning_parameter: parameters.1,
@@ -861,7 +837,16 @@ impl SynthRuntime {
         runtime.graph_errors = vec![0.0; slots * operators];
         runtime.graph_outputs = vec![0.0; slots * operators];
         runtime.graph_history = vec![0.0; slots * runtime.graph_edges.len()];
-        runtime.graph_release_levels = vec![0.0; slots * operators];
+        runtime.amplitude_definitions = amplitude_definitions;
+        runtime.amplitude_states = (0..slots)
+            .map(|_| {
+                runtime
+                    .amplitude_definitions
+                    .iter()
+                    .map(Amplitude::start)
+                    .collect()
+            })
+            .collect::<PyResult<_>>()?;
         Ok(runtime)
     }
 
@@ -1511,8 +1496,8 @@ impl SynthRuntime {
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
         initial: f64,
-        attack: PyReadonlyArray2<'_, f64>,
-        release: PyReadonlyArray2<'_, f64>,
+        attack: AmplitudeSegments,
+        release: AmplitudeSegments,
         minimum_hold_frames: f64,
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
@@ -1618,6 +1603,8 @@ impl SynthRuntime {
 
     pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
+            amplitude_definitions: self.amplitude_definitions.clone(),
+            amplitude_states: self.amplitude_states.clone(),
             envelfo_transform_states: self.envelfo_transform_states.clone(),
             envelfo_transforms: self.envelfo_transforms.clone(),
             envelfo_transform_routes: self.envelfo_transform_routes.clone(),
@@ -1625,18 +1612,12 @@ impl SynthRuntime {
             waveform: self.waveform,
             source_kind: self.source_kind,
             duty: self.duty,
-            mod_initial: self.mod_initial,
-            mod_attack: self.mod_attack.clone(),
-            mod_release: self.mod_release.clone(),
             fm_phase_offsets: self.fm_phase_offsets,
             graph_operators: self.graph_operators.clone(),
             graph_edges: self.graph_edges.clone(),
             graph_order: self.graph_order.clone(),
             graph_carrier: self.graph_carrier,
             graph_carrier_parameter: self.graph_carrier_parameter,
-            initial: self.initial,
-            attack: self.attack.clone(),
-            release: self.release.clone(),
             minimum_hold_frames: self.minimum_hold_frames,
             routes: self.routes.clone(),
             control_definitions: self.control_definitions.clone(),
@@ -1670,20 +1651,17 @@ impl SynthRuntime {
             mod_phases: self.mod_phases.clone(),
             mod_errors: self.mod_errors.clone(),
             previous_modulators: self.previous_modulators.clone(),
-            mod_release_levels: self.mod_release_levels.clone(),
             named_states: self.named_states.clone(),
             graph_phases: self.graph_phases.clone(),
             graph_errors: self.graph_errors.clone(),
             graph_outputs: self.graph_outputs.clone(),
             graph_history: self.graph_history.clone(),
-            graph_release_levels: self.graph_release_levels.clone(),
             noise_keys: self.noise_keys.clone(),
             noise_counters: self.noise_counters.clone(),
             gains: self.gains.clone(),
             active: self.active.clone(),
             ages: self.ages.clone(),
             release_frames: self.release_frames.clone(),
-            release_levels: self.release_levels.clone(),
             frequency_steps: self.frequency_steps.clone(),
             frequency_remaining: self.frequency_remaining.clone(),
             gain_steps: self.gain_steps.clone(),
@@ -1700,6 +1678,7 @@ impl SynthRuntime {
         self.validate_snapshot(snapshot)?;
         self.envelfo_transform_states
             .clone_from(&snapshot.envelfo_transform_states);
+        self.amplitude_states.clone_from(&snapshot.amplitude_states);
         self.frequencies.clone_from(&snapshot.frequencies);
         self.phases.clone_from(&snapshot.phases);
         self.errors.clone_from(&snapshot.errors);
@@ -1707,8 +1686,6 @@ impl SynthRuntime {
         self.mod_errors.clone_from(&snapshot.mod_errors);
         self.previous_modulators
             .clone_from(&snapshot.previous_modulators);
-        self.mod_release_levels
-            .clone_from(&snapshot.mod_release_levels);
         self.named_states.clone_from(&snapshot.named_states);
         self.staged_states.clone_from(&snapshot.staged_states);
         self.staged_pending.clone_from(&snapshot.staged_pending);
@@ -1724,15 +1701,12 @@ impl SynthRuntime {
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
         self.graph_history.clone_from(&snapshot.graph_history);
-        self.graph_release_levels
-            .clone_from(&snapshot.graph_release_levels);
         self.noise_keys.clone_from(&snapshot.noise_keys);
         self.noise_counters.clone_from(&snapshot.noise_counters);
         self.gains.clone_from(&snapshot.gains);
         self.active.clone_from(&snapshot.active);
         self.ages.clone_from(&snapshot.ages);
         self.release_frames.clone_from(&snapshot.release_frames);
-        self.release_levels.clone_from(&snapshot.release_levels);
         self.frequency_steps.clone_from(&snapshot.frequency_steps);
         self.frequency_remaining
             .clone_from(&snapshot.frequency_remaining);
@@ -1821,19 +1795,14 @@ impl SynthRuntime {
         if self.rate != snapshot.rate
             || self.waveform != snapshot.waveform
             || self.source_kind != snapshot.source_kind
+            || self.amplitude_definitions != snapshot.amplitude_definitions
             || self.duty != snapshot.duty
-            || self.mod_initial != snapshot.mod_initial
-            || self.mod_attack != snapshot.mod_attack
-            || self.mod_release != snapshot.mod_release
             || self.fm_phase_offsets != snapshot.fm_phase_offsets
             || self.graph_operators != snapshot.graph_operators
             || self.graph_edges != snapshot.graph_edges
             || self.graph_order != snapshot.graph_order
             || self.graph_carrier != snapshot.graph_carrier
             || self.graph_carrier_parameter != snapshot.graph_carrier_parameter
-            || self.initial != snapshot.initial
-            || self.attack != snapshot.attack
-            || self.release != snapshot.release
             || self.minimum_hold_frames != snapshot.minimum_hold_frames
             || self.routes != snapshot.routes
             || self.control_definitions != snapshot.control_definitions
@@ -2019,26 +1988,22 @@ impl SynthRuntime {
                     } else {
                         1.0
                     };
-                let age = self.ages[voice] as f64;
-                let level = if let Some(release_frame) = self.release_frames[voice] {
-                    let end = release_frame + total_frames(&self.release);
-                    if age >= end.ceil() {
-                        self.active[voice] = false;
-                        self.delayed_events[voice].clear();
-                        continue;
-                    }
-                    if age >= release_frame.ceil() {
-                        envelope_value(
-                            self.release_levels[voice],
-                            &self.release,
-                            age - release_frame,
-                        )
-                    } else {
-                        envelope_value(self.initial, &self.attack, age)
-                    }
-                } else {
-                    envelope_value(self.initial, &self.attack, age)
-                };
+                for (definition, state) in self
+                    .amplitude_definitions
+                    .iter()
+                    .zip(&mut self.amplitude_states[voice])
+                {
+                    definition.settle(state, self.release_frames[voice], self.ages[voice])?;
+                }
+                let definition = &self.amplitude_definitions[self.graph_carrier];
+                let state = &self.amplitude_states[voice][self.graph_carrier];
+                let observed = definition.value(state, self.ages[voice])?;
+                if definition.complete(state, &observed) {
+                    self.active[voice] = false;
+                    self.delayed_events[voice].clear();
+                    continue;
+                }
+                let level = observed.value;
                 let wave = if self.source_kind == 0 {
                     let angle = TAU * self.phases[voice] / self.rate;
                     let phase = (angle / TAU).rem_euclid(1.0);
@@ -2057,21 +2022,13 @@ impl SynthRuntime {
                         _ => (1.0 + self.duty - 2.0 * phase) / (1.0 - self.duty),
                     }
                 } else if self.source_kind == 1 {
-                    let mod_level = if let Some(release_frame) = self.release_frames[voice] {
-                        let end = release_frame + total_frames(&self.mod_release);
-                        if age >= end.ceil() {
-                            0.0
-                        } else if age >= release_frame.ceil() {
-                            envelope_value(
-                                self.mod_release_levels[voice],
-                                &self.mod_release,
-                                age - release_frame,
-                            )
-                        } else {
-                            envelope_value(self.mod_initial, &self.mod_attack, age)
-                        }
+                    let definition = &self.amplitude_definitions[1];
+                    let state = &self.amplitude_states[voice][1];
+                    let value = definition.value(state, self.ages[voice])?;
+                    let mod_level = if definition.complete(state, &value) {
+                        0.0
                     } else {
-                        envelope_value(self.mod_initial, &self.mod_attack, age)
+                        value.value
                     };
                     let process_tuning = self.parameter(voice, 1)?;
                     let mod_frequency = self.frequencies[voice]
@@ -2106,21 +2063,13 @@ impl SynthRuntime {
                     let process_tuning = self.parameter(voice, 1)?;
                     for operator in &self.graph_order {
                         let definition = &self.graph_operators[*operator];
-                        let level = if let Some(release_frame) = self.release_frames[voice] {
-                            let end = release_frame + total_frames(&definition.release);
-                            if age >= end.ceil() {
-                                0.0
-                            } else if age >= release_frame.ceil() {
-                                envelope_value(
-                                    self.graph_release_levels[operator_base + *operator],
-                                    &definition.release,
-                                    age - release_frame,
-                                )
-                            } else {
-                                envelope_value(definition.initial, &definition.attack, age)
-                            }
+                        let amplitude = &self.amplitude_definitions[*operator];
+                        let state = &self.amplitude_states[voice][*operator];
+                        let observed = amplitude.value(state, self.ages[voice])?;
+                        let level = if amplitude.complete(state, &observed) {
+                            0.0
                         } else {
-                            envelope_value(definition.initial, &definition.attack, age)
+                            observed.value
                         };
                         let mut offset = 0.0;
                         for (index, edge) in self.graph_edges.iter().enumerate() {
@@ -2156,14 +2105,6 @@ impl SynthRuntime {
                         self.graph_outputs[operator_base + *operator] = level * value;
                         if *operator == self.graph_carrier {
                             carrier_sample = value;
-                        }
-                    }
-                    if let Some(release_frame) = self.release_frames[voice] {
-                        let carrier = &self.graph_operators[self.graph_carrier];
-                        if age >= (release_frame + total_frames(&carrier.release)).ceil() {
-                            self.active[voice] = false;
-                            self.delayed_events[voice].clear();
-                            continue;
                         }
                     }
                     let carrier = carrier_sample;
@@ -2279,10 +2220,31 @@ impl SynthRuntime {
         {
             return Err(PyValueError::new_err("Invalid synth runtime action"));
         }
-        if (kind <= 3 || kind == 5 || (9..=12).contains(&kind)) && voice >= self.frequencies.len() {
+        if (kind <= 3 || kind == 5 || (9..=13).contains(&kind)) && voice >= self.frequencies.len() {
             return Err(PyValueError::new_err("Invalid synth runtime voice"));
         }
         match kind {
+            13 => {
+                let source = action[3] as usize;
+                let command = action[4] as usize;
+                if action[3] != source as f64
+                    || source >= self.amplitude_definitions.len()
+                    || action[4] != command as f64
+                    || command > 5
+                    || !action[5].is_finite()
+                    || (command == 3 && !(0.0..=1.0).contains(&action[5]))
+                    || (command != 3 && command != 4 && action[5] != 0.0)
+                {
+                    return Err(PyValueError::new_err("Invalid amplitude command"));
+                }
+                if !self.active[voice] {
+                    return Ok(());
+                }
+                let definition = &self.amplitude_definitions[source];
+                let state = &mut self.amplitude_states[voice][source];
+                definition.settle(state, self.release_frames[voice], self.ages[voice])?;
+                definition.command(state, self.ages[voice], command, action[5])?;
+            }
             12 => {
                 if action[3] != action[3] as u32 as f64
                     || action[4] != action[4] as u32 as f64
@@ -2358,7 +2320,6 @@ impl SynthRuntime {
                             .rem_euclid(self.rate);
                         self.graph_errors[index] = 0.0;
                         self.graph_outputs[index] = 0.0;
-                        self.graph_release_levels[index] = 0.0;
                     }
                     self.graph_history[voice * edges..(voice + 1) * edges].fill(0.0);
                 }
@@ -2382,6 +2343,13 @@ impl SynthRuntime {
                 } else {
                     self.frequencies[voice] = action[3];
                     self.gains[voice] = action[4];
+                }
+                for (definition, state) in self
+                    .amplitude_definitions
+                    .iter()
+                    .zip(&mut self.amplitude_states[voice])
+                {
+                    *state = definition.start()?;
                 }
                 self.ages[voice] = 0;
                 self.release_frames[voice] = None;
@@ -2414,20 +2382,6 @@ impl SynthRuntime {
                         }
                     }
                     let release_frame = (self.ages[voice] as f64).max(self.minimum_hold_frames);
-                    self.release_levels[voice] =
-                        envelope_value(self.initial, &self.attack, release_frame);
-                    self.mod_release_levels[voice] =
-                        envelope_value(self.mod_initial, &self.mod_attack, release_frame);
-                    if self.source_kind == 3 {
-                        let operator_base = voice * self.graph_operators.len();
-                        for (operator, definition) in self.graph_operators.iter().enumerate() {
-                            self.graph_release_levels[operator_base + operator] = envelope_value(
-                                definition.initial,
-                                &definition.attack,
-                                release_frame,
-                            );
-                        }
-                    }
                     let envelope_base = voice * self.named_envelopes.len();
                     for (index, definition) in self.named_envelopes.iter().enumerate() {
                         if definition.release.is_empty() {
@@ -3973,24 +3927,6 @@ fn modular_multiply(mut first: u128, mut second: u128, modulus: u128) -> u128 {
         second >>= 1;
     }
     result
-}
-
-pub(crate) fn segments(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Segment>> {
-    if values.shape()[1] != 2
-        || values.as_array().iter().any(|v| !v.is_finite())
-        || values.as_array().rows().into_iter().any(|r| r[0] < 0.0)
-    {
-        return Err(PyValueError::new_err("Invalid synth runtime envelope"));
-    }
-    Ok(values
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|r| Segment {
-            frames: r[0],
-            target: r[1],
-        })
-        .collect())
 }
 
 pub(crate) fn total_frames(segments: &[Segment]) -> f64 {

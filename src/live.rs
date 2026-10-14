@@ -1,9 +1,8 @@
 //! One native owner for persistent generated sources and callback scratch.
 
+use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
-use crate::runtime::{
-    Segment, SynthRuntime, SynthRuntimeSnapshot, envelope_value, segments, total_frames,
-};
+use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot};
 use crate::sampler::{Cursor, SampleBuffer, Selection, State};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
@@ -31,9 +30,8 @@ struct SampleRuntime {
     buffer: SampleBuffer,
     initial_cursor: Cursor,
     routes: Array2<f64>,
-    initial: f64,
-    attack: Vec<Segment>,
-    release: Vec<Segment>,
+    amplitude: Amplitude,
+    amplitude_states: Vec<AmplitudeState>,
     minimum_hold_frames: f64,
     cursors: Vec<Cursor>,
     steps: Vec<f64>,
@@ -41,7 +39,6 @@ struct SampleRuntime {
     active: Vec<bool>,
     ages: Vec<usize>,
     release_frames: Vec<Option<f64>>,
-    release_levels: Vec<f64>,
     source_values: Vec<f64>,
     frame: usize,
 }
@@ -296,8 +293,8 @@ impl LiveRuntime {
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
         initial: f64,
-        attack: PyReadonlyArray2<'_, f64>,
-        release: PyReadonlyArray2<'_, f64>,
+        attack: AmplitudeSegments,
+        release: AmplitudeSegments,
         minimum_hold_frames: f64,
         voices: usize,
         batch_capacity: usize,
@@ -321,13 +318,16 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Live sample starts exhausted"));
         }
         let source_channels = buffer.audio.ncols();
+        let amplitude = Amplitude::new(initial, attack, release)?;
+        let amplitude_states = (0..voices)
+            .map(|_| amplitude.start())
+            .collect::<PyResult<_>>()?;
         let runtime = SampleRuntime {
             buffer,
             initial_cursor: cursor,
             routes: routes.as_array().to_owned(),
-            initial,
-            attack: segments(attack)?,
-            release: segments(release)?,
+            amplitude,
+            amplitude_states,
             minimum_hold_frames,
             cursors: vec![cursor; voices],
             steps: vec![1.0; voices],
@@ -335,7 +335,6 @@ impl LiveRuntime {
             active: vec![false; voices],
             ages: vec![0; voices],
             release_frames: vec![None; voices],
-            release_levels: vec![0.0; voices],
             source_values: vec![0.0; source_channels],
             frame: 0,
         };
@@ -1373,9 +1372,7 @@ impl SourceRuntime {
             }
             (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
                 if runtime.routes != state.routes
-                    || runtime.initial != state.initial
-                    || runtime.attack != state.attack
-                    || runtime.release != state.release
+                    || runtime.amplitude != state.amplitude
                     || runtime.minimum_hold_frames != state.minimum_hold_frames
                     || runtime.cursors.len() != state.cursors.len()
                     || runtime.buffer.audio.as_ref() != state.buffer.audio.as_ref()
@@ -1434,27 +1431,27 @@ impl SampleRuntime {
                     continue;
                 }
                 let age = self.ages[voice] as f64;
-                let level = if let Some(release_frame) = self.release_frames[voice] {
+                if let Some(release_frame) = self.release_frames[voice] {
                     if age >= release_frame.ceil() && !self.cursors[voice].released {
                         self.cursors[voice].release();
                     }
-                    let end = release_frame + total_frames(&self.release);
-                    if age >= end.ceil() {
-                        self.active[voice] = false;
-                        continue;
-                    }
-                    if age >= release_frame.ceil() {
-                        envelope_value(
-                            self.release_levels[voice],
-                            &self.release,
-                            age - release_frame,
-                        )
-                    } else {
-                        envelope_value(self.initial, &self.attack, age)
-                    }
-                } else {
-                    envelope_value(self.initial, &self.attack, age)
-                };
+                }
+                self.amplitude.settle(
+                    &mut self.amplitude_states[voice],
+                    self.release_frames[voice],
+                    self.ages[voice],
+                )?;
+                let value = self
+                    .amplitude
+                    .value(&self.amplitude_states[voice], self.ages[voice])?;
+                if self
+                    .amplitude
+                    .complete(&self.amplitude_states[voice], &value)
+                {
+                    self.active[voice] = false;
+                    continue;
+                }
+                let level = value.value;
                 let frame = i64::try_from(self.frame + offset)
                     .map_err(|_| PyValueError::new_err("Live sample frame overflow"))?;
                 let cursor = &mut self.cursors[voice];
@@ -1523,13 +1520,12 @@ impl SampleRuntime {
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;
+                self.amplitude_states[voice] = self.amplitude.start()?;
                 self.release_frames[voice] = None;
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
                     let release_frame = (self.ages[voice] as f64).max(self.minimum_hold_frames);
-                    self.release_levels[voice] =
-                        envelope_value(self.initial, &self.attack, release_frame);
                     self.release_frames[voice] = Some(release_frame);
                 }
             }
@@ -1540,6 +1536,30 @@ impl SampleRuntime {
                 }
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
+            }
+            4 => {
+                let command = action[3] as usize;
+                if action[3] != command as f64
+                    || command > 5
+                    || !action[4].is_finite()
+                    || action[5] != 0.0
+                {
+                    return Err(PyValueError::new_err("Invalid live amplitude command"));
+                }
+                if !self.active[voice] {
+                    return Ok(());
+                }
+                self.amplitude.settle(
+                    &mut self.amplitude_states[voice],
+                    self.release_frames[voice],
+                    self.ages[voice],
+                )?;
+                self.amplitude.command(
+                    &mut self.amplitude_states[voice],
+                    self.ages[voice],
+                    command,
+                    action[4],
+                )?;
             }
             _ => return Err(PyValueError::new_err("Unknown live sample action")),
         }

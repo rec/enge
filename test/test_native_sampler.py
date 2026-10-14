@@ -78,8 +78,8 @@ def test_native_sample_voice_matches_reference_without_python_dsp(
     monkeypatch.setattr(sampler, "sample_frames", forbidden)
     monkeypatch.setattr(filters, "filter_samples", forbidden)
     monkeypatch.setattr(_native, "SampleBuffer", forbidden)
-    for name in ("envelope_samples", "route_samples"):
-        monkeypatch.setattr(synth, name, forbidden)
+    monkeypatch.setattr(synth.VoiceEnvelopeRenderer, "amplitude_samples", forbidden)
+    monkeypatch.setattr(synth, "route_samples", forbidden)
     chunks: list[np.ndarray] = []
     for start, end in pairwise(boundaries):
         compiled = sampler.SampleVoiceRenderer.model_validate_json(

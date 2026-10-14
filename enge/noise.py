@@ -11,7 +11,7 @@ from ufor.streams import AudioType
 from ufor.synth import NoiseVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
 
-from . import _native, filters, native, synth
+from . import _native, filters, synth
 
 
 class PreparedVoice(synth.PreparedVoiceEnvelope, frozen=True):
@@ -82,13 +82,7 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
                 self.frame_count,
                 definition.sample_rate,
                 gains,
-                native.envelope_spans(
-                    definition.envelope,
-                    self.frame_count,
-                    count,
-                    definition.sample_rate,
-                    self.release_frame,
-                ),
+                self.amplitude_spans(count),
                 np.array(definition.routes[0]),
                 filters.native_inputs(definition.filters, self.filter_states, values),
                 definition.filter_order == FilterOrder.after_amplitude,
@@ -96,16 +90,7 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
             states = filters.restored_states(memory)
         else:
             audio = noise_samples(self.stream_key, self.frame_count, count)
-            amplitudes = (
-                synth.envelope_samples(
-                    definition.envelope,
-                    self.frame_count,
-                    count,
-                    definition.sample_rate,
-                    self.release_frame,
-                )
-                * gains
-            )
+            amplitudes = self.amplitude_samples(count) * gains
             if definition.filter_order == FilterOrder.after_amplitude:
                 audio *= amplitudes[:, None]
             audio, states = filters.filter_samples(
@@ -134,6 +119,8 @@ class PreparedNoise(Model, frozen=True):
 
 class VoiceSnapshot(Model, frozen=True):
     voice_id: str
+    part: str
+    trigger_id: str | None
     template: str
     renderer: VoiceRenderer
     sources: dict[str, int]
@@ -242,6 +229,10 @@ class OfflineNoise:
         self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
+        if synth.apply_amplitude_event(
+            action, ((v.renderer, v.part, v.trigger_id) for v in self.voices.values())
+        ):
+            return
         if self.controls.apply(action, self.voices):
             return
         if isinstance(action, instrument_trace.VoiceRetirement):
@@ -277,6 +268,8 @@ class OfflineNoise:
             raise synth.EngineError(f"Duplicate active voice: {action.voice_id}")
         self.voices[action.voice_id] = VoiceSnapshot(
             voice_id=action.voice_id,
+            part=action.part,
+            trigger_id=action.trigger_id,
             template=template.name,
             sources=self.controls.sources(template, action),
             renderer=VoiceRenderer.start(

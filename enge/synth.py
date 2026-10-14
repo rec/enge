@@ -1,7 +1,7 @@
 """Offline rendering for Ufor's oscillator synth profile."""
 
 from collections import deque
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from fractions import Fraction
 from functools import cached_property
 from math import ceil, floor, isfinite
@@ -13,6 +13,7 @@ from envelfo.runtime import (
     advance_envelfo,
     envelfo_at,
     envelfo_event,
+    envelope_complete_at,
     initial_envelfo,
     lfo_definition,
     next_stage_event,
@@ -56,7 +57,13 @@ from ufor.samples.processing import (
 )
 from ufor.segments import IndefiniteSegment, Segment
 from ufor.streams import AudioType
-from ufor.synth import SynthInstrument, SynthInstrumentScore, SynthVoice, frequency
+from ufor.synth import (
+    FMVoice,
+    SynthInstrument,
+    SynthInstrumentScore,
+    SynthVoice,
+    frequency,
+)
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
@@ -184,12 +191,12 @@ class PreparedVoiceEnvelope(Model, frozen=True):
         return self
 
     @cached_property
-    def release_frames(self) -> Fraction:
-        return _duration(self.envelope.release) * self.sample_rate
-
-    @cached_property
     def minimum_hold_frames(self) -> Fraction:
-        return self.minimum_hold_seconds * self.sample_rate
+        return Fraction(str(self.minimum_hold_seconds)) * self.sample_rate
+
+    @property
+    def amplitude_definitions(self) -> dict[str, Envelope]:
+        return {"": self.envelope}
 
 
 class VoiceEnvelopeRenderer(BaseModel):
@@ -198,11 +205,35 @@ class VoiceEnvelopeRenderer(BaseModel):
     definition: PreparedVoiceEnvelope
     frame_count: int = 0
     release_frame: Fraction | None = None
+    amplitude_states: dict[str, EnvelfoState] = Field(default_factory=dict)
+    lifetime_op: str = ""
+
+    @model_validator(mode="after")
+    def initialize_amplitudes(self) -> Self:
+        if not self.amplitude_states:
+            self.amplitude_states = {
+                n: envelfo_event(
+                    e,
+                    initial_envelfo(e, Fraction(0)),
+                    EnvelfoEvent(at=Fraction(0), ordinal=0, action="note_on"),
+                )
+                for n, e in self.definition.amplitude_definitions.items()
+            }
+        return self
 
     @property
     def complete(self) -> bool:
-        return self.release_frame is not None and self.frame_count >= (
-            self.release_frame + self.definition.release_frames
+        self.settle_amplitudes(Fraction(self.frame_count))
+        state = self.amplitude_states[self.lifetime_op]
+        assert isinstance(state.runtime, EnvelopeState)
+        return (
+            state.runtime.phase == "release"
+            and envelfo_at(
+                self.definition.envelope,
+                state,
+                Fraction(self.frame_count, self.definition.sample_rate),
+            ).status
+            == "complete"
         )
 
     def release(self) -> bool:
@@ -216,8 +247,111 @@ class VoiceEnvelopeRenderer(BaseModel):
     def active_frames(self, frames: int) -> int:
         if self.release_frame is None:
             return frames
-        end = self.release_frame + self.definition.release_frames
-        return max(0, min(frames, ceil(end) - self.frame_count))
+        state = self.amplitude_states[self.lifetime_op]
+        assert isinstance(state.runtime, EnvelopeState)
+        if state.runtime.phase == "on":
+            state = envelfo_event(
+                self.definition.envelope,
+                state,
+                EnvelfoEvent(
+                    at=self.release_frame / self.definition.sample_rate,
+                    ordinal=state.runtime.ordinal + 1,
+                    action="note_off",
+                ),
+            )
+        end = envelope_complete_at(self.definition.envelope, state)
+        return (
+            frames
+            if end is None
+            else max(
+                0,
+                min(frames, ceil(end * self.definition.sample_rate) - self.frame_count),
+            )
+        )
+
+    def settle_amplitudes(self, frame: Fraction, op: str | None = None) -> None:
+        if self.release_frame is None or frame < self.release_frame:
+            return
+        for name, body in self.definition.amplitude_definitions.items():
+            if op is not None and name != op:
+                continue
+            state = self.amplitude_states[name]
+            assert isinstance(state.runtime, EnvelopeState)
+            if state.runtime.phase == "on":
+                self.amplitude_states[name] = envelfo_event(
+                    body,
+                    state,
+                    EnvelfoEvent(
+                        at=self.release_frame / self.definition.sample_rate,
+                        ordinal=state.runtime.ordinal + 1,
+                        action="note_off",
+                    ),
+                )
+
+    def amplitude_event(self, action: instrument_trace.EnvelfoObservation) -> None:
+        name = self.lifetime_op if action.op is None else action.op
+        if name not in self.amplitude_states:
+            raise EngineError(f"Unknown amplitude operator: {name}")
+        self.settle_amplitudes(Fraction(self.frame_count))
+        state = self.amplitude_states[name]
+        assert isinstance(state.runtime, EnvelopeState)
+        self.amplitude_states[name] = envelfo_event(
+            self.definition.amplitude_definitions[name],
+            state,
+            EnvelfoEvent(
+                at=Fraction(self.frame_count, self.definition.sample_rate),
+                ordinal=state.runtime.ordinal + 1,
+                action=action.action,
+                position=None
+                if action.position is None
+                else Fraction(str(action.position)),
+                offset=None if action.offset is None else Fraction(str(action.offset)),
+            ),
+        )
+
+    def amplitude_spans(self, frames: int, op: str | None = None) -> np.ndarray:
+        name = self.lifetime_op if op is None else op
+        body = self.definition.amplitude_definitions[name]
+        rate = self.definition.sample_rate
+        self.settle_amplitudes(Fraction(self.frame_count))
+        boundary = (
+            frames
+            if self.release_frame is None
+            else max(0, min(frames, ceil(self.release_frame) - self.frame_count))
+        )
+        spans = native.envelope_spans(
+            body, self.amplitude_states[name], self.frame_count, boundary, rate
+        )
+        if boundary < frames:
+            self.settle_amplitudes(Fraction(self.frame_count + boundary), name)
+            tail = native.envelope_spans(
+                body,
+                self.amplitude_states[name],
+                self.frame_count + boundary,
+                frames - boundary,
+                rate,
+            )
+            tail[:, :2] += boundary
+            tail[:, 6] += boundary
+            spans = np.concatenate((spans, tail))
+        return spans
+
+    def amplitude_samples(self, frames: int, op: str | None = None) -> np.ndarray:
+        values = np.zeros(frames)
+        for (
+            first,
+            last,
+            entry,
+            delta,
+            origin,
+            denominator,
+            offset,
+        ) in self.amplitude_spans(frames, op):
+            a, b = int(first), int(last)
+            values[a:b] = entry + delta * (
+                origin + (np.arange(a, b) - offset) / denominator
+            )
+        return values
 
     model_config = ConfigDict(
         extra="forbid", allow_inf_nan=False, validate_default=True
@@ -305,13 +439,7 @@ class VoiceRenderer(VoiceEnvelopeRenderer):
                 definition.sample_rate,
                 definition.gain,
                 np.ones(count) if gains is None else gains[:count],
-                native.envelope_spans(
-                    definition.envelope,
-                    self.frame_count,
-                    count,
-                    definition.sample_rate,
-                    self.release_frame,
-                ),
+                self.amplitude_spans(count),
                 definition.routes,
                 frames,
                 filters.native_inputs(definition.filters, self.filter_states, values),
@@ -333,16 +461,7 @@ class VoiceRenderer(VoiceEnvelopeRenderer):
                     definition.sample_rate,
                 )
                 waves.append(wave)
-            amplitude = (
-                envelope_samples(
-                    definition.envelope,
-                    self.frame_count,
-                    count,
-                    definition.sample_rate,
-                    self.release_frame,
-                )
-                * definition.gain
-            )
+            amplitude = self.amplitude_samples(count) * definition.gain
             if gains is not None:
                 amplitude *= gains[:count]
             samples = waves[0][:, None] if len(waves) == 1 else np.column_stack(waves)
@@ -371,6 +490,8 @@ class VoiceRenderer(VoiceEnvelopeRenderer):
 
 class VoiceSnapshot(Model, frozen=True):
     voice_id: str
+    part: str
+    trigger_id: str | None
     template: str
     frequency_hz: float
     renderer: VoiceRenderer
@@ -407,6 +528,21 @@ class PersistentSynthSnapshot(Model, frozen=True):
     state: _native.SynthRuntimeSnapshot
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+def apply_amplitude_event(
+    action: instrument_trace.TraceAction,
+    voices: Iterable[tuple[VoiceEnvelopeRenderer, str, str | None]],
+) -> bool:
+    if (
+        not isinstance(action, instrument_trace.EnvelfoObservation)
+        or action.target != "envelope"
+    ):
+        return False
+    for renderer, part, trigger in voices:
+        if (part, trigger) == (action.part, action.trigger_id):
+            renderer.amplitude_event(action)
+    return True
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedSynth:
@@ -786,6 +922,11 @@ class ControlRenderer:
     def apply(
         self, action: instrument_trace.TraceAction, active_voice_ids: Collection[str]
     ) -> bool:
+        if (
+            isinstance(action, instrument_trace.EnvelfoObservation)
+            and action.target == "envelope"
+        ):
+            return False
         self.clear_cache()
         if isinstance(action, instrument_trace.LFOObservation):
             matches = [
@@ -830,6 +971,7 @@ class ControlRenderer:
                     }
                 )
         elif isinstance(action, instrument_trace.EnvelfoObservation):
+            assert action.name is not None
             if any(
                 (
                     action.name in self.patch_children[index]
@@ -2216,6 +2358,10 @@ class OfflineSynth:
         self.controls.patches = snapshot.patches
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
+        if apply_amplitude_event(
+            action, ((v.renderer, v.part, v.trigger_id) for v in self.voices.values())
+        ):
+            return
         if self.controls.apply(action, self.voices):
             return
         elif isinstance(action, VoiceStart):
@@ -2270,6 +2416,8 @@ class OfflineSynth:
         sources = self.controls.sources(template, action)
         self.voices[action.voice_id] = VoiceSnapshot(
             voice_id=action.voice_id,
+            part=action.part,
+            trigger_id=action.trigger_id,
             template=template.name,
             frequency_hz=action.pitch_hz,
             renderer=VoiceRenderer.start(
@@ -2740,6 +2888,52 @@ class PersistentSynth:
                     )
                     count += 1
             elif isinstance(action, instrument_trace.EnvelfoObservation):
+                if action.target == "envelope":
+                    operator = 0
+                    if isinstance(self.template, FMVoice):
+                        name = (
+                            self.template.fm.carrier if action.op is None else action.op
+                        )
+                        operator = next(
+                            (
+                                i
+                                for i, o in enumerate(self.template.fm.operators)
+                                if o.name == name
+                            ),
+                            -1,
+                        )
+                        if operator < 0:
+                            raise EngineError(f"Unknown amplitude operator: {name}")
+                    elif action.op is not None:
+                        raise EngineError("op requires an FM voice")
+                    command = (
+                        "pause",
+                        "resume",
+                        "reverse",
+                        "seek",
+                        "shift",
+                        "advance",
+                    ).index(action.action)
+                    for voice_id, slot in self.voices.items():
+                        if self.voice_triggers[voice_id] == VoiceAddress(
+                            part=action.part, trigger_id=action.trigger_id
+                        ):
+                            self._encode_action(
+                                count,
+                                offset,
+                                13,
+                                slot,
+                                operator,
+                                command,
+                                action.position
+                                if action.position is not None
+                                else action.offset
+                                if action.offset is not None
+                                else 0,
+                            )
+                            count += 1
+                    continue
+                assert action.name is not None
                 envelfo = self.template.envelfos.get(action.name)
                 if action.name in _patch_child_names(self.template) or (
                     envelfo is not None and isinstance(envelfo, Patch)
@@ -3106,49 +3300,6 @@ def oscillator_samples(
     )
 
 
-def envelope_samples(
-    envelope: Envelope,
-    start: int,
-    length: int,
-    sample_rate: int,
-    release_frame: Fraction | None = None,
-) -> np.ndarray:
-    """Render a prepared held linear envelope in voice-relative sample frames.
-
-    The caller resolves minimum hold into release_frame. Release begins at the
-    exact fractional coordinate and captures the level there, even between
-    samples. The final authored target is held; voice retirement is separate.
-    """
-    assert isinstance(envelope.initial, float)
-    values = _envelope_values(
-        envelope.initial,
-        envelope.segments,
-        Fraction(start, sample_rate),
-        length,
-        sample_rate,
-    )
-    if release_frame is not None:
-        offset = max(0, ceil(release_frame) - start)
-        if offset < length:
-            release_gain = float(
-                _envelope_values(
-                    envelope.initial,
-                    envelope.segments,
-                    release_frame / sample_rate,
-                    1,
-                    sample_rate,
-                )[0]
-            )
-            values[offset:] = _envelope_values(
-                release_gain,
-                envelope.release,
-                (start + offset - release_frame) / sample_rate,
-                length - offset,
-                sample_rate,
-            )
-    return values
-
-
 def validate_envelope(envelope: Envelope) -> None:
     """Validate the amplitude-envelope profile shared by both voice renderers."""
     if envelope.clock != "seconds" or envelope.scope != "voice":
@@ -3159,8 +3310,6 @@ def validate_envelope(envelope: Envelope) -> None:
         )
     if not envelope.release:
         raise EngineError("Voice amplitude envelopes require an explicit release")
-    if any(s.duration is None for s in [*envelope.segments, *envelope.release]):
-        raise EngineError("Voice amplitude envelopes require finite segments")
     if envelope.playback != PlaybackMode.once or envelope.markers:
         raise EngineError(
             "Voice amplitude envelopes require once playback without markers"
@@ -3279,16 +3428,13 @@ def _duration(segments: list[Segment | IndefiniteSegment]) -> Fraction:
 
 def _runtime_segments(
     segments: list[Segment | IndefiniteSegment], sample_rate: int
-) -> np.ndarray:
-    return np.asarray(
-        [
-            [float(s.duration * sample_rate), s.to]
-            if isinstance(s, Segment)
-            else [-1.0, 0.0]
-            for s in segments
-        ],
-        dtype=np.float64,
-    )
+) -> list[tuple[tuple[int, int] | None, float]]:
+    return [
+        (((d := s.duration * sample_rate).numerator, d.denominator), float(s.to))
+        if isinstance(s, Segment)
+        else (None, 0.0)
+        for s in segments
+    ]
 
 
 def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> float:

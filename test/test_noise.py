@@ -341,7 +341,7 @@ def test_native_noise_has_no_python_dsp_fallback(
         raise AssertionError("Native noise called Python DSP")
 
     monkeypatch.setattr(noise, "noise_samples", forbidden)
-    monkeypatch.setattr(synth, "envelope_samples", forbidden)
+    monkeypatch.setattr(synth.VoiceEnvelopeRenderer, "amplitude_samples", forbidden)
     monkeypatch.setattr(synth, "route_samples", forbidden)
     monkeypatch.setattr(filters, "filter_samples", forbidden)
     actual = noise.VoiceRenderer.start(prepared, 7, "native").render(

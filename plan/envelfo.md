@@ -223,7 +223,12 @@ leaves the currently reached hold. Note-off enters release directly. These
 Envelopes use segment-local elapsed coordinates, not normalized total positions;
 normalized seek/shift, markers and repeated playback are rejected. Finite
 Envelope behavior remains unchanged. Python/Rust continuation state retains the
-segment cursor. Enge keeps its finite voice-amplitude preparation policy.
+segment cursor. Enge's voice-amplitude profile now supports these waits too,
+using the shared scalar Python and Rust Envelope core. Host lifetime policy
+keeps minimum hold, source exhaustion and retirement in enge. Commands use
+`target="envelope"` with an optional FM `op`; default and explicit carrier
+addresses share one state. Unbounded releases retain the allocated voice until
+advanced to completion or forcibly retired.
 
 Step 1 is complete as of 2026-10-11: see the
 [inventory and baseline contract](../doc/envelfo-contract.md), the shared

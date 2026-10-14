@@ -4,7 +4,8 @@ from fractions import Fraction
 from math import ceil
 
 import numpy as np
-from ufor.envelfo import Envelope
+from envelfo.runtime import envelfo_at
+from ufor.envelfo import EnvelfoState, Envelope, EnvelopeState
 from ufor.oscillator import Oscillator, Waveform
 from ufor.segments import IndefiniteSegment, Segment
 
@@ -43,10 +44,10 @@ def render(
 
 def envelope_spans(
     envelope: Envelope,
+    state: EnvelfoState,
     start: int,
     frames: int,
     sample_rate: int,
-    release_frame: Fraction | None,
 ) -> np.ndarray:
     """Resolve half-open integer spans without rounding rational boundaries.
 
@@ -54,41 +55,75 @@ def envelope_spans(
     local index origin. Rust evaluates the linear arithmetic for each sample.
     Later rows overwrite earlier rows, including the release's terminal level.
     """
-    assert isinstance(envelope.initial, float)
-    spans = _spans(
-        envelope.initial,
-        envelope.segments,
-        Fraction(start, sample_rate),
-        frames,
-        sample_rate,
-        0,
+    if not frames:
+        return np.empty((0, 7))
+    runtime = state.runtime
+    assert isinstance(runtime, EnvelopeState)
+    position = runtime.position
+    if position.direction == -1:
+        return np.array(
+            [
+                [
+                    i,
+                    i + 1,
+                    0
+                    if (
+                        v := envelfo_at(
+                            envelope, state, Fraction(start + i, sample_rate)
+                        )
+                    ).status
+                    == "complete"
+                    else v.value,
+                    0,
+                    0,
+                    1,
+                    i,
+                ]
+                for i in range(frames)
+            ],
+            dtype=np.float64,
+        )
+    if position.paused or not position.rate:
+        value = envelfo_at(envelope, state, Fraction(start, sample_rate))
+        return np.array(
+            [[0, frames, 0 if value.status == "complete" else value.value, 0, 0, 1, 0]],
+            dtype=np.float64,
+        )
+    parts = envelope.release if runtime.phase == "release" else envelope.segments
+    indefinite = any(
+        s.duration is None for s in [*envelope.segments, *envelope.release]
     )
-    if release_frame is not None:
-        offset = max(0, ceil(release_frame) - start)
-        if offset < frames:
-            elapsed = release_frame / sample_rate
-            boundary = Fraction(0)
-            level = envelope.initial
-            for segment in envelope.segments:
-                assert isinstance(segment, Segment)
-                end = boundary + segment.duration
-                if elapsed < end:
-                    level += (segment.to - level) * float(
-                        (elapsed - boundary) / segment.duration
-                    )
-                    break
-                boundary, level = end, segment.to
-            spans.extend(
-                _spans(
-                    level,
-                    envelope.release,
-                    (start + offset - release_frame) / sample_rate,
-                    frames - offset,
-                    sample_rate,
-                    offset,
-                )
-            )
-    return np.asarray(spans, dtype=np.float64)
+    parts = parts[runtime.segment_index :]
+    total = sum((s.duration for s in parts if isinstance(s, Segment)), Fraction(0))
+    scale = Fraction(1) if indefinite else total
+    speed = position.rate * scale
+    if not speed:
+        value = envelfo_at(envelope, state, Fraction(start, sample_rate))
+        return np.array(
+            [[0, frames, 0 if value.status == "complete" else value.value, 0, 0, 1, 0]],
+            dtype=np.float64,
+        )
+    elapsed = (
+        position.coordinate * scale / speed + Fraction(start, sample_rate) - position.at
+    )
+    scaled = [
+        s.model_copy(update={"duration": s.duration / speed})
+        if isinstance(s, Segment)
+        else s
+        for s in parts
+    ]
+    return np.asarray(
+        _spans(
+            runtime.start_value,
+            scaled,
+            elapsed,
+            frames,
+            sample_rate,
+            0,
+            runtime.phase == "release",
+        ),
+        dtype=np.float64,
+    )
 
 
 def _spans(
@@ -98,13 +133,21 @@ def _spans(
     frames: int,
     sample_rate: int,
     offset: int,
+    silence_after: bool,
 ) -> list[list[float]]:
-    assert isinstance(segments[-1], Segment)
-    spans = [[offset, offset + frames, segments[-1].to, 0, 0, 1, offset]]
+    terminal = initial
+    for segment in segments:
+        if isinstance(segment, IndefiniteSegment):
+            break
+        terminal = segment.to
+    spans = [[offset, offset + frames, terminal, 0, 0, 1, offset]]
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
-        assert isinstance(segment, Segment)
+        if isinstance(segment, IndefiniteSegment):
+            first = min(frames, max(0, ceil((boundary - elapsed) * sample_rate)))
+            spans.append([first + offset, offset + frames, entry, 0, 0, 1, offset])
+            return spans
         end = boundary + segment.duration
         first = max(0, ceil((boundary - elapsed) * sample_rate))
         last = min(frames, ceil((end - elapsed) * sample_rate))
@@ -121,4 +164,7 @@ def _spans(
                 ]
             )
         boundary, entry = end, segment.to
+    if silence_after:
+        first = max(0, ceil((boundary - elapsed) * sample_rate))
+        spans.append([min(first, frames) + offset, frames + offset, 0, 0, 0, 1, offset])
     return spans

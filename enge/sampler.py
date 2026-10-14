@@ -198,7 +198,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
             self.frame_count,
         )
         if count and self.backend == "native":
-            from . import native, native_sample
+            from . import native_sample
 
             output, self.source, memory = native_sample.render(
                 sample,
@@ -214,13 +214,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                 self.release_frame,
                 self.definition.gain,
                 np.ones(count) if gains is None else gains[:count],
-                native.envelope_spans(
-                    self.definition.envelope,
-                    self.frame_count,
-                    count,
-                    self.definition.sample_rate,
-                    self.release_frame,
-                ),
+                self.amplitude_spans(count),
                 np.asarray(self.definition.routes, dtype=np.float64),
                 frames,
                 filters.native_inputs(
@@ -241,16 +235,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                 else pitch_ratios[:count],
                 self.release_frame,
             )
-            amplitude = (
-                synth.envelope_samples(
-                    self.definition.envelope,
-                    self.frame_count,
-                    count,
-                    self.definition.sample_rate,
-                    self.release_frame,
-                )
-                * self.definition.gain
-            )
+            amplitude = self.amplitude_samples(count) * self.definition.gain
             if gains is not None:
                 amplitude *= gains[:count]
             if self.definition.filter_order == FilterOrder.after_amplitude:

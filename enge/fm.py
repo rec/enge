@@ -1,12 +1,13 @@
 """Graph phase modulation with independent NumPy and Rust numerical kernels."""
 
-from math import ceil, isfinite
+from math import isfinite
 from typing import Literal, Self, cast
 
 import numpy as np
 from pydantic import ConfigDict, Field, model_validator
 from ufor import instrument_trace, modulation
 from ufor.base import Model
+from ufor.envelfo import Envelope
 from ufor.fm import FM, edge_target_name
 from ufor.oscillator import Waveform
 from ufor.samples.processing import FilterOrder, Processing, ResonantFilter
@@ -22,6 +23,10 @@ class PreparedVoice(synth.PreparedVoiceEnvelope, frozen=True):
     pitch_hz: float = Field(gt=0)
     routes: list[list[float]]
     filters: list[ResonantFilter] = Field(default_factory=list)
+
+    @property
+    def amplitude_definitions(self) -> dict[str, Envelope]:
+        return {o.name: o.envelope for o in self.fm.operators}
 
     @model_validator(mode="after")
     def voice_profile(self) -> Self:
@@ -49,6 +54,7 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
     ) -> "VoiceRenderer":
         return cls(
             definition=definition.model_copy(deep=True),
+            lifetime_op=definition.fm.carrier,
             backend=backend,
             phases=[
                 [operator.phase_cycles * definition.sample_rate, 0]
@@ -104,25 +110,8 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
             self.definition.filters, rate, count, filter_values, self.frame_count
         )
         envelopes = np.column_stack(
-            [
-                synth.envelope_samples(
-                    operator.envelope, self.frame_count, count, rate, self.release_frame
-                )
-                for operator in operators
-            ]
+            [self.amplitude_samples(count, operator.name) for operator in operators]
         )
-        if self.release_frame is not None:
-            for index, operator in enumerate(operators):
-                end = (
-                    self.release_frame
-                    + sum(
-                        s.duration
-                        for s in operator.envelope.release
-                        if s.duration is not None
-                    )
-                    * rate
-                )
-                envelopes[max(0, ceil(end) - self.frame_count) :, index] = 0
         graph_edges = [
             (
                 next(
@@ -217,6 +206,8 @@ class PreparedFM(Model, frozen=True):
 
 class VoiceSnapshot(Model, frozen=True):
     voice_id: str
+    part: str
+    trigger_id: str | None
     template: str
     renderer: VoiceRenderer
     sources: dict[str, int]
@@ -323,6 +314,10 @@ class OfflineFM:
         self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
+        if synth.apply_amplitude_event(
+            action, ((v.renderer, v.part, v.trigger_id) for v in self.voices.values())
+        ):
+            return
         if self.controls.apply(action, self.voices):
             return
         if isinstance(action, instrument_trace.VoiceRetirement):
@@ -363,6 +358,8 @@ class OfflineFM:
         )
         self.voices[action.voice_id] = VoiceSnapshot(
             voice_id=action.voice_id,
+            part=action.part,
+            trigger_id=action.trigger_id,
             template=template.name,
             sources=self.controls.sources(template, action),
             renderer=VoiceRenderer.start(

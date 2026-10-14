@@ -26,6 +26,8 @@ class PreparedSampler(Model, frozen=True):
 
 class SampleVoiceSnapshot(Model, frozen=True):
     voice_id: str
+    part: str
+    trigger_id: str | None
     template: str
     renderer: sampler.SampleVoiceRenderer
     instrument_sources: dict[str, int]
@@ -52,6 +54,8 @@ class PersistentSamplerSnapshot(Model, frozen=True):
 
 
 class NativeSampleVoice(Model, frozen=True):
+    part: str
+    trigger_id: str | None
     source: int
     slot: int
 
@@ -210,6 +214,10 @@ class OfflineSampler:
         self.controls.envelopes = snapshot.envelopes
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
+        if synth.apply_amplitude_event(
+            action, ((v.renderer, v.part, v.trigger_id) for v in self.voices.values())
+        ):
+            return
         if self.controls.apply(action, self.voices) or isinstance(
             action, instrument_trace.Diagnostic
         ):
@@ -248,6 +256,8 @@ class OfflineSampler:
         common = self.definition.document.body.settings
         self.voices[action.voice_id] = SampleVoiceSnapshot(
             voice_id=action.voice_id,
+            part=action.part,
+            trigger_id=action.trigger_id,
             template=slot.name,
             renderer=sampler.SampleVoiceRenderer.start(
                 definition,
@@ -590,7 +600,10 @@ class PersistentSampler(OfflineSampler):
                     )
                 active[source][voice] = True
                 self.native_voices[action.voice_id] = NativeSampleVoice(
-                    source=source, slot=voice
+                    source=source,
+                    slot=voice,
+                    part=action.part,
+                    trigger_id=action.trigger_id,
                 )
                 tuning = (
                     self.definition.document.body.settings.processing.tuning_cents
@@ -617,6 +630,39 @@ class PersistentSampler(OfflineSampler):
                     if kind == 2:
                         active[voice.source][voice.slot] = False
                         del self.native_voices[action.voice_id]
+            elif (
+                isinstance(action, instrument_trace.EnvelfoObservation)
+                and action.target == "envelope"
+            ):
+                if action.op is not None:
+                    raise synth.EngineError("op requires an FM voice")
+                command = (
+                    "pause",
+                    "resume",
+                    "reverse",
+                    "seek",
+                    "shift",
+                    "advance",
+                ).index(action.action)
+                for voice in self.native_voices.values():
+                    if (voice.part, voice.trigger_id) == (
+                        action.part,
+                        action.trigger_id,
+                    ):
+                        encoded[voice.source].append(
+                            [
+                                offset,
+                                4,
+                                voice.slot,
+                                command,
+                                action.position
+                                if action.position is not None
+                                else action.offset
+                                if action.offset is not None
+                                else 0,
+                                0,
+                            ]
+                        )
             else:
                 raise synth.EngineError(
                     f"Unsupported native live sampler action at frame {action.tick}: "
