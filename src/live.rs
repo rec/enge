@@ -1,6 +1,6 @@
 //! One native owner for persistent generated sources and callback scratch.
 
-use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState};
+use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot};
 use crate::sampler::{Cursor, SampleBuffer, Selection, State};
@@ -1438,7 +1438,7 @@ impl SampleRuntime {
                 }
                 self.amplitude.settle(
                     &mut self.amplitude_states[voice],
-                    self.release_frames[voice],
+                    self.release_frames[voice].map(frame_time).transpose()?,
                     self.ages[voice],
                 )?;
                 let value = self
@@ -1551,7 +1551,7 @@ impl SampleRuntime {
                 }
                 self.amplitude.settle(
                     &mut self.amplitude_states[voice],
-                    self.release_frames[voice],
+                    self.release_frames[voice].map(frame_time).transpose()?,
                     self.ages[voice],
                 )?;
                 self.amplitude.command(

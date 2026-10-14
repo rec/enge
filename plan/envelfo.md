@@ -22,7 +22,7 @@ Python package, `envelfo-core` for the Rust crate, and `Envelfo` in type names.
 The recent breaking rename remains canonical. Do not introduce old-name aliases
 or backward readers during extraction.
 
-## Current starting point
+## Original inventory starting point, 2026-10-11
 
 - `ufor/envelfo.py` combines portable definitions, validation, state models,
   exact-position semantics, evaluation, and stage/event processing.
@@ -298,6 +298,26 @@ enge pins the extracted scheduler revision but does not yet execute it in the
 audio adapter. Consumer replacement, built-in tempo maps, serialized Rust
 snapshots, bindings and arpeg integration remain unfinished. No new musical
 policy decision was required.
+
+Step 4 continued on 2026-10-14. Native named Envelope playback now owns
+`envelfo-core::envelope::EnvelopeState`, rather than a second playback/repeat
+implementation. Making fractional routed cues usable with checked rational
+time also required replacing native Stages playback and natural boundaries
+with `envelfo-core::stages`. Both adapters retain enge's voice and route owners.
+Prepared durations, loop bounds, marker positions, tempo-map observations,
+minimum-hold boundaries and connection delays now enter as exact ratios.
+Routed LFO marker crossings, Stage events, delayed queues and Envelope starts
+keep exact timestamps through ordering and snapshot continuation. No epsilon
+or rounding repairs event times. Numeric command payloads still enter through
+the existing floating-point action protocol and are checked when converted.
+
+Tests cover one-third-frame Stage and LFO cues, fractional delayed delivery
+before and after restoration, rational named loops across stopped beat clocks,
+and voice-timed release at a fractional minimum-hold boundary. The existing
+linear preparation restrictions remain; this slice does not enable curved
+audio-host Envelopes. Ordinary native LFO signal playback and retained Patch
+operators/orchestration still use enge adapters, so the full scheduler replacement
+and removal of all duplicated execution are not finished.
 
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline

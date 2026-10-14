@@ -60,6 +60,18 @@ orchestration and floating-point native event positions. Consumer replacement,
 built-in tempo maps, serialized Rust snapshots, bindings and combined arpeg
 expression traces remain integration work.
 
+Native adapter update, 2026-10-14: named Envelope playback and Stages now use
+the standalone core directly. Their definitions and local clock observations
+enter as exact ratios. LFO marker crossings, Stage outputs, routed cues,
+connection delays and pending Envelope starts retain rational host timestamps
+through queues and snapshots, without floating-point ordering or epsilon
+adjustments. Fractional minimum-hold boundaries also remain exact when entering
+named release. `test_native_named_envelope.py` anchors thirds of an audio frame,
+non-binary delays and loops, stopped beat clocks and restored continuation.
+Ordinary native LFO signal state and retained Patch operators/orchestration are
+still separate adapters; this does not claim that the entire native scheduler
+uses the standalone Patch runtime.
+
 ## Capability and evidence matrix
 
 Python reference means enveLFO scalar semantics unless the row explicitly names
@@ -74,9 +86,9 @@ Neither kind proves an independent Rust library exists.
 | Indefinite Envelope segments | Scalar and staged Envelope playback, explicit `advance` | Scalar/staged core and native Envelope cursors | Shared `indefinite-segments-advance-and-restore` and `indefinite-envelope-is-a-stage` traces; no separate constant generator |
 | Voice-amplitude Envelope waits | Shared scalar state plus enge minimum-hold and completion policy | Shared Rust Envelope state per voice/operator; native sample state | `test_amplitude_envelope.py` covers attack/release waits, FM carrier/operator addressing, continuation and sample exhaustion; `test_envelope_policy.py` covers minimum hold and paused release |
 | LFO signals and commands | `initial_envelfo`, `envelfo_at`, `envelfo_event`; uFor shape mathematics | `src/lfo.rs`, `LfoDefinition`, `LfoEventState`, staged LFO evaluation | uFor `test_cycle_pause_reverse_and_seek_preserve_seconds_position`; enge `test_instrument_lfo_playback_commands_match_offline_and_persistent`; no standalone state API yet |
-| Envelope attacks, release, loops, reversal, finite repeats | uFor Envelope evaluation and position/state functions | `NamedEnvelopeState`, `PlaybackState`, envelope coordinate/repeat helpers | uFor `test_triggered_envelope_holds_then_releases_from_current_value`, `test_finite_envelope_repeats_hold_final_boundary`; enge `test_finite_envelope_repeats_match_persistent_native` |
-| Curved Envelope segments | uFor `envelope.curve_at`/`curve_progress`, used by Envelopes and Stages | Persistent named/staged preparation rejects nonzero segment curves | enge `_persistent_modulation` and `_runtime_staged_envelfo`; Rust curved-segment parity is missing, not implied by linear audio tests |
-| Stage transition events and entry capture | uFor `advance_envelfo`, `next_stage_event` | `StagedEnvelfoState`, `next_staged_event`, `staged_transition` | uFor `test_note_off_at_stage_end_discards_obsolete_completion`; enge `test_staged_envelope_events_cue_another_envelfo_in_native_runtime`; Rust event time is currently floating point |
+| Envelope attacks, release, loops, reversal, finite repeats | enveLFO scalar Envelope execution | Shared Rust `EnvelopeState`; enge owns queued voice release and routes | enge `test_finite_envelope_repeats_match_persistent_native` and `test_native_named_envelope.py`; no duplicate native named Envelope evaluator |
+| Curved Envelope segments | Shared scalar curve mathematics used by Envelopes and Stages | Standalone core supports curves; enge named/staged preparation still rejects them | enge `_persistent_modulation` and `_runtime_staged_envelfo`; removing audio-host restrictions is separate work |
+| Stage transition events and entry capture | enveLFO `advance_envelfo`, `next_stage_event` | Shared Rust `Stages` and `StageState`; exact routed timestamps | enge `test_staged_envelope_events_cue_another_envelfo_in_native_runtime` and fractional routed delivery tests; native Stage playback/boundary helpers removed |
 | Patch named signal/event outputs | Definitions/ranges/order in uFor; execution and child materialization in enge | Prepared transform nodes, children and connection tables in persistent runtime | enge `test_patch_named_outputs_match_separate_envelfos`, `test_patch_named_event_output_cues_stage`; `initial_envelfo` does not evaluate a Patch independently |
 | Sum, Product, Affine, Quantize | uFor stateless helpers; enge graph execution | `envelfo_transform_values` evaluation | uFor `test_patch_transforms_follow_dependencies_without_clipping`, `test_quantize_half_steps_choose_the_higher_value`; enge `test_quantize_grid_matches_across_clocks_partitions_and_snapshots` |
 | SampleHold | uFor `SampleHoldState`, explicit sample-event draws; enge owns per-voice seed derivation | SampleHold lowered through named envelope state; SplitMix64 implementation | uFor `test_sample_hold_draws_only_on_sample_events_and_restores_its_stream`; enge `test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise` |

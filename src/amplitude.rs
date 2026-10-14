@@ -83,16 +83,12 @@ impl Amplitude {
     pub(crate) fn settle(
         &self,
         state: &mut AmplitudeState,
-        release: Option<f64>,
+        release: Option<Time>,
         age: usize,
     ) -> PyResult<()> {
-        if let Some(at) = release.filter(|at| age as f64 >= *at && state.state.phase() == Phase::On)
-        {
-            self.send(
-                state,
-                frame_time(at)?,
-                EnvelopeCommand::Playback(Command::NoteOff),
-            )?;
+        let age = frame_position(age)?;
+        if let Some(at) = release.filter(|at| age >= *at && state.state.phase() == Phase::On) {
+            self.send(state, at, EnvelopeCommand::Playback(Command::NoteOff))?;
         }
         Ok(())
     }
@@ -155,7 +151,13 @@ fn error(value: envelfo_core::Error) -> PyErr {
     PyValueError::new_err(format!("Amplitude Envelope: {value:?}"))
 }
 
-fn frame_time(value: f64) -> PyResult<Time> {
+pub(crate) fn frame_position(frame: usize) -> PyResult<Time> {
+    let frame =
+        i64::try_from(frame).map_err(|_| PyValueError::new_err("Native EnveLFO frame overflow"))?;
+    Ok(Time::from_integer(frame))
+}
+
+pub(crate) fn frame_time(value: f64) -> PyResult<Time> {
     if !value.is_finite() {
         return Err(PyValueError::new_err("Invalid amplitude time"));
     }

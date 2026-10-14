@@ -50,6 +50,13 @@ enge owns minimum hold, release timing and voice retirement. Amplitude envelopes
 currently require numeric initial values, activation start, voice seconds, held
 linear segments, an explicit release, and once playback without markers.
 
+Persistent named Envelopes and Stages execute through `envelfo-core`.
+Their prepared timing, beat-clock observations and routed event queues use
+checked rational times, including cues between audio frames and fractional
+delays. Snapshots retain that exact continuation. enge still owns audio routing,
+voice lifetime, observation scheduling and native Patch orchestration; ordinary
+LFO signal playback has not yet been replaced by the shared core.
+
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,
 smooths controls in their declared scopes, preserves phase through pitch changes,

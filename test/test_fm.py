@@ -82,7 +82,7 @@ def test_native_graph_runtime_rejects_invalid_execution_order(order: list[int]) 
             order,
             1,
             0,
-            0,
+            (0, 1),
             np.empty((0, 8)),
             [],
             np.empty((0, 7)),

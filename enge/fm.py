@@ -651,7 +651,10 @@ class PersistentFM(synth.PersistentSynth):
             ),
             carrier,
             carrier_parameter,
-            float(template.minimum_hold_seconds * rate),
+            (
+                (hold := template.minimum_hold_seconds * rate).numerator,
+                hold.denominator,
+            ),
             controls,
             smoothing,
             lfos,

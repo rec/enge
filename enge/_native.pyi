@@ -95,7 +95,7 @@ class SynthRuntime:
         initial: float,
         attack: list[tuple[tuple[int, int] | None, float]],
         release: list[tuple[tuple[int, int] | None, float]],
-        minimum_hold_frames: float,
+        minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
         lfos: np.ndarray,
@@ -116,7 +116,7 @@ class SynthRuntime:
         mod_attack: list[tuple[tuple[int, int] | None, float]],
         mod_release: list[tuple[tuple[int, int] | None, float]],
         phase_offsets: list[float],
-        minimum_hold_frames: float,
+        minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
         lfos: np.ndarray,
@@ -143,7 +143,7 @@ class SynthRuntime:
         order: list[int],
         carrier: int,
         carrier_parameter: int,
-        minimum_hold_frames: float,
+        minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
         lfos: np.ndarray,
@@ -160,7 +160,7 @@ class SynthRuntime:
         initial: float,
         attack: list[tuple[tuple[int, int] | None, float]],
         release: list[tuple[tuple[int, int] | None, float]],
-        minimum_hold_frames: float,
+        minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
         lfos: np.ndarray,
@@ -196,14 +196,29 @@ class SynthRuntime:
     def set_named_envelopes(
         self,
         initials: list[float],
-        attacks: list[list[tuple[float, float]]],
-        releases: list[list[tuple[float, float]]],
+        attacks: list[list[tuple[tuple[int, int] | None, float]]],
+        releases: list[list[tuple[tuple[int, int] | None, float]]],
         parameters: list[
-            tuple[int, int, float, float, bool, int, float, float, int | None, bool]
+            tuple[
+                int,
+                int,
+                float,
+                float,
+                bool,
+                int,
+                tuple[int, int],
+                tuple[int, int],
+                int | None,
+                bool,
+                tuple[bool, int, bool],
+            ]
         ],
     ) -> None: ...
     def set_beat_clock(
-        self, points: list[tuple[float, float, float, float]]
+        self,
+        points: list[
+            tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]
+        ],
     ) -> None: ...
     def set_beat_named_envelopes(self, indices: list[int]) -> None: ...
     def set_staged_envelfos(
@@ -215,12 +230,12 @@ class SynthRuntime:
                         int,
                         float,
                         bool,
-                        list[tuple[float, float]],
-                        list[float],
-                        list[tuple[float, str]],
+                        list[tuple[tuple[int, int] | None, float]],
+                        tuple[int, list[tuple[int, int]], float, float] | None,
+                        list[tuple[tuple[int, int], str]],
                         int,
-                        float,
-                        float,
+                        tuple[int, int],
+                        tuple[int, int],
                         int | None,
                     ]
                 ],
@@ -233,7 +248,9 @@ class SynthRuntime:
                 bool,
             ]
         ],
-        connections: list[tuple[int, str, int, str, int, int, int, int, float]],
+        connections: list[
+            tuple[int, str, int, str, int, int, int, int, tuple[int, int]]
+        ],
     ) -> None: ...
     def set_sample_hold_envelfos(
         self, definitions: list[tuple[int, int, float, float]]
@@ -251,17 +268,43 @@ class SynthRuntime:
     def set_patch_events(
         self,
         connections: list[
-            tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
+            tuple[
+                int,
+                tuple[int, int],
+                int,
+                str | None,
+                int,
+                int,
+                int,
+                int,
+                int,
+                tuple[int, int],
+                bool,
+            ]
         ],
     ) -> None: ...
     def set_patch_stage_starts(
         self,
-        connections: list[tuple[int, str, int, int, int, int, int, int, float, bool]],
+        connections: list[
+            tuple[int, str, int, int, int, int, int, int, tuple[int, int], bool]
+        ],
     ) -> None: ...
     def set_threshold_events(
         self,
         connections: list[
-            tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
+            tuple[
+                int,
+                tuple[int, int],
+                int,
+                str | None,
+                int,
+                int,
+                int,
+                int,
+                int,
+                tuple[int, int],
+                bool,
+            ]
         ],
     ) -> None: ...
     def active_slots(self) -> list[bool]: ...

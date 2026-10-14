@@ -75,21 +75,20 @@ class EngineError(ValueError):
     """The requested input is invalid or outside Enge's implemented profile."""
 
 
+StagedRuntimeStage = tuple[
+    int,
+    float,
+    bool,
+    list[tuple[tuple[int, int] | None, float]],
+    tuple[int, list[tuple[int, int]], float, float] | None,
+    list[tuple[tuple[int, int], str]],
+    int,
+    tuple[int, int],
+    tuple[int, int],
+    int | None,
+]
 StagedRuntimeDefinition = tuple[
-    list[
-        tuple[
-            int,
-            float,
-            bool,
-            list[tuple[float, float]],
-            list[float],
-            list[tuple[float, str]],
-            int,
-            float,
-            float,
-            int | None,
-        ]
-    ],
+    list[StagedRuntimeStage],
     list[tuple[int, str, int]],
     int,
     int | None,
@@ -2554,7 +2553,10 @@ class PersistentSynth:
             cast(float, template.envelope.initial),
             _runtime_segments(template.envelope.segments, rate),
             _runtime_segments(template.envelope.release, rate),
-            float(template.minimum_hold_seconds * rate),
+            (
+                (hold := template.minimum_hold_seconds * rate).numerator,
+                hold.denominator,
+            ),
             controls,
             smoothing,
             lfos,
@@ -2576,11 +2578,22 @@ class PersistentSynth:
         if tempo_map is not None:
             self.runtime.set_beat_clock(
                 [
-                    (
-                        float(p.at_seconds * rate),
-                        float(tempo_map.elapsed_beats(Fraction(0), p.at_seconds)),
-                        float(p.beat),
-                        float(p.bpm / (60 * rate)) if p.running else 0.0,
+                    cast(
+                        tuple[
+                            tuple[int, int],
+                            tuple[int, int],
+                            tuple[int, int],
+                            tuple[int, int],
+                        ],
+                        tuple(
+                            (v.numerator, v.denominator)
+                            for v in (
+                                p.at_seconds * rate,
+                                tempo_map.elapsed_beats(Fraction(0), p.at_seconds),
+                                p.beat,
+                                p.bpm / (60 * rate) if p.running else Fraction(0),
+                            )
+                        ),
                     )
                     for p in tempo_map.points
                 ]
@@ -2616,7 +2629,19 @@ class PersistentSynth:
                 if name in patch_children:
                     source_map[name] = indices[:1]
         patch_events: list[
-            tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
+            tuple[
+                int,
+                tuple[int, int],
+                int,
+                str | None,
+                int,
+                int,
+                int,
+                int,
+                int,
+                tuple[int, int],
+                bool,
+            ]
         ] = []
         self.transform_nodes = _configure_patch_transforms(
             self.runtime,
@@ -2627,7 +2652,7 @@ class PersistentSynth:
             self.definition.sample_rate,
         )
         patch_stage_starts: list[
-            tuple[int, str, int, int, int, int, int, int, float, bool]
+            tuple[int, str, int, int, int, int, int, int, tuple[int, int], bool]
         ] = []
         for parent_name, parent in template.envelfos.items():
             if not isinstance(parent, Patch):
@@ -2671,7 +2696,7 @@ class PersistentSynth:
                             self.voice_lfo_sources[f"patch-{parent_name}-{child_name}"][
                                 0
                             ],
-                            float(marker),
+                            (marker.numerator, marker.denominator),
                             destination,
                             None,
                             order,
@@ -2720,7 +2745,7 @@ class PersistentSynth:
             patch_events.append(
                 (
                     self.voice_lfo_sources[source_binding.reference][0],
-                    float(marker),
+                    (marker.numerator, marker.denominator),
                     self.staged_envelfo_sources[target_binding.reference][0],
                     connection.cue,
                     len(patch_events),
@@ -3437,14 +3462,13 @@ def _runtime_segments(
     ]
 
 
-def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> float:
-    try:
-        frames = float(seconds * sample_rate)
-    except OverflowError:
-        raise EngineError("Delayed Envelfo event time is not representable") from None
-    if not isfinite(frames) or (seconds and frames == 0):
+def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> tuple[int, int]:
+    frames = seconds * sample_rate
+    if not -(1 << 63) <= frames.numerator < (1 << 63) or frames.denominator >= (
+        1 << 63
+    ):
         raise EngineError("Delayed Envelfo event time is not representable")
-    return frames
+    return frames.numerator, frames.denominator
 
 
 def _configure_sample_hold_envelfos(
@@ -3592,9 +3616,35 @@ def _threshold_runtime_connections(
     stages: dict[str, list[int]],
     nodes: dict[tuple[str, str], int],
     rate: int,
-) -> list[tuple[int, float, int, str | None, int, int, int, int, int, float, bool]]:
+) -> list[
+    tuple[
+        int,
+        tuple[int, int],
+        int,
+        str | None,
+        int,
+        int,
+        int,
+        int,
+        int,
+        tuple[int, int],
+        bool,
+    ]
+]:
     result: list[
-        tuple[int, float, int, str | None, int, int, int, int, int, float, bool]
+        tuple[
+            int,
+            tuple[int, int],
+            int,
+            str | None,
+            int,
+            int,
+            int,
+            int,
+            int,
+            tuple[int, int],
+            bool,
+        ]
     ] = []
     bindings = {b.name: b for b in template.bindings}
     for (parent_name, child), node in nodes.items():
@@ -3612,7 +3662,7 @@ def _threshold_runtime_connections(
             result.append(
                 (
                     node,
-                    float(port == "rising"),
+                    (int(port == "rising"), 1),
                     nodes[parent_name, connection.target]
                     if capture
                     else (stages if cue is not None else envelopes)[target][0],
@@ -3628,7 +3678,7 @@ def _threshold_runtime_connections(
                         else f"{target}:"
                         f"{'cue' if cue is not None else 'start'}-{order}",
                     ),
-                    1.0 + _runtime_event_delay(connection.delay, rate),
+                    _runtime_event_delay(connection.delay + Fraction(1, rate), rate),
                     capture,
                 )
             )
@@ -3648,7 +3698,7 @@ def _threshold_runtime_connections(
             result.append(
                 (
                     node,
-                    float(port == "rising"),
+                    (int(port == "rising"), 1),
                     stages[target][0],
                     connection.cue,
                     order,
@@ -3656,7 +3706,7 @@ def _threshold_runtime_connections(
                     connection.offset,
                     int(connection.probability * 2**53),
                     envelfo_random.stream_key(0, f"{target}:cue-{order}"),
-                    1.0 + _runtime_event_delay(connection.delay, rate),
+                    _runtime_event_delay(connection.delay + Fraction(1, rate), rate),
                     False,
                 )
             )
@@ -3682,15 +3732,29 @@ def _persistent_modulation(
     dict[str, list[int]],
     dict[str, list[int]],
     list[float],
-    list[list[tuple[float, float]]],
-    list[list[tuple[float, float]]],
-    list[tuple[int, int, float, float, bool, int, float, float, int | None, bool]],
+    list[list[tuple[tuple[int, int] | None, float]]],
+    list[list[tuple[tuple[int, int] | None, float]]],
+    list[
+        tuple[
+            int,
+            int,
+            float,
+            float,
+            bool,
+            int,
+            tuple[int, int],
+            tuple[int, int],
+            int | None,
+            bool,
+            tuple[bool, int, bool],
+        ]
+    ],
     dict[str, list[int]],
     set[str],
     np.ndarray,
     list[StagedRuntimeDefinition],
     dict[str, list[int]],
-    list[tuple[int, str, int, str, int, int, int, int, float]],
+    list[tuple[int, str, int, str, int, int, int, int, tuple[int, int]]],
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
@@ -3831,10 +3895,22 @@ def _persistent_modulation(
     lfo_sources: dict[str, list[int]] = {}
     voice_lfo_sources: dict[str, list[int]] = {}
     envelope_initials: list[float] = []
-    envelope_attacks: list[list[tuple[float, float]]] = []
-    envelope_releases: list[list[tuple[float, float]]] = []
+    envelope_attacks: list[list[tuple[tuple[int, int] | None, float]]] = []
+    envelope_releases: list[list[tuple[tuple[int, int] | None, float]]] = []
     envelope_parameters: list[
-        tuple[int, int, float, float, bool, int, float, float, int | None, bool]
+        tuple[
+            int,
+            int,
+            float,
+            float,
+            bool,
+            int,
+            tuple[int, int],
+            tuple[int, int],
+            int | None,
+            bool,
+            tuple[bool, int, bool],
+        ]
     ] = []
     named_envelfo_sources: dict[str, list[int]] = {}
     staged_envelfos: list[StagedRuntimeDefinition] = []
@@ -3935,10 +4011,11 @@ def _persistent_modulation(
                         slope,
                         False,
                         0,
-                        0,
-                        1,
+                        (0, 1),
+                        (1, 1),
                         None,
                         True,
+                        (True, 0, True),
                     )
                 )
                 continue
@@ -3960,20 +4037,10 @@ def _persistent_modulation(
                     1 if envelfo.clock == "beats" else definition.sample_rate
                 )
                 envelope_attacks.append(
-                    [
-                        (float(segment.duration * duration_scale), segment.to)
-                        if isinstance(segment, Segment)
-                        else (-1.0, 0.0)
-                        for segment in generator.segments
-                    ]
+                    _runtime_segments(generator.segments, duration_scale)
                 )
                 envelope_releases.append(
-                    [
-                        (float(segment.duration * duration_scale), segment.to)
-                        if isinstance(segment, Segment)
-                        else (-1.0, 0.0)
-                        for segment in generator.release
-                    ]
+                    _runtime_segments(generator.release, duration_scale)
                 )
                 envelope_parameters.append(
                     (
@@ -3982,31 +4049,7 @@ def _persistent_modulation(
                         intercept,
                         slope,
                         binding.release_timing == ReleaseTiming.voice,
-                        [
-                            PlaybackMode.once,
-                            PlaybackMode.loop,
-                            PlaybackMode.ping_pong,
-                        ].index(generator.playback),
-                        float(
-                            next(
-                                m.position
-                                for m in generator.markers
-                                if m.name == generator.loop_start
-                            )
-                        )
-                        if generator.loop_start is not None
-                        else 0.0,
-                        float(
-                            next(
-                                m.position
-                                for m in generator.markers
-                                if m.name == generator.loop_end
-                            )
-                        )
-                        if generator.loop_end is not None
-                        else 1.0,
-                        generator.repeat_count,
-                        generator.start == "event",
+                        *_runtime_named_envelope_options(generator),
                     )
                 )
                 continue
@@ -4077,7 +4120,9 @@ def _persistent_modulation(
             envelope_initials.append(0.0)
             envelope_attacks.append([])
             envelope_releases.append([])
-            envelope_parameters.append((0, 1, 1, 0, False, 0, 0, 1, None, True))
+            envelope_parameters.append(
+                (0, 1, 1, 0, False, 0, (0, 1), (1, 1), None, True, (True, 0, True))
+            )
             continue
         if isinstance(envelfo, LFO):
             generator = lfo_definition(envelfo)
@@ -4128,20 +4173,10 @@ def _persistent_modulation(
             )
             envelope_initials.append(generator.initial)
             envelope_attacks.append(
-                [
-                    (float(segment.duration * duration_scale), segment.to)
-                    if isinstance(segment, Segment)
-                    else (-1.0, 0.0)
-                    for segment in generator.segments
-                ]
+                _runtime_segments(generator.segments, duration_scale)
             )
             envelope_releases.append(
-                [
-                    (float(s.duration * duration_scale), s.to)
-                    if isinstance(s, Segment)
-                    else (-1.0, 0.0)
-                    for s in generator.release
-                ]
+                _runtime_segments(generator.release, duration_scale)
             )
             envelope_parameters.append(
                 (
@@ -4150,27 +4185,7 @@ def _persistent_modulation(
                     1,
                     0,
                     binding.release_timing == ReleaseTiming.voice,
-                    list(PlaybackMode).index(generator.playback),
-                    float(
-                        next(
-                            m.position
-                            for m in generator.markers
-                            if m.name == generator.loop_start
-                        )
-                    )
-                    if generator.loop_start is not None
-                    else 0.0,
-                    float(
-                        next(
-                            m.position
-                            for m in generator.markers
-                            if m.name == generator.loop_end
-                        )
-                    )
-                    if generator.loop_end is not None
-                    else 1.0,
-                    generator.repeat_count,
-                    generator.start == "event",
+                    *_runtime_named_envelope_options(generator),
                 )
             )
             continue
@@ -4248,6 +4263,34 @@ def _envelfo_state_owners(
     return owners
 
 
+def _runtime_named_envelope_options(
+    generator: Envelope,
+) -> tuple[
+    int, tuple[int, int], tuple[int, int], int | None, bool, tuple[bool, int, bool]
+]:
+    bounds = [
+        next(m.position for m in generator.markers if m.name == n)
+        if n is not None
+        else f
+        for n, f in (
+            (generator.loop_start, Fraction(0)),
+            (generator.loop_end, Fraction(1)),
+        )
+    ]
+    return (
+        list(PlaybackMode).index(generator.playback),
+        (bounds[0].numerator, bounds[0].denominator),
+        (bounds[1].numerator, bounds[1].denominator),
+        generator.repeat_count,
+        generator.start == "event",
+        (
+            generator.hold,
+            ("current", "initial", "ignore").index(generator.retrigger),
+            generator.polarity == "bipolar",
+        ),
+    )
+
+
 def _runtime_staged_envelfo(
     body: Stages,
     sample_rate: int,
@@ -4258,91 +4301,60 @@ def _runtime_staged_envelfo(
     beat_clock: bool,
 ) -> StagedRuntimeDefinition:
     names = {stage.name: index for index, stage in enumerate(body.stages)}
-    stages: list[
-        tuple[
-            int,
-            float,
-            bool,
-            list[tuple[float, float]],
-            list[float],
-            list[tuple[float, str]],
-            int,
-            float,
-            float,
-            int | None,
-        ]
-    ] = []
+    stages: list[StagedRuntimeStage] = []
+    scale = 1 if beat_clock else sample_rate
     for stage in body.stages:
         envelfo = stage.envelfo
+        markers = [
+            ((m.position.numerator, m.position.denominator), m.name)
+            for m in envelfo.markers
+        ]
         if isinstance(envelfo, Envelope):
             if any(s.curve != 0 for s in envelfo.segments if isinstance(s, Segment)):
                 raise EngineError("Persistent staged envelopes require linear segments")
+            options = _runtime_named_envelope_options(envelfo)
             stages.append(
                 (
                     1,
                     0.0 if envelfo.initial == "current" else envelfo.initial,
                     envelfo.initial == "current",
-                    [
-                        (float(s.duration * (1 if beat_clock else sample_rate)), s.to)
-                        if isinstance(s, Segment)
-                        else (-1.0, 0.0)
-                        for s in envelfo.segments
-                    ],
-                    [],
-                    [(float(m.position), m.name) for m in envelfo.markers],
-                    [
-                        PlaybackMode.once,
-                        PlaybackMode.loop,
-                        PlaybackMode.ping_pong,
-                    ].index(envelfo.playback),
-                    float(
-                        next(
-                            m.position
-                            for m in envelfo.markers
-                            if m.name == envelfo.loop_start
-                        )
-                    )
-                    if envelfo.loop_start is not None
-                    else 0.0,
-                    float(
-                        next(
-                            m.position
-                            for m in envelfo.markers
-                            if m.name == envelfo.loop_end
-                        )
-                    )
-                    if envelfo.loop_end is not None
-                    else 1.0,
+                    _runtime_segments(envelfo.segments, scale),
+                    None,
+                    markers,
+                    options[0],
+                    options[1],
+                    options[2],
                     envelfo.repeat_count,
                 )
             )
         else:
             assert isinstance(envelfo, LFO)
             assert isinstance(envelfo.rate, Fraction)
+            times = [
+                envelfo.rate / scale,
+                envelfo.phase,
+                envelfo.duty_cycle,
+                envelfo.delay * scale,
+                envelfo.fade_in * scale,
+            ]
             stages.append(
                 (
                     2,
                     0.0,
                     False,
                     [],
-                    [
-                        float(
-                            [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                                envelfo.shape
-                            )
+                    (
+                        [Waveform.sine, Waveform.square, Waveform.triangle].index(
+                            envelfo.shape
                         ),
-                        float(envelfo.rate / (1 if beat_clock else sample_rate)),
-                        float(envelfo.phase),
-                        float(envelfo.duty_cycle),
-                        float(envelfo.delay * (1 if beat_clock else sample_rate)),
-                        float(envelfo.fade_in * (1 if beat_clock else sample_rate)),
+                        [(t.numerator, t.denominator) for t in times],
                         envelfo.center,
                         envelfo.depth,
-                    ],
-                    [(float(m.position), m.name) for m in envelfo.markers],
+                    ),
+                    markers,
                     0,
-                    0.0,
-                    1.0,
+                    (0, 1),
+                    (1, 1),
                     None,
                 )
             )

@@ -1,19 +1,20 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
-use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState};
+use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_position, frame_time};
+use envelfo_core::envelope::{
+    Envelope, EnvelopeCommand, EnvelopeState, Initial, Marker, Playback, Retrigger,
+    Segment as CoreSegment, Start,
+};
+use envelfo_core::lfo::Command;
 use envelfo_core::random::random_word;
+use envelfo_core::time::Time;
+use envelfo_core::{lfo, stages};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::collections::VecDeque;
 use std::f64::consts::{PI, TAU};
-
-#[derive(Clone, PartialEq)]
-pub(crate) struct Segment {
-    pub(crate) frames: f64,
-    pub(crate) target: f64,
-}
 
 #[derive(Clone, PartialEq)]
 struct ControlDefinition {
@@ -69,38 +70,31 @@ struct BeatPoint {
     beat: f64,
     song_beat: f64,
     rate: f64,
+    clock_frame: Time,
+    clock_beat: Time,
+    clock_rate: Time,
 }
 
 #[derive(Clone, PartialEq)]
 struct NamedEnvelopeDefinition {
     sample_hold: Option<(u64, f64, f64)>,
-    initial: f64,
-    attack: Vec<Segment>,
-    release: Vec<Segment>,
+    body: Envelope,
     parameter: usize,
     operation: usize,
     intercept: f64,
     slope: f64,
     release_with_voice: bool,
-    playback: usize,
-    loop_start: f64,
-    loop_end: f64,
-    repeat_count: Option<usize>,
     beat_clock: bool,
     event_started: bool,
 }
 
 #[derive(Clone)]
 struct NamedEnvelopeState {
-    segment_index: usize,
+    core: EnvelopeState,
+    ordinal: u64,
     random_state: u64,
-    playback: PlaybackState,
-    start_value: f64,
-    released: bool,
-    pending_release: Option<(f64, f64)>,
-    traversals: usize,
-    complete_coordinate: Option<f64>,
-    idle: bool,
+    sampled_value: f64,
+    pending_release: Option<(Time, Time)>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -108,7 +102,7 @@ struct PatchEventConnection {
     threshold: bool,
     capture: bool,
     source: usize,
-    marker: f64,
+    marker: Time,
     destination: usize,
     cue: Option<String>,
     order: usize,
@@ -116,7 +110,7 @@ struct PatchEventConnection {
     offset: usize,
     probability: u64,
     key: u64,
-    delay: f64,
+    delay: Time,
 }
 
 #[derive(Clone, PartialEq)]
@@ -130,36 +124,20 @@ struct PatchStageStartConnection {
     offset: usize,
     probability: u64,
     key: u64,
-    delay: f64,
+    delay: Time,
 }
 
 #[derive(Clone)]
 struct EnvelopeStart {
-    at: f64,
+    at: Time,
     order: usize,
     voice: usize,
     destination: usize,
 }
 
 #[derive(Clone, PartialEq)]
-struct StageDefinition {
-    kind: u8,
-    playback: usize,
-    loop_start: f64,
-    loop_end: f64,
-    repeat_count: Option<usize>,
-    initial: f64,
-    current_initial: bool,
-    segments: Vec<Segment>,
-    lfo: Vec<f64>,
-    markers: Vec<(f64, String)>,
-}
-
-#[derive(Clone, PartialEq)]
 struct StagedEnvelfoDefinition {
-    stages: Vec<StageDefinition>,
-    transitions: Vec<(usize, String, usize)>,
-    initial_stage: usize,
+    body: stages::Stages,
     parameter: Option<usize>,
     operation: usize,
     intercept: f64,
@@ -169,59 +147,8 @@ struct StagedEnvelfoDefinition {
 
 #[derive(Clone)]
 struct StagedEnvelfoState {
-    segment_index: usize,
-    stage_done: bool,
-    stage: usize,
-    playback: PlaybackState,
-    entry_value: f64,
-    completed: bool,
-    complete_value: f64,
-    cursor_at: f64,
-    cursor_order: usize,
-    traversals: usize,
-}
-
-#[derive(Clone)]
-struct PlaybackState {
-    at: f64,
-    coordinate: f64,
-    rate: f64,
-    direction: f64,
-    paused: bool,
-    age: f64,
-}
-
-impl PlaybackState {
-    fn coordinate_at(&self, at: f64) -> f64 {
-        self.coordinate
-            + if self.paused {
-                0.0
-            } else {
-                self.direction * self.rate * (at - self.at)
-            }
-    }
-
-    fn age_at(&self, at: f64) -> f64 {
-        self.age + if self.paused { 0.0 } else { at - self.at }
-    }
-
-    fn advance(&mut self, at: f64) {
-        self.coordinate = self.coordinate_at(at);
-        self.age = self.age_at(at);
-        self.at = at;
-    }
-
-    fn command(&mut self, kind: usize, position: f64, at: f64) {
-        self.advance(at);
-        match kind {
-            0 => self.paused = true,
-            1 => self.paused = false,
-            2 => self.direction = -self.direction,
-            3 => self.coordinate = position,
-            4 => self.coordinate += position,
-            _ => unreachable!(),
-        }
-    }
+    core: stages::StageState,
+    ordinal: u64,
 }
 
 #[derive(Clone, PartialEq)]
@@ -234,12 +161,12 @@ struct StagedConnection {
     offset: usize,
     probability: u64,
     key: u64,
-    delay: f64,
+    delay: Time,
 }
 
 #[derive(Clone)]
 struct StagedEvent {
-    at: f64,
+    at: Time,
     voice: usize,
     source: usize,
     port: String,
@@ -254,13 +181,13 @@ enum DelayedConnection {
 
 #[derive(Clone)]
 struct DelayedEvent {
-    at: f64,
+    at: Time,
     connection: DelayedConnection,
 }
 
 type PatchEventInput = (
     usize,
-    f64,
+    (i64, i64),
     usize,
     Option<String>,
     usize,
@@ -268,10 +195,20 @@ type PatchEventInput = (
     usize,
     u64,
     u64,
-    f64,
+    (i64, i64),
     bool,
 );
-type StageConnectionInput = (usize, String, usize, String, usize, usize, u64, u64, f64);
+type StageConnectionInput = (
+    usize,
+    String,
+    usize,
+    String,
+    usize,
+    usize,
+    u64,
+    u64,
+    (i64, i64),
+);
 type StageStartInput = (
     usize,
     String,
@@ -281,7 +218,7 @@ type StageStartInput = (
     usize,
     u64,
     u64,
-    f64,
+    (i64, i64),
     bool,
 );
 
@@ -292,13 +229,13 @@ type StageInput = (
     u8,
     f64,
     bool,
-    Vec<(f64, f64)>,
-    Vec<f64>,
-    Vec<(f64, String)>,
+    AmplitudeSegments,
+    Option<(usize, Vec<(i64, i64)>, f64, f64)>,
+    Vec<((i64, i64), String)>,
     usize,
-    f64,
-    f64,
-    Option<usize>,
+    (i64, i64),
+    (i64, i64),
+    Option<u64>,
 );
 type NamedEnvelopeInput = (
     usize,
@@ -307,11 +244,13 @@ type NamedEnvelopeInput = (
     f64,
     bool,
     usize,
-    f64,
-    f64,
-    Option<usize>,
+    (i64, i64),
+    (i64, i64),
+    Option<u64>,
     bool,
+    (bool, usize, bool),
 );
+type BeatClockInput = ((i64, i64), (i64, i64), (i64, i64), (i64, i64));
 type StagedEnvelfoInput = (
     Vec<StageInput>,
     Vec<(usize, String, usize)>,
@@ -366,7 +305,7 @@ pub struct SynthRuntimeSnapshot {
     graph_order: Vec<usize>,
     graph_carrier: usize,
     graph_carrier_parameter: usize,
-    minimum_hold_frames: f64,
+    minimum_hold_frames: Time,
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
@@ -409,7 +348,7 @@ pub struct SynthRuntimeSnapshot {
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
-    release_frames: Vec<Option<f64>>,
+    release_frames: Vec<Option<Time>>,
     frequency_steps: Vec<f64>,
     frequency_remaining: Vec<usize>,
     gain_steps: Vec<f64>,
@@ -441,7 +380,7 @@ pub struct SynthRuntime {
     graph_order: Vec<usize>,
     graph_carrier: usize,
     graph_carrier_parameter: usize,
-    minimum_hold_frames: f64,
+    minimum_hold_frames: Time,
     routes: Array2<f64>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
@@ -484,7 +423,7 @@ pub struct SynthRuntime {
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
-    release_frames: Vec<Option<f64>>,
+    release_frames: Vec<Option<Time>>,
     frequency_steps: Vec<f64>,
     frequency_remaining: Vec<usize>,
     gain_steps: Vec<f64>,
@@ -511,7 +450,7 @@ impl SynthRuntime {
         initial: f64,
         attack: AmplitudeSegments,
         release: AmplitudeSegments,
-        minimum_hold_frames: f64,
+        minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
         lfos: PyReadonlyArray2<'_, f64>,
@@ -521,6 +460,7 @@ impl SynthRuntime {
         context_capacity: usize,
         filter_after_amplitude: bool,
     ) -> PyResult<Self> {
+        let minimum_hold_frames = ratio_time(minimum_hold_frames)?;
         let amplitude = Amplitude::new(initial, attack, release)?;
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
@@ -535,8 +475,7 @@ impl SynthRuntime {
             || routes.shape()[1] == 0
             || routes.as_array().iter().any(|v| !v.is_finite())
             || !initial.is_finite()
-            || !minimum_hold_frames.is_finite()
-            || minimum_hold_frames < 0.0
+            || minimum_hold_frames < Time::ZERO
             || parameters.len() < 6
             || parameters.len() % 3 != 0
             || parameters.iter().any(|v| !v.is_finite())
@@ -658,7 +597,7 @@ impl SynthRuntime {
         mod_attack: AmplitudeSegments,
         mod_release: AmplitudeSegments,
         phase_offsets: Vec<f64>,
-        minimum_hold_frames: f64,
+        minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
         lfos: PyReadonlyArray2<'_, f64>,
@@ -727,7 +666,7 @@ impl SynthRuntime {
         order: Vec<usize>,
         carrier: usize,
         carrier_parameter: usize,
-        minimum_hold_frames: f64,
+        minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
         lfos: PyReadonlyArray2<'_, f64>,
@@ -853,15 +792,15 @@ impl SynthRuntime {
     fn set_named_envelopes(
         &mut self,
         initials: Vec<f64>,
-        attacks: Vec<Vec<(f64, f64)>>,
-        releases: Vec<Vec<(f64, f64)>>,
+        attacks: Vec<AmplitudeSegments>,
+        releases: Vec<AmplitudeSegments>,
         parameters: Vec<NamedEnvelopeInput>,
     ) -> PyResult<()> {
         let count = initials.len();
         if attacks.len() != count || releases.len() != count || parameters.len() != count {
             return Err(PyValueError::new_err("Invalid named envelope definitions"));
         }
-        let definitions: Vec<NamedEnvelopeDefinition> = initials
+        let definitions = initials
             .into_iter()
             .zip(attacks)
             .zip(releases)
@@ -880,95 +819,154 @@ impl SynthRuntime {
                         loop_end,
                         repeat_count,
                         event_started,
+                        (hold, retrigger, bipolar),
                     ),
                 )| {
-                    if !initial.is_finite()
-                        || attack.iter().chain(&release).any(|(frames, target)| {
-                            !frames.is_finite()
-                                || (*frames < 0.0 && *frames != -1.0)
-                                || !target.is_finite()
-                        })
-                        || parameter >= self.parameter_definitions.len() / 3
+                    if parameter >= self.parameter_definitions.len() / 3
                         || operation > 1
-                        || playback > 2
-                        || (playback != 0
-                            && attack
-                                .iter()
-                                .chain(&release)
-                                .any(|(frames, _)| *frames == -1.0))
-                        || !(0.0..1.0).contains(&loop_start)
-                        || !(loop_start..=1.0).contains(&loop_end)
-                        || loop_start == loop_end
-                        || repeat_count.is_some_and(|count| count == 0 || playback == 0)
                         || !intercept.is_finite()
                         || !slope.is_finite()
                     {
                         return Err(PyValueError::new_err("Invalid named envelope definition"));
                     }
+                    let convert = |parts: AmplitudeSegments| -> PyResult<Vec<CoreSegment>> {
+                        parts
+                            .into_iter()
+                            .map(|(duration, to)| {
+                                Ok(CoreSegment {
+                                    duration: duration
+                                        .map(|(n, d)| Time::new(n, d))
+                                        .transpose()
+                                        .map_err(core_error)?,
+                                    to,
+                                    curve: 0.0,
+                                })
+                            })
+                            .collect()
+                    };
+                    let start = Time::new(loop_start.0, loop_start.1).map_err(core_error)?;
+                    let end = Time::new(loop_end.0, loop_end.1).map_err(core_error)?;
+                    let bounds = if start == Time::ZERO && end == Time::ONE {
+                        None
+                    } else {
+                        Some((start, end))
+                    };
+                    let mut segments = convert(attack)?;
+                    // SampleHold shares the host route slots but does not execute this body.
+                    if segments.is_empty() {
+                        segments.push(CoreSegment {
+                            duration: Some(Time::ZERO),
+                            to: initial,
+                            curve: 0.0,
+                        });
+                    }
+                    let body = Envelope {
+                        initial: Initial::Value(initial),
+                        segments,
+                        release: convert(release)?,
+                        bipolar,
+                        hold,
+                        retrigger: match retrigger {
+                            0 => Retrigger::Current,
+                            1 => Retrigger::Initial,
+                            2 => Retrigger::Ignore,
+                            _ => {
+                                return Err(PyValueError::new_err(
+                                    "Invalid named envelope retrigger",
+                                ));
+                            }
+                        },
+                        start: if event_started {
+                            Start::Event
+                        } else {
+                            Start::Activation
+                        },
+                        playback: match playback {
+                            0 => Playback::Once,
+                            1 => Playback::Loop,
+                            2 => Playback::PingPong,
+                            _ => {
+                                return Err(PyValueError::new_err(
+                                    "Invalid named envelope playback",
+                                ));
+                            }
+                        },
+                        markers: bounds
+                            .map(|(start, end)| {
+                                vec![
+                                    Marker {
+                                        name: "loop_start".into(),
+                                        position: start,
+                                    },
+                                    Marker {
+                                        name: "loop_end".into(),
+                                        position: end,
+                                    },
+                                ]
+                            })
+                            .unwrap_or_default(),
+                        loop_bounds: bounds,
+                        repeat_count,
+                    };
+                    body.validate().map_err(core_error)?;
                     Ok(NamedEnvelopeDefinition {
                         sample_hold: None,
-                        initial,
-                        attack: attack
-                            .into_iter()
-                            .map(|(frames, target)| Segment { frames, target })
-                            .collect(),
-                        release: release
-                            .into_iter()
-                            .map(|(frames, target)| Segment { frames, target })
-                            .collect(),
+                        body,
                         parameter,
                         operation,
                         intercept,
                         slope,
                         release_with_voice,
-                        playback,
-                        loop_start,
-                        loop_end,
-                        repeat_count,
                         beat_clock: false,
                         event_started,
                     })
                 },
             )
-            .collect::<PyResult<_>>()?;
-        let states = self.frequencies.len() * count;
-        self.named_envelopes = definitions;
-        self.named_owners = (0..count).collect();
-        self.named_states = self
-            .named_envelopes
+            .collect::<PyResult<Vec<_>>>()?;
+        let states = definitions
             .iter()
             .cycle()
-            .take(states)
-            .map(|definition| named_envelope_initial(definition, 0.0))
-            .collect();
+            .take(self.frequencies.len() * count)
+            .map(|d| named_envelope_initial(d, Time::ZERO))
+            .collect::<PyResult<_>>()?;
+        self.named_envelopes = definitions;
+        self.named_owners = (0..count).collect();
+        self.named_states = states;
         Ok(())
     }
 
-    fn set_beat_clock(&mut self, points: Vec<(f64, f64, f64, f64)>) -> PyResult<()> {
+    fn set_beat_clock(&mut self, points: Vec<BeatClockInput>) -> PyResult<()> {
+        let points = points
+            .into_iter()
+            .map(|(frame, beat, song, rate)| {
+                let clock_frame = Time::new(frame.0, frame.1).map_err(core_error)?;
+                let clock_beat = Time::new(beat.0, beat.1).map_err(core_error)?;
+                let clock_rate = Time::new(rate.0, rate.1).map_err(core_error)?;
+                let song_beat = Time::new(song.0, song.1).map_err(core_error)?;
+                Ok(BeatPoint {
+                    frame: clock_frame.as_f64(),
+                    beat: clock_beat.as_f64(),
+                    song_beat: song_beat.as_f64(),
+                    rate: clock_rate.as_f64(),
+                    clock_frame,
+                    clock_beat,
+                    clock_rate,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         if self.frame != 0
             || points.is_empty()
-            || points[0].0 != 0.0
-            || points.iter().any(|(frame, beat, song_beat, rate)| {
-                !frame.is_finite()
-                    || !beat.is_finite()
-                    || !song_beat.is_finite()
-                    || !rate.is_finite()
-                    || *beat < 0.0
-                    || *rate < 0.0
-            })
-            || points.windows(2).any(|pair| pair[1].0 <= pair[0].0)
+            || points[0].clock_frame != Time::ZERO
+            || points
+                .iter()
+                .any(|p| p.clock_beat < Time::ZERO || p.clock_rate < Time::ZERO)
+            || points
+                .windows(2)
+                .any(|p| p[1].clock_frame <= p[0].clock_frame)
         {
             return Err(PyValueError::new_err("Invalid native beat clock"));
         }
-        self.beat_points = points
-            .into_iter()
-            .map(|(frame, beat, song_beat, rate)| BeatPoint {
-                frame,
-                beat,
-                song_beat,
-                rate,
-            })
-            .collect();
+        self.beat_points = points;
         Ok(())
     }
 
@@ -994,7 +992,7 @@ impl SynthRuntime {
     ) -> PyResult<()> {
         let mut definitions = Vec::with_capacity(inputs.len());
         for (
-            stages,
+            inputs,
             transitions,
             initial_stage,
             parameter,
@@ -1004,105 +1002,138 @@ impl SynthRuntime {
             beat_clock,
         ) in inputs
         {
-            if stages.is_empty()
-                || initial_stage >= stages.len()
+            if inputs.is_empty()
+                || initial_stage >= inputs.len()
                 || (beat_clock && self.beat_points.is_empty())
                 || parameter.is_some_and(|p| p >= self.parameter_definitions.len() / 3)
                 || operation > 1
                 || !intercept.is_finite()
                 || !slope.is_finite()
-                || transitions.iter().any(|(source, event, target)| {
-                    *source >= stages.len() || event.is_empty() || *target > stages.len()
-                })
+                || transitions
+                    .iter()
+                    .any(|(source, _, target)| *source >= inputs.len() || *target > inputs.len())
             {
                 return Err(PyValueError::new_err("Invalid staged Envelfo definition"));
             }
-            let stages: Vec<StageDefinition> = stages
-                .into_iter()
-                .map(
-                    |(
-                        kind,
-                        initial,
-                        current_initial,
-                        segments,
-                        lfo,
-                        markers,
-                        playback,
-                        loop_start,
-                        loop_end,
-                        repeat_count,
-                    )| {
-                        if !matches!(kind, 1 | 2)
-                            || playback > 2
-                            || (kind != 1 && playback != 0)
-                            || !(0.0..1.0).contains(&loop_start)
-                            || !(loop_start..=1.0).contains(&loop_end)
-                            || loop_start == loop_end
-                            || repeat_count
-                                .is_some_and(|count| count == 0 || kind != 1 || playback == 0)
-                            || !initial.is_finite()
-                            || (kind != 1 && current_initial)
-                            || segments.iter().any(|(frames, target)| {
-                                !frames.is_finite()
-                                    || (*frames < 0.0 && *frames != -1.0)
-                                    || !target.is_finite()
-                            })
-                            || (kind == 1
-                                && !segments.iter().any(|(frames, _)| *frames == -1.0)
-                                && segments.iter().map(|(frames, _)| frames).sum::<f64>() <= 0.0)
-                            || (kind != 1 && !segments.is_empty())
-                            || (kind == 2
-                                && (lfo.len() != 8
-                                    || lfo.iter().any(|value| !value.is_finite())
-                                    || !(0.0..=2.0).contains(&lfo[0])
-                                    || lfo[0].fract() != 0.0
-                                    || lfo[1] < 0.0
-                                    || !(0.0..1.0).contains(&lfo[2])
-                                    || !(0.0..=1.0).contains(&lfo[3])
-                                    || lfo[4] < 0.0
-                                    || lfo[5] < 0.0
-                                    || lfo[7] < 0.0
-                                    || lfo[6] - lfo[7] < -1.0
-                                    || lfo[6] + lfo[7] > 1.0))
-                            || (kind != 2 && !lfo.is_empty())
-                            || (segments.iter().any(|(frames, _)| *frames == -1.0)
-                                && (playback != 0 || !markers.is_empty()))
-                            || markers.iter().any(|(position, name)| {
-                                !position.is_finite()
-                                    || !(0.0..=1.0).contains(position)
-                                    || (kind == 2 && *position == 1.0)
-                                    || name.is_empty()
-                            })
-                        {
-                            return Err(PyValueError::new_err("Invalid staged Envelfo stage"));
-                        }
-                        Ok(StageDefinition {
-                            kind,
-                            playback,
-                            loop_start,
-                            loop_end,
-                            repeat_count,
-                            initial,
-                            current_initial,
-                            segments: segments
-                                .into_iter()
-                                .map(|(frames, target)| Segment { frames, target })
-                                .collect(),
-                            lfo,
-                            markers,
+            let mut bodies = Vec::with_capacity(inputs.len());
+            for (
+                index,
+                (kind, initial, current, parts, lfo, markers, playback, start, end, repeats),
+            ) in inputs.into_iter().enumerate()
+            {
+                let markers = markers
+                    .into_iter()
+                    .map(|(position, name)| {
+                        Ok(Marker {
+                            name,
+                            position: ratio_time(position)?,
                         })
-                    },
-                )
-                .collect::<PyResult<_>>()?;
-            if stages[initial_stage].current_initial {
-                return Err(PyValueError::new_err(
-                    "Initial staged Envelfo stage cannot capture current",
-                ));
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
+                let body = match kind {
+                    1 => {
+                        if lfo.is_some() {
+                            return Err(PyValueError::new_err("Invalid staged Envelope"));
+                        }
+                        let start = ratio_time(start)?;
+                        let end = ratio_time(end)?;
+                        stages::Body::Envelope(Envelope {
+                            initial: if current {
+                                Initial::Current
+                            } else {
+                                Initial::Value(initial)
+                            },
+                            segments: parts
+                                .into_iter()
+                                .map(|(duration, to)| {
+                                    Ok(CoreSegment {
+                                        duration: duration.map(ratio_time).transpose()?,
+                                        to,
+                                        curve: 0.0,
+                                    })
+                                })
+                                .collect::<PyResult<_>>()?,
+                            release: vec![],
+                            bipolar: true,
+                            hold: true,
+                            retrigger: Retrigger::Current,
+                            start: Start::Activation,
+                            playback: match playback {
+                                0 => Playback::Once,
+                                1 => Playback::Loop,
+                                2 => Playback::PingPong,
+                                _ => {
+                                    return Err(PyValueError::new_err(
+                                        "Invalid staged Envelope playback",
+                                    ));
+                                }
+                            },
+                            loop_bounds: if start == Time::ZERO && end == Time::ONE {
+                                None
+                            } else {
+                                Some((start, end))
+                            },
+                            repeat_count: repeats,
+                            markers: markers.clone(),
+                        })
+                    }
+                    2 => {
+                        if current || !parts.is_empty() || playback != 0 || repeats.is_some() {
+                            return Err(PyValueError::new_err("Invalid staged LFO"));
+                        }
+                        let Some((shape, times, center, depth)) = lfo else {
+                            return Err(PyValueError::new_err("Invalid staged LFO"));
+                        };
+                        let times = times
+                            .into_iter()
+                            .map(ratio_time)
+                            .collect::<PyResult<Vec<_>>>()?;
+                        if times.len() != 5 {
+                            return Err(PyValueError::new_err("Invalid staged LFO timing"));
+                        }
+                        let mut body = lfo::LFO::new(times[0]).map_err(core_error)?;
+                        body.shape = match shape {
+                            0 => lfo::Shape::Sine,
+                            1 => lfo::Shape::Square,
+                            2 => lfo::Shape::Triangle,
+                            _ => return Err(PyValueError::new_err("Invalid staged LFO shape")),
+                        };
+                        body.phase = times[1];
+                        body.duty = times[2];
+                        body.delay = times[3];
+                        body.fade = times[4];
+                        body.center = center;
+                        body.depth = depth;
+                        stages::Body::LFO(body)
+                    }
+                    _ => return Err(PyValueError::new_err("Invalid staged Envelfo stage")),
+                };
+                bodies.push(stages::Stage {
+                    name: index.to_string(),
+                    markers: if kind == 2 { markers } else { vec![] },
+                    body,
+                });
             }
+            let count = bodies.len();
+            let body = stages::Stages {
+                initial_stage: initial_stage.to_string(),
+                stages: bodies,
+                transitions: transitions
+                    .into_iter()
+                    .map(|(source, event, target)| stages::Transition {
+                        from: vec![source.to_string()],
+                        event,
+                        action: if target == count {
+                            stages::Action::Finish
+                        } else {
+                            stages::Action::Enter(target.to_string())
+                        },
+                    })
+                    .collect(),
+            };
+            body.validate().map_err(core_error)?;
             definitions.push(StagedEnvelfoDefinition {
-                stages,
-                transitions,
-                initial_stage,
+                body,
                 parameter,
                 operation,
                 intercept,
@@ -1110,48 +1141,22 @@ impl SynthRuntime {
                 beat_clock,
             });
         }
-        if connections.iter().any(
-            |(source, port, destination, cue, every, _, probability, _, delay)| {
-                *source >= definitions.len()
-                    || *destination >= definitions.len()
-                    || port.is_empty()
-                    || cue.is_empty()
-                    || *every == 0
-                    || *probability > (1 << 53)
-                    || !delay.is_finite()
-                    || *delay < 0.0
-            },
-        ) {
-            return Err(PyValueError::new_err("Invalid staged Envelfo connection"));
-        }
-        self.staged_states = (0..self.frequencies.len())
-            .flat_map(|_| {
-                definitions.iter().map(|definition| StagedEnvelfoState {
-                    segment_index: 0,
-                    stage_done: false,
-                    stage: definition.initial_stage,
-                    playback: stage_playback(
-                        &definition.stages[definition.initial_stage],
-                        0.0,
-                        false,
-                        1.0,
-                    ),
-                    entry_value: definition.stages[definition.initial_stage].initial,
-                    completed: false,
-                    complete_value: 0.0,
-                    cursor_at: 0.0,
-                    cursor_order: usize::MAX,
-                    traversals: 0,
-                })
-            })
-            .collect();
-        self.staged_envelfos = definitions;
-        self.staged_owners = (0..self.staged_envelfos.len()).collect();
-        self.staged_connections = connections
+        let connections = connections
             .into_iter()
             .map(
                 |(source, port, destination, cue, every, offset, probability, key, delay)| {
-                    StagedConnection {
+                    let delay = ratio_time(delay)?;
+                    if source >= definitions.len()
+                        || destination >= definitions.len()
+                        || port.is_empty()
+                        || cue.is_empty()
+                        || every == 0
+                        || probability > (1 << 53)
+                        || delay < Time::ZERO
+                    {
+                        return Err(PyValueError::new_err("Invalid staged Envelfo connection"));
+                    }
+                    Ok(StagedConnection {
                         source,
                         port,
                         destination,
@@ -1161,10 +1166,22 @@ impl SynthRuntime {
                         probability,
                         key,
                         delay,
-                    }
+                    })
                 },
             )
-            .collect();
+            .collect::<PyResult<_>>()?;
+        self.staged_states = (0..self.frequencies.len())
+            .flat_map(|_| definitions.iter())
+            .map(|d| {
+                Ok(StagedEnvelfoState {
+                    core: d.body.initial(Time::ZERO).map_err(core_error)?,
+                    ordinal: 0,
+                })
+            })
+            .collect::<PyResult<_>>()?;
+        self.staged_envelfos = definitions;
+        self.staged_owners = (0..self.staged_envelfos.len()).collect();
+        self.staged_connections = connections;
         self.staged_pending.clear();
         self.reset_event_counts();
         Ok(())
@@ -1282,15 +1299,15 @@ impl SynthRuntime {
                 )| {
                     *every == 0
                         || *probability > (1 << 53)
-                        || !delay.is_finite()
-                        || *delay < 0.0
+                        || ratio_time(*delay).is_err()
+                        || ratio_time(*delay).is_ok_and(|d| d < Time::ZERO)
                         || *source >= self.lfo_definitions.len()
                         || self.lfo_definitions[*source].scope != 3
                         || self.lfo_definitions[*source].rate.0 == 0
                         || self.lfo_definitions[*source].beat_clock
                         || self.lfo_definitions[*source].transport_position
-                        || !marker.is_finite()
-                        || !(0.0..1.0).contains(marker)
+                        || ratio_time(*marker).is_err()
+                        || ratio_time(*marker).is_ok_and(|m| m < Time::ZERO || m >= Time::ONE)
                         || if *capture {
                             cue.is_some()
                                 || *destination >= self.envelfo_transforms.len()
@@ -1322,11 +1339,11 @@ impl SynthRuntime {
                     delay,
                     capture,
                 )| {
-                    PatchEventConnection {
+                    Ok(PatchEventConnection {
                         threshold: false,
                         capture,
                         source: self.lfo_owners[source],
-                        marker,
+                        marker: ratio_time(marker)?,
                         destination: if capture {
                             destination
                         } else if cue.is_some() {
@@ -1340,11 +1357,11 @@ impl SynthRuntime {
                         offset,
                         probability,
                         key,
-                        delay,
-                    }
+                        delay: ratio_time(delay)?,
+                    })
                 },
             )
-            .collect();
+            .collect::<PyResult<_>>()?;
         self.reset_event_counts();
         Ok(())
     }
@@ -1356,8 +1373,8 @@ impl SynthRuntime {
                     *source >= self.staged_envelfos.len()
                         || *every == 0
                         || *probability > (1 << 53)
-                        || !delay.is_finite()
-                        || *delay < 0.0
+                        || ratio_time(*delay).is_err()
+                        || ratio_time(*delay).is_ok_and(|d| d < Time::ZERO)
                         || port.is_empty()
                         || if *capture {
                             *destination >= self.envelfo_transforms.len()
@@ -1388,7 +1405,7 @@ impl SynthRuntime {
                     delay,
                     capture,
                 )| {
-                    PatchStageStartConnection {
+                    Ok(PatchStageStartConnection {
                         capture,
                         source: self.staged_owners[source],
                         port,
@@ -1402,11 +1419,11 @@ impl SynthRuntime {
                         offset,
                         probability,
                         key,
-                        delay,
-                    }
+                        delay: ratio_time(delay)?,
+                    })
                 },
             )
-            .collect();
+            .collect::<PyResult<_>>()?;
         self.reset_event_counts();
         Ok(())
     }
@@ -1429,11 +1446,11 @@ impl SynthRuntime {
                 )| {
                     *source >= self.envelfo_transforms.len()
                         || self.envelfo_transforms[*source].0 != 3
-                        || (*marker != 0.0 && *marker != 1.0)
+                        || (*marker != (0, 1) && *marker != (1, 1))
                         || *every == 0
                         || *probability > (1 << 53)
-                        || !delay.is_finite()
-                        || *delay < 1.0
+                        || ratio_time(*delay).is_err()
+                        || ratio_time(*delay).is_ok_and(|d| d < Time::ONE)
                         || if *capture {
                             cue.is_some()
                                 || *destination >= self.envelfo_transforms.len()
@@ -1449,32 +1466,13 @@ impl SynthRuntime {
         {
             return Err(PyValueError::new_err("Invalid threshold event connections"));
         }
-        self.patch_events.extend(connections.into_iter().map(
-            |(
-                source,
-                marker,
-                destination,
-                cue,
-                order,
-                every,
-                offset,
-                probability,
-                key,
-                delay,
-                capture,
-            )| {
-                PatchEventConnection {
-                    threshold: true,
-                    capture,
+        let definitions = connections
+            .into_iter()
+            .map(
+                |(
                     source,
                     marker,
-                    destination: if capture {
-                        destination
-                    } else if cue.is_some() {
-                        self.staged_owners[destination]
-                    } else {
-                        self.named_owners[destination]
-                    },
+                    destination,
                     cue,
                     order,
                     every,
@@ -1482,9 +1480,32 @@ impl SynthRuntime {
                     probability,
                     key,
                     delay,
-                }
-            },
-        ));
+                    capture,
+                )| {
+                    Ok(PatchEventConnection {
+                        threshold: true,
+                        capture,
+                        source,
+                        marker: ratio_time(marker)?,
+                        destination: if capture {
+                            destination
+                        } else if cue.is_some() {
+                            self.staged_owners[destination]
+                        } else {
+                            self.named_owners[destination]
+                        },
+                        cue,
+                        order,
+                        every,
+                        offset,
+                        probability,
+                        key,
+                        delay: ratio_time(delay)?,
+                    })
+                },
+            )
+            .collect::<PyResult<Vec<_>>>()?;
+        self.patch_events.extend(definitions);
         self.reset_event_counts();
         Ok(())
     }
@@ -1498,7 +1519,7 @@ impl SynthRuntime {
         initial: f64,
         attack: AmplitudeSegments,
         release: AmplitudeSegments,
-        minimum_hold_frames: f64,
+        minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
         lfos: PyReadonlyArray2<'_, f64>,
@@ -1738,7 +1759,7 @@ impl SynthRuntime {
             .map(|c| c.delay)
             .chain(self.patch_events.iter().map(|c| c.delay))
             .chain(self.patch_stage_starts.iter().map(|c| c.delay))
-            .any(|delay| delay > 0.0);
+            .any(|delay| delay > Time::ZERO);
         if delayed {
             for queue in &mut self.delayed_events {
                 if queue.capacity() < 4096 {
@@ -1845,32 +1866,56 @@ impl SynthRuntime {
         point.song_beat + (frame - point.frame) * point.rate
     }
 
-    fn frame_at_local_beat(&self, beat: f64) -> f64 {
+    fn exact_beat_at(&self, frame: Time) -> PyResult<Time> {
+        let index = self.beat_points.partition_point(|p| p.clock_frame <= frame);
+        let point = &self.beat_points[index - 1];
+        point
+            .clock_beat
+            .checked_add(
+                frame
+                    .checked_sub(point.clock_frame)
+                    .and_then(|d| d.checked_mul(point.clock_rate))
+                    .map_err(core_error)?,
+            )
+            .map_err(core_error)
+    }
+
+    fn frame_at_local_beat(&self, beat: Time) -> PyResult<Option<Time>> {
         for (index, point) in self.beat_points.iter().enumerate() {
-            let next = self.beat_points.get(index + 1);
-            if point.rate > 0.0 && beat >= point.beat {
-                let frame = point.frame + (beat - point.beat) / point.rate;
-                if next.is_none_or(|following| frame <= following.frame) {
-                    return frame;
+            if point.clock_rate > Time::ZERO && beat >= point.clock_beat {
+                let frame = point
+                    .clock_frame
+                    .checked_add(
+                        beat.checked_sub(point.clock_beat)
+                            .and_then(|d| d.checked_div(point.clock_rate))
+                            .map_err(core_error)?,
+                    )
+                    .map_err(core_error)?;
+                if self
+                    .beat_points
+                    .get(index + 1)
+                    .is_none_or(|next| frame <= next.clock_frame)
+                {
+                    return Ok(Some(frame));
                 }
             }
         }
-        f64::INFINITY
+        Ok(None)
     }
 
-    fn staged_time(&self, definition: &StagedEnvelfoDefinition, frame: f64) -> f64 {
+    fn staged_time(&self, definition: &StagedEnvelfoDefinition, frame: Time) -> PyResult<Time> {
         if definition.beat_clock {
-            self.local_beat_at(frame)
+            self.exact_beat_at(frame)
         } else {
-            frame
+            Ok(frame)
         }
     }
 
-    fn named_time(&self, definition: &NamedEnvelopeDefinition, frame: f64) -> f64 {
+    fn named_time(&self, definition: &NamedEnvelopeDefinition, frame: Time) -> PyResult<Time> {
         if definition.beat_clock {
-            self.local_beat_at(frame)
+            self.exact_beat_at(frame)
         } else {
-            frame
+            Ok(frame)
         }
     }
 
@@ -1965,14 +2010,14 @@ impl SynthRuntime {
         let mut action = 0;
         for frame in 0..frames {
             self.advance_patch_events(false)?;
-            self.advance_staged(self.frame as f64, false, true)?;
+            self.advance_staged(frame_position(self.frame)?, false, true)?;
             while action < actions.len() && actions[action] as usize == frame {
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
             self.dispatch_staged_events()?;
             self.advance_patch_events(true)?;
-            self.advance_staged(self.frame as f64, true, true)?;
+            self.advance_staged(frame_position(self.frame)?, true, true)?;
             self.dispatch_staged_events()?;
             self.flush_envelope_starts()?;
             for voice in 0..self.frequencies.len() {
@@ -2271,31 +2316,23 @@ impl SynthRuntime {
                     .fill(None);
                 for (source, definition) in self.staged_envelfos.iter().enumerate() {
                     let index = voice * self.staged_envelfos.len() + source;
-                    let at = self.staged_time(definition, self.frame as f64);
+                    let frame = frame_position(self.frame)?;
+                    let at = self.staged_time(definition, frame)?;
                     self.staged_states[index] = StagedEnvelfoState {
-                        segment_index: 0,
-                        stage_done: false,
-                        stage: definition.initial_stage,
-                        playback: stage_playback(
-                            &definition.stages[definition.initial_stage],
-                            at,
-                            false,
-                            1.0,
-                        ),
-                        entry_value: definition.stages[definition.initial_stage].initial,
-                        completed: false,
-                        complete_value: 0.0,
-                        cursor_at: at,
-                        cursor_order: usize::MAX,
-                        traversals: 0,
+                        core: definition.body.initial(at).map_err(core_error)?,
+                        ordinal: 0,
                     };
-                    if staged_transition(definition, &mut self.staged_states[index], "note_on", at)
-                    {
+                    for event in staged_command(
+                        definition,
+                        &mut self.staged_states[index],
+                        at,
+                        stages::StageCommand::Playback(Command::NoteOn),
+                    )? {
                         self.staged_pending.push_back(StagedEvent {
-                            at: self.frame as f64,
+                            at: frame,
                             voice,
                             source,
-                            port: "done".to_owned(),
+                            port: event.port,
                         });
                     }
                 }
@@ -2327,8 +2364,8 @@ impl SynthRuntime {
                 for (index, definition) in self.named_envelopes.iter().enumerate() {
                     self.named_states[envelope_base + index] = named_envelope_initial(
                         definition,
-                        self.named_time(definition, self.frame as f64),
-                    );
+                        self.named_time(definition, frame_position(self.frame)?)?,
+                    )?;
                     if let Some((key, _, _)) = definition.sample_hold {
                         let state = &mut self.named_states[envelope_base + index];
                         state.random_state = self.envelfo_keys[voice] ^ key;
@@ -2366,35 +2403,40 @@ impl SynthRuntime {
                 if self.active[voice] && self.release_frames[voice].is_none() {
                     for (source, definition) in self.staged_envelfos.iter().enumerate() {
                         let index = voice * self.staged_envelfos.len() + source;
-                        let at = self.staged_time(definition, self.frame as f64);
-                        if staged_transition(
+                        let frame = frame_position(self.frame)?;
+                        let at = self.staged_time(definition, frame)?;
+                        for event in staged_command(
                             definition,
                             &mut self.staged_states[index],
-                            "note_off",
                             at,
-                        ) {
+                            stages::StageCommand::Playback(Command::NoteOff),
+                        )? {
                             self.staged_pending.push_back(StagedEvent {
-                                at: self.frame as f64,
+                                at: frame,
                                 voice,
                                 source,
-                                port: "done".to_owned(),
+                                port: event.port,
                             });
                         }
                     }
-                    let release_frame = (self.ages[voice] as f64).max(self.minimum_hold_frames);
+                    let age = frame_position(self.ages[voice])?;
+                    let frame = frame_position(self.frame)?;
+                    let release_frame = age.max(self.minimum_hold_frames);
                     let envelope_base = voice * self.named_envelopes.len();
                     for (index, definition) in self.named_envelopes.iter().enumerate() {
-                        if definition.release.is_empty() {
+                        if definition.body.release.is_empty() {
                             continue;
                         }
                         let named_release_at = if definition.release_with_voice {
-                            self.frame as f64 + release_frame - self.ages[voice] as f64
+                            frame
+                                .checked_add(release_frame.checked_sub(age).map_err(core_error)?)
+                                .map_err(core_error)?
                         } else {
-                            self.frame as f64
+                            frame
                         };
                         self.named_states[envelope_base + index].pending_release = Some((
                             named_release_at,
-                            self.named_time(definition, named_release_at),
+                            self.named_time(definition, named_release_at)?,
                         ));
                     }
                     self.release_frames[voice] = Some(release_frame);
@@ -2571,71 +2613,25 @@ impl SynthRuntime {
                 if definition.sample_hold.is_some() {
                     return Ok(());
                 }
-                let at = self.named_time(definition, self.frame as f64);
+                let at = self.named_time(definition, frame_position(self.frame)?)?;
                 let mut state = named_envelope_settled(
                     definition,
                     &self.named_states[index],
-                    self.frame as f64,
-                );
-                let indefinite = indefinite_segments(&definition.attack)
-                    || indefinite_segments(&definition.release);
-                if indefinite && matches!(command, 3 | 4) {
-                    return Err(PyValueError::new_err(
-                        "Indefinite Envelope cannot use normalized positions",
-                    ));
-                }
-                if command == 5 {
-                    if state.idle || !indefinite {
-                        return Err(PyValueError::new_err(
-                            "Advance requires an active indefinite segment",
-                        ));
-                    }
-                    let parts = if state.released {
-                        &definition.release
-                    } else {
-                        &definition.attack
-                    };
-                    state.playback.advance(at);
-                    let (next_segment, value) = advance_indefinite_segment(
-                        state.start_value,
-                        &parts[state.segment_index..],
-                        state.playback.coordinate,
-                    )?;
-                    state.segment_index += next_segment;
-                    state.start_value = value;
-                    state.playback.coordinate = 0.0;
-                    self.named_states[index] = state;
-                    return Ok(());
-                }
-                if let Some(count) = definition.repeat_count.filter(|_| !state.released) {
-                    if state.complete_coordinate.is_none() {
-                        let (crossed, boundary) = repeat_crossings(
-                            &state.playback,
-                            at,
-                            definition.loop_start,
-                            definition.loop_end,
-                            count - state.traversals,
-                        );
-                        state.traversals += crossed;
-                        if let Some(boundary) = boundary {
-                            state.playback.advance(at);
-                            state.playback.coordinate = boundary;
-                            state.complete_coordinate = Some(repeat_boundary_coordinate(
-                                definition.playback,
-                                boundary,
-                                state.playback.direction,
-                                definition.loop_start,
-                                definition.loop_end,
-                            ));
-                        }
-                    }
-                }
-                state.playback.command(command, action[5], at);
-                if command == 4 && (state.released || definition.playback == 0) {
-                    state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
-                }
+                    frame_position(self.frame)?,
+                )?;
+                let command = match command {
+                    0 => EnvelopeCommand::Playback(Command::Pause),
+                    1 => EnvelopeCommand::Playback(Command::Resume),
+                    2 => EnvelopeCommand::Playback(Command::Reverse),
+                    3 => EnvelopeCommand::Playback(Command::Seek(frame_time(action[5])?)),
+                    4 => EnvelopeCommand::Playback(Command::Shift(frame_time(action[5])?)),
+                    5 => EnvelopeCommand::Advance,
+                    _ => unreachable!(),
+                };
+                named_envelope_command(definition, &mut state, at, command)?;
                 self.named_states[index] = state;
             }
+
             10 => {
                 let source = action[3] as usize;
                 let command = action[4] as usize;
@@ -2651,42 +2647,28 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid staged Envelfo action"));
                 }
                 let index = voice * self.staged_envelfos.len() + source;
-                let at = self.staged_time(&self.staged_envelfos[source], self.frame as f64);
-                let mut state = self.staged_states[index].clone();
-                let stage = &self.staged_envelfos[source].stages[state.stage];
-                if (command == 3 || command == 4) && indefinite_segments(&stage.segments) {
-                    return Err(PyValueError::new_err(
-                        "Indefinite Envelope cannot use normalized positions",
-                    ));
-                }
-                if command == 5 {
-                    if state.completed || !indefinite_segments(&stage.segments) {
-                        return Err(PyValueError::new_err(
-                            "Advance requires an active indefinite segment",
-                        ));
-                    }
-                    state.playback.advance(at);
-                    let (index, value) = advance_indefinite_segment(
-                        state.entry_value,
-                        &stage.segments[state.segment_index..],
-                        state.playback.coordinate,
-                    )?;
-                    state.segment_index += index;
-                    state.stage_done = false;
-                    state.entry_value = value;
-                    state.playback.coordinate = 0.0;
-                } else {
-                    state.playback.command(command, action[5], at);
-                }
-                if command == 4
-                    && self.staged_envelfos[source].stages[state.stage].kind == 1
-                    && self.staged_envelfos[source].stages[state.stage].playback == 0
+                let definition = &self.staged_envelfos[source];
+                let frame = frame_position(self.frame)?;
+                let at = self.staged_time(definition, frame)?;
+                let command = match command {
+                    0 => stages::StageCommand::Playback(Command::Pause),
+                    1 => stages::StageCommand::Playback(Command::Resume),
+                    2 => stages::StageCommand::Playback(Command::Reverse),
+                    3 => stages::StageCommand::Playback(Command::Seek(frame_time(action[5])?)),
+                    4 => stages::StageCommand::Playback(Command::Shift(frame_time(action[5])?)),
+                    5 => stages::StageCommand::Advance,
+                    _ => unreachable!(),
+                };
+                for event in
+                    staged_command(definition, &mut self.staged_states[index], at, command)?
                 {
-                    state.playback.coordinate = state.playback.coordinate.clamp(0.0, 1.0);
+                    self.staged_pending.push_back(StagedEvent {
+                        at: frame,
+                        voice,
+                        source,
+                        port: event.port,
+                    });
                 }
-                state.cursor_at = at;
-                state.cursor_order = usize::MAX;
-                self.staged_states[index] = state;
             }
             11 => {
                 let source = action[3] as usize;
@@ -2755,14 +2737,13 @@ impl SynthRuntime {
 
     fn advance_staged(
         &mut self,
-        limit_frame: f64,
+        limit_frame: Time,
         inclusive: bool,
         delayed_inclusive: bool,
     ) -> PyResult<()> {
         let mut count = 0;
-        let mut batch_at = None;
         loop {
-            let mut next: Option<f64> = None;
+            let mut next = None;
             let mut events = Vec::new();
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
@@ -2773,201 +2754,75 @@ impl SynthRuntime {
                         continue;
                     }
                     let state = &self.staged_states[voice * self.staged_envelfos.len() + source];
-                    let limit = self.staged_time(definition, limit_frame);
-                    if let Some((stage_at, order, port)) =
-                        next_staged_event(definition, state, limit, inclusive)
+                    let limit = self.staged_time(definition, limit_frame)?;
+                    if let Some(event) = definition
+                        .body
+                        .next_event(&state.core, limit, inclusive)
+                        .map_err(core_error)?
                     {
                         let at = if definition.beat_clock {
-                            self.frame_at_local_beat(stage_at)
+                            self.frame_at_local_beat(event.at)?
                         } else {
-                            stage_at
+                            Some(event.at)
+                        };
+                        let Some(at) = at else {
+                            continue;
                         };
                         if next.is_none_or(|current| at < current) {
                             next = Some(at);
                             events.clear();
                         }
                         if next == Some(at) {
-                            events.push((voice, source, stage_at, order, port));
+                            events.push((voice, source, event.at));
                         }
                     }
                 }
             }
-            let delayed_at = self
+            let delayed = self
                 .delayed_events
                 .iter()
                 .flatten()
-                .filter(|event| {
-                    event.at < limit_frame
-                        || (inclusive && delayed_inclusive && event.at == limit_frame)
+                .filter(|e| {
+                    e.at < limit_frame || inclusive && delayed_inclusive && e.at == limit_frame
                 })
-                .map(|event| event.at)
-                .min_by(f64::total_cmp);
-            if let Some(at) = delayed_at {
+                .map(|e| e.at)
+                .min();
+            if let Some(at) = delayed {
                 if next.is_none_or(|current| at < current) {
                     next = Some(at);
                     events.clear();
                 }
             }
-            if batch_at.is_some() && batch_at != next {
-                self.dispatch_staged_events()?;
-                batch_at = None;
-                continue;
-            }
             let Some(at) = next else {
                 break;
             };
-            batch_at = Some(at);
-            if events.is_empty() {
-                self.dispatch_staged_events()?;
-                count += self.deliver_delayed_events(at)?;
-                self.dispatch_staged_events()?;
-                batch_at = None;
-                if count > 4096 {
-                    return Err(PyValueError::new_err(
-                        "Delayed Envelfo event capacity exceeded",
-                    ));
-                }
-                continue;
-            }
-            for (voice, source, stage_at, order, port) in events {
-                if count == 4096 {
-                    return Err(PyValueError::new_err(
-                        "Staged Envelfo event capacity exceeded",
-                    ));
-                }
+            for (voice, source, stage_at) in events {
                 let definition = &self.staged_envelfos[source];
-                let state = &mut self.staged_states[voice * self.staged_envelfos.len() + source];
-                state.cursor_at = stage_at;
-                state.cursor_order = order;
-                state.playback.advance(stage_at);
-                let stage_index = state.stage;
-                let stage = &definition.stages[state.stage];
-                if port == "done" {
-                    state.stage_done = true;
-                    if stage.repeat_count.is_none() {
-                        state.playback.coordinate = if indefinite_segments(&stage.segments) {
-                            total_frames(&stage.segments[state.segment_index..])
-                        } else {
-                            1.0
-                        };
-                    }
-                } else if stage.kind == 1 {
-                    if stage.loop_start != 0.0 || stage.loop_end != 1.0 {
-                        if port == "cycle" || port == "turned" {
-                            let width = stage.loop_end - stage.loop_start;
-                            state.playback.coordinate = stage.loop_end
-                                + ((state.playback.coordinate - stage.loop_end) / width).round()
-                                    * width;
-                        }
-                    } else if port == "cycle" || port == "turned" {
-                        state.playback.coordinate = state.playback.coordinate.round();
-                    } else if stage.playback == 0 {
-                        state.playback.coordinate = stage.markers[order].0;
-                    } else {
-                        let marker = stage.markers[order].0;
-                        let period = if stage.playback == 1 { 1.0 } else { 2.0 };
-                        let outward = ((state.playback.coordinate - marker) / period).round()
-                            * period
-                            + marker;
-                        if stage.playback == 1 {
-                            state.playback.coordinate = outward;
-                        } else {
-                            let returning = ((state.playback.coordinate - (2.0 - marker)) / period)
-                                .round()
-                                * period
-                                + 2.0
-                                - marker;
-                            state.playback.coordinate = if (outward - state.playback.coordinate)
-                                .abs()
-                                < (returning - state.playback.coordinate).abs()
-                            {
-                                outward
-                            } else {
-                                returning
-                            };
-                        }
-                    }
-                } else if stage.kind == 2 {
-                    let marker = stage.markers[order].0;
-                    state.playback.coordinate =
-                        (state.playback.coordinate - marker).round() + marker;
-                }
-                if stage.repeat_count.is_some()
-                    && port
-                        == if stage.playback == 1 {
-                            "cycle"
-                        } else {
-                            "turned"
-                        }
-                {
-                    state.traversals += 1;
-                }
-                let final_repeat = stage.repeat_count.is_some_and(|count| {
-                    state.traversals == count
-                        && port
-                            == if stage.playback == 1 {
-                                "cycle"
-                            } else {
-                                "turned"
-                            }
-                });
-                let returning = final_repeat
-                    && stage.playback == 2
-                    && (((state.playback.coordinate - stage.loop_end)
-                        / (stage.loop_end - stage.loop_start))
-                        .round()
-                        .rem_euclid(2.0)
-                        == 1.0);
-                let finished =
-                    staged_transition(definition, state, &format!("stage.{port}"), stage_at);
-                self.staged_pending.push_back(StagedEvent {
-                    at,
-                    voice,
-                    source,
-                    port: if port == "done" {
-                        "stage.done".to_owned()
-                    } else {
-                        port
-                    },
-                });
-                if final_repeat {
-                    if returning {
-                        self.staged_pending.push_back(StagedEvent {
-                            at,
-                            voice,
-                            source,
-                            port: "cycle".to_owned(),
-                        });
-                    }
+                let result = definition
+                    .body
+                    .advance(
+                        &mut self.staged_states[voice * self.staged_envelfos.len() + source].core,
+                        stage_at,
+                        None,
+                    )
+                    .map_err(core_error)?;
+                count += result.events.len();
+                for event in result.events {
                     self.staged_pending.push_back(StagedEvent {
                         at,
                         voice,
                         source,
-                        port: "stage.done".to_owned(),
-                    });
-                    if !finished && state.stage == stage_index {
-                        if staged_transition(definition, state, "stage.done", stage_at) {
-                            self.staged_pending.push_back(StagedEvent {
-                                at,
-                                voice,
-                                source,
-                                port: "done".to_owned(),
-                            });
-                        } else if state.stage == stage_index {
-                            state.complete_value = staged_value(definition, state, stage_at);
-                            state.completed = true;
-                        }
-                    }
-                }
-                if finished {
-                    self.staged_pending.push_back(StagedEvent {
-                        at,
-                        voice,
-                        source,
-                        port: "done".to_owned(),
+                        port: event.port,
                     });
                 }
-                count += 1;
+            }
+            self.dispatch_staged_events()?;
+            count += self.deliver_delayed_events(at)?;
+            self.dispatch_staged_events()?;
+            if count > 4096 {
+                return Err(PyValueError::new_err(
+                    "Staged Envelfo event capacity exceeded",
+                ));
             }
         }
         self.dispatch_staged_events()?;
@@ -2997,7 +2852,7 @@ impl SynthRuntime {
                         "Staged Envelfo event capacity exceeded",
                     ));
                 }
-                if connection.delay > 0.0 {
+                if connection.delay > Time::ZERO {
                     queue_delayed_event(
                         &mut self.delayed_events[event.voice],
                         event.at,
@@ -3008,15 +2863,20 @@ impl SynthRuntime {
                     continue;
                 }
                 let definition = &self.staged_envelfos[connection.destination];
-                let at = self.staged_time(definition, event.at);
+                let at = self.staged_time(definition, event.at)?;
                 let state = &mut self.staged_states
                     [event.voice * self.staged_envelfos.len() + connection.destination];
-                if staged_transition(definition, state, &format!("cue.{}", connection.cue), at) {
+                for output in staged_command(
+                    definition,
+                    state,
+                    at,
+                    stages::StageCommand::Cue(connection.cue.clone()),
+                )? {
                     self.staged_pending.push_back(StagedEvent {
                         at: event.at,
                         voice: event.voice,
                         source: connection.destination,
-                        port: "done".to_owned(),
+                        port: output.port,
                     });
                 }
                 count += 1;
@@ -3044,7 +2904,7 @@ impl SynthRuntime {
                         "Staged Envelfo event capacity exceeded",
                     ));
                 }
-                if connection.delay > 0.0 {
+                if connection.delay > Time::ZERO {
                     queue_delayed_event(
                         &mut self.delayed_events[event.voice],
                         event.at,
@@ -3082,36 +2942,64 @@ impl SynthRuntime {
             if !self.active[voice] || self.ages[voice] == 0 {
                 continue;
             }
-            let age = self.ages[voice] as f64;
+            let age = frame_position(self.ages[voice])?;
+            let frame = frame_position(self.frame)?;
+            let sample_rate = frame_time(self.rate)?;
             for (order, connection) in self.patch_events.iter().enumerate() {
                 if connection.threshold {
                     continue;
                 }
                 let definition = &self.lfo_definitions[connection.source];
-                let rate = definition.rate.0 as f64 / definition.rate.1 as f64;
-                let phase = definition.phase.0 as f64 / definition.phase.1 as f64;
-                let before = ((phase + rate * (age - 1.0) / self.rate) - connection.marker).floor();
-                let after = ((phase + rate * age / self.rate) - connection.marker + 1e-12).floor();
-                if !before.is_finite()
-                    || !after.is_finite()
-                    || before.abs() >= i64::MAX as f64
-                    || after.abs() >= i64::MAX as f64
-                    || after - before > (4096 - events.len()) as f64
-                {
+                let rate = Time::new(
+                    i64::try_from(definition.rate.0)
+                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
+                    i64::try_from(definition.rate.1)
+                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
+                )
+                .map_err(core_error)?;
+                let phase = Time::new(
+                    i64::try_from(definition.phase.0)
+                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
+                    i64::try_from(definition.phase.1)
+                        .map_err(|_| core_error(envelfo_core::Error::Overflow))?,
+                )
+                .map_err(core_error)?;
+                let position = |age: Time| -> PyResult<Time> {
+                    phase
+                        .checked_add(
+                            rate.checked_mul(age)
+                                .and_then(|v| v.checked_div(sample_rate))
+                                .map_err(core_error)?,
+                        )
+                        .and_then(|v| v.checked_sub(connection.marker))
+                        .map_err(core_error)
+                };
+                let before = position(age.checked_sub(Time::ONE).map_err(core_error)?)?.floor();
+                let after = position(age)?.floor();
+                if i128::from(after) - i128::from(before) > (4096 - events.len()) as i128 {
                     return Err(PyValueError::new_err("Patch event capacity exceeded"));
                 }
-                let first = before as i64 + 1;
-                let last = after as i64;
-                for turn in first..=last {
-                    let event_age = (turn as f64 + connection.marker - phase) * self.rate / rate;
-                    events.push((self.frame as f64 - (age - event_age), order, voice));
+                let first = before
+                    .checked_add(1)
+                    .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
+                for turn in first..=after {
+                    let event_age = Time::from_integer(turn)
+                        .checked_add(connection.marker)
+                        .and_then(|v| v.checked_sub(phase))
+                        .and_then(|v| v.checked_mul(sample_rate))
+                        .and_then(|v| v.checked_div(rate))
+                        .map_err(core_error)?;
+                    let at = frame
+                        .checked_sub(age.checked_sub(event_age).map_err(core_error)?)
+                        .map_err(core_error)?;
+                    events.push((at, order, voice));
                 }
             }
         }
-        events.sort_by(|a, b| a.partial_cmp(b).expect("finite Patch event time"));
+        events.sort();
         let mut previous_at = None;
         for (at, order, voice) in events {
-            if (at >= self.frame as f64) != at_boundary {
+            if (at >= frame_position(self.frame)?) != at_boundary {
                 continue;
             }
             if previous_at != Some(at) {
@@ -3132,7 +3020,7 @@ impl SynthRuntime {
                 continue;
             }
             let destination = connection.destination;
-            if connection.delay > 0.0 {
+            if connection.delay > Time::ZERO {
                 queue_delayed_event(
                     &mut self.delayed_events[voice],
                     at,
@@ -3148,15 +3036,20 @@ impl SynthRuntime {
             }
             if let Some(cue) = &connection.cue {
                 let definition = &self.staged_envelfos[destination];
-                let stage_at = self.staged_time(definition, at);
+                let stage_at = self.staged_time(definition, at)?;
                 let state =
                     &mut self.staged_states[voice * self.staged_envelfos.len() + destination];
-                if staged_transition(definition, state, &format!("cue.{cue}"), stage_at) {
+                for event in staged_command(
+                    definition,
+                    state,
+                    stage_at,
+                    stages::StageCommand::Cue(cue.clone()),
+                )? {
                     self.staged_pending.push_back(StagedEvent {
                         at,
                         voice,
                         source: destination,
-                        port: "done".to_owned(),
+                        port: event.port,
                     });
                 }
                 continue;
@@ -3172,7 +3065,7 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn deliver_delayed_events(&mut self, at: f64) -> PyResult<usize> {
+    fn deliver_delayed_events(&mut self, at: Time) -> PyResult<usize> {
         let mut count = 0;
         for voice in 0..self.delayed_events.len() {
             while let Some(index) = self.delayed_events[voice]
@@ -3210,15 +3103,20 @@ impl SynthRuntime {
                         [voice * self.envelfo_transforms.len() + destination] = None;
                 } else if let Some(cue) = cue {
                     let definition = &self.staged_envelfos[destination];
-                    let stage_at = self.staged_time(definition, at);
+                    let stage_at = self.staged_time(definition, at)?;
                     let state =
                         &mut self.staged_states[voice * self.staged_envelfos.len() + destination];
-                    if staged_transition(definition, state, &format!("cue.{cue}"), stage_at) {
+                    for event in staged_command(
+                        definition,
+                        state,
+                        stage_at,
+                        stages::StageCommand::Cue(cue.clone()),
+                    )? {
                         self.staged_pending.push_back(StagedEvent {
                             at,
                             voice,
                             source: destination,
-                            port: "done".to_owned(),
+                            port: event.port,
                         });
                     }
                 } else {
@@ -3241,7 +3139,7 @@ impl SynthRuntime {
         }
         let mut starts = std::mem::take(&mut self.pending_envelope_starts);
         starts.sort_by(|a, b| {
-            a.at.total_cmp(&b.at)
+            a.at.cmp(&b.at)
                 .then_with(|| a.order.cmp(&b.order))
                 .then_with(|| a.voice.cmp(&b.voice))
         });
@@ -3252,15 +3150,10 @@ impl SynthRuntime {
                 sample_hold_draw(definition, &mut self.named_states[index]);
                 continue;
             }
-            let previous = &self.named_states[index];
-            let start_value = if previous.idle {
-                definition.initial
-            } else {
-                named_envelope_value(definition, previous, event.at, event.at)
-            };
-            let mut state = named_envelope_initial(definition, event.at);
-            state.idle = false;
-            state.start_value = start_value;
+            let at = self.named_time(definition, event.at)?;
+            let mut state =
+                named_envelope_settled(definition, &self.named_states[index], event.at)?;
+            named_envelope_command(definition, &mut state, at, EnvelopeCommand::Start)?;
             self.named_states[index] = state;
         }
         Ok(())
@@ -3352,9 +3245,9 @@ impl SynthRuntime {
                             definition,
                             &self.named_states
                                 [voice * self.named_envelopes.len() + self.named_owners[*source]],
-                            self.named_time(definition, self.frame as f64),
-                            self.frame as f64,
-                        )
+                            self.named_time(definition, frame_position(self.frame)?)?,
+                            frame_position(self.frame)?,
+                        )?
                     }
                     2 => {
                         let definition = &self.staged_envelfos[*source];
@@ -3362,8 +3255,8 @@ impl SynthRuntime {
                             definition,
                             &self.staged_states
                                 [voice * self.staged_envelfos.len() + self.staged_owners[*source]],
-                            self.staged_time(definition, self.frame as f64),
-                        )
+                            self.staged_time(definition, frame_position(self.frame)?)?,
+                        )?
                     }
                     _ => self.envelfo_transform_values[base + source],
                 };
@@ -3412,7 +3305,7 @@ impl SynthRuntime {
                     for (order, connection) in self.patch_events.iter().enumerate() {
                         if !connection.threshold
                             || connection.source != node
-                            || connection.marker != value
+                            || connection.marker.as_f64() != value
                         {
                             continue;
                         }
@@ -3425,7 +3318,7 @@ impl SynthRuntime {
                         ) {
                             queue_delayed_event(
                                 &mut self.delayed_events[voice],
-                                self.frame as f64,
+                                frame_position(self.frame)?,
                                 connection.delay,
                                 DelayedConnection::PatchEvent(order),
                             )?;
@@ -3481,9 +3374,9 @@ impl SynthRuntime {
             let value = named_envelope_value(
                 definition,
                 &self.named_states[envelope_base + self.named_owners[source]],
-                self.named_time(definition, self.frame as f64),
-                self.frame as f64,
-            );
+                self.named_time(definition, frame_position(self.frame)?)?,
+                frame_position(self.frame)?,
+            )?;
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;
@@ -3500,8 +3393,8 @@ impl SynthRuntime {
             let value = staged_value(
                 definition,
                 state,
-                self.staged_time(definition, self.frame as f64),
-            );
+                self.staged_time(definition, frame_position(self.frame)?)?,
+            )?;
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;
@@ -3929,701 +3822,127 @@ fn modular_multiply(mut first: u128, mut second: u128, modulus: u128) -> u128 {
     result
 }
 
-pub(crate) fn total_frames(segments: &[Segment]) -> f64 {
-    segments.iter().map(|s| s.frames).sum()
+fn core_error(error: envelfo_core::Error) -> PyErr {
+    PyValueError::new_err(format!("Native EnveLFO: {error}"))
 }
 
-fn indefinite_segments(segments: &[Segment]) -> bool {
-    segments.iter().any(|s| s.frames == -1.0)
-}
-
-fn advance_indefinite_segment(
-    initial: f64,
-    segments: &[Segment],
-    mut elapsed: f64,
-) -> PyResult<(usize, f64)> {
-    let mut value = initial;
-    elapsed = elapsed.max(0.0);
-    for (index, segment) in segments.iter().enumerate() {
-        if segment.frames == -1.0 {
-            return Ok((index + 1, value));
-        }
-        if elapsed < segment.frames {
-            break;
-        }
-        elapsed -= segment.frames;
-        value = segment.target;
-    }
-    Err(PyValueError::new_err(
-        "Advance requires an active indefinite segment",
-    ))
-}
-
-pub(crate) fn envelope_value(initial: f64, segments: &[Segment], elapsed: f64) -> f64 {
-    let mut boundary = 0.0;
-    let mut entry = initial;
-    for segment in segments {
-        if segment.frames == -1.0 {
-            return entry;
-        }
-        let end = boundary + segment.frames;
-        if elapsed < end {
-            return entry + (segment.target - entry) * (elapsed - boundary) / segment.frames;
-        }
-        boundary = end;
-        entry = segment.target;
-    }
-    entry
-}
-
-fn named_envelope_initial(definition: &NamedEnvelopeDefinition, at: f64) -> NamedEnvelopeState {
-    let duration = total_frames(&definition.attack);
-    let indefinite =
-        indefinite_segments(&definition.attack) || indefinite_segments(&definition.release);
-    NamedEnvelopeState {
-        segment_index: 0,
+fn named_envelope_initial(
+    definition: &NamedEnvelopeDefinition,
+    at: Time,
+) -> PyResult<NamedEnvelopeState> {
+    let core = definition.body.initial(at).map_err(core_error)?;
+    let mut state = NamedEnvelopeState {
+        core,
+        ordinal: 0,
         random_state: 0,
-        playback: PlaybackState {
-            at,
-            coordinate: if !indefinite && duration == 0.0 {
-                1.0
-            } else {
-                0.0
-            },
-            rate: if indefinite {
-                1.0
-            } else if duration == 0.0 {
-                0.0
-            } else {
-                1.0 / duration
-            },
-            direction: 1.0,
-            paused: false,
-            age: 0.0,
-        },
-        start_value: definition.initial,
-        released: false,
+        sampled_value: 0.0,
         pending_release: None,
-        traversals: 0,
-        complete_coordinate: None,
-        idle: definition.event_started,
-    }
+    };
+    named_envelope_command(
+        definition,
+        &mut state,
+        at,
+        EnvelopeCommand::Playback(Command::NoteOn),
+    )?;
+    Ok(state)
+}
+
+fn named_envelope_command(
+    definition: &NamedEnvelopeDefinition,
+    state: &mut NamedEnvelopeState,
+    at: Time,
+    command: EnvelopeCommand,
+) -> PyResult<()> {
+    let ordinal = state
+        .ordinal
+        .checked_add(1)
+        .ok_or_else(|| PyValueError::new_err("Named Envelope ordinal overflow"))?;
+    definition
+        .body
+        .command(&mut state.core, at, ordinal, command)
+        .map_err(core_error)?;
+    state.ordinal = ordinal;
+    Ok(())
 }
 
 fn named_envelope_settled(
     definition: &NamedEnvelopeDefinition,
     state: &NamedEnvelopeState,
-    frame: f64,
-) -> NamedEnvelopeState {
+    frame: Time,
+) -> PyResult<NamedEnvelopeState> {
     let mut settled = state.clone();
-    if let Some((_, release_at)) = state
+    if let Some((_, at)) = state
         .pending_release
-        .filter(|(release_frame, _)| *release_frame <= frame)
+        .filter(|(release, _)| *release <= frame)
     {
-        let indefinite =
-            indefinite_segments(&definition.attack) || indefinite_segments(&definition.release);
-        let value = envelope_value(
-            state.start_value,
-            &definition.attack[state.segment_index..],
-            if indefinite {
-                state.playback.coordinate_at(release_at).max(0.0)
-            } else {
-                named_envelope_coordinate(definition, state, release_at)
-                    * total_frames(&definition.attack)
-            },
-        );
-        let release_duration = total_frames(&definition.release);
-        settled.start_value = value;
-        settled.segment_index = 0;
-        settled.released = true;
+        named_envelope_command(
+            definition,
+            &mut settled,
+            at,
+            EnvelopeCommand::Playback(Command::NoteOff),
+        )?;
         settled.pending_release = None;
-        settled.traversals = 0;
-        settled.complete_coordinate = None;
-        settled.playback = PlaybackState {
-            at: release_at,
-            coordinate: if !indefinite && release_duration == 0.0 {
-                1.0
-            } else {
-                0.0
-            },
-            rate: if indefinite {
-                1.0
-            } else if release_duration == 0.0 {
-                0.0
-            } else {
-                1.0 / release_duration
-            },
-            direction: state.playback.direction,
-            paused: state.playback.paused,
-            age: 0.0,
-        };
     }
-    settled
+    Ok(settled)
 }
 
 fn named_envelope_value(
     definition: &NamedEnvelopeDefinition,
     state: &NamedEnvelopeState,
-    at: f64,
-    frame: f64,
-) -> f64 {
+    at: Time,
+    frame: Time,
+) -> PyResult<f64> {
     if definition.sample_hold.is_some() {
-        return state.start_value;
+        return Ok(state.sampled_value);
     }
-    if state.idle {
-        return definition.initial;
-    }
-    let settled = named_envelope_settled(definition, state, frame);
-    let segments = if settled.released {
-        &definition.release
-    } else {
-        &definition.attack
-    };
-    let duration = total_frames(segments);
-    if indefinite_segments(&definition.attack) || indefinite_segments(&definition.release) {
-        return envelope_value(
-            settled.start_value,
-            &segments[settled.segment_index..],
-            settled.playback.coordinate_at(at).max(0.0),
-        );
-    }
-    envelope_value(
-        settled.start_value,
-        segments,
-        named_envelope_coordinate(definition, &settled, at) * duration,
-    )
+    let state = named_envelope_settled(definition, state, frame)?;
+    Ok(definition
+        .body
+        .value(&state.core, at)
+        .map_err(core_error)?
+        .value)
 }
 
-fn repeat_crossings(
-    playback: &PlaybackState,
-    at: f64,
-    loop_start: f64,
-    loop_end: f64,
-    remaining: usize,
-) -> (usize, Option<f64>) {
-    let width = loop_end - loop_start;
-    let coordinate = playback.coordinate;
-    let target = playback.coordinate_at(at);
-    if playback.paused || playback.rate == 0.0 || target == coordinate {
-        return (0, None);
-    }
-    let named = loop_start != 0.0 || loop_end != 1.0;
-    let forward = playback.direction > 0.0;
-    let first = if forward {
-        if named {
-            loop_end + (((coordinate - loop_end) / width).floor() + 1.0).max(0.0) * width
-        } else {
-            coordinate.floor() + 1.0
-        }
-    } else if named {
-        loop_end + (((coordinate - loop_end) / width).ceil() - 1.0) * width
-    } else {
-        coordinate.ceil() - 1.0
-    };
-    if !forward && named && first < loop_end {
-        return (0, None);
-    }
-    let crossed = if forward {
-        (((target - first) / width + 1e-8).floor() + 1.0).max(0.0) as usize
-    } else {
-        (((first - target) / width + 1e-8).floor() + 1.0).max(0.0) as usize
-    };
-    let boundary = if crossed >= remaining {
-        Some(first + (remaining - 1) as f64 * width * playback.direction)
-    } else {
-        None
-    };
-    (crossed.min(remaining), boundary)
+fn ratio_time(value: (i64, i64)) -> PyResult<Time> {
+    Time::new(value.0, value.1).map_err(core_error)
 }
 
-fn repeat_boundary_coordinate(
-    playback: usize,
-    boundary: f64,
-    direction: f64,
-    loop_start: f64,
-    loop_end: f64,
-) -> f64 {
-    if playback == 1 {
-        if direction > 0.0 {
-            loop_end
-        } else {
-            loop_start
-        }
-    } else {
-        envelope_coordinate(boundary, playback, loop_start, loop_end)
-    }
-}
-
-fn named_envelope_coordinate(
-    definition: &NamedEnvelopeDefinition,
-    state: &NamedEnvelopeState,
-    at: f64,
-) -> f64 {
-    if let Some(coordinate) = state.complete_coordinate {
-        return coordinate;
-    }
-    if !state.released {
-        if let Some(count) = definition.repeat_count {
-            let (_, boundary) = repeat_crossings(
-                &state.playback,
-                at,
-                definition.loop_start,
-                definition.loop_end,
-                count - state.traversals,
-            );
-            if let Some(boundary) = boundary {
-                return repeat_boundary_coordinate(
-                    definition.playback,
-                    boundary,
-                    state.playback.direction,
-                    definition.loop_start,
-                    definition.loop_end,
-                );
-            }
-        }
-    }
-    envelope_coordinate(
-        state.playback.coordinate_at(at),
-        if state.released {
-            0
-        } else {
-            definition.playback
-        },
-        definition.loop_start,
-        definition.loop_end,
-    )
-}
-
-fn envelope_coordinate(coordinate: f64, playback: usize, start: f64, end: f64) -> f64 {
-    if start != 0.0 || end != 1.0 {
-        if coordinate < end {
-            return coordinate.max(0.0);
-        }
-        let width = end - start;
-        if playback == 1 {
-            return start + (coordinate - end).rem_euclid(width);
-        }
-        if playback == 2 {
-            let position = (coordinate - end).rem_euclid(2.0 * width);
-            return if position <= width {
-                end - position
-            } else {
-                start + position - width
-            };
-        }
-    }
-    match playback {
-        0 => coordinate.clamp(0.0, 1.0),
-        1 => coordinate.rem_euclid(1.0),
-        2 => {
-            let position = coordinate.rem_euclid(2.0);
-            if position <= 1.0 {
-                position
-            } else {
-                2.0 - position
-            }
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn staged_value(definition: &StagedEnvelfoDefinition, state: &StagedEnvelfoState, at: f64) -> f64 {
-    if state.completed {
-        return state.complete_value;
-    }
-    let stage = &definition.stages[state.stage];
-    match stage.kind {
-        1 => {
-            let duration = total_frames(&stage.segments);
-            let coordinate = state.playback.coordinate_at(at);
-            if indefinite_segments(&stage.segments) {
-                return envelope_value(
-                    state.entry_value,
-                    &stage.segments[state.segment_index..],
-                    coordinate.max(0.0),
-                );
-            }
-            let bounded = if stage
-                .repeat_count
-                .is_some_and(|count| state.traversals >= count)
-            {
-                repeat_boundary_coordinate(
-                    stage.playback,
-                    coordinate,
-                    state.playback.direction,
-                    stage.loop_start,
-                    stage.loop_end,
-                )
-            } else {
-                envelope_coordinate(coordinate, stage.playback, stage.loop_start, stage.loop_end)
-            };
-            envelope_value(state.entry_value, &stage.segments, bounded * duration)
-        }
-        _ => {
-            let lfo = &stage.lfo;
-            let phase = state.playback.coordinate_at(at).rem_euclid(1.0);
-            let age = state.playback.age_at(at);
-            let weight = if age < lfo[4] {
-                0.0
-            } else if lfo[5] == 0.0 {
-                1.0
-            } else {
-                ((age - lfo[4]) / lfo[5]).clamp(0.0, 1.0)
-            };
-            let shape = match lfo[0] as usize {
-                0 => (TAU * phase).sin(),
-                1 => {
-                    if phase < lfo[3] {
-                        1.0
-                    } else {
-                        -1.0
-                    }
-                }
-                _ if phase < lfo[3] => 2.0 * phase / lfo[3] - 1.0,
-                _ => (1.0 + lfo[3] - 2.0 * phase) / (1.0 - lfo[3]),
-            };
-            lfo[6] + lfo[7] * weight * shape
-        }
-    }
-}
-
-fn stage_playback(stage: &StageDefinition, at: f64, paused: bool, direction: f64) -> PlaybackState {
-    let (coordinate, rate) = match stage.kind {
-        1 => (
-            0.0,
-            if indefinite_segments(&stage.segments) {
-                1.0
-            } else {
-                1.0 / total_frames(&stage.segments)
-            },
-        ),
-        _ => (stage.lfo[2], stage.lfo[1]),
-    };
-    PlaybackState {
-        at,
-        coordinate,
-        rate,
-        direction,
-        paused,
-        age: 0.0,
-    }
-}
-
-fn staged_event_time(playback: &PlaybackState, target: f64) -> f64 {
-    let at = playback.at + (target - playback.coordinate).abs() / playback.rate;
-    let frame = at.round();
-    if (at - frame).abs() < 1e-8 { frame } else { at }
-}
-
-fn next_staged_event(
+fn staged_value(
     definition: &StagedEnvelfoDefinition,
     state: &StagedEnvelfoState,
-    limit: f64,
-    inclusive: bool,
-) -> Option<(f64, usize, String)> {
-    if state.completed {
-        return None;
-    }
-    let stage = &definition.stages[state.stage];
-    let playback = &state.playback;
-    if indefinite_segments(&stage.segments)
-        && !state.stage_done
-        && stage.segments[state.segment_index..]
-            .iter()
-            .all(|s| s.frames == 0.0)
-    {
-        return if if inclusive {
-            playback.at <= limit
-        } else {
-            playback.at < limit
-        } {
-            Some((playback.at, 0, "done".to_owned()))
-        } else {
-            None
-        };
-    }
-    if playback.paused || playback.rate == 0.0 {
-        return None;
-    }
-    let start = playback.coordinate;
-    let forward = playback.direction > 0.0;
-    let mut candidates = Vec::new();
-    if indefinite_segments(&stage.segments) {
-        let parts = &stage.segments[state.segment_index..];
-        if !indefinite_segments(parts) && forward {
-            let target = total_frames(parts);
-            if start < target || start == target && !state.stage_done {
-                candidates.push((staged_event_time(playback, target), 0, "done".to_owned()));
-            }
-        }
-    } else if stage.kind == 1 && stage.playback == 0 {
-        for (order, (position, name)) in stage.markers.iter().enumerate() {
-            if (if forward {
-                *position > start
-            } else {
-                *position < start
-            }) || (*position == start
-                && state.cursor_order != usize::MAX
-                && if forward {
-                    order > state.cursor_order
-                } else {
-                    order < state.cursor_order
-                })
-            {
-                candidates.push((staged_event_time(playback, *position), order, name.clone()));
-            }
-        }
-        if forward
-            && (start < 1.0
-                || (start == 1.0
-                    && state.cursor_order != usize::MAX
-                    && state.cursor_order < stage.markers.len()))
-        {
-            candidates.push((
-                staged_event_time(playback, 1.0),
-                stage.markers.len(),
-                "done".to_owned(),
-            ));
-        }
-    } else if stage.kind == 1 && (stage.loop_start != 0.0 || stage.loop_end != 1.0) {
-        let width = stage.loop_end - stage.loop_start;
-        let period = if stage.playback == 1 {
-            width
-        } else {
-            2.0 * width
-        };
-        for (order, (position, name)) in stage.markers.iter().enumerate() {
-            let mut targets = vec![*position];
-            let mut bases = Vec::new();
-            if *position >= stage.loop_start {
-                if stage.playback == 1 {
-                    bases.push(stage.loop_end + position - stage.loop_start);
-                } else {
-                    if *position < stage.loop_end {
-                        bases.push(2.0 * stage.loop_end - position);
-                    }
-                    if *position > stage.loop_start {
-                        bases.push(stage.loop_end + width + position - stage.loop_start);
-                    }
-                }
-            }
-            for base in bases {
-                let relative = (start - base) / period;
-                let turn = if forward {
-                    (relative.floor() + 1.0).max(0.0)
-                } else {
-                    relative.ceil() - 1.0
-                };
-                if turn >= 0.0 {
-                    targets.push(base + turn * period);
-                }
-                if start >= base && (relative - relative.round()).abs() < 1e-8 {
-                    targets.push(start);
-                }
-            }
-            for target in targets {
-                if (if forward {
-                    target > start
-                } else {
-                    target < start
-                }) || ((target - start).abs() < 1e-8
-                    && state.cursor_order != usize::MAX
-                    && if forward {
-                        order > state.cursor_order
-                    } else {
-                        state.cursor_order < stage.markers.len() && order < state.cursor_order
-                    })
-                {
-                    candidates.push((staged_event_time(playback, target), order, name.clone()));
-                }
-            }
-        }
-        let order = stage.markers.len();
-        let turn = if forward {
-            ((start - stage.loop_end) / width).floor() + 1.0
-        } else {
-            ((start - stage.loop_end) / width).ceil() - 1.0
-        };
-        let turn = if forward { turn.max(0.0) } else { turn };
-        if turn >= 0.0 {
-            let target = stage.loop_end + turn * width;
-            candidates.push((
-                staged_event_time(playback, target),
-                order,
-                if stage.playback == 1 {
-                    "cycle"
-                } else {
-                    "turned"
-                }
-                .to_owned(),
-            ));
-            if stage.playback == 2 && turn.rem_euclid(2.0) == 1.0 {
-                candidates.push((
-                    staged_event_time(playback, target),
-                    order + 1,
-                    "cycle".to_owned(),
-                ));
-            }
-        }
-        let relative = (start - stage.loop_end) / width;
-        if start + 1e-8 >= stage.loop_end && (relative - relative.round()).abs() < 1e-8 {
-            if state.cursor_order < order {
-                candidates.push((
-                    playback.at,
-                    order,
-                    if stage.playback == 1 {
-                        "cycle"
-                    } else {
-                        "turned"
-                    }
-                    .to_owned(),
-                ));
-            }
-            if stage.playback == 2
-                && relative.round().rem_euclid(2.0) == 1.0
-                && state.cursor_order == order
-            {
-                candidates.push((playback.at, order + 1, "cycle".to_owned()));
-            }
-        }
-    } else if stage.kind == 1 {
-        let period = if stage.playback == 1 { 1.0 } else { 2.0 };
-        for (order, (position, name)) in stage.markers.iter().enumerate() {
-            let offsets = if stage.playback == 1 {
-                vec![*position]
-            } else {
-                vec![*position, 2.0 - position]
-            };
-            for offset in offsets {
-                let relative = (start - offset) / period;
-                let turn = if forward {
-                    relative.floor() + 1.0
-                } else {
-                    relative.ceil() - 1.0
-                };
-                let target = turn * period + offset;
-                candidates.push((staged_event_time(playback, target), order, name.clone()));
-                if state.cursor_order != usize::MAX
-                    && (relative - relative.round()).abs() < 1e-8
-                    && if forward {
-                        order > state.cursor_order
-                    } else {
-                        order < state.cursor_order
-                    }
-                {
-                    candidates.push((playback.at, order, name.clone()));
-                }
-            }
-        }
-        let boundary = if forward {
-            start.floor() + 1.0
-        } else {
-            start.ceil() - 1.0
-        };
-        let order = stage.markers.len();
-        candidates.push((
-            staged_event_time(playback, boundary),
-            order,
-            if stage.playback == 1 {
-                "cycle"
-            } else {
-                "turned"
-            }
-            .to_owned(),
-        ));
-        if stage.playback == 2 {
-            if boundary.rem_euclid(2.0) == 0.0 {
-                candidates.push((
-                    staged_event_time(playback, boundary),
-                    order + 1,
-                    "cycle".to_owned(),
-                ));
-            }
-            if start == start.round() && start.rem_euclid(2.0) == 0.0 && state.cursor_order == order
-            {
-                candidates.push((playback.at, order + 1, "cycle".to_owned()));
-            }
-        }
-    } else if stage.kind == 2 {
-        for (order, (position, name)) in stage.markers.iter().enumerate() {
-            let offset = start - position;
-            let turn = if forward {
-                offset.floor() + 1.0
-            } else {
-                offset.ceil() - 1.0
-            };
-            let target = turn + position;
-            candidates.push((staged_event_time(playback, target), order, name.clone()));
-            if state.cursor_order != usize::MAX
-                && offset.fract() == 0.0
-                && if forward {
-                    order > state.cursor_order
-                } else {
-                    order < state.cursor_order
-                }
-            {
-                candidates.push((playback.at, order, name.clone()));
-            }
-        }
-    }
-    candidates
-        .into_iter()
-        .filter(|(at, _, _)| if inclusive { *at <= limit } else { *at < limit })
-        .min_by(|a, b| {
-            a.0.total_cmp(&b.0).then_with(|| {
-                let order = |candidate: &(f64, usize, String)| {
-                    if forward || candidate.2 == "turned" || candidate.2 == "cycle" {
-                        candidate.1 as i64
-                    } else {
-                        -(candidate.1 as i64)
-                    }
-                };
-                order(a).cmp(&order(b))
-            })
-        })
+    at: Time,
+) -> PyResult<f64> {
+    Ok(definition
+        .body
+        .value(&state.core, at)
+        .map_err(core_error)?
+        .value)
 }
 
-fn staged_transition(
+fn staged_command(
     definition: &StagedEnvelfoDefinition,
     state: &mut StagedEnvelfoState,
-    event: &str,
-    at: f64,
-) -> bool {
-    if state.completed {
-        return false;
-    }
-    let Some((_, _, target)) = definition
-        .transitions
-        .iter()
-        .find(|(source, kind, _)| *source == state.stage && *kind == event)
-    else {
-        return false;
-    };
-    let value = staged_value(definition, state, at);
-    if *target == definition.stages.len() {
-        state.completed = true;
-        state.complete_value = value;
-        true
-    } else {
-        let stage = &definition.stages[*target];
-        *state = StagedEnvelfoState {
-            segment_index: 0,
-            stage_done: false,
-            stage: *target,
-            playback: stage_playback(stage, at, state.playback.paused, state.playback.direction),
-            entry_value: if stage.current_initial {
-                value
-            } else {
-                stage.initial
-            },
-            completed: false,
-            complete_value: 0.0,
-            cursor_at: at,
-            cursor_order: usize::MAX,
-            traversals: 0,
-        };
-        false
-    }
+    at: Time,
+    command: stages::StageCommand,
+) -> PyResult<Vec<stages::OutputEvent>> {
+    let ordinal = state
+        .ordinal
+        .checked_add(1)
+        .ok_or_else(|| PyValueError::new_err("Stage ordinal overflow"))?;
+    let result = definition
+        .body
+        .advance(
+            &mut state.core,
+            at,
+            Some(&stages::Event {
+                at,
+                ordinal,
+                command,
+            }),
+        )
+        .map_err(core_error)?;
+    state.ordinal = ordinal;
+    Ok(result.events)
 }
 
 fn advance_ramp(value: &mut f64, step: f64, remaining: &mut usize) {
@@ -4642,8 +3961,8 @@ fn valid_envelfo_owners(owners: &[usize]) -> bool {
 
 fn queue_delayed_event(
     queue: &mut Vec<DelayedEvent>,
-    at: f64,
-    delay: f64,
+    at: Time,
+    delay: Time,
     connection: DelayedConnection,
 ) -> PyResult<()> {
     if queue.len() == 4096 {
@@ -4651,8 +3970,8 @@ fn queue_delayed_event(
             "Delayed Envelfo event capacity exceeded",
         ));
     }
-    let due = at + delay;
-    if !due.is_finite() || due <= at {
+    let due = at.checked_add(delay).map_err(core_error)?;
+    if due <= at {
         return Err(PyValueError::new_err(
             "Delayed Envelfo event time is not representable",
         ));
@@ -4679,6 +3998,6 @@ fn forward_event(count: &mut usize, state: &mut u64, every: usize, probability: 
 fn sample_hold_draw(definition: &NamedEnvelopeDefinition, state: &mut NamedEnvelopeState) {
     let (_, minimum, maximum) = definition.sample_hold.unwrap();
     let word = random_word(&mut state.random_state);
-    state.start_value =
+    state.sampled_value =
         minimum + (maximum - minimum) * ((word >> 11) as f64 / (1_u64 << 53) as f64);
 }
