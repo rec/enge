@@ -5,13 +5,14 @@ from math import ceil
 from typing import Literal
 
 import numpy as np
-from ufor import lfo
+from envelfo import runtime
+from ufor.envelfo import LFO, EnvelfoState, LFOState
 from ufor.oscillator import Waveform
 
 
 def lfo_samples(
-    definition: lfo.LFO,
-    state: lfo.LFOState,
+    definition: LFO,
+    state: EnvelfoState,
     start: int,
     frames: int,
     sample_rate: int,
@@ -31,23 +32,28 @@ def lfo_samples(
         raise ValueError("Control interval must be a positive integer")
     if backend not in ("numpy", "native"):
         raise ValueError(f"Unknown LFO backend: {backend}")
+    current = state.runtime
+    assert isinstance(current, LFOState)
+    position = current.position
+    if position.paused or position.direction != 1:
+        raise ValueError("Block LFO rendering requires forward, unpaused playback")
     at = Fraction(start, sample_rate)
-    if at < state.at or at < state.started_at:
+    if at < position.at:
         raise ValueError("LFO query precedes its current state")
     if not frames:
         return np.empty((0, 2))
     interval = control_interval
-    if definition.waveform != Waveform.sine or state.rate * interval * 2 >= sample_rate:
+    if definition.shape != Waveform.sine or position.rate * interval * 2 >= sample_rate:
         interval = 1
     if frames == 1 and interval == 1 and backend == "numpy":
-        value = lfo.lfo_at(definition, state, at)
+        value = runtime.envelfo_at(definition, state, at)
         return np.array([[value.value, value.weight]])
-    weights = _activation_spans(definition, state, at, frames, sample_rate)
-    anchor = ceil(max(state.at, state.started_at) * sample_rate)
+    weights = _activation_spans(definition, current, at, frames, sample_rate)
+    anchor = ceil(position.at * sample_rate)
     offset = (start - anchor) % interval
     count = frames if interval == 1 else (offset + max(0, frames - 1)) // interval + 2
     first = start if interval == 1 else start - offset
-    spans = _phase_spans(definition, state, first, count, sample_rate, interval)
+    spans = _phase_spans(definition, current, first, count, sample_rate, interval)
     sample_weights = (
         weights if interval == 1 else np.array([[0, count, 1, 0, 0, 1, 0]], dtype=float)
     )
@@ -55,9 +61,7 @@ def lfo_samples(
         from . import _native
 
         output = _native.render_lfo(
-            [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                definition.waveform
-            ),
+            [Waveform.sine, Waveform.square, Waveform.triangle].index(definition.shape),
             spans,
             sample_weights,
             count,
@@ -67,9 +71,9 @@ def lfo_samples(
         for span in spans:
             begin, end = int(span[0]), int(span[1])
             phase = span[2] + np.arange(end - begin) * span[3]
-            if definition.waveform == Waveform.sine:
+            if definition.shape == Waveform.sine:
                 values = np.sin(2 * np.pi * phase)
-            elif definition.waveform == Waveform.square:
+            elif definition.shape == Waveform.square:
                 values = np.full(end - begin, 1 if span[4] else -1)
             else:
                 values = 2 * phase - 1 if span[4] else 1 - 2 * phase
@@ -86,19 +90,24 @@ def lfo_samples(
                 _weights(weights, frames),
             )
         )
+    output[:, 0] = definition.center + definition.depth * output[:, 0]
     return output
 
 
 def _phase_spans(
-    definition: lfo.LFO,
-    state: lfo.LFOState,
+    definition: LFO,
+    state: LFOState,
     start: int,
     frames: int,
     sample_rate: int,
     interval: int,
 ) -> np.ndarray:
-    phase = lfo.phase_at(state, Fraction(start, sample_rate))
-    step = (state.rate * interval / sample_rate) % 1
+    position = state.position
+    phase = (
+        position.coordinate
+        + position.rate * (Fraction(start, sample_rate) - position.at)
+    ) % 1
+    step = (position.rate * interval / sample_rate) % 1
     spans: list[list[float]] = []
     first = 0
     while first < frames:
@@ -110,7 +119,7 @@ def _phase_spans(
             else frames - first
         )
         origin, increment = phase, step
-        if definition.waveform == Waveform.triangle:
+        if definition.shape == Waveform.triangle:
             width = definition.duty_cycle if rising else 1 - definition.duty_cycle
             origin = (
                 phase / width if rising else (phase - definition.duty_cycle) / width
@@ -125,13 +134,14 @@ def _phase_spans(
 
 
 def _activation_spans(
-    definition: lfo.LFO,
-    state: lfo.LFOState,
+    definition: LFO,
+    state: LFOState,
     at: Fraction,
     frames: int,
     sample_rate: int,
 ) -> np.ndarray:
-    age = at - state.started_at - definition.delay
+    position = state.position
+    age = position.age + at - position.at - definition.delay
     spans: list[list[float]] = [[0, frames, 1, 0, 0, 1, 0]]
     delayed = min(frames, max(0, ceil(-age * sample_rate)))
     spans.append([0, delayed, 0, 0, 0, 1, 0])

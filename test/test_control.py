@@ -5,8 +5,9 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from envelfo import runtime
 from test_synth import check_audio
-from ufor import lfo, modulation
+from ufor import envelfo, modulation
 from ufor.samples import controls
 
 from enge import control
@@ -235,10 +236,10 @@ def test_additive_routes_retain_small_terms_under_cancellation(frames: int) -> N
 def test_lfo_interval_matches_event_anchored_interpolation(
     tmp_path: Path, backend: Literal["numpy", "native"], interval: int
 ) -> None:
-    definition = lfo.LFO(
+    definition = envelfo.LFO(
         rate=5, phase=Fraction(1, 7), delay=Fraction(3, 96000), fade_in=Fraction(1, 10)
     )
-    state = lfo.initial_lfo(definition, Fraction(37, 48000))
+    state = runtime.initial_envelfo(definition, Fraction(37, 48000))
     actual = lfo_samples(definition, state, 37, 48000, 48000, backend, interval)
     knots = np.arange(0, 48000 + interval, interval)
     values = np.sin(2 * np.pi * (1 / 7 + knots * 5 / 48000))
@@ -253,7 +254,7 @@ def test_lfo_interval_matches_event_anchored_interpolation(
         [
             lfo_samples(
                 definition,
-                lfo.LFOState.model_validate_json(state.model_dump_json()),
+                envelfo.EnvelfoState.model_validate_json(state.model_dump_json()),
                 37 + i,
                 min(997, 48000 - i),
                 48000,
@@ -282,8 +283,8 @@ def test_lfo_interval_matches_event_anchored_interpolation(
 def test_control_interval_preserves_edges_and_fast_lfos(
     tmp_path: Path, backend: Literal["numpy", "native"], waveform: str, rate: int
 ) -> None:
-    definition = lfo.LFO(waveform=waveform, rate=rate, duty_cycle=Fraction(1, 3))
-    state = lfo.initial_lfo(definition, Fraction(0))
+    definition = envelfo.LFO(shape=waveform, rate=rate, duty_cycle=Fraction(1, 3))
+    state = runtime.initial_envelfo(definition, Fraction(0))
     expected = lfo_samples(definition, state, 0, 48000, 48000, backend)
     actual = lfo_samples(definition, state, 0, 48000, 48000, backend, 1024)
     check_audio(tmp_path / "lfo-control-edges.wav", actual, expected)
@@ -305,11 +306,13 @@ def test_block_evaluation_does_not_call_scalar_models(
 
     monkeypatch.setattr(controls, "control_at", forbidden)
     monkeypatch.setattr(modulation, "evaluate", forbidden)
-    monkeypatch.setattr(lfo, "lfo_at", forbidden)
+    monkeypatch.setattr(runtime, "envelfo_at", forbidden)
     engine = noise.OfflineNoise(noise.prepare(document), "native")
     engine.advance(actions, 0, 48000)
-    definition = lfo.LFO(rate=3)
-    lfo_samples(definition, lfo.initial_lfo(definition, Fraction(0)), 0, 48000, 48000)
+    definition = envelfo.LFO(rate=3)
+    lfo_samples(
+        definition, runtime.initial_envelfo(definition, Fraction(0)), 0, 48000, 48000
+    )
 
 
 @pytest.mark.parametrize("kind", ["synth", "sampler", "fm", "noise"])
@@ -425,8 +428,8 @@ def test_control_cache_preserves_ownership_and_observes_same_frame_changes(
 def test_interpolated_lfo_rate_and_reset_events_do_not_anticipate_changes(
     tmp_path: Path, backend: Literal["numpy", "native"]
 ) -> None:
-    definition = lfo.LFO(rate=3, phase=Fraction(1, 7))
-    state = lfo.initial_lfo(definition, Fraction(0))
+    definition = envelfo.LFO(rate=3, phase=Fraction(1, 7))
+    state = runtime.initial_envelfo(definition, Fraction(0))
     actual = []
     expected = []
     for start, end, event in [
@@ -435,10 +438,10 @@ def test_interpolated_lfo_rate_and_reset_events_do_not_anticipate_changes(
         (23011, 48000, "reset"),
     ]:
         if event is not None:
-            state = lfo.lfo_event(
+            state = runtime.envelfo_event(
                 definition,
                 state,
-                lfo.LFOEvent(
+                envelfo.EnvelfoEvent(
                     at=Fraction(start, 48000),
                     ordinal=0,
                     action=event,
@@ -450,7 +453,8 @@ def test_interpolated_lfo_rate_and_reset_events_do_not_anticipate_changes(
         )
         knots = list(range(start, end + 64, 64))
         values = [
-            lfo.lfo_at(definition, state, Fraction(i, 48000)).value for i in knots
+            runtime.envelfo_at(definition, state, Fraction(i, 48000)).value
+            for i in knots
         ]
         expected.append(
             np.column_stack(

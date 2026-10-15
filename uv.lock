@@ -77,7 +77,7 @@ dev = [
 [[package]]
 name = "envelfo"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#950d3a1484ee4b89caa9d6b4318f174c1bb07ef5" }
+source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#a9213ce9d99602866022339975ae5469e7784985" }
 dependencies = [
     { name = "ufor" },
 ]
@@ -474,7 +474,7 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.2.0"
-source = { git = "ssh://git@github.com/rec/ufor.git?branch=main#862e2c142d19547729cab019ed75ed13ff1bc6c8" }
+source = { git = "ssh://git@github.com/rec/ufor.git?branch=main#9b3b0cd6cd65f3af1015ae5b333e1c2e0ee681d6" }
 dependencies = [
     { name = "pydantic" },
     { name = "reccy" },

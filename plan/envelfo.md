@@ -18,7 +18,8 @@ Neither core owns audio rendering, MIDI ports, clock acquisition, or application
 configuration. A host supplies time and inputs and consumes signals and events.
 
 Use `enveLFO` as the project display name, `envelfo` for the repository and
-Python package, `envelfo-core` for the Rust crate, and `Envelfo` in type names.
+Python package, `envelfo-core` for the Rust crate, and `EnveLFO` as the shared
+definition base.
 The recent breaking rename remains canonical. Do not introduce old-name aliases
 or backward readers during extraction.
 
@@ -430,6 +431,37 @@ before distributing releases. No new dependencies or tooling are prescribed
 without an implementation need and review.
 
 ## Completion criteria
+
+Final extraction audit, 2026-10-15: the standalone implementations and the enge
+and arpeg integrations are complete under the accepted host/continuation
+contracts. The current capability matrix is in enveLFO's
+`doc/extraction-audit.md`; enge's `doc/envelfo-contract.md` records its host boundary.
+Earlier dated progress notes above are history, not current gap lists.
+
+The audit found and removed a remaining legacy `ufor.lfo` execution path.
+Lighting now uses the canonical LFO definition and stateless shared mathematics;
+enge's block helper consumes canonical state directly, without old-model
+conversion. The public legacy model/state/event/value classes and execution
+functions have no aliases. uFor's generated schema now contains one LFO model.
+
+Additional shared host traces cover independently clocked children, elapsed
+beats across stops and transport seeks, direct song-position LFOs, delayed
+capture during stopped transport, seconds-based Slew, division/offset sampling,
+curved release and retained/pending state across continuation. Both languages
+read the same expectations. Rust's body runner visits every shared body case,
+instead of naming individual LFO cases and silently missing future additions.
+
+Distribution verification includes Python source/wheel builds, tests against
+an installed wheel outside the checkout without NumPy or enge, and standalone
+Rust package compilation with the MIT notices included. A release-only workflow
+gates Linux/Windows/macOS, Python 3.13/3.15 and Rust debug/release builds. It is
+not run per commit, and cross-platform release results are not claimed now.
+
+Serialized Rust disk snapshots and optional standalone Python bindings remain
+separate features. Host-supplied clock mapping is the intended boundary, not
+a missing built-in tempo implementation. arpeg's after-note-on expression
+ordering remains explicitly documented for reconsideration. No tag, publication
+or new musical policy is part of extraction closeout.
 
 - Python installs and evaluates Envelfos without NumPy, enge, or native bindings.
 - Rust consumers can link and evaluate `envelfo-core` without Python or enge.

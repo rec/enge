@@ -13,10 +13,9 @@ from envelfo.runtime import (
     envelfo_event,
     envelope_complete_at,
     initial_envelfo,
-    lfo_definition,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import envelfo_random, instrument_trace, lfo, modulation
+from ufor import envelfo_random, instrument_trace, modulation
 from ufor.base import Model
 from ufor.control import TempoMap
 from ufor.envelfo import (
@@ -766,7 +765,6 @@ class ControlRenderer:
         ] = {}
         self.cached_lfos: dict[int, np.ndarray] = {}
         self.cached_controls: dict[tuple[int, str, Fraction], np.ndarray] = {}
-        self.lfo_definitions: dict[int, lfo.LFO] = {}
         self.sample_rate = sample_rate
         self.tempo_map = tempo_map.model_copy(deep=True) if tempo_map else None
         self.declarations = declarations
@@ -1392,23 +1390,15 @@ class ControlRenderer:
                 and not position.paused
                 and position.direction == 1
             ):
-                if id(body) not in self.lfo_definitions:
-                    self.lfo_definitions[id(body)] = lfo_definition(body)
                 values = lfo_samples(
-                    self.lfo_definitions[id(body)],
-                    lfo.LFOState(
-                        at=position.at,
-                        started_at=position.at - position.age,
-                        phase=position.coordinate % 1,
-                        rate=position.rate,
-                    ),
+                    body,
+                    state,
                     start,
                     frames,
                     self.sample_rate,
                     self.backend,
                     self.control_interval,
                 )
-                values[:, 0] = body.center + body.depth * values[:, 0]
                 return values
             values = [
                 envelfo_at(
@@ -1487,22 +1477,16 @@ class ControlRenderer:
         if isinstance(body, LFO):
             if not frames:
                 return np.empty(0)
-            definition = lfo_definition(body)
             samples = lfo_samples(
-                definition,
-                lfo.LFOState(
-                    at=position.at,
-                    started_at=position.at - position.age,
-                    phase=position.coordinate % 1,
-                    rate=position.rate,
-                ),
+                body,
+                EnvelfoState(runtime=LFOState(at=position.at, position=position)),
                 start,
                 frames,
                 self.sample_rate,
                 self.backend,
                 1,
             )
-            return body.center + body.depth * samples[:, 0] * samples[:, 1]
+            return body.center + (samples[:, 0] - body.center) * samples[:, 1]
         assert isinstance(body, Envelope)
         if body.playback != PlaybackMode.once or position.coordinate < 0:
             return None
@@ -3358,13 +3342,13 @@ def _persistent_modulation(
             assert isinstance(envelfo, LFO)
             intercept += slope * envelfo.center
             slope *= envelfo.depth
-            generator = lfo_definition(envelfo)
+            generator = envelfo
             index = len(lfo_rows)
             lfo_rows.append(
                 [
                     ["instrument", "part", "trigger", "voice"].index(source.scope),
                     [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                        generator.waveform
+                        generator.shape
                     ),
                     parameter,
                     0 if operation == modulation.Operation.add else 1,
@@ -3386,6 +3370,7 @@ def _persistent_modulation(
                 generator.fade_in
                 * (1 if envelfo.clock == "beats" else definition.sample_rate),
             ):
+                assert isinstance(value, Fraction)
                 lfo_rationals.append((value.numerator, value.denominator))
             if source.scope == "instrument":
                 lfo_sources.setdefault(binding.reference, []).append(index)
@@ -3410,7 +3395,7 @@ def _persistent_modulation(
             )
             continue
         if isinstance(envelfo, LFO):
-            generator = lfo_definition(envelfo)
+            generator = envelfo
             source_scopes.add(envelfo.scope)
             if envelfo.scope != "voice":
                 lfo_sources.setdefault(binding.reference, []).append(len(lfo_rows))
@@ -3422,7 +3407,7 @@ def _persistent_modulation(
                 [
                     ["instrument", "part", "trigger", "voice"].index(envelfo.scope),
                     [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                        generator.waveform
+                        generator.shape
                     ),
                     0,
                     1,
@@ -3440,6 +3425,7 @@ def _persistent_modulation(
                 generator.fade_in
                 * (1 if envelfo.clock == "beats" else definition.sample_rate),
             ):
+                assert isinstance(value, Fraction)
                 lfo_rationals.append((value.numerator, value.denominator))
             continue
         if isinstance(envelfo, Envelope):
