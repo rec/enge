@@ -333,8 +333,29 @@ therefore affect routed crossings through the same state used for signals.
 Numeric LFO command payloads use their decimal value, matching Python
 `Fraction(str(value))`, with checked rational overflow rather than binary-float
 denominator expansion. Existing Patch-level command restrictions remain.
-Native retained Patch operators/orchestration and Python host scheduler
-replacement are still unfinished; this does not claim complete extraction.
+At that stage, native retained Patch operators/orchestration and Python host
+scheduler replacement remained unfinished.
+
+Step 4 continued on 2026-10-15 with native Patch orchestration and connection
+scheduling. Each native voice now owns one shared `PatchState`, including child
+playback, retained signals, connection gates, random draws and delayed commands.
+The old native transform evaluator, event counters, marker dispatcher, delayed
+queues and deferred start dispatcher are removed. Prepared source owners preserve
+shared children and named outputs. Prepared random-stream keys preserve existing
+sample and probability sequences when independently named graphs are flattened.
+
+The core clock interface now addresses each child, allowing exact seconds,
+elapsed beats and signal-only transport positions in one scheduler. enge maps
+host tempo observations, supplies instrument/part-owned signals, and retains
+voice admission, minimum hold, release timing and retirement. Same-time commands
+are bracketed by an exclusive event phase and one inclusive audio observation;
+Threshold retains next-frame delivery, and Slew measures host seconds even while
+beats are stopped. Aggregate snapshots clone core state and pending host release
+policy. Cross-clock audio regressions cover fractional delayed cues, probability,
+stopped clocks, song seeks and restoration into a fresh native renderer.
+
+Python audio-host scheduler replacement, serialized Rust snapshots and the
+combined arpeg integration remain separate unfinished extraction work.
 
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline

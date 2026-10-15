@@ -2,19 +2,21 @@
 
 use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_position, frame_time};
 use envelfo_core::envelope::{
-    Envelope, EnvelopeCommand, EnvelopeState, Initial, Marker, Playback, Retrigger,
-    Segment as CoreSegment, Start,
+    Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
 };
 use envelfo_core::lfo::Command;
-use envelfo_core::random::random_word;
+use envelfo_core::patch::{ChildCommand, PatchState};
 use envelfo_core::time::Time;
 use envelfo_core::{lfo, stages};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use std::collections::VecDeque;
 use std::f64::consts::{PI, TAU};
+
+use patch_host::{PatchHost, clock_at};
+
+mod patch_host;
 
 #[derive(Clone, PartialEq)]
 struct ControlDefinition {
@@ -51,7 +53,6 @@ struct LfoDefinition {
 struct LfoPlayback {
     core: lfo::LFOState,
     ordinal: u64,
-    cursor: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -75,15 +76,6 @@ struct NamedEnvelopeDefinition {
     event_started: bool,
 }
 
-#[derive(Clone)]
-struct NamedEnvelopeState {
-    core: EnvelopeState,
-    ordinal: u64,
-    random_state: u64,
-    sampled_value: f64,
-    pending_release: Option<(Time, Time)>,
-}
-
 #[derive(Clone, PartialEq)]
 struct PatchEventConnection {
     threshold: bool,
@@ -92,7 +84,6 @@ struct PatchEventConnection {
     marker: Time,
     destination: usize,
     cue: Option<String>,
-    order: usize,
     every: usize,
     offset: usize,
     probability: u64,
@@ -106,20 +97,11 @@ struct PatchStageStartConnection {
     source: usize,
     port: String,
     destination: usize,
-    order: usize,
     every: usize,
     offset: usize,
     probability: u64,
     key: u64,
     delay: Time,
-}
-
-#[derive(Clone)]
-struct EnvelopeStart {
-    at: Time,
-    order: usize,
-    voice: usize,
-    destination: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -130,12 +112,6 @@ struct StagedEnvelfoDefinition {
     intercept: f64,
     slope: f64,
     beat_clock: bool,
-}
-
-#[derive(Clone)]
-struct StagedEnvelfoState {
-    core: stages::StageState,
-    ordinal: u64,
 }
 
 #[derive(Clone, PartialEq)]
@@ -149,27 +125,6 @@ struct StagedConnection {
     probability: u64,
     key: u64,
     delay: Time,
-}
-
-#[derive(Clone)]
-struct StagedEvent {
-    at: Time,
-    voice: usize,
-    source: usize,
-    port: String,
-}
-
-#[derive(Clone, Copy)]
-enum DelayedConnection {
-    StagedCue(usize),
-    PatchEvent(usize),
-    StageStart(usize),
-}
-
-#[derive(Clone)]
-struct DelayedEvent {
-    at: Time,
-    connection: DelayedConnection,
 }
 
 type PatchEventInput = (
@@ -279,7 +234,9 @@ struct GraphEdge {
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
-    envelfo_transform_states: Vec<Option<f64>>,
+    patch_host: Option<PatchHost>,
+    patch_states: Vec<Option<PatchState>>,
+    pending_releases: Vec<Vec<Option<Time>>>,
     envelfo_transforms: Vec<EnvelfoTransformInput>,
     envelfo_transform_routes: Vec<EnvelfoTransformRoute>,
     rate: f64,
@@ -299,22 +256,15 @@ pub struct SynthRuntimeSnapshot {
     lfo_definitions: Vec<LfoDefinition>,
     lfo_owners: Vec<usize>,
     lfo_event_states: Vec<LfoPlayback>,
-    voice_lfo_event_states: Vec<LfoPlayback>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
-    pending_envelope_starts: Vec<EnvelopeStart>,
-    delayed_events: Vec<Vec<DelayedEvent>>,
-    event_counts: Vec<usize>,
     envelfo_keys: Vec<u64>,
-    event_random: Vec<u64>,
     beat_points: Vec<BeatPoint>,
     staged_envelfos: Vec<StagedEnvelfoDefinition>,
     staged_owners: Vec<usize>,
-    staged_states: Vec<StagedEnvelfoState>,
     staged_connections: Vec<StagedConnection>,
-    staged_pending: VecDeque<StagedEvent>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -325,7 +275,6 @@ pub struct SynthRuntimeSnapshot {
     mod_phases: Vec<f64>,
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
-    named_states: Vec<NamedEnvelopeState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -352,10 +301,12 @@ pub struct SynthRuntimeSnapshot {
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntime {
+    patch_host: Option<PatchHost>,
+    patch_states: Vec<Option<PatchState>>,
+    pending_releases: Vec<Vec<Option<Time>>>,
     envelfo_transforms: Vec<EnvelfoTransformInput>,
     envelfo_transform_routes: Vec<EnvelfoTransformRoute>,
     envelfo_transform_values: Vec<f64>,
-    envelfo_transform_states: Vec<Option<f64>>,
     rate: f64,
     filter_after_amplitude: bool,
     waveform: u8,
@@ -374,22 +325,15 @@ pub struct SynthRuntime {
     lfo_definitions: Vec<LfoDefinition>,
     lfo_owners: Vec<usize>,
     lfo_event_states: Vec<LfoPlayback>,
-    voice_lfo_event_states: Vec<LfoPlayback>,
     named_envelopes: Vec<NamedEnvelopeDefinition>,
     named_owners: Vec<usize>,
     patch_events: Vec<PatchEventConnection>,
     patch_stage_starts: Vec<PatchStageStartConnection>,
-    pending_envelope_starts: Vec<EnvelopeStart>,
-    delayed_events: Vec<Vec<DelayedEvent>>,
-    event_counts: Vec<usize>,
     envelfo_keys: Vec<u64>,
-    event_random: Vec<u64>,
     beat_points: Vec<BeatPoint>,
     staged_envelfos: Vec<StagedEnvelfoDefinition>,
     staged_owners: Vec<usize>,
-    staged_states: Vec<StagedEnvelfoState>,
     staged_connections: Vec<StagedConnection>,
-    staged_pending: VecDeque<StagedEvent>,
     filter_definitions: Vec<FilterDefinition>,
     context_kinds: Vec<usize>,
     context_states: Vec<ControlState>,
@@ -400,7 +344,6 @@ pub struct SynthRuntime {
     mod_phases: Vec<f64>,
     mod_errors: Vec<f64>,
     previous_modulators: Vec<f64>,
-    named_states: Vec<NamedEnvelopeState>,
     graph_phases: Vec<f64>,
     graph_errors: Vec<f64>,
     graph_outputs: Vec<f64>,
@@ -490,9 +433,8 @@ impl SynthRuntime {
         let lfo_count = lfo_definitions.len();
         let lfo_states = lfo_definitions
             .iter()
-            .map(|d| initial_lfo(d, Time::ZERO, 0))
+            .map(|d| initial_lfo(d, Time::ZERO))
             .collect::<PyResult<Vec<_>>>()?;
-        let voice_lfo_states = (0..slots).flat_map(|_| lfo_states.clone()).collect();
         let context_states = (0..context_capacity)
             .flat_map(|_| control_states.clone())
             .collect();
@@ -500,10 +442,12 @@ impl SynthRuntime {
             .map(|_| Ok(vec![amplitude.start()?]))
             .collect::<PyResult<_>>()?;
         Ok(Self {
+            patch_host: None,
+            patch_states: vec![None; slots],
+            pending_releases: vec![vec![]; slots],
             envelfo_transforms: Vec::new(),
             envelfo_transform_routes: Vec::new(),
             envelfo_transform_values: Vec::new(),
-            envelfo_transform_states: Vec::new(),
             rate,
             waveform,
             source_kind: 0,
@@ -524,22 +468,15 @@ impl SynthRuntime {
             lfo_definitions,
             lfo_owners: (0..lfo_count).collect(),
             lfo_event_states: lfo_states,
-            voice_lfo_event_states: voice_lfo_states,
             named_envelopes: Vec::new(),
             named_owners: Vec::new(),
             patch_events: Vec::new(),
             patch_stage_starts: Vec::new(),
-            pending_envelope_starts: Vec::new(),
-            delayed_events: (0..slots).map(|_| Vec::new()).collect(),
-            event_counts: Vec::new(),
             envelfo_keys: vec![0; slots],
-            event_random: Vec::new(),
             beat_points: Vec::new(),
             staged_envelfos: Vec::new(),
             staged_owners: Vec::new(),
-            staged_states: Vec::new(),
             staged_connections: Vec::new(),
-            staged_pending: VecDeque::new(),
             filter_definitions,
             context_kinds: vec![0; context_capacity],
             context_states,
@@ -550,7 +487,6 @@ impl SynthRuntime {
             mod_phases: vec![0.0; slots],
             mod_errors: vec![0.0; slots],
             previous_modulators: vec![0.0; slots],
-            named_states: Vec::new(),
             graph_phases: Vec::new(),
             graph_errors: Vec::new(),
             graph_outputs: Vec::new(),
@@ -912,15 +848,9 @@ impl SynthRuntime {
                 },
             )
             .collect::<PyResult<Vec<_>>>()?;
-        let states = definitions
-            .iter()
-            .cycle()
-            .take(self.frequencies.len() * count)
-            .map(|d| named_envelope_initial(d, Time::ZERO))
-            .collect::<PyResult<_>>()?;
         self.named_envelopes = definitions;
         self.named_owners = (0..count).collect();
-        self.named_states = states;
+        self.pending_releases = vec![vec![None; count]; self.frequencies.len()];
         Ok(())
     }
 
@@ -1156,20 +1086,9 @@ impl SynthRuntime {
                 },
             )
             .collect::<PyResult<_>>()?;
-        self.staged_states = (0..self.frequencies.len())
-            .flat_map(|_| definitions.iter())
-            .map(|d| {
-                Ok(StagedEnvelfoState {
-                    core: d.body.initial(Time::ZERO).map_err(core_error)?,
-                    ordinal: 0,
-                })
-            })
-            .collect::<PyResult<_>>()?;
         self.staged_envelfos = definitions;
         self.staged_owners = (0..self.staged_envelfos.len()).collect();
         self.staged_connections = connections;
-        self.staged_pending.clear();
-        self.reset_event_counts();
         Ok(())
     }
 
@@ -1261,7 +1180,6 @@ impl SynthRuntime {
             return Err(PyValueError::new_err("Invalid Envelfo transform graph"));
         }
         self.envelfo_transform_values = vec![0.0; self.frequencies.len() * nodes.len()];
-        self.envelfo_transform_states = vec![None; self.envelfo_transform_values.len()];
         self.envelfo_transforms = nodes;
         self.envelfo_transform_routes = routes;
         Ok(())
@@ -1317,7 +1235,7 @@ impl SynthRuntime {
                     marker,
                     destination,
                     cue,
-                    order,
+                    _order,
                     every,
                     offset,
                     probability,
@@ -1338,7 +1256,6 @@ impl SynthRuntime {
                             self.named_owners[destination]
                         },
                         cue,
-                        order,
                         every,
                         offset,
                         probability,
@@ -1348,7 +1265,6 @@ impl SynthRuntime {
                 },
             )
             .collect::<PyResult<_>>()?;
-        self.reset_event_counts();
         Ok(())
     }
 
@@ -1383,7 +1299,7 @@ impl SynthRuntime {
                     source,
                     port,
                     destination,
-                    order,
+                    _order,
                     every,
                     offset,
                     probability,
@@ -1400,7 +1316,6 @@ impl SynthRuntime {
                         } else {
                             self.named_owners[destination]
                         },
-                        order,
                         every,
                         offset,
                         probability,
@@ -1410,7 +1325,6 @@ impl SynthRuntime {
                 },
             )
             .collect::<PyResult<_>>()?;
-        self.reset_event_counts();
         Ok(())
     }
 
@@ -1460,7 +1374,7 @@ impl SynthRuntime {
                     marker,
                     destination,
                     cue,
-                    order,
+                    _order,
                     every,
                     offset,
                     probability,
@@ -1481,7 +1395,6 @@ impl SynthRuntime {
                             self.named_owners[destination]
                         },
                         cue,
-                        order,
                         every,
                         offset,
                         probability,
@@ -1492,7 +1405,6 @@ impl SynthRuntime {
             )
             .collect::<PyResult<Vec<_>>>()?;
         self.patch_events.extend(definitions);
-        self.reset_event_counts();
         Ok(())
     }
 
@@ -1610,9 +1522,11 @@ impl SynthRuntime {
 
     pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
+            patch_host: self.patch_host.clone(),
+            patch_states: self.patch_states.clone(),
+            pending_releases: self.pending_releases.clone(),
             amplitude_definitions: self.amplitude_definitions.clone(),
             amplitude_states: self.amplitude_states.clone(),
-            envelfo_transform_states: self.envelfo_transform_states.clone(),
             envelfo_transforms: self.envelfo_transforms.clone(),
             envelfo_transform_routes: self.envelfo_transform_routes.clone(),
             rate: self.rate,
@@ -1632,22 +1546,15 @@ impl SynthRuntime {
             lfo_definitions: self.lfo_definitions.clone(),
             lfo_owners: self.lfo_owners.clone(),
             lfo_event_states: self.lfo_event_states.clone(),
-            voice_lfo_event_states: self.voice_lfo_event_states.clone(),
             named_envelopes: self.named_envelopes.clone(),
             named_owners: self.named_owners.clone(),
             patch_events: self.patch_events.clone(),
             patch_stage_starts: self.patch_stage_starts.clone(),
-            pending_envelope_starts: self.pending_envelope_starts.clone(),
-            delayed_events: self.delayed_events.clone(),
-            event_counts: self.event_counts.clone(),
             envelfo_keys: self.envelfo_keys.clone(),
-            event_random: self.event_random.clone(),
             beat_points: self.beat_points.clone(),
             staged_envelfos: self.staged_envelfos.clone(),
             staged_owners: self.staged_owners.clone(),
-            staged_states: self.staged_states.clone(),
             staged_connections: self.staged_connections.clone(),
-            staged_pending: self.staged_pending.clone(),
             filter_definitions: self.filter_definitions.clone(),
             context_kinds: self.context_kinds.clone(),
             context_states: self.context_states.clone(),
@@ -1658,7 +1565,6 @@ impl SynthRuntime {
             mod_phases: self.mod_phases.clone(),
             mod_errors: self.mod_errors.clone(),
             previous_modulators: self.previous_modulators.clone(),
-            named_states: self.named_states.clone(),
             graph_phases: self.graph_phases.clone(),
             graph_errors: self.graph_errors.clone(),
             graph_outputs: self.graph_outputs.clone(),
@@ -1683,8 +1589,9 @@ impl SynthRuntime {
 
     pub(crate) fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         self.validate_snapshot(snapshot)?;
-        self.envelfo_transform_states
-            .clone_from(&snapshot.envelfo_transform_states);
+        self.patch_host.clone_from(&snapshot.patch_host);
+        self.patch_states.clone_from(&snapshot.patch_states);
+        self.pending_releases.clone_from(&snapshot.pending_releases);
         self.amplitude_states.clone_from(&snapshot.amplitude_states);
         self.frequencies.clone_from(&snapshot.frequencies);
         self.phases.clone_from(&snapshot.phases);
@@ -1693,17 +1600,7 @@ impl SynthRuntime {
         self.mod_errors.clone_from(&snapshot.mod_errors);
         self.previous_modulators
             .clone_from(&snapshot.previous_modulators);
-        self.named_states.clone_from(&snapshot.named_states);
-        self.staged_states.clone_from(&snapshot.staged_states);
-        self.staged_pending.clone_from(&snapshot.staged_pending);
-        self.pending_envelope_starts
-            .clone_from(&snapshot.pending_envelope_starts);
-        for (queue, saved) in self.delayed_events.iter_mut().zip(&snapshot.delayed_events) {
-            queue.clone_from(saved);
-        }
-        self.event_counts.clone_from(&snapshot.event_counts);
         self.envelfo_keys.clone_from(&snapshot.envelfo_keys);
-        self.event_random.clone_from(&snapshot.event_random);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
@@ -1725,8 +1622,6 @@ impl SynthRuntime {
         self.frame = snapshot.frame;
         self.control_states.clone_from(&snapshot.control_states);
         self.lfo_event_states.clone_from(&snapshot.lfo_event_states);
-        self.voice_lfo_event_states
-            .clone_from(&snapshot.voice_lfo_event_states);
         self.context_kinds.clone_from(&snapshot.context_kinds);
         self.context_states.clone_from(&snapshot.context_states);
         self.voice_part_contexts
@@ -1738,66 +1633,6 @@ impl SynthRuntime {
 }
 
 impl SynthRuntime {
-    fn reset_event_counts(&mut self) {
-        let delayed = self
-            .staged_connections
-            .iter()
-            .map(|c| c.delay)
-            .chain(self.patch_events.iter().map(|c| c.delay))
-            .chain(self.patch_stage_starts.iter().map(|c| c.delay))
-            .any(|delay| delay > Time::ZERO);
-        if delayed {
-            for queue in &mut self.delayed_events {
-                if queue.capacity() < 4096 {
-                    queue.reserve_exact(4096 - queue.len());
-                }
-            }
-        }
-        self.event_counts = vec![
-            0;
-            self.frequencies.len()
-                * (self.staged_connections.len()
-                    + self.patch_events.len()
-                    + self.patch_stage_starts.len())
-        ];
-        self.event_random = vec![0; self.event_counts.len()];
-        for voice in 0..self.frequencies.len() {
-            self.reset_voice_event_counts(voice);
-        }
-    }
-
-    fn reset_voice_event_counts(&mut self, voice: usize) {
-        let nodes = self.envelfo_transforms.len();
-        self.envelfo_transform_states[voice * nodes..(voice + 1) * nodes].fill(None);
-        self.delayed_events[voice].clear();
-        let connections =
-            self.staged_connections.len() + self.patch_events.len() + self.patch_stage_starts.len();
-        let offsets = self
-            .staged_connections
-            .iter()
-            .map(|c| c.offset)
-            .chain(self.patch_events.iter().map(|c| c.offset))
-            .chain(self.patch_stage_starts.iter().map(|c| c.offset));
-        for (count, offset) in self.event_counts[voice * connections..(voice + 1) * connections]
-            .iter_mut()
-            .zip(offsets)
-        {
-            *count = offset;
-        }
-        let keys = self
-            .staged_connections
-            .iter()
-            .map(|c| c.key)
-            .chain(self.patch_events.iter().map(|c| c.key))
-            .chain(self.patch_stage_starts.iter().map(|c| c.key));
-        for (state, key) in self.event_random[voice * connections..(voice + 1) * connections]
-            .iter_mut()
-            .zip(keys)
-        {
-            *state = self.envelfo_keys[voice] ^ key;
-        }
-    }
-
     pub(crate) fn validate_snapshot(&self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         if self.rate != snapshot.rate
             || self.waveform != snapshot.waveform
@@ -1836,78 +1671,11 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn song_beat_at(&self, frame: Time) -> PyResult<Time> {
-        let index = self.beat_points.partition_point(|p| p.clock_frame <= frame);
-        let point = &self.beat_points[index - 1];
-        point
-            .song_beat
-            .checked_add(
-                frame
-                    .checked_sub(point.clock_frame)
-                    .and_then(|d| d.checked_mul(point.clock_rate))
-                    .map_err(core_error)?,
-            )
-            .map_err(core_error)
-    }
-
-    fn exact_beat_at(&self, frame: Time) -> PyResult<Time> {
-        let index = self.beat_points.partition_point(|p| p.clock_frame <= frame);
-        let point = &self.beat_points[index - 1];
-        point
-            .clock_beat
-            .checked_add(
-                frame
-                    .checked_sub(point.clock_frame)
-                    .and_then(|d| d.checked_mul(point.clock_rate))
-                    .map_err(core_error)?,
-            )
-            .map_err(core_error)
-    }
-
-    fn frame_at_local_beat(&self, beat: Time) -> PyResult<Option<Time>> {
-        for (index, point) in self.beat_points.iter().enumerate() {
-            if point.clock_rate > Time::ZERO && beat >= point.clock_beat {
-                let frame = point
-                    .clock_frame
-                    .checked_add(
-                        beat.checked_sub(point.clock_beat)
-                            .and_then(|d| d.checked_div(point.clock_rate))
-                            .map_err(core_error)?,
-                    )
-                    .map_err(core_error)?;
-                if self
-                    .beat_points
-                    .get(index + 1)
-                    .is_none_or(|next| frame <= next.clock_frame)
-                {
-                    return Ok(Some(frame));
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    fn staged_time(&self, definition: &StagedEnvelfoDefinition, frame: Time) -> PyResult<Time> {
-        if definition.beat_clock {
-            self.exact_beat_at(frame)
-        } else {
-            Ok(frame)
-        }
-    }
-
-    fn named_time(&self, definition: &NamedEnvelopeDefinition, frame: Time) -> PyResult<Time> {
-        if definition.beat_clock {
-            self.exact_beat_at(frame)
-        } else {
-            Ok(frame)
-        }
-    }
-
     fn lfo_time(&self, definition: &LfoDefinition, frame: Time) -> PyResult<Time> {
         if definition.body.driver == lfo::Driver::Transport {
-            self.song_beat_at(frame)
+            clock_at(&self.beat_points, 2, frame).map_err(core_error)
         } else if definition.body.clock == lfo::Clock::Beats {
-            self.exact_beat_at(frame)
+            clock_at(&self.beat_points, 1, frame).map_err(core_error)
         } else {
             Ok(frame)
         }
@@ -1947,6 +1715,7 @@ impl SynthRuntime {
         gain_db: f64,
         actions: &[f64],
     ) -> PyResult<()> {
+        self.prepare_patch()?;
         let frames = output.nrows();
         if frames == 0
             || output.ncols() != self.routes.ncols()
@@ -1987,22 +1756,19 @@ impl SynthRuntime {
         output.fill(0.0);
         let mut action = 0;
         for frame in 0..frames {
-            self.advance_patch_events(false)?;
-            self.advance_staged(frame_position(self.frame)?, false, true)?;
+            if action < actions.len() && actions[action] as usize == frame {
+                self.settle_patches(false)?;
+            }
             while action < actions.len() && actions[action] as usize == frame {
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
-            self.dispatch_staged_events()?;
-            self.advance_patch_events(true)?;
-            self.advance_staged(frame_position(self.frame)?, true, true)?;
-            self.dispatch_staged_events()?;
-            self.flush_envelope_starts()?;
+            self.settle_patches(true)?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
                 }
-                self.evaluate_envelfo_transforms(voice)?;
+                self.observe_patch(voice)?;
                 let amplitude = self.parameter(voice, 0)?
                     * if self.source_kind == 3 {
                         self.parameter(voice, self.graph_carrier_parameter)?
@@ -2023,7 +1789,8 @@ impl SynthRuntime {
                 let observed = definition.value(state, self.ages[voice])?;
                 if definition.complete(state, &observed) {
                     self.active[voice] = false;
-                    self.delayed_events[voice].clear();
+                    self.patch_states[voice] = None;
+                    self.pending_releases[voice].fill(None);
                     continue;
                 }
                 let level = observed.value;
@@ -2288,35 +2055,7 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid voice start"));
                 }
                 self.active[voice] = true;
-                self.reset_voice_event_counts(voice);
-                let lfo_base = voice * self.lfo_definitions.len();
-                for (source, definition) in self.lfo_definitions.iter().enumerate() {
-                    let at = self.lfo_time(definition, frame_position(self.frame)?)?;
-                    self.voice_lfo_event_states[lfo_base + source] =
-                        initial_lfo(definition, at, self.frame)?;
-                }
-                for (source, definition) in self.staged_envelfos.iter().enumerate() {
-                    let index = voice * self.staged_envelfos.len() + source;
-                    let frame = frame_position(self.frame)?;
-                    let at = self.staged_time(definition, frame)?;
-                    self.staged_states[index] = StagedEnvelfoState {
-                        core: definition.body.initial(at).map_err(core_error)?,
-                        ordinal: 0,
-                    };
-                    for event in staged_command(
-                        definition,
-                        &mut self.staged_states[index],
-                        at,
-                        stages::StageCommand::Playback(Command::NoteOn),
-                    )? {
-                        self.staged_pending.push_back(StagedEvent {
-                            at: frame,
-                            voice,
-                            source,
-                            port: event.port,
-                        });
-                    }
-                }
+                self.start_patch(voice)?;
                 self.phases[voice] = action[5].rem_euclid(self.rate);
                 self.errors[voice] = 0.0;
                 self.mod_phases[voice] =
@@ -2340,18 +2079,6 @@ impl SynthRuntime {
                         self.graph_outputs[index] = 0.0;
                     }
                     self.graph_history[voice * edges..(voice + 1) * edges].fill(0.0);
-                }
-                let envelope_base = voice * self.named_envelopes.len();
-                for (index, definition) in self.named_envelopes.iter().enumerate() {
-                    self.named_states[envelope_base + index] = named_envelope_initial(
-                        definition,
-                        self.named_time(definition, frame_position(self.frame)?)?,
-                    )?;
-                    if let Some((key, _, _)) = definition.sample_hold {
-                        let state = &mut self.named_states[envelope_base + index];
-                        state.random_state = self.envelfo_keys[voice] ^ key;
-                        sample_hold_draw(definition, state);
-                    }
                 }
                 if self.source_kind == 2 {
                     self.noise_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
@@ -2382,28 +2109,20 @@ impl SynthRuntime {
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
-                    for (source, definition) in self.staged_envelfos.iter().enumerate() {
-                        let index = voice * self.staged_envelfos.len() + source;
-                        let frame = frame_position(self.frame)?;
-                        let at = self.staged_time(definition, frame)?;
-                        for event in staged_command(
-                            definition,
-                            &mut self.staged_states[index],
-                            at,
-                            stages::StageCommand::Playback(Command::NoteOff),
-                        )? {
-                            self.staged_pending.push_back(StagedEvent {
-                                at: frame,
+                    for source in 0..self.staged_envelfos.len() {
+                        if self.staged_owners[source] == source {
+                            self.patch_command(
                                 voice,
+                                2,
                                 source,
-                                port: event.port,
-                            });
+                                frame_position(self.frame)?,
+                                ChildCommand::Playback(Command::NoteOff),
+                            )?;
                         }
                     }
                     let age = frame_position(self.ages[voice])?;
                     let frame = frame_position(self.frame)?;
                     let release_frame = age.max(self.minimum_hold_frames);
-                    let envelope_base = voice * self.named_envelopes.len();
                     for (index, definition) in self.named_envelopes.iter().enumerate() {
                         if definition.body.release.is_empty() {
                             continue;
@@ -2415,21 +2134,17 @@ impl SynthRuntime {
                         } else {
                             frame
                         };
-                        self.named_states[envelope_base + index].pending_release = Some((
-                            named_release_at,
-                            self.named_time(definition, named_release_at)?,
-                        ));
+                        if self.named_owners[index] == index {
+                            self.pending_releases[voice][index] = Some(named_release_at);
+                        }
                     }
                     self.release_frames[voice] = Some(release_frame);
                 }
             }
             2 => {
                 self.active[voice] = false;
-                self.delayed_events[voice].clear();
-                let base = voice * self.named_envelopes.len();
-                for state in &mut self.named_states[base..base + self.named_envelopes.len()] {
-                    state.pending_release = None;
-                }
+                self.patch_states[voice] = None;
+                self.pending_releases[voice].fill(None);
             }
             3 => {
                 let duration = action[5] as usize;
@@ -2542,13 +2257,7 @@ impl SynthRuntime {
                     6 => Command::Shift(control_time(action[4])?),
                     _ => unreachable!(),
                 };
-                lfo_command(
-                    definition,
-                    &mut self.lfo_event_states[lfo],
-                    at,
-                    self.frame,
-                    command,
-                )?;
+                lfo_command(definition, &mut self.lfo_event_states[lfo], at, command)?;
             }
             9 => {
                 let source = action[3] as usize;
@@ -2564,28 +2273,19 @@ impl SynthRuntime {
                 {
                     return Err(PyValueError::new_err("Invalid named Envelfo action"));
                 }
-                let index = voice * self.named_envelopes.len() + source;
-                let definition = &self.named_envelopes[source];
-                if definition.sample_hold.is_some() {
+                if self.named_envelopes[source].sample_hold.is_some() {
                     return Ok(());
                 }
-                let at = self.named_time(definition, frame_position(self.frame)?)?;
-                let mut state = named_envelope_settled(
-                    definition,
-                    &self.named_states[index],
-                    frame_position(self.frame)?,
-                )?;
                 let command = match command {
-                    0 => EnvelopeCommand::Playback(Command::Pause),
-                    1 => EnvelopeCommand::Playback(Command::Resume),
-                    2 => EnvelopeCommand::Playback(Command::Reverse),
-                    3 => EnvelopeCommand::Playback(Command::Seek(frame_time(action[5])?)),
-                    4 => EnvelopeCommand::Playback(Command::Shift(frame_time(action[5])?)),
-                    5 => EnvelopeCommand::Advance,
+                    0 => ChildCommand::Playback(Command::Pause),
+                    1 => ChildCommand::Playback(Command::Resume),
+                    2 => ChildCommand::Playback(Command::Reverse),
+                    3 => ChildCommand::Playback(Command::Seek(frame_time(action[5])?)),
+                    4 => ChildCommand::Playback(Command::Shift(frame_time(action[5])?)),
+                    5 => ChildCommand::Advance,
                     _ => unreachable!(),
                 };
-                named_envelope_command(definition, &mut state, at, command)?;
-                self.named_states[index] = state;
+                self.patch_command(voice, 1, source, frame_position(self.frame)?, command)?;
             }
 
             10 => {
@@ -2602,29 +2302,16 @@ impl SynthRuntime {
                 {
                     return Err(PyValueError::new_err("Invalid staged Envelfo action"));
                 }
-                let index = voice * self.staged_envelfos.len() + source;
-                let definition = &self.staged_envelfos[source];
-                let frame = frame_position(self.frame)?;
-                let at = self.staged_time(definition, frame)?;
                 let command = match command {
-                    0 => stages::StageCommand::Playback(Command::Pause),
-                    1 => stages::StageCommand::Playback(Command::Resume),
-                    2 => stages::StageCommand::Playback(Command::Reverse),
-                    3 => stages::StageCommand::Playback(Command::Seek(frame_time(action[5])?)),
-                    4 => stages::StageCommand::Playback(Command::Shift(frame_time(action[5])?)),
-                    5 => stages::StageCommand::Advance,
+                    0 => ChildCommand::Playback(Command::Pause),
+                    1 => ChildCommand::Playback(Command::Resume),
+                    2 => ChildCommand::Playback(Command::Reverse),
+                    3 => ChildCommand::Playback(Command::Seek(frame_time(action[5])?)),
+                    4 => ChildCommand::Playback(Command::Shift(frame_time(action[5])?)),
+                    5 => ChildCommand::Advance,
                     _ => unreachable!(),
                 };
-                for event in
-                    staged_command(definition, &mut self.staged_states[index], at, command)?
-                {
-                    self.staged_pending.push_back(StagedEvent {
-                        at: frame,
-                        voice,
-                        source,
-                        port: event.port,
-                    });
-                }
+                self.patch_command(voice, 2, source, frame_position(self.frame)?, command)?;
             }
             11 => {
                 let source = action[3] as usize;
@@ -2642,9 +2329,6 @@ impl SynthRuntime {
                 {
                     return Err(PyValueError::new_err("Invalid voice LFO action"));
                 }
-                let definition = &self.lfo_definitions[source];
-                let index = voice * self.lfo_definitions.len() + source;
-                let at = self.lfo_time(definition, frame_position(self.frame)?)?;
                 let command = match command {
                     0 => Command::Pause,
                     1 => Command::Resume,
@@ -2653,12 +2337,12 @@ impl SynthRuntime {
                     4 => Command::Shift(control_time(action[5])?),
                     _ => unreachable!(),
                 };
-                lfo_command(
-                    definition,
-                    &mut self.voice_lfo_event_states[index],
-                    at,
-                    self.frame,
-                    command,
+                self.patch_command(
+                    voice,
+                    0,
+                    source,
+                    frame_position(self.frame)?,
+                    ChildCommand::Playback(command),
                 )?;
             }
             _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
@@ -2666,534 +2350,24 @@ impl SynthRuntime {
         Ok(())
     }
 
-    fn advance_staged(
-        &mut self,
-        limit_frame: Time,
-        inclusive: bool,
-        delayed_inclusive: bool,
-    ) -> PyResult<()> {
-        let mut count = 0;
-        loop {
-            let mut next = None;
-            let mut events = Vec::new();
-            for voice in 0..self.frequencies.len() {
-                if !self.active[voice] {
-                    continue;
-                }
-                for (source, definition) in self.staged_envelfos.iter().enumerate() {
-                    if self.staged_owners[source] != source {
-                        continue;
-                    }
-                    let state = &self.staged_states[voice * self.staged_envelfos.len() + source];
-                    let limit = self.staged_time(definition, limit_frame)?;
-                    if let Some(event) = definition
-                        .body
-                        .next_event(&state.core, limit, inclusive)
-                        .map_err(core_error)?
-                    {
-                        let at = if definition.beat_clock {
-                            self.frame_at_local_beat(event.at)?
-                        } else {
-                            Some(event.at)
-                        };
-                        let Some(at) = at else {
-                            continue;
-                        };
-                        if next.is_none_or(|current| at < current) {
-                            next = Some(at);
-                            events.clear();
-                        }
-                        if next == Some(at) {
-                            events.push((voice, source, event.at));
-                        }
-                    }
-                }
-            }
-            let delayed = self
-                .delayed_events
-                .iter()
-                .flatten()
-                .filter(|e| {
-                    e.at < limit_frame || inclusive && delayed_inclusive && e.at == limit_frame
-                })
-                .map(|e| e.at)
-                .min();
-            if let Some(at) = delayed {
-                if next.is_none_or(|current| at < current) {
-                    next = Some(at);
-                    events.clear();
-                }
-            }
-            let Some(at) = next else {
-                break;
-            };
-            for (voice, source, stage_at) in events {
-                let definition = &self.staged_envelfos[source];
-                let result = definition
-                    .body
-                    .advance(
-                        &mut self.staged_states[voice * self.staged_envelfos.len() + source].core,
-                        stage_at,
-                        None,
-                    )
-                    .map_err(core_error)?;
-                count += result.events.len();
-                for event in result.events {
-                    self.staged_pending.push_back(StagedEvent {
-                        at,
-                        voice,
-                        source,
-                        port: event.port,
-                    });
-                }
-            }
-            self.dispatch_staged_events()?;
-            count += self.deliver_delayed_events(at)?;
-            self.dispatch_staged_events()?;
-            if count > 4096 {
-                return Err(PyValueError::new_err(
-                    "Staged Envelfo event capacity exceeded",
-                ));
-            }
-        }
-        self.dispatch_staged_events()?;
-        Ok(())
-    }
-
-    fn dispatch_staged_events(&mut self) -> PyResult<()> {
-        let mut count = 0;
-        while let Some(event) = self.staged_pending.pop_front() {
-            let connections = self.staged_connections.len()
-                + self.patch_events.len()
-                + self.patch_stage_starts.len();
-            for (index, connection) in self.staged_connections.iter().enumerate() {
-                if connection.source != event.source || connection.port != event.port {
-                    continue;
-                }
-                if !forward_event(
-                    &mut self.event_counts[event.voice * connections + index],
-                    &mut self.event_random[event.voice * connections + index],
-                    connection.every,
-                    connection.probability,
-                ) {
-                    continue;
-                }
-                if count == 4096 {
-                    return Err(PyValueError::new_err(
-                        "Staged Envelfo event capacity exceeded",
-                    ));
-                }
-                if connection.delay > Time::ZERO {
-                    queue_delayed_event(
-                        &mut self.delayed_events[event.voice],
-                        event.at,
-                        connection.delay,
-                        DelayedConnection::StagedCue(index),
-                    )?;
-                    count += 1;
-                    continue;
-                }
-                let definition = &self.staged_envelfos[connection.destination];
-                let at = self.staged_time(definition, event.at)?;
-                let state = &mut self.staged_states
-                    [event.voice * self.staged_envelfos.len() + connection.destination];
-                for output in staged_command(
-                    definition,
-                    state,
-                    at,
-                    stages::StageCommand::Cue(connection.cue.clone()),
-                )? {
-                    self.staged_pending.push_back(StagedEvent {
-                        at: event.at,
-                        voice: event.voice,
-                        source: connection.destination,
-                        port: output.port,
-                    });
-                }
-                count += 1;
-            }
-            for (index, connection) in self.patch_stage_starts.iter().enumerate() {
-                if connection.source != event.source || connection.port != event.port {
-                    continue;
-                }
-                if !forward_event(
-                    &mut self.event_counts[event.voice * connections
-                        + self.staged_connections.len()
-                        + self.patch_events.len()
-                        + index],
-                    &mut self.event_random[event.voice * connections
-                        + self.staged_connections.len()
-                        + self.patch_events.len()
-                        + index],
-                    connection.every,
-                    connection.probability,
-                ) {
-                    continue;
-                }
-                if count == 4096 {
-                    return Err(PyValueError::new_err(
-                        "Staged Envelfo event capacity exceeded",
-                    ));
-                }
-                if connection.delay > Time::ZERO {
-                    queue_delayed_event(
-                        &mut self.delayed_events[event.voice],
-                        event.at,
-                        connection.delay,
-                        DelayedConnection::StageStart(index),
-                    )?;
-                    count += 1;
-                    continue;
-                }
-                if connection.capture {
-                    self.envelfo_transform_states
-                        [event.voice * self.envelfo_transforms.len() + connection.destination] =
-                        None;
-                    count += 1;
-                    continue;
-                }
-                self.pending_envelope_starts.push(EnvelopeStart {
-                    at: event.at,
-                    order: connection.order,
-                    voice: event.voice,
-                    destination: connection.destination,
-                });
-                count += 1;
-            }
-        }
-        Ok(())
-    }
-
-    fn advance_patch_events(&mut self, at_boundary: bool) -> PyResult<()> {
-        if self.patch_events.is_empty() {
-            return Ok(());
-        }
-        let mut events = Vec::new();
-        for voice in 0..self.frequencies.len() {
-            if !self.active[voice] || self.ages[voice] == 0 {
-                continue;
-            }
-            let frame = frame_position(self.frame)?;
-            for (order, connection) in self.patch_events.iter().enumerate() {
-                if connection.threshold {
-                    continue;
-                }
-                let definition = &self.lfo_definitions[connection.source];
-                let state = &self.voice_lfo_event_states
-                    [voice * self.lfo_definitions.len() + connection.source];
-                let mut after = self.lfo_time(definition, frame_position(state.cursor)?)?;
-                let limit = self.lfo_time(definition, frame)?;
-                while let Some(at) = definition
-                    .body
-                    .next_marker(&state.core, connection.marker, after, limit, at_boundary)
-                    .map_err(core_error)?
-                {
-                    if events.len() == 4096 {
-                        return Err(PyValueError::new_err("Patch event capacity exceeded"));
-                    }
-                    events.push((at, order, voice));
-                    after = at;
-                }
-            }
-        }
-        events.sort();
-        let mut previous_at = None;
-        for (at, order, voice) in events {
-            if at_boundary && at < frame_position(self.frame)? {
-                continue;
-            }
-            if previous_at != Some(at) {
-                self.dispatch_staged_events()?;
-                self.advance_staged(at, true, false)?;
-                previous_at = Some(at);
-            }
-            let connection = &self.patch_events[order];
-            let connections = self.staged_connections.len()
-                + self.patch_events.len()
-                + self.patch_stage_starts.len();
-            if !forward_event(
-                &mut self.event_counts[voice * connections + self.staged_connections.len() + order],
-                &mut self.event_random[voice * connections + self.staged_connections.len() + order],
-                connection.every,
-                connection.probability,
-            ) {
-                continue;
-            }
-            let destination = connection.destination;
-            if connection.delay > Time::ZERO {
-                queue_delayed_event(
-                    &mut self.delayed_events[voice],
-                    at,
-                    connection.delay,
-                    DelayedConnection::PatchEvent(order),
-                )?;
-                continue;
-            }
-            if connection.capture {
-                self.envelfo_transform_states
-                    [voice * self.envelfo_transforms.len() + destination] = None;
-                continue;
-            }
-            if let Some(cue) = &connection.cue {
-                let definition = &self.staged_envelfos[destination];
-                let stage_at = self.staged_time(definition, at)?;
-                let state =
-                    &mut self.staged_states[voice * self.staged_envelfos.len() + destination];
-                for event in staged_command(
-                    definition,
-                    state,
-                    stage_at,
-                    stages::StageCommand::Cue(cue.clone()),
-                )? {
-                    self.staged_pending.push_back(StagedEvent {
-                        at,
-                        voice,
-                        source: destination,
-                        port: event.port,
-                    });
-                }
-                continue;
-            }
-            self.pending_envelope_starts.push(EnvelopeStart {
-                at,
-                order: connection.order,
-                voice,
-                destination,
-            });
-        }
-        if at_boundary {
-            for voice in 0..self.frequencies.len() {
-                if !self.active[voice] {
-                    continue;
-                }
-                let base = voice * self.lfo_definitions.len();
-                for state in
-                    &mut self.voice_lfo_event_states[base..base + self.lfo_definitions.len()]
-                {
-                    state.cursor = self.frame;
-                }
-            }
-        }
-        self.dispatch_staged_events()?;
-        Ok(())
-    }
-
-    fn deliver_delayed_events(&mut self, at: Time) -> PyResult<usize> {
-        let mut count = 0;
-        for voice in 0..self.delayed_events.len() {
-            while let Some(index) = self.delayed_events[voice]
-                .iter()
-                .position(|event| event.at == at)
-            {
-                let event = self.delayed_events[voice].remove(index);
-                count += 1;
-                let (destination, cue, order, capture) = match event.connection {
-                    DelayedConnection::StagedCue(index) => {
-                        let connection = &self.staged_connections[index];
-                        (connection.destination, Some(&connection.cue), index, false)
-                    }
-                    DelayedConnection::PatchEvent(index) => {
-                        let connection = &self.patch_events[index];
-                        (
-                            connection.destination,
-                            connection.cue.as_ref(),
-                            connection.order,
-                            connection.capture,
-                        )
-                    }
-                    DelayedConnection::StageStart(index) => {
-                        let connection = &self.patch_stage_starts[index];
-                        (
-                            connection.destination,
-                            None,
-                            connection.order,
-                            connection.capture,
-                        )
-                    }
-                };
-                if capture {
-                    self.envelfo_transform_states
-                        [voice * self.envelfo_transforms.len() + destination] = None;
-                } else if let Some(cue) = cue {
-                    let definition = &self.staged_envelfos[destination];
-                    let stage_at = self.staged_time(definition, at)?;
-                    let state =
-                        &mut self.staged_states[voice * self.staged_envelfos.len() + destination];
-                    for event in staged_command(
-                        definition,
-                        state,
-                        stage_at,
-                        stages::StageCommand::Cue(cue.clone()),
-                    )? {
-                        self.staged_pending.push_back(StagedEvent {
-                            at,
-                            voice,
-                            source: destination,
-                            port: event.port,
-                        });
-                    }
-                } else {
-                    self.pending_envelope_starts.push(EnvelopeStart {
-                        at,
-                        voice,
-                        destination,
-                        order,
-                    });
-                }
-                self.dispatch_staged_events()?;
-            }
-        }
-        Ok(count)
-    }
-
-    fn flush_envelope_starts(&mut self) -> PyResult<()> {
-        if self.pending_envelope_starts.len() > 4096 {
-            return Err(PyValueError::new_err("Patch event capacity exceeded"));
-        }
-        let mut starts = std::mem::take(&mut self.pending_envelope_starts);
-        starts.sort_by(|a, b| {
-            a.at.cmp(&b.at)
-                .then_with(|| a.order.cmp(&b.order))
-                .then_with(|| a.voice.cmp(&b.voice))
-        });
-        for event in starts {
-            let definition = &self.named_envelopes[event.destination];
-            let index = event.voice * self.named_envelopes.len() + event.destination;
-            if definition.sample_hold.is_some() {
-                sample_hold_draw(definition, &mut self.named_states[index]);
-                continue;
-            }
-            let at = self.named_time(definition, event.at)?;
-            let mut state =
-                named_envelope_settled(definition, &self.named_states[index], event.at)?;
-            named_envelope_command(definition, &mut state, at, EnvelopeCommand::Start)?;
-            self.named_states[index] = state;
-        }
-        Ok(())
-    }
-
     fn lfo_signal(&self, voice: usize, source: usize) -> PyResult<(f64, f64)> {
         let definition = &self.lfo_definitions[source];
-        let owner = self.lfo_owners[source];
         if definition.scope == 1 {
             self.context_kind(self.voice_part_contexts[voice], 1)?;
         }
-        let state = if definition.scope == 3 {
-            &self.voice_lfo_event_states[voice * self.lfo_definitions.len() + owner]
+        let value = if definition.scope == 3 {
+            self.patch_value(voice, 0, source)?
         } else {
-            &self.lfo_event_states[owner]
+            let state = &self.lfo_event_states[self.lfo_owners[source]];
+            definition
+                .body
+                .value(
+                    &state.core,
+                    self.lfo_time(definition, frame_position(self.frame)?)?,
+                )
+                .map_err(core_error)?
         };
-        let at = self.lfo_time(definition, frame_position(self.frame)?)?;
-        let value = definition.body.value(&state.core, at).map_err(core_error)?;
         Ok((value.value, value.weight))
-    }
-
-    fn evaluate_envelfo_transforms(&mut self, voice: usize) -> PyResult<()> {
-        let base = voice * self.envelfo_transforms.len();
-        for (node, (kind, inputs, scale, offset, initial)) in
-            self.envelfo_transforms.iter().enumerate()
-        {
-            let mut output = if *kind == 1 { 1.0 } else { 0.0 };
-            for (source_kind, source, center, depth) in inputs {
-                let value = match source_kind {
-                    0 => {
-                        let (value, weight) = self.lfo_signal(voice, *source)?;
-                        (center + depth * value) * weight
-                    }
-                    1 => {
-                        let definition = &self.named_envelopes[*source];
-                        named_envelope_value(
-                            definition,
-                            &self.named_states
-                                [voice * self.named_envelopes.len() + self.named_owners[*source]],
-                            self.named_time(definition, frame_position(self.frame)?)?,
-                            frame_position(self.frame)?,
-                        )?
-                    }
-                    2 => {
-                        let definition = &self.staged_envelfos[*source];
-                        staged_value(
-                            definition,
-                            &self.staged_states
-                                [voice * self.staged_envelfos.len() + self.staged_owners[*source]],
-                            self.staged_time(definition, frame_position(self.frame)?)?,
-                        )?
-                    }
-                    _ => self.envelfo_transform_values[base + source],
-                };
-                if *kind == 1 {
-                    output *= value;
-                } else {
-                    output += value;
-                }
-            }
-            self.envelfo_transform_values[base + node] = if *kind == 6 {
-                let value = self.envelfo_transform_states[base + node].unwrap_or(output);
-                self.envelfo_transform_states[base + node] = Some(value);
-                value
-            } else if *kind == 5 {
-                let position = (output - offset) / scale;
-                let lower = position.floor();
-                let nearest = lower + if position - lower >= 0.5 { 1.0 } else { 0.0 };
-                offset + nearest * scale
-            } else if *kind == 4 {
-                let value = match self.envelfo_transform_states[base + node] {
-                    None => initial.unwrap_or(output),
-                    Some(previous) if output >= previous => output.min(previous + scale),
-                    Some(previous) => output.max(previous - offset),
-                };
-                self.envelfo_transform_states[base + node] = Some(value);
-                value
-            } else if *kind == 3 {
-                let previous = self.envelfo_transform_states[base + node];
-                let value = match previous {
-                    None => {
-                        if output >= *offset {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                    Some(0.0) if output >= *offset => 1.0,
-                    Some(1.0) if output <= *scale => 0.0,
-                    Some(value) => value,
-                };
-                self.envelfo_transform_states[base + node] = Some(value);
-                if previous.is_some_and(|old| old != value) {
-                    let connections = self.staged_connections.len()
-                        + self.patch_events.len()
-                        + self.patch_stage_starts.len();
-                    for (order, connection) in self.patch_events.iter().enumerate() {
-                        if !connection.threshold
-                            || connection.source != node
-                            || connection.marker.as_f64() != value
-                        {
-                            continue;
-                        }
-                        let index = voice * connections + self.staged_connections.len() + order;
-                        if forward_event(
-                            &mut self.event_counts[index],
-                            &mut self.event_random[index],
-                            connection.every,
-                            connection.probability,
-                        ) {
-                            queue_delayed_event(
-                                &mut self.delayed_events[voice],
-                                frame_position(self.frame)?,
-                                connection.delay,
-                                DelayedConnection::PatchEvent(order),
-                            )?;
-                        }
-                    }
-                }
-                value
-            } else if *kind == 2 {
-                offset + scale * output
-            } else {
-                output
-            };
-        }
-        Ok(())
     }
 
     fn parameter(&self, voice: usize, parameter: usize) -> PyResult<f64> {
@@ -3227,17 +2401,11 @@ impl SynthRuntime {
                 product *= 1.0 + weight * (amount - 1.0);
             }
         }
-        let envelope_base = voice * self.named_envelopes.len();
         for (source, definition) in self.named_envelopes.iter().enumerate() {
             if definition.parameter != parameter {
                 continue;
             }
-            let value = named_envelope_value(
-                definition,
-                &self.named_states[envelope_base + self.named_owners[source]],
-                self.named_time(definition, frame_position(self.frame)?)?,
-                frame_position(self.frame)?,
-            )?;
+            let value = self.patch_value(voice, 1, source)?.value;
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;
@@ -3249,13 +2417,7 @@ impl SynthRuntime {
             if definition.parameter != Some(parameter) {
                 continue;
             }
-            let state = &self.staged_states
-                [voice * self.staged_envelfos.len() + self.staged_owners[source]];
-            let value = staged_value(
-                definition,
-                state,
-                self.staged_time(definition, frame_position(self.frame)?)?,
-            )?;
+            let value = self.patch_value(voice, 2, source)?.value;
             let amount = definition.intercept + definition.slope * value;
             if definition.operation == 0 {
                 addition += amount;
@@ -3599,11 +2761,10 @@ fn filter_definitions(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<FilterD
         .collect()
 }
 
-fn initial_lfo(definition: &LfoDefinition, at: Time, frame: usize) -> PyResult<LfoPlayback> {
+fn initial_lfo(definition: &LfoDefinition, at: Time) -> PyResult<LfoPlayback> {
     Ok(LfoPlayback {
         core: definition.body.initial(at).map_err(core_error)?,
         ordinal: 0,
-        cursor: frame,
     })
 }
 
@@ -3611,7 +2772,6 @@ fn lfo_command(
     definition: &LfoDefinition,
     state: &mut LfoPlayback,
     at: Time,
-    frame: usize,
     command: Command,
 ) -> PyResult<()> {
     let ordinal = state
@@ -3623,7 +2783,6 @@ fn lfo_command(
         .command(&mut state.core, at, ordinal, command)
         .map_err(core_error)?;
     state.ordinal = ordinal;
-    state.cursor = frame;
     Ok(())
 }
 
@@ -3645,123 +2804,8 @@ fn core_error(error: envelfo_core::Error) -> PyErr {
     PyValueError::new_err(format!("Native EnveLFO: {error}"))
 }
 
-fn named_envelope_initial(
-    definition: &NamedEnvelopeDefinition,
-    at: Time,
-) -> PyResult<NamedEnvelopeState> {
-    let core = definition.body.initial(at).map_err(core_error)?;
-    let mut state = NamedEnvelopeState {
-        core,
-        ordinal: 0,
-        random_state: 0,
-        sampled_value: 0.0,
-        pending_release: None,
-    };
-    named_envelope_command(
-        definition,
-        &mut state,
-        at,
-        EnvelopeCommand::Playback(Command::NoteOn),
-    )?;
-    Ok(state)
-}
-
-fn named_envelope_command(
-    definition: &NamedEnvelopeDefinition,
-    state: &mut NamedEnvelopeState,
-    at: Time,
-    command: EnvelopeCommand,
-) -> PyResult<()> {
-    let ordinal = state
-        .ordinal
-        .checked_add(1)
-        .ok_or_else(|| PyValueError::new_err("Named Envelope ordinal overflow"))?;
-    definition
-        .body
-        .command(&mut state.core, at, ordinal, command)
-        .map_err(core_error)?;
-    state.ordinal = ordinal;
-    Ok(())
-}
-
-fn named_envelope_settled(
-    definition: &NamedEnvelopeDefinition,
-    state: &NamedEnvelopeState,
-    frame: Time,
-) -> PyResult<NamedEnvelopeState> {
-    let mut settled = state.clone();
-    if let Some((_, at)) = state
-        .pending_release
-        .filter(|(release, _)| *release <= frame)
-    {
-        named_envelope_command(
-            definition,
-            &mut settled,
-            at,
-            EnvelopeCommand::Playback(Command::NoteOff),
-        )?;
-        settled.pending_release = None;
-    }
-    Ok(settled)
-}
-
-fn named_envelope_value(
-    definition: &NamedEnvelopeDefinition,
-    state: &NamedEnvelopeState,
-    at: Time,
-    frame: Time,
-) -> PyResult<f64> {
-    if definition.sample_hold.is_some() {
-        return Ok(state.sampled_value);
-    }
-    let state = named_envelope_settled(definition, state, frame)?;
-    Ok(definition
-        .body
-        .value(&state.core, at)
-        .map_err(core_error)?
-        .value)
-}
-
 fn ratio_time(value: (i64, i64)) -> PyResult<Time> {
     Time::new(value.0, value.1).map_err(core_error)
-}
-
-fn staged_value(
-    definition: &StagedEnvelfoDefinition,
-    state: &StagedEnvelfoState,
-    at: Time,
-) -> PyResult<f64> {
-    Ok(definition
-        .body
-        .value(&state.core, at)
-        .map_err(core_error)?
-        .value)
-}
-
-fn staged_command(
-    definition: &StagedEnvelfoDefinition,
-    state: &mut StagedEnvelfoState,
-    at: Time,
-    command: stages::StageCommand,
-) -> PyResult<Vec<stages::OutputEvent>> {
-    let ordinal = state
-        .ordinal
-        .checked_add(1)
-        .ok_or_else(|| PyValueError::new_err("Stage ordinal overflow"))?;
-    let result = definition
-        .body
-        .advance(
-            &mut state.core,
-            at,
-            Some(&stages::Event {
-                at,
-                ordinal,
-                command,
-            }),
-        )
-        .map_err(core_error)?;
-    state.ordinal = ordinal;
-    Ok(result.events)
 }
 
 fn advance_ramp(value: &mut f64, step: f64, remaining: &mut usize) {
@@ -3776,47 +2820,4 @@ fn valid_envelfo_owners(owners: &[usize]) -> bool {
         .iter()
         .enumerate()
         .all(|(index, owner)| *owner <= index && owners[*owner] == *owner)
-}
-
-fn queue_delayed_event(
-    queue: &mut Vec<DelayedEvent>,
-    at: Time,
-    delay: Time,
-    connection: DelayedConnection,
-) -> PyResult<()> {
-    if queue.len() == 4096 {
-        return Err(PyValueError::new_err(
-            "Delayed Envelfo event capacity exceeded",
-        ));
-    }
-    let due = at.checked_add(delay).map_err(core_error)?;
-    if due <= at {
-        return Err(PyValueError::new_err(
-            "Delayed Envelfo event time is not representable",
-        ));
-    }
-    queue.push(DelayedEvent {
-        at: due,
-        connection,
-    });
-    Ok(())
-}
-
-fn forward_event(count: &mut usize, state: &mut u64, every: usize, probability: u64) -> bool {
-    let forward = *count == 0;
-    *count = if forward { every - 1 } else { *count - 1 };
-    if !forward || probability == 0 {
-        return false;
-    }
-    if probability == (1 << 53) {
-        return true;
-    }
-    random_word(state) >> 11 < probability
-}
-
-fn sample_hold_draw(definition: &NamedEnvelopeDefinition, state: &mut NamedEnvelopeState) {
-    let (_, minimum, maximum) = definition.sample_hold.unwrap();
-    let word = random_word(&mut state.random_state);
-    state.sampled_value =
-        minimum + (maximum - minimum) * ((word >> 11) as f64 / (1_u64 << 53) as f64);
 }

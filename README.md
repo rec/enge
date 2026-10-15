@@ -50,11 +50,13 @@ enge owns minimum hold, release timing and voice retirement. Amplitude envelopes
 currently require numeric initial values, activation start, voice seconds, held
 linear segments, an explicit release, and once playback without markers.
 
-Persistent LFOs, named Envelopes and Stages execute through `envelfo-core`.
+Persistent LFOs, named Envelopes, Stages and Patch graphs execute through
+`envelfo-core`.
 Their prepared timing, beat-clock observations and routed event queues use
 checked rational times, including cues between audio frames and fractional
 delays. Snapshots retain that exact continuation. enge still owns audio routing,
-voice lifetime, observation scheduling and native Patch orchestration. LFO
+voice lifetime, observation scheduling and per-child clock mapping. The core
+owns retained operators, connection gates and exact delayed delivery. LFO
 commands, activation fades and transport-position signals use shared exact
 playback state, and marker routing follows that state across commands and
 restoration.

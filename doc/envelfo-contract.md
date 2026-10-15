@@ -68,9 +68,8 @@ through queues and snapshots, without floating-point ordering or epsilon
 adjustments. Fractional minimum-hold boundaries also remain exact when entering
 named release. `test_native_named_envelope.py` anchors thirds of an audio frame,
 non-binary delays and loops, stopped beat clocks and restored continuation.
-Ordinary native LFO signal state and retained Patch operators/orchestration are
-still separate adapters; this does not claim that the entire native scheduler
-uses the standalone Patch runtime.
+At that stage, ordinary native LFO signal state and retained Patch
+operators/orchestration were still separate adapters.
 
 Native LFO adapter update: ordinary playback now also consumes shared Rust
 `LFO`/`LFOState` for shapes, activation weight, commands and continuation.
@@ -79,7 +78,17 @@ been removed. `LFO::next_marker` supplies exact routed crossings from that
 same state and is also used by the standalone Rust Patch scheduler.
 `test_native_lfo_core.py` covers decimal commands and paused resets, exact large
 and negative transport positions, and pause-retimed markers across restoration.
-Scope ownership and retained Patch orchestration remain host responsibilities.
+Scope ownership remains a host responsibility.
+
+Native Patch adapter update: each voice now owns shared Rust `PatchState`.
+The core evaluates retained operators and schedules connections, random gates,
+fractional deliveries and cascades. Its clock mapping addresses each child;
+enge supplies exact host tempo observations and instrument/part-owned inputs.
+Prepared stream keys preserve existing random identities across flattened graphs.
+Voice lifetime and minimum-hold release policy stay in enge. Snapshots retain
+core state and pending host release times. `test_native_patch_core.py` covers
+cross-clock exported Threshold cues through stops, seeks and restored queues;
+existing native Patch, operator, random and capacity regressions still apply.
 
 ## Capability and evidence matrix
 
@@ -94,15 +103,15 @@ Neither kind proves an independent Rust library exists.
 | Definitions, units, library references | uFor `envelfo.py`, `library.py`, `segments.py`, `score_types.py` | Prepared tuples supplied by Python, not equivalent authored-document validation | uFor `test_envelfo_score_round_trips_simple_bodies`, `test_example_envelfo_library_resolves_all_scores`, `test_units.py`; normalized Rust definition boundary still to extract |
 | Indefinite Envelope segments | Scalar and staged Envelope playback, explicit `advance` | Scalar/staged core and native Envelope cursors | Shared `indefinite-segments-advance-and-restore` and `indefinite-envelope-is-a-stage` traces; no separate constant generator |
 | Voice-amplitude Envelope waits | Shared scalar state plus enge minimum-hold and completion policy | Shared Rust Envelope state per voice/operator; native sample state | `test_amplitude_envelope.py` covers attack/release waits, FM carrier/operator addressing, continuation and sample exhaustion; `test_envelope_policy.py` covers minimum hold and paused release |
-| LFO signals and commands | enveLFO `initial_envelfo`, `envelfo_at`, `envelfo_event` | Shared Rust `LFO` and `LFOState`; enge owns scope and delivery cursors | `test_native_lfo_core.py` and existing scoped/playback audio tests; no duplicate native persistent phase/fade evaluator; stateless block acceleration remains an audio adapter |
+| LFO signals and commands | enveLFO `initial_envelfo`, `envelfo_at`, `envelfo_event` | Shared Rust `LFO` and `LFOState`; enge owns scope, core Patch owns voice delivery cursors | `test_native_lfo_core.py` and existing scoped/playback audio tests; no duplicate native persistent phase/fade evaluator; stateless block acceleration remains an audio adapter |
 | Envelope attacks, release, loops, reversal, finite repeats | enveLFO scalar Envelope execution | Shared Rust `EnvelopeState`; enge owns queued voice release and routes | enge `test_finite_envelope_repeats_match_persistent_native` and `test_native_named_envelope.py`; no duplicate native named Envelope evaluator |
 | Curved Envelope segments | Shared scalar curve mathematics used by Envelopes and Stages | Standalone core supports curves; enge named/staged preparation still rejects them | enge `_persistent_modulation` and `_runtime_staged_envelfo`; removing audio-host restrictions is separate work |
 | Stage transition events and entry capture | enveLFO `advance_envelfo`, `next_stage_event` | Shared Rust `Stages` and `StageState`; exact routed timestamps | enge `test_staged_envelope_events_cue_another_envelfo_in_native_runtime` and fractional routed delivery tests; native Stage playback/boundary helpers removed |
-| Patch named signal/event outputs | Definitions/ranges/order in uFor; execution and child materialization in enge | Prepared transform nodes, children and connection tables in persistent runtime | enge `test_patch_named_outputs_match_separate_envelfos`, `test_patch_named_event_output_cues_stage`; `initial_envelfo` does not evaluate a Patch independently |
-| Sum, Product, Affine, Quantize | uFor stateless helpers; enge graph execution | `envelfo_transform_values` evaluation | uFor `test_patch_transforms_follow_dependencies_without_clipping`, `test_quantize_half_steps_choose_the_higher_value`; enge `test_quantize_grid_matches_across_clocks_partitions_and_snapshots` |
-| SampleHold | uFor `SampleHoldState`, explicit sample-event draws; enge owns per-voice seed derivation | SampleHold lowered through named envelope state; SplitMix64 implementation | uFor `test_sample_hold_draws_only_on_sample_events_and_restores_its_stream`; enge `test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise` |
-| Latch, Threshold, Slew | uFor scalar helpers; enge owns observation grid, retained graph state and resulting deliveries | Persistent transform state and connection processing | enge `test_latch_activation_and_same_frame_captures`, `test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots`, `test_slew_shared_state_limits_rates_and_restores_mid_ramp`; independent Python graph execution still missing |
-| Event division, offset, chance, delayed delivery | uFor connection validation; enge `ControlRenderer` event queues and counters | Prepared connection tables, `forward_event`, delayed-event queues | enge `test_patch_division_is_first_aligned_independent_and_snapshot_safe`, `test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe`, `test_delayed_envelfo_events_report_queue_and_clock_limits` |
+| Patch named signal/event outputs | Definitions/ranges/order in uFor; audio child materialization in enge; standalone `envelfo.patch` | Shared Rust Patch graph and per-voice `PatchState` | enge `test_patch_named_outputs_match_separate_envelfos`, `test_patch_named_event_output_cues_stage`; Python audio adapter replacement remains |
+| Sum, Product, Affine, Quantize | Shared stateless helpers; enge audio graph execution | Shared core signal operators observed by Patch | uFor `test_patch_transforms_follow_dependencies_without_clipping`, `test_quantize_half_steps_choose_the_higher_value`; enge `test_quantize_grid_matches_across_clocks_partitions_and_snapshots` |
+| SampleHold | Shared sample-event draws; enge owns per-voice seed derivation | Shared core SampleHold state inside Patch, with prepared stream keys | uFor `test_sample_hold_draws_only_on_sample_events_and_restores_its_stream`; enge `test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise` |
+| Latch, Threshold, Slew | Shared operators and standalone Patch; enge audio observation grid | Shared core retained state and Patch connection processing | enge `test_latch_activation_and_same_frame_captures`, `test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots`, `test_slew_shared_state_limits_rates_and_restores_mid_ramp` |
+| Event division, offset, chance, delayed delivery | uFor connection validation; enge `ControlRenderer` audio queues; standalone `envelfo.patch` scheduler | Shared core connection gates and bounded exact pending deliveries | enge `test_patch_division_is_first_aligned_independent_and_snapshot_safe`, `test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe`, `test_delayed_envelfo_events_report_queue_and_clock_limits` |
 | Beats, tempo, stop, seek, quantized commands | uFor `TempoMap` and trace preparation; enge converts host time to the instance clock | Prepared `BeatPoint` observations; native playback between host points | uFor `test_synth_trace_cancels_pending_envelfo_command_on_transport_seek`; enge `test_beat_stages_follow_tempo_and_stop_across_restore`, `test_host_tempo_quantizes_envelfo_change_for_both_renderers`; clock acquisition is not part of either core |
 | Direct transport-position LFO | uFor `PositionDriver.transport`, `envelfo_at` | Native LFO transport-position flag | enge `test_transport_position_cycle_follows_seek_without_crossing_history`; only beat-clock LFOs with transport reset and no delay/fade are allowed |
 | Scope, trigger addressing and release ownership | uFor trace contracts; enge instance admission/routing/lifecycle | Voice/context slots and prepared source owners | enge `test_trigger_addressed_envelfo_changes_only_matching_voice`, `test_trigger_envelfo_playback_matches_persistent_fm_and_noise`; host ownership remains outside the control core |
@@ -161,9 +170,9 @@ The final crossing emits its boundary events then `stage.done`; an explicit fini
 transition additionally emits `done`. Without a finish transition, completion
 still holds the boundary value but does not invent a `done` event.
 
-The existing Rust runtime has `f64` beat points, playback positions and delayed
-event times, and snaps near-integer staged event times using a tolerance. This
-is still an exact-event-time native integration gap. The approved standalone
+At inventory time the Rust runtime had `f64` beat points, playback positions and
+delayed event times, and snapped near-integer staged event times using a tolerance.
+The native migration has removed that integration gap. The standalone
 boundary uses reduced signed i64 numerators and positive i64 denominators,
 with i128 intermediates and explicit errors when normalized components do not
 fit. It supports checked conversion to/from arpeg's `Ratio<i64>`; it does not
