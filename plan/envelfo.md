@@ -469,9 +469,17 @@ Release-only checks cover both feature configurations.
 Clock mappings, external queues and combined enge/arpeg application snapshots
 remain host-owned. Optional standalone Python bindings remain a separate
 feature. Host-supplied clock mapping is the intended boundary, not
-a missing built-in tempo implementation. arpeg's after-note-on expression
-ordering remains explicitly documented for reconsideration. No tag, publication
-or new musical policy is part of extraction closeout.
+a missing built-in tempo implementation.
+
+arpeg expression-ordering follow-up: both Python and Rust players now separate
+scheduling from MIDI realization. Hosts deliver all same-time hits, observe once,
+then realize fresh expression before note-on. Ordinary playback uses that same
+path; note-offs, captured/current lane ownership and exact beat timestamps are
+preserved. Python snapshots support the intermediate phase, and stopping cancels
+unsent attacks while releasing only realized notes. Shared wire traces exercise
+these phases, including tempo changes, overlap and captured phrases. Combined
+Rust application snapshots remain host-owned work. No tag or publication is part
+of this change.
 
 - Python installs and evaluates Envelfos without NumPy, enge, or native bindings.
 - Rust consumers can link and evaluate `envelfo-core` without Python or enge.

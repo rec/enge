@@ -201,13 +201,14 @@ Patch definitions plus complete state, including pending core deliveries and RNG
 streams. Hosts still save clock mappings and external queues themselves. This
 does not add serialized combined enge/arpeg application snapshots.
 
-Standalone Python bindings to Rust and arpeg expression observation before
-note-on remain separate follow-ups under the accepted host-boundary contracts.
-arpeg deliberately returns
-newly triggered expression after note messages at the same timestamp; revisit
-that ordering explicitly before promising support for instruments that latch
-expression at note-on. Built-in Rust tempo acquisition and broader audio-host
-Envelope profiles are not silently added here.
+arpeg's Python and Rust players now separate scheduling and MIDI realization.
+Hosts deliver same-time hits, observe the bridge once, then realize controllers
+before note-on, retaining existing release and expression-lane ownership rules.
+Python snapshots also retain pending unrealized batches. Combined Rust host
+snapshot serialization remains separate work.
+
+Standalone Python bindings to Rust remain optional. Built-in Rust tempo
+acquisition and broader audio-host Envelope profiles are not silently added here.
 
 ## Additional work beyond the prompt
 
