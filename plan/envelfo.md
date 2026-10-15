@@ -457,8 +457,18 @@ Rust package compilation with the MIT notices included. A release-only workflow
 gates Linux/Windows/macOS, Python 3.13/3.15 and Rust debug/release builds. It is
 not run per commit, and cross-platform release results are not claimed now.
 
-Serialized Rust disk snapshots and optional standalone Python bindings remain
-separate features. Host-supplied clock mapping is the intended boundary, not
+Rust JSON snapshot follow-up, 2026-10-15: the optional `snapshots` feature now
+bundles normalized LFO, Envelope, Stages, SampleHold and Patch definitions with
+complete continuation state. Version 1 preserves exact rational times, 64-bit
+counters/random words and signal floats. Save/load validates definitions, child
+types, indexes, graph order and pending deliveries. Unknown versions are rejected
+without migration. The shared Rust conformance traces serialize and restore at
+every step when enabled; default builds remain free of serialization dependencies.
+Release-only checks cover both feature configurations.
+
+Clock mappings, external queues and combined enge/arpeg application snapshots
+remain host-owned. Optional standalone Python bindings remain a separate
+feature. Host-supplied clock mapping is the intended boundary, not
 a missing built-in tempo implementation. arpeg's after-note-on expression
 ordering remains explicitly documented for reconsideration. No tag, publication
 or new musical policy is part of extraction closeout.

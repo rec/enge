@@ -20,7 +20,7 @@ rather than replace, shared standalone conformance.
 | Patch outputs, signal operators and retained state | Standalone Patch scheduler | Core Patch/signal modules | Shared Patch/host traces and operator tests |
 | Division, offset, chance, random words and delayed queues | Standalone Patch/random modules | Core Patch/random modules | Shared portable vectors and host traces; focused gate/cascade/capacity rollback tests |
 | Per-child clocks and elapsed beats versus song position | Host TempoMap supplied to Patch | Host ClockMapping supplied to Patch | Shared stop/seek/tempo trace; frame conversion and clock acquisition stay in hosts |
-| Continuation and pending deliveries | JSON snapshots | Independent state clones | Shared restore points; enge snapshot isolation and exact fractional delivery tests |
+| Continuation and pending deliveries | JSON snapshots | Clones; optional core JSON snapshots | Shared traces restore JSON with the Rust feature enabled; enge snapshot isolation and exact fractional delivery tests |
 | Voice scope, triggers, minimum hold and retirement | enge | enge | Host policy, not duplicate Envelope playback |
 | Audio integration | enge sampling and shared Python Patch state | Native adapters over shared core state | Full enge suite and Python/native Patch regressions |
 | arpeg expression integration | Optional arpeg bridge | Separate arpeg-envelfo crate | Shared composition MIDI trace, mapped clocks and pending-delivery continuation |
@@ -95,8 +95,9 @@ with i128 intermediates and explicit errors when normalized components do not
 fit. It supports checked conversion to/from arpeg's `Ratio<i64>`; it does not
 promise arbitrary Python Fraction range. Command overflow leaves the supplied
 LFO state unchanged. Floating-point conversion is limited to signal values,
-not comparisons, phase wraps or position advancement. Rust snapshots currently
-use cloned state, not a shared serialized wire format.
+not comparisons, phase wraps or position advancement. Rust supports cloned state
+and optional, self-contained versioned JSON through core's `snapshots` feature.
+This is not a shared Python/Rust wire format or a change to enge's audio snapshots.
 
 ### Signals and observation schedules
 
@@ -180,7 +181,9 @@ transport is stopped, seconds-based Slew, division/offset sampling, curved
 Envelope commands, and pending deliveries across continuation. The Rust fixture
 host integrates supplied observations only; it is not a new core tempo API.
 
-Python restore steps serialize and reload state; Rust restore steps clone it.
+Python restore steps serialize and reload state. With `snapshots` enabled, the
+Rust shared body/Patch/host traces serialize and reload every continuation step;
+default Rust builds retain clone-based continuation checks.
 Cross-language snapshot interchange is not required. arpeg owns its composed
 expression wire trace and verifies its explicit lane ownership and same-time
 delivery phases independently of enge.
@@ -193,9 +196,14 @@ No release or hardware validation is implied.
 
 ## Separately scoped follow-ups
 
-Serialized Rust disk snapshots, standalone Python bindings to Rust, and arpeg
-expression observation before note-on are not extraction blockers under the
-accepted continuation and host-boundary contracts. arpeg deliberately returns
+Optional Rust JSON snapshots now cover LFO, Envelope, Stages, SampleHold and
+Patch definitions plus complete state, including pending core deliveries and RNG
+streams. Hosts still save clock mappings and external queues themselves. This
+does not add serialized combined enge/arpeg application snapshots.
+
+Standalone Python bindings to Rust and arpeg expression observation before
+note-on remain separate follow-ups under the accepted host-boundary contracts.
+arpeg deliberately returns
 newly triggered expression after note messages at the same timestamp; revisit
 that ordering explicitly before promising support for instruments that latch
 expression at note-on. Built-in Rust tempo acquisition and broader audio-host
