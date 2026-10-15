@@ -375,8 +375,27 @@ old per-source snapshot records are not read through compatibility adapters.
 
 Regressions cover saved JSON with pending captures, original snapshot isolation,
 seconds/beat clocks, stopped transport, fractional events, random streams and
-all existing audio backends. Serialized Rust snapshots and combined arpeg
-integration remain unfinished, along with the final extraction/release audit.
+all existing audio backends. Serialized Rust snapshots remain unfinished,
+along with the final extraction/release audit.
+
+Step 5 now has an optional Python `arpeg.envelfo` bridge and separate
+`arpeg-envelfo` Rust crate. Both connect arpeg hits to a standalone event-started
+Envelope and named Patch outputs to existing expression lanes. Hosts supply
+exact timestamps, per-child tempo mappings and observation/delivery boundaries;
+neither core depends on the other or acquires its own clock. One shared wire
+trace checks controllers between notes, irregular advancement, tempo changes,
+stop/start, seeking, final release and explicit lane ownership. Pending Patch
+deliveries survive Python JSON restoration and Rust bridge cloning. Python
+also restores the player alongside the bridge. A serialized combined Rust
+host/player continuation format has not been introduced.
+
+The first integration deliberately returns hit-triggered expression after
+arpeg's note messages at the same timestamp. Revisit this ordering: instruments
+that latch expression at note-on may need observation before note realization,
+which would require separating those phases in arpeg. This is documented in
+arpeg's `doc/envelfo.md` and covered by its composition fixture, rather than
+claimed to provide pre-note-on expression already. Feedback and additional
+selection/rhythm mappings are outside this first integration.
 
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline
