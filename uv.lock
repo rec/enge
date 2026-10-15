@@ -77,7 +77,7 @@ dev = [
 [[package]]
 name = "envelfo"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#aa3cedaa84b07a5af09a102b51cd292c4a40bab7" }
+source = { git = "ssh://git@github.com/rec/envelfo.git?branch=main#e751fafb51907b476dd379e3577ade1a5a66b82f" }
 dependencies = [
     { name = "ufor" },
 ]
