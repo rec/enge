@@ -164,9 +164,16 @@ Zero-duration amplitude-envelope phases jump immediately to their endpoints;
 their curve values do not affect playback. Nonzero-duration phases remain linear.
 Decoding remains with the caller. Curved envelope phases with nonzero duration,
 equalizers,
-layer crossfades, delayed or offset sample starts, event bindings, other
+layer crossfades, delayed or offset sample starts, key event bindings, other
 modulation targets, and fade
 retirements fail explicitly.
+
+Offline sample instruments accept voice-scoped velocity EventBindings in both
+NumPy and native rendering. Each voice retains its prepared start velocity as
+an unsmoothed constant, including across snapshot/restore and later controller
+changes or notes. Existing modulation routes supply the velocity-response curve;
+there is no additional automatic velocity gain. Key bindings and event bindings
+in other offline engines or native live registration remain unsupported.
 
 The NumPy and Rust graph FM engine in [fm.py](enge/fm.py) renders two through six
 named sine, square, or triangle operators. Acyclic current-sample edges modulate

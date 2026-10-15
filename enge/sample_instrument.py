@@ -268,8 +268,8 @@ class OfflineSampler:
                 sample,
                 backend=self.backend,
             ),
-            instrument_sources=self.controls.sources(common, action),
-            slot_sources=self.controls.sources(settings, action),
+            instrument_sources=self.controls.sources(common, action, action.velocity),
+            slot_sources=self.controls.sources(settings, action, action.velocity),
         )
 
     def _voice_definition(
@@ -714,7 +714,7 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
         raise synth.EngineError(
             "Only sample volume, tuning, and filter processing are implemented"
         )
-    synth.validate_generators(settings)
+    synth.validate_generators(settings, allow_velocity_bindings=True)
     synth.validate_modulation(settings)
 
 

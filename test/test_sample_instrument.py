@@ -8,7 +8,7 @@ import pytest
 from test_dynamic_synth import change, dynamic_score, onset
 from test_synth import check_audio, score
 from ufor.envelfo import Envelope
-from ufor.events import Release
+from ufor.events import ControlChange, PerformanceEvent, Release
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
 from ufor.samples import instrument, trace
 from ufor.samples.enums import LoopMode
@@ -57,6 +57,140 @@ def sample_score(
         ],
     }
     return instrument.SampleInstrumentScore.model_validate(raw)
+
+
+@pytest.mark.parametrize("location", ["instrument", "slot"])
+def test_velocity_bindings_keep_each_voice_value_through_controls_and_restore(
+    backend: Literal["numpy", "native"], tmp_path: Path, location: str
+) -> None:
+    raw = sample_score(frames=96000).model_dump(mode="json")
+    raw["body"]["settings"]["controls"] = {"velocity": {"default": 0.8}}
+    settings = (
+        raw["body"]["settings"] if location == "instrument" else raw["body"]["slots"][0]
+    )
+    settings["modulation"] = {
+        "sources": [
+            {"name": "note-velocity", "scope": "voice", "minimum": 0, "maximum": 1}
+        ],
+        "parameters": [
+            {
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "scope": "voice",
+                "unit": "ratio",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 1,
+            }
+        ],
+        "routes": [
+            {
+                "name": "velocity-gain",
+                "source": "note-velocity",
+                "target": {"name": "processing", "parameter": "amplitude"},
+                "unit": "ratio",
+                "operation": "multiply",
+                "points": [
+                    {"input": v / 127, "amount": (v / 127) ** 2} for v in range(128)
+                ],
+            }
+        ],
+    }
+    settings["bindings"] = [{"name": "note-velocity", "kind": "velocity"}]
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    prepared = sample_instrument.prepare(
+        document,
+        {
+            "asset": np.tile([0.125, 0.0625], (96000, 1)),
+        },
+    )
+    events: list[PerformanceEvent] = [
+        onset(frame=f, trigger_id=n, pitch=440).model_copy(
+            update={
+                "velocity": v,
+                "controls": {"velocity": 0.8},
+            }
+        )
+        for f, n, v in [
+            (0, "first", 64 / 127),
+            (12000, "second", 1),
+            (24000, "quiet", 1 / 127),
+            (36000, "zero", 0),
+        ]
+    ]
+    events.append(
+        ControlChange(
+            tick=6000, ordinal=0, scope="part", part="main", control="velocity", value=0
+        )
+    )
+    releases = [
+        Release(tick=f, ordinal=0, part="main", trigger_id=n)
+        for f, n in [
+            (18000, "first"),
+            (30000, "second"),
+            (42000, "quiet"),
+            (48000, "zero"),
+        ]
+    ]
+    actions = trace.prepare(document.body, [*events, *releases], seed=0).actions
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
+    chunks: list[np.ndarray] = []
+    for start, end in pairwise(
+        [0, 1, 6000, 12000, 12001, 18000, 24000, 30000, 36000, 42000, 48000, 96000]
+    ):
+        chunks.append(
+            renderer.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        snapshot = sample_instrument.SamplerSnapshot.model_validate_json(
+            renderer.snapshot().model_dump_json()
+        )
+        renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
+        renderer.restore(snapshot)
+    gain = np.zeros(96000)
+    gain[:18000] += (64 / 127) ** 2
+    gain[12000:30000] += 1
+    gain[24000:42000] += (1 / 127) ** 2
+    expected = gain[:, None] * [0.125, 0.09375]
+    check_audio(tmp_path / "voice-velocity.wav", np.concatenate(chunks), expected)
+
+
+def test_sample_key_event_bindings_remain_unsupported() -> None:
+    raw = sample_score(frames=48000).model_dump(mode="json")
+    raw["body"]["slots"][0].update(
+        {
+            "bindings": [{"name": "key", "kind": "key"}],
+            "modulation": {
+                "sources": [
+                    {"name": "key", "scope": "voice", "minimum": 0, "maximum": 127}
+                ],
+                "parameters": [
+                    {
+                        "target": {"name": "processing", "parameter": "amplitude"},
+                        "scope": "voice",
+                        "unit": "ratio",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 1,
+                    }
+                ],
+                "routes": [
+                    {
+                        "name": "key-gain",
+                        "source": "key",
+                        "operation": "multiply",
+                        "target": {"name": "processing", "parameter": "amplitude"},
+                        "unit": "ratio",
+                        "points": [
+                            {"input": 0, "amount": 0},
+                            {"input": 127, "amount": 1},
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    with pytest.raises(EngineError, match="Unsupported binding"):
+        sample_instrument.prepare(document, {"asset": np.ones((48000, 2))})
 
 
 @pytest.mark.parametrize("release_seconds", [Fraction(0), Fraction(1, 4)])

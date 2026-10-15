@@ -107,9 +107,10 @@ class ControlRamp(Model, frozen=True):
 
 
 class ControlContext(Model, frozen=True):
-    scope: Literal["instrument", "part", "trigger"]
+    scope: Literal["instrument", "part", "trigger", "voice"]
     part: str | None
     trigger_id: str | None
+    voice_id: str | None = None
     ramps: list[ControlRamp]
 
 
@@ -1012,13 +1013,42 @@ class ControlRenderer:
         )
 
     def sources(
-        self, settings: SoundSettings, action: instrument_trace.VoiceStart
+        self,
+        settings: SoundSettings,
+        action: instrument_trace.VoiceStart,
+        velocity: float | None = None,
     ) -> dict[str, int]:
         result: dict[str, int] = {}
         setting = next(i for i, s in enumerate(self.settings) if s is settings)
         bindings = {b.name: b for b in settings.bindings}
         for source in settings.modulation.sources:
             binding = bindings[source.name]
+            if isinstance(binding, processing.EventBinding):
+                if velocity is None:
+                    raise EngineError(
+                        "Velocity binding requires resolved sample velocity"
+                    )
+                index = len(self.contexts)
+                self.contexts.append(
+                    ControlContext(
+                        scope="voice",
+                        part=action.part,
+                        trigger_id=action.trigger_id,
+                        voice_id=action.voice_id,
+                        ramps=[
+                            ControlRamp(
+                                control="velocity",
+                                state=controls.initial_control(
+                                    controls.ControlDeclaration(default=velocity),
+                                    Fraction(action.tick, self.sample_rate),
+                                    Fraction(0),
+                                ),
+                            )
+                        ],
+                    )
+                )
+                result[source.name] = index
+                continue
             if isinstance(binding, processing.GeneratorBinding):
                 body = settings.envelfos[binding.reference]
                 if isinstance(body, Patch):
@@ -1202,6 +1232,12 @@ class ControlRenderer:
         signals = self._graph_values(settings, sources, start, frames)
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
+                continue
+            if isinstance(binding, processing.EventBinding):
+                value = self.contexts[sources[binding.name]].ramps[0].state.value
+                signals[binding.name] = np.column_stack(
+                    (np.full(frames, value), np.ones(frames))
+                )
                 continue
             assert isinstance(binding, ControlBinding)
             context_id = sources[binding.name]
@@ -2616,7 +2652,9 @@ def validate_envelope(envelope: Envelope) -> None:
 
 
 def validate_generators(
-    settings: SoundSettings, allow_beat_envelfos: bool = False
+    settings: SoundSettings,
+    allow_beat_envelfos: bool = False,
+    allow_velocity_bindings: bool = False,
 ) -> None:
     """Validate the Envelfo clocks supported by the selected renderer."""
     if any(isinstance(g, EnveLFOReference) for g in settings.envelfos.values()):
@@ -2641,9 +2679,14 @@ def validate_generators(
     if any(
         not isinstance(b, ControlBinding)
         and not isinstance(b, processing.GeneratorBinding)
+        and not (
+            allow_velocity_bindings
+            and isinstance(b, processing.EventBinding)
+            and b.kind == "velocity"
+        )
         for b in settings.bindings
     ):
-        raise EngineError("Only control and envelfo bindings are implemented")
+        raise EngineError("Unsupported binding for this renderer")
 
 
 def validate_modulation(settings: SoundSettings) -> None:
