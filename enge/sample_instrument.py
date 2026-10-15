@@ -5,6 +5,7 @@ from math import isfinite
 from typing import Literal, cast
 
 import numpy as np
+from envelfo import patch
 from pydantic import Field
 from ufor import instrument_trace
 from ufor.base import Model
@@ -43,6 +44,7 @@ class SamplerSnapshot(Model, frozen=True):
     contexts: list[synth.ControlContext]
     lfos: list[synth.LFOSource]
     envelopes: list[synth.EnvelopeSource]
+    graphs: dict[str, patch.PatchState]
     backend: Literal["numpy", "native"]
 
 
@@ -188,6 +190,7 @@ class OfflineSampler:
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
             envelopes=self.controls.envelopes,
+            graphs=self.controls.graphs,
             backend=self.backend,
         ).model_copy(deep=True)
 
@@ -212,6 +215,7 @@ class OfflineSampler:
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
         self.controls.envelopes = snapshot.envelopes
+        self.controls.graphs = snapshot.graphs
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if synth.apply_amplitude_event(

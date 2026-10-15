@@ -4,6 +4,7 @@ from math import isfinite
 from typing import Literal, Self, cast
 
 import numpy as np
+from envelfo import patch
 from pydantic import ConfigDict, Field, model_validator
 from ufor import instrument_trace, modulation
 from ufor.base import Model
@@ -222,6 +223,7 @@ class FMSnapshot(Model, frozen=True):
     contexts: list[synth.ControlContext]
     lfos: list[synth.LFOSource]
     envelopes: list[synth.EnvelopeSource]
+    graphs: dict[str, patch.PatchState]
 
 
 class PersistentFMSnapshot(Model, frozen=True):
@@ -294,6 +296,7 @@ class OfflineFM:
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
             envelopes=self.controls.envelopes,
+            graphs=self.controls.graphs,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: FMSnapshot) -> None:
@@ -312,6 +315,7 @@ class OfflineFM:
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
         self.controls.envelopes = snapshot.envelopes
+        self.controls.graphs = snapshot.graphs
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if synth.apply_amplitude_event(

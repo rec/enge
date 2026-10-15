@@ -61,6 +61,13 @@ commands, activation fades and transport-position signals use shared exact
 playback state, and marker routing follows that state across commands and
 restoration.
 
+Python graph playback now uses the standalone `envelfo.patch` scheduler too.
+enge prepares bindings, supplies host-owned signals, samples event-free spans
+and retains voice-release policy; it no longer maintains separate Patch queues,
+connection gates or retained operators. Python synth, FM, noise and sampler
+snapshots store shared execution state under `graphs`. This replaces the old
+per-source snapshot layout, without a backwards reader.
+
 The NumPy reference and Rust backend render held linear-envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,
 smooths controls in their declared scopes, preserves phase through pitch changes,

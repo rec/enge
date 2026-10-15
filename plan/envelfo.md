@@ -354,8 +354,29 @@ beats are stopped. Aggregate snapshots clone core state and pending host release
 policy. Cross-clock audio regressions cover fractional delayed cues, probability,
 stopped clocks, song seeks and restoration into a fresh native renderer.
 
-Python audio-host scheduler replacement, serialized Rust snapshots and the
-combined arpeg integration remain separate unfinished extraction work.
+At that stage, Python audio-host scheduler replacement, serialized Rust snapshots
+and the combined arpeg integration remained unfinished.
+
+Step 4 continued with the Python audio-host scheduler migration. enge now
+materializes its bindings, inherited Patch children, operator dependencies and
+cross-instance connections into `envelfo.patch.PreparedPatch`. It preserves each
+child clock, scope ownership and prepared random-stream identity. Shared
+`PatchState` owns voice-local playback, retained values, gates and exact delayed
+deliveries. The former Python connection dispatchers, per-source event queues,
+gate counters and Patch signal evaluator have been removed.
+
+The shared scheduler exposes explicit command phases, event-only settling and
+non-mutating next-boundary queries. enge retains its event-free audio sampling
+adapters; stateless block signals are evaluated by the standalone library without
+NumPy. Retained operators use the host's individual observation schedule.
+Instrument/part-owned signals and minimum-hold release policy remain in enge.
+Synth, FM, noise and sampler snapshots now save shared state under `graphs`;
+old per-source snapshot records are not read through compatibility adapters.
+
+Regressions cover saved JSON with pending captures, original snapshot isolation,
+seconds/beat clocks, stopped transport, fractional events, random streams and
+all existing audio backends. Serialized Rust snapshots and combined arpeg
+integration remain unfinished, along with the final extraction/release audit.
 
 1. **Inventory and freeze the contract.** Build the capability/parity matrix,
    identify pure versus host-specific responsibilities, and establish baseline

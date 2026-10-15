@@ -2485,9 +2485,11 @@ def test_staged_envelfo_renders_and_restores_at_attack_boundary(
         expected,
     )
     np.testing.assert_allclose(replay, second, atol=0)
-    assert snapshot.envelopes[0].state.runtime.stage == (
-        "release" if release_frame < 24000 else "sway"
-    )
+    source = snapshot.envelopes[0]
+    state = snapshot.graphs[f"{source.setting}:{source.voice_id}"].children[
+        f"source-{source.binding_name}"
+    ]
+    assert state.runtime.stage == ("release" if release_frame < 24000 else "sway")
     if release_frame < 24000:
         assert np.max(np.abs(expected[12000:13000])) > np.max(
             np.abs(expected[23000:24000])
@@ -2601,7 +2603,11 @@ def test_staged_sampler_envelfo_releases_and_restores(
         expected,
     )
     np.testing.assert_allclose(replay, second, atol=0)
-    assert snapshot.envelopes[0].state.runtime.stage == "release"
+    source = snapshot.envelopes[0]
+    state = snapshot.graphs[f"{source.setting}:{source.voice_id}"].children[
+        f"source-{source.binding_name}"
+    ]
+    assert state.runtime.stage == "release"
     assert expected[24000, 0] > expected[36000, 0]
 
 
@@ -2729,7 +2735,11 @@ def test_staged_marker_cues_another_envelfo_at_exact_time(
     renderer = synth.OfflineSynth(prepared, backend)
     first = renderer.advance(actions, 0, 16000)
     snapshot = renderer.snapshot()
-    assert snapshot.envelopes[1].state.runtime.stage == "bright"
+    source = snapshot.envelopes[1]
+    state = snapshot.graphs[f"{source.setting}:{source.voice_id}"].children[
+        f"source-{source.binding_name}"
+    ]
+    assert state.runtime.stage == "bright"
     second = renderer.advance([], 16000, 48000)
     restored = synth.OfflineSynth(prepared, backend)
     restored.restore(snapshot)

@@ -90,6 +90,16 @@ core state and pending host release times. `test_native_patch_core.py` covers
 cross-clock exported Threshold cues through stops, seeks and restored queues;
 existing native Patch, operator, random and capacity regressions still apply.
 
+Python Patch adapter update: enge now materializes independent generators and
+connections into the standalone `PreparedPatch` boundary. `PatchState` owns child
+playback, retained signals, gates and delayed delivery; enge retains global/part
+inputs, voice release policy and event-free audio sampling. Stateless block
+operators also execute in the shared library. The former Python queue, gate and
+operator implementations are removed. Aggregate Python snapshots use `graphs`,
+replacing per-source execution records without a backwards reader.
+`test_python_patch_core.py` verifies JSON restoration with captures still pending
+and isolation of earlier snapshots in seconds and beat clocks.
+
 ## Capability and evidence matrix
 
 Python reference means enveLFO scalar semantics unless the row explicitly names
@@ -107,11 +117,11 @@ Neither kind proves an independent Rust library exists.
 | Envelope attacks, release, loops, reversal, finite repeats | enveLFO scalar Envelope execution | Shared Rust `EnvelopeState`; enge owns queued voice release and routes | enge `test_finite_envelope_repeats_match_persistent_native` and `test_native_named_envelope.py`; no duplicate native named Envelope evaluator |
 | Curved Envelope segments | Shared scalar curve mathematics used by Envelopes and Stages | Standalone core supports curves; enge named/staged preparation still rejects them | enge `_persistent_modulation` and `_runtime_staged_envelfo`; removing audio-host restrictions is separate work |
 | Stage transition events and entry capture | enveLFO `advance_envelfo`, `next_stage_event` | Shared Rust `Stages` and `StageState`; exact routed timestamps | enge `test_staged_envelope_events_cue_another_envelfo_in_native_runtime` and fractional routed delivery tests; native Stage playback/boundary helpers removed |
-| Patch named signal/event outputs | Definitions/ranges/order in uFor; audio child materialization in enge; standalone `envelfo.patch` | Shared Rust Patch graph and per-voice `PatchState` | enge `test_patch_named_outputs_match_separate_envelfos`, `test_patch_named_event_output_cues_stage`; Python audio adapter replacement remains |
-| Sum, Product, Affine, Quantize | Shared stateless helpers; enge audio graph execution | Shared core signal operators observed by Patch | uFor `test_patch_transforms_follow_dependencies_without_clipping`, `test_quantize_half_steps_choose_the_higher_value`; enge `test_quantize_grid_matches_across_clocks_partitions_and_snapshots` |
+| Patch named signal/event outputs | Definitions/ranges/order in uFor; audio materialization in enge; scheduling in standalone `envelfo.patch` | Shared Rust Patch graph and per-voice `PatchState` | enge `test_patch_named_outputs_match_separate_envelfos`, `test_patch_named_event_output_cues_stage`, `test_python_patch_core.py` |
+| Sum, Product, Affine, Quantize | Standalone scalar/block signal evaluation; enge audio sampling | Shared core signal operators observed by Patch | uFor `test_patch_transforms_follow_dependencies_without_clipping`, `test_quantize_half_steps_choose_the_higher_value`; enge `test_quantize_grid_matches_across_clocks_partitions_and_snapshots` |
 | SampleHold | Shared sample-event draws; enge owns per-voice seed derivation | Shared core SampleHold state inside Patch, with prepared stream keys | uFor `test_sample_hold_draws_only_on_sample_events_and_restores_its_stream`; enge `test_sample_hold_is_shared_by_reference_and_persistent_fm_and_noise` |
-| Latch, Threshold, Slew | Shared operators and standalone Patch; enge audio observation grid | Shared core retained state and Patch connection processing | enge `test_latch_activation_and_same_frame_captures`, `test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots`, `test_slew_shared_state_limits_rates_and_restores_mid_ramp` |
-| Event division, offset, chance, delayed delivery | uFor connection validation; enge `ControlRenderer` audio queues; standalone `envelfo.patch` scheduler | Shared core connection gates and bounded exact pending deliveries | enge `test_patch_division_is_first_aligned_independent_and_snapshot_safe`, `test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe`, `test_delayed_envelfo_events_report_queue_and_clock_limits` |
+| Latch, Threshold, Slew | Standalone Patch owns retained state; enge supplies its audio observation grid | Shared core retained state and Patch connection processing | enge `test_latch_activation_and_same_frame_captures`, `test_threshold_gate_and_next_frame_commands_survive_partitions_and_snapshots`, `test_slew_shared_state_limits_rates_and_restores_mid_ramp` |
+| Event division, offset, chance, delayed delivery | uFor connection validation; standalone `envelfo.patch` scheduler for both standalone and audio playback | Shared core connection gates and bounded exact pending deliveries | enge `test_patch_division_is_first_aligned_independent_and_snapshot_safe`, `test_sample_hold_events_are_seeded_independent_delayed_and_snapshot_safe`, `test_delayed_envelfo_events_report_queue_and_clock_limits` |
 | Beats, tempo, stop, seek, quantized commands | uFor `TempoMap` and trace preparation; enge converts host time to the instance clock | Prepared `BeatPoint` observations; native playback between host points | uFor `test_synth_trace_cancels_pending_envelfo_command_on_transport_seek`; enge `test_beat_stages_follow_tempo_and_stop_across_restore`, `test_host_tempo_quantizes_envelfo_change_for_both_renderers`; clock acquisition is not part of either core |
 | Direct transport-position LFO | uFor `PositionDriver.transport`, `envelfo_at` | Native LFO transport-position flag | enge `test_transport_position_cycle_follows_seek_without_crossing_history`; only beat-clock LFOs with transport reset and no delay/fade are allowed |
 | Scope, trigger addressing and release ownership | uFor trace contracts; enge instance admission/routing/lifecycle | Voice/context slots and prepared source owners | enge `test_trigger_addressed_envelfo_changes_only_matching_voice`, `test_trigger_envelfo_playback_matches_persistent_fm_and_noise`; host ownership remains outside the control core |

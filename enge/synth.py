@@ -1,22 +1,19 @@
 """Offline rendering for Ufor's oscillator synth profile."""
 
-from collections import deque
 from collections.abc import Callable, Collection, Iterable
 from fractions import Fraction
 from functools import cached_property
-from math import ceil, floor, isfinite
+from math import ceil, isfinite
 from typing import Literal, Self, cast
 
 import numpy as np
-from envelfo.patch import connection_gate, observe_signals
+from envelfo import patch
 from envelfo.runtime import (
-    advance_envelfo,
     envelfo_at,
     envelfo_event,
     envelope_complete_at,
     initial_envelfo,
     lfo_definition,
-    next_stage_event,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import envelfo_random, instrument_trace, lfo, modulation
@@ -28,7 +25,6 @@ from ufor.envelfo import (
     EnterStage,
     EnveLFO,
     EnvelfoEvent,
-    EnvelfoOutputEvent,
     EnveLFOReference,
     EnvelfoState,
     Envelope,
@@ -67,7 +63,7 @@ from ufor.synth import (
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
-from . import _native, control, filters, native
+from . import _native, control, envelfo_graph, filters, native
 from .lfo import lfo_samples
 
 
@@ -124,15 +120,7 @@ class LFOSource(Model, frozen=True):
     part: str | None
     trigger_id: str | None
     voice_id: str | None
-    state: EnvelfoState
-
-
-class DelayedEnvelfoEvent(Model, frozen=True):
-    at: Fraction
-    target: int
-    order: int
-    cue: str | None
-    capture: str | None = None
+    state: EnvelfoState | None = None
 
 
 class EnvelopeSource(Model, frozen=True):
@@ -142,12 +130,7 @@ class EnvelopeSource(Model, frozen=True):
     part: str
     trigger_id: str | None
     voice_id: str
-    state: EnvelfoState
     pending_release: Fraction | None = None
-    event_counts: dict[str, int] = Field(default_factory=dict)
-    envelfo_key: int = 0
-    event_random: dict[str, int] = Field(default_factory=dict)
-    pending_events: list[DelayedEnvelfoEvent] = Field(default_factory=list)
 
 
 class OscillatorState(Model, frozen=True):
@@ -169,11 +152,6 @@ class OscillatorState(Model, frozen=True):
 class PatchState(Model, frozen=True):
     voice_id: str
     name: str
-    values: dict[str, float] = Field(default_factory=dict)
-    event_counts: dict[str, int] = Field(default_factory=dict)
-    envelfo_key: int = 0
-    event_random: dict[str, int] = Field(default_factory=dict)
-    pending_events: list[DelayedEnvelfoEvent] = Field(default_factory=list)
 
 
 class PreparedVoiceEnvelope(Model, frozen=True):
@@ -507,6 +485,7 @@ class SynthSnapshot(Model, frozen=True):
     lfos: list[LFOSource]
     envelopes: list[EnvelopeSource]
     patches: list[PatchState] = Field(default_factory=list)
+    graphs: dict[str, patch.PatchState] = Field(default_factory=dict)
     tempo_map: TempoMap | None = None
 
 
@@ -766,52 +745,6 @@ def _patch_child_names(settings: SoundSettings) -> set[str]:
     }
 
 
-def _patch_start_connections(
-    settings: SoundSettings, sources: dict[str, int]
-) -> list[tuple[str, str, int, int, int, int, float, Fraction, str | None]]:
-    bindings = {
-        binding.reference: binding.name
-        for binding in settings.bindings
-        if isinstance(binding, processing.GeneratorBinding)
-    }
-    connections: list[
-        tuple[str, str, int, int, int, int, float, Fraction, str | None]
-    ] = []
-    for parent_name, parent in settings.envelfos.items():
-        if not isinstance(parent, Patch):
-            continue
-        for order, connection in enumerate(parent.events):
-            if connection.action not in ("start", "sample", "capture"):
-                continue
-            child_name, _, port = connection.source.partition(".")
-            source_name = f"patch-{parent_name}-{child_name}"
-            target_name = f"patch-{parent_name}-{connection.target}"
-            if source_name not in settings.envelfos or (
-                connection.action != "capture" and target_name not in settings.envelfos
-            ):
-                continue
-            connections.append(
-                (
-                    bindings[source_name],
-                    port,
-                    sources[
-                        bindings[
-                            parent_name
-                            if connection.action == "capture"
-                            else target_name
-                        ]
-                    ],
-                    order,
-                    connection.every,
-                    connection.offset,
-                    connection.probability,
-                    connection.delay,
-                    connection.target if connection.action == "capture" else None,
-                )
-            )
-    return connections
-
-
 class ControlRenderer:
     """Resolve scoped controls and LFO sources for one instrument instance."""
 
@@ -832,7 +765,6 @@ class ControlRenderer:
             tuple[int, tuple[tuple[str, int], ...]], dict[tuple[str, str], np.ndarray]
         ] = {}
         self.cached_lfos: dict[int, np.ndarray] = {}
-        self.cached_envelopes: dict[int, np.ndarray] = {}
         self.cached_controls: dict[tuple[int, str, Fraction], np.ndarray] = {}
         self.lfo_definitions: dict[int, lfo.LFO] = {}
         self.sample_rate = sample_rate
@@ -845,6 +777,8 @@ class ControlRenderer:
         self.lfos: list[LFOSource] = []
         self.envelopes: list[EnvelopeSource] = []
         self.patches: list[PatchState] = []
+        self.graphs: dict[str, patch.PatchState] = {}
+        self.programs = [envelfo_graph.prepare_graph(s) for s in settings]
         self.new_context("instrument", None, None, 0, {})
 
     def envelfo_time(self, envelfo: EnveLFO, seconds: Fraction) -> Fraction:
@@ -855,15 +789,6 @@ class ControlRenderer:
         if envelfo.position_driver == "transport":
             return self.tempo_map.beat_at(seconds)
         return self.tempo_map.elapsed_beats(Fraction(0), seconds)
-
-    def envelfo_seconds(self, envelfo: EnveLFO, at: Fraction) -> Fraction:
-        if envelfo.clock == "seconds":
-            return at
-        assert self.tempo_map is not None
-        seconds = self.tempo_map.time_for_elapsed_beat(at)
-        if seconds is None:
-            raise EngineError("Beat-clock Envelfo event has no host time")
-        return seconds
 
     def new_context(
         self,
@@ -939,6 +864,7 @@ class ControlRenderer:
                 raise EngineError(f"Unknown instrument LFO: {action.name}")
             for index, source in matches:
                 definition = self.settings[source.setting].envelfos[source.name]
+                assert source.state is not None
                 self.lfos[index] = source.model_copy(
                     update={
                         "state": envelfo_event(
@@ -982,62 +908,34 @@ class ControlRenderer:
                 )
             ):
                 raise EngineError("Patch-level Envelfo commands are not implemented")
-            for index, source in enumerate(self.lfos):
+            for source in self.lfos:
                 if (
                     source.name == action.name
-                    and source.voice_id is not None
                     and source.voice_id in active_voice_ids
                     and (source.part, source.trigger_id)
                     == (action.part, action.trigger_id)
                 ):
-                    definition = self.settings[source.setting].envelfos[source.name]
-                    self.lfos[index] = source.model_copy(
-                        update={
-                            "state": envelfo_event(
-                                definition,
-                                source.state,
-                                self._envelfo_observation(action, definition),
-                            )
-                        }
+                    assert source.voice_id is not None
+                    self._graph_event(
+                        source.setting,
+                        source.voice_id,
+                        f"lfo-{source.name}",
+                        self._envelfo_observation(action),
                     )
-            for index, source in enumerate(self.envelopes):
+            for source in self.envelopes:
                 if (
-                    source.name != action.name
-                    or source.voice_id not in active_voice_ids
-                    or (source.part, source.trigger_id)
-                    != (action.part, action.trigger_id)
+                    source.name == action.name
+                    and source.voice_id in active_voice_ids
+                    and (source.part, source.trigger_id)
+                    == (action.part, action.trigger_id)
                 ):
-                    continue
-                settings = self.settings[source.setting]
-                definition = settings.envelfos[source.name]
-                event = self._envelfo_observation(action, definition)
-                if (
-                    isinstance(source.state.runtime, SampleHoldState)
-                    and event.at == source.state.runtime.at
-                ):
-                    # Stopped beats can collapse distinct host frames onto one time.
-                    event = event.model_copy(
-                        update={
-                            "ordinal": max(
-                                event.ordinal, source.state.runtime.ordinal + 1
-                            )
-                        }
+                    node = self.programs[source.setting].outputs[source.binding_name]
+                    self._graph_event(
+                        source.setting,
+                        source.voice_id,
+                        node,
+                        self._envelfo_observation(action),
                     )
-                if isinstance(definition, Stages):
-                    result = advance_envelfo(definition, source.state, event.at, event)
-                    state = result.state
-                    emitted = [(source.binding_name, e) for e in result.events]
-                else:
-                    state = envelfo_event(definition, source.state, event)
-                    emitted = []
-                self.envelopes[index] = source.model_copy(update={"state": state})
-                if emitted:
-                    sources = {
-                        s.binding_name: i
-                        for i, s in enumerate(self.envelopes)
-                        if s.setting == source.setting and s.voice_id == source.voice_id
-                    }
-                    self._dispatch_staged_events(settings, sources, emitted)
         elif isinstance(action, instrument_trace.TriggerContext):
             if action.controls.keys() != self.declarations.keys():
                 raise EngineError("Trigger context must contain all declared controls")
@@ -1085,10 +983,10 @@ class ControlRenderer:
         return True
 
     def _envelfo_observation(
-        self, action: instrument_trace.EnvelfoObservation, envelfo: EnveLFO
+        self, action: instrument_trace.EnvelfoObservation
     ) -> EnvelfoEvent:
         return EnvelfoEvent(
-            at=self.envelfo_time(envelfo, Fraction(action.tick, self.sample_rate)),
+            at=Fraction(action.tick, self.sample_rate),
             ordinal=action.ordinal,
             action=action.action,
             position=None
@@ -1097,18 +995,35 @@ class ControlRenderer:
             offset=None if action.offset is None else Fraction(str(action.offset)),
         )
 
+    def _graph_event(
+        self, setting: int, voice_id: str, node: str, event: EnvelfoEvent
+    ) -> None:
+        key = f"{setting}:{voice_id}"
+        state = self.graphs[key]
+        current = state.children[node].runtime
+        event = event.model_copy(
+            update={"ordinal": max(event.ordinal, current.ordinal + 1)}
+        )
+        self.graphs[key], _ = patch.patch_event(
+            self.programs[setting],
+            state,
+            node,
+            event,
+            tempo_map=self.tempo_map,
+            inclusive=False,
+        )
+
     def sources(
         self, settings: SoundSettings, action: instrument_trace.VoiceStart
     ) -> dict[str, int]:
         result: dict[str, int] = {}
-        emitted: list[tuple[str, EnvelfoOutputEvent]] = []
+        setting = next(i for i, s in enumerate(self.settings) if s is settings)
         bindings = {b.name: b for b in settings.bindings}
         for source in settings.modulation.sources:
             binding = bindings[source.name]
             if isinstance(binding, processing.GeneratorBinding):
-                setting = next(i for i, s in enumerate(self.settings) if s is settings)
-                envelfo = settings.envelfos[binding.reference]
-                if isinstance(envelfo, Patch):
+                body = settings.envelfos[binding.reference]
+                if isinstance(body, Patch):
                     index = next(
                         (
                             i
@@ -1121,135 +1036,99 @@ class ControlRenderer:
                     if index is None:
                         index = len(self.patches)
                         self.patches.append(
-                            PatchState(
-                                voice_id=action.voice_id,
-                                name=binding.reference,
-                                envelfo_key=action.envelfo_key,
-                            )
+                            PatchState(voice_id=action.voice_id, name=binding.reference)
                         )
                     result[source.name] = -1 - index
-                    continue
-                if isinstance(envelfo, (Envelope, Stages, SampleHold)):
-                    if envelfo.scope != "voice":
+                elif isinstance(body, (Envelope, Stages, SampleHold)):
+                    if body.scope != "voice":
                         raise EngineError(
                             "Staged and envelope Envelfos require voice scope"
                         )
-                    existing = None
-                    if binding.reference in self.patch_children[setting]:
-                        existing = next(
-                            (
-                                i
-                                for i, item in enumerate(self.envelopes)
-                                if (item.setting, item.name, item.voice_id)
-                                == (setting, binding.reference, action.voice_id)
-                            ),
-                            None,
-                        )
-                    if existing is not None:
-                        result[source.name] = existing
-                        continue
-                    index = len(self.envelopes)
-                    initial = initial_envelfo(
-                        envelfo,
-                        self.envelfo_time(
-                            envelfo, Fraction(action.tick, self.sample_rate)
+                    index = next(
+                        (
+                            i
+                            for i, e in enumerate(self.envelopes)
+                            if binding.reference in self.patch_children[setting]
+                            and (e.setting, e.name, e.voice_id)
+                            == (setting, binding.reference, action.voice_id)
                         ),
-                        seed=action.envelfo_key
-                        ^ envelfo_random.stream_key(
-                            0, binding.reference + ":sample-hold"
-                        )
-                        if isinstance(envelfo, SampleHold)
-                        else 0,
+                        None,
                     )
-                    if isinstance(envelfo, Stages):
-                        advanced = advance_envelfo(
-                            envelfo,
-                            initial,
-                            self.envelfo_time(
-                                envelfo, Fraction(action.tick, self.sample_rate)
-                            ),
-                            EnvelfoEvent(
-                                at=self.envelfo_time(
-                                    envelfo, Fraction(action.tick, self.sample_rate)
-                                ),
-                                ordinal=action.ordinal,
-                                action="note_on",
-                            ),
+                    if index is None:
+                        index = len(self.envelopes)
+                        self.envelopes.append(
+                            EnvelopeSource(
+                                setting=setting,
+                                name=binding.reference,
+                                binding_name=binding.name,
+                                part=action.part,
+                                trigger_id=action.trigger_id,
+                                voice_id=action.voice_id,
+                            )
                         )
-                        initial = advanced.state
-                        emitted.extend((binding.name, e) for e in advanced.events)
-                    elif isinstance(envelfo, Envelope) and envelfo.release:
-                        initial = envelfo_event(
-                            envelfo,
-                            initial,
-                            EnvelfoEvent(
-                                at=self.envelfo_time(
-                                    envelfo, Fraction(action.tick, self.sample_rate)
-                                ),
-                                ordinal=action.ordinal,
-                                action="note_on",
-                            ),
-                        )
-                    self.envelopes.append(
-                        EnvelopeSource(
-                            setting=setting,
-                            name=binding.reference,
-                            binding_name=binding.name,
-                            part=action.part,
-                            trigger_id=action.trigger_id,
-                            voice_id=action.voice_id,
-                            state=initial,
-                            envelfo_key=action.envelfo_key,
-                        )
-                    )
                     result[source.name] = index
-                    continue
-                part = action.part if envelfo.scope in ("part", "voice") else None
-                voice_id = action.voice_id if envelfo.scope == "voice" else None
-                index = next(
-                    (
-                        i
-                        for i, s in enumerate(self.lfos)
-                        if (s.setting, s.name, s.part, s.voice_id)
-                        == (setting, binding.reference, part, voice_id)
-                    ),
-                    None,
-                )
-                if index is None:
-                    index = len(self.lfos)
-                    self.lfos.append(
-                        LFOSource(
-                            setting=setting,
-                            name=binding.reference,
-                            part=part,
-                            trigger_id=action.trigger_id
-                            if voice_id is not None
-                            else None,
-                            voice_id=voice_id,
-                            state=initial_envelfo(
-                                envelfo,
-                                self.envelfo_time(
-                                    envelfo,
-                                    Fraction(
-                                        action.tick if voice_id is not None else 0,
-                                        self.sample_rate,
-                                    ),
-                                ),
-                            ),
-                        )
+                else:
+                    assert isinstance(body, LFO)
+                    part = action.part if body.scope in ("part", "voice") else None
+                    voice_id = action.voice_id if body.scope == "voice" else None
+                    index = next(
+                        (
+                            i
+                            for i, e in enumerate(self.lfos)
+                            if (e.setting, e.name, e.part, e.voice_id)
+                            == (setting, binding.reference, part, voice_id)
+                        ),
+                        None,
                     )
-                result[source.name] = index
+                    if index is None:
+                        index = len(self.lfos)
+                        self.lfos.append(
+                            LFOSource(
+                                setting=setting,
+                                name=binding.reference,
+                                part=part,
+                                trigger_id=action.trigger_id
+                                if voice_id is not None
+                                else None,
+                                voice_id=voice_id,
+                                state=initial_envelfo(
+                                    body, self.envelfo_time(body, Fraction(0))
+                                )
+                                if voice_id is None
+                                else None,
+                            )
+                        )
+                    result[source.name] = index
                 continue
             part = None if source.scope == "instrument" else action.part
             trigger_id = action.trigger_id if source.scope == "trigger" else None
             context_id = self.context(source.scope, part, trigger_id)
             if context_id is None:
                 if source.scope == "trigger" and trigger_id is not None:
-                    raise EngineError("Voice start is missing its trigger context")
+                    raise EngineError(f"Missing trigger context: {part}/{trigger_id}")
                 assert source.scope in ("instrument", "part", "trigger")
                 context_id = self.new_context(source.scope, part, trigger_id, 0, {})
             result[source.name] = context_id
-        self._dispatch_staged_events(settings, result, emitted)
+        program = self.programs[setting]
+        if program.envelfos:
+            at = Fraction(action.tick, self.sample_rate)
+            state = patch.initial_patch(
+                program,
+                at,
+                name="voice",
+                seed=action.envelfo_key,
+                tempo_map=self.tempo_map,
+            )
+            key = f"{setting}:{action.voice_id}"
+            self.graphs[key] = state
+            for name in state.children:
+                if isinstance(program.envelfos[name], (Envelope, Stages)):
+                    self._graph_event(
+                        setting,
+                        action.voice_id,
+                        name,
+                        EnvelfoEvent(at=at, ordinal=action.ordinal, action="note_on"),
+                    )
         return result
 
     def release(
@@ -1265,7 +1144,6 @@ class ControlRenderer:
             Fraction(action.tick, self.sample_rate)
             + (renderer.release_frame - renderer.frame_count) / self.sample_rate
         )
-        emitted: list[tuple[str, EnvelfoOutputEvent]] = []
         released: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
@@ -1277,43 +1155,34 @@ class ControlRenderer:
                 continue
             released.add(index)
             source = self.envelopes[index]
-            definition = settings.envelfos[binding.reference]
-            if (
-                isinstance(definition, Envelope)
+            at = (
+                voice_release_at
+                if isinstance(settings.envelfos[binding.reference], Envelope)
                 and binding.release_timing == ReleaseTiming.voice
-                and voice_release_at > Fraction(action.tick, self.sample_rate)
-            ):
-                self.envelopes[index] = source.model_copy(
-                    update={"pending_release": voice_release_at}
-                )
-                continue
-            event = EnvelfoEvent(
-                at=self.envelfo_time(
-                    definition, Fraction(action.tick, self.sample_rate)
-                ),
-                ordinal=action.ordinal,
-                action="note_off",
+                else Fraction(action.tick, self.sample_rate)
             )
-            if isinstance(definition, Stages):
-                advanced = advance_envelfo(definition, source.state, event.at, event)
-                state = advanced.state
-                emitted.extend((binding.name, e) for e in advanced.events)
+            if at > Fraction(action.tick, self.sample_rate):
+                self.envelopes[index] = source.model_copy(
+                    update={"pending_release": at}
+                )
             else:
-                state = envelfo_event(definition, source.state, event)
-            self.envelopes[index] = source.model_copy(update={"state": state})
-        self._dispatch_staged_events(settings, sources, emitted)
+                node = self.programs[source.setting].outputs[binding.name]
+                self._graph_event(
+                    source.setting,
+                    source.voice_id,
+                    node,
+                    EnvelfoEvent(at=at, ordinal=action.ordinal, action="note_off"),
+                )
 
     def stop(self, voice_id: str) -> None:
         self.clear_cache()
+        for setting in range(len(self.settings)):
+            self.graphs.pop(f"{setting}:{voice_id}", None)
         self.envelopes = [
-            s.model_copy(update={"pending_release": None, "pending_events": []})
+            s.model_copy(update={"pending_release": None})
             if s.voice_id == voice_id
             else s
             for s in self.envelopes
-        ]
-        self.patches = [
-            s.model_copy(update={"pending_events": []}) if s.voice_id == voice_id else s
-            for s in self.patches
         ]
 
     def values(
@@ -1332,107 +1201,9 @@ class ControlRenderer:
         key = (id(settings), tuple(sorted(sources.items())))
         if key in self.cached_values:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
-        if frames > 1 and any(
-            isinstance(m, Patch)
-            and any(
-                isinstance(b, (Latch, Threshold, Slew)) for b in m.envelfos.values()
-            )
-            for m in settings.envelfos.values()
-        ):
-            output = {
-                (p.target.name, p.target.parameter): np.empty(frames)
-                for p in settings.modulation.parameters
-            }
-            for i in range(frames):
-                for name, value in self.values(settings, sources, start + i, 1).items():
-                    output[name][i] = value[0]
-            self.clear_cache()
-            self.cached_span = span
-            self.cached_values[key] = output
-            return {n: v.copy() for n, v in output.items()}
-        self._envelfo_event_values(settings, sources, start, frames)
-        signals: dict[str, np.ndarray] = {}
+        signals = self._graph_values(settings, sources, start, frames)
         for binding in settings.bindings:
             if isinstance(binding, processing.GeneratorBinding):
-                index = sources[binding.name]
-                envelfo = settings.envelfos[binding.reference]
-                if isinstance(envelfo, Patch):
-                    continue
-                if isinstance(envelfo, (Envelope, Stages, SampleHold)):
-                    if index not in self.cached_envelopes:
-                        source = self.envelopes[index]
-                        state = source.state
-                        assert isinstance(envelfo, (Envelope, SampleHold))
-                        values = np.empty(frames)
-                        for i in range(frames):
-                            at = Fraction(start + i, self.sample_rate)
-                            if (
-                                source.pending_release is not None
-                                and at >= source.pending_release
-                            ):
-                                state = envelfo_event(
-                                    envelfo,
-                                    state,
-                                    EnvelfoEvent(
-                                        at=self.envelfo_time(
-                                            envelfo, source.pending_release
-                                        ),
-                                        ordinal=0,
-                                        action="note_off",
-                                    ),
-                                )
-                                source = source.model_copy(
-                                    update={"state": state, "pending_release": None}
-                                )
-                                self.envelopes[index] = source
-                            values[i] = envelfo_at(
-                                envelfo, state, self.envelfo_time(envelfo, at)
-                            ).value
-                        self.cached_envelopes[index] = np.column_stack(
-                            (values, np.ones(frames))
-                        )
-                    signals[binding.name] = self.cached_envelopes[index]
-                    continue
-                if index not in self.cached_lfos:
-                    state = self.lfos[index].state.runtime
-                    assert isinstance(envelfo, LFO)
-                    assert isinstance(state, LFOState)
-                    position = state.position
-                    if (
-                        envelfo.clock == "seconds"
-                        and not position.paused
-                        and position.direction == 1
-                    ):
-                        if id(envelfo) not in self.lfo_definitions:
-                            self.lfo_definitions[id(envelfo)] = lfo_definition(envelfo)
-                        samples = lfo_samples(
-                            self.lfo_definitions[id(envelfo)],
-                            lfo.LFOState(
-                                at=position.at,
-                                started_at=position.at - position.age,
-                                phase=position.coordinate % 1,
-                                rate=position.rate,
-                            ),
-                            start,
-                            frames,
-                            self.sample_rate,
-                            self.backend,
-                            self.control_interval,
-                        )
-                        samples[:, 0] = envelfo.center + envelfo.depth * samples[:, 0]
-                    else:
-                        samples = np.empty((frames, 2))
-                        for i in range(frames):
-                            value = envelfo_at(
-                                envelfo,
-                                self.lfos[index].state,
-                                self.envelfo_time(
-                                    envelfo, Fraction(start + i, self.sample_rate)
-                                ),
-                            )
-                            samples[i] = value.value, value.weight
-                    self.cached_lfos[index] = samples
-                signals[binding.name] = self.cached_lfos[index]
                 continue
             assert isinstance(binding, ControlBinding)
             context_id = sources[binding.name]
@@ -1451,451 +1222,221 @@ class ControlRenderer:
                     )
                 )
             signals[binding.name] = self.cached_controls[source_key]
-        for parent_name, parent in settings.envelfos.items():
-            if not isinstance(parent, Patch):
-                continue
-            selected = [
-                b
-                for b in settings.bindings
-                if isinstance(b, processing.GeneratorBinding)
-                and b.reference == parent_name
-            ]
-            if not selected:
-                continue
-            children: dict[str, np.ndarray] = {}
-            patch_index = -1 - sources[selected[0].name]
-            state = self.patches[patch_index]
-            retained = dict(state.values)
-            if any(
-                isinstance(b, (Latch, Threshold, Slew))
-                for b in parent.envelfos.values()
-            ):
-                assert frames == 1
-                inputs = {
-                    n: float(signals[b.name][0, 0] * signals[b.name][0, 1])
-                    for n in parent.envelfos
-                    for b in settings.bindings
-                    if isinstance(b, processing.GeneratorBinding)
-                    and b.reference == f"patch-{parent_name}-{n}"
-                }
-                values, retained, emitted = observe_signals(
-                    parent, inputs, retained, Fraction(1, self.sample_rate)
-                )
-                children = {n: np.full(frames, v) for n, v in values.items()}
-                for name, port in emitted:
-                    self._threshold_event(
-                        settings,
-                        sources,
-                        parent_name,
-                        name,
-                        port,
-                        Fraction(start + 1, self.sample_rate),
-                    )
-            for name in parent.signal_order:
-                if name in children:
-                    continue
-                body = parent.envelfos[name]
-                if isinstance(body, (Sum, Product)):
-                    if any(n not in children for n in body.inputs):
-                        continue
-                    value = np.full(frames, 0.0 if isinstance(body, Sum) else 1.0)
-                    for child in body.inputs:
-                        if isinstance(body, Sum):
-                            value += children[child]
-                        else:
-                            value *= children[child]
-                    children[name] = value
-                elif isinstance(body, Affine):
-                    if body.input in children:
-                        children[name] = body.offset + body.scale * children[body.input]
-                elif isinstance(body, Quantize):
-                    if body.input in children:
-                        position = (children[body.input] - body.origin) / body.step
-                        lower = np.floor(position)
-                        children[name] = (
-                            body.origin
-                            + (lower + (position - lower >= 0.5)) * body.step
-                        )
-                else:
-                    binding = next(
-                        (
-                            b
-                            for b in settings.bindings
-                            if isinstance(b, processing.GeneratorBinding)
-                            and b.reference == f"patch-{parent_name}-{name}"
-                        ),
-                        None,
-                    )
-                    if binding is not None:
-                        signal = signals[binding.name]
-                        children[name] = signal[:, 0] * signal[:, 1]
-            for binding in selected:
-                assert binding.output is not None
-                signals[binding.name] = np.column_stack(
-                    (children[parent.outputs[binding.output]], np.ones(frames))
-                )
-            self.patches[patch_index] = self.patches[patch_index].model_copy(
-                update={"values": retained}
-            )
         output = control.modulation_samples(settings.modulation, signals, frames)
         self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
 
-    def _envelfo_event_values(
+    def _graph_values(
         self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
-    ) -> None:
-        staged: list[tuple[str, int, EnveLFO]] = []
-        seen: set[int] = set()
-        for binding in settings.bindings:
-            if not isinstance(binding, processing.GeneratorBinding):
-                continue
+    ) -> dict[str, np.ndarray]:
+        bindings = [
+            b for b in settings.bindings if isinstance(b, processing.GeneratorBinding)
+        ]
+        if not bindings:
+            return {}
+        setting = next(i for i, s in enumerate(self.settings) if s is settings)
+        program = self.programs[setting]
+        voice_id: str | None = None
+        for binding in bindings:
+            body = settings.envelfos[binding.reference]
             index = sources[binding.name]
-            if index in seen or not isinstance(
-                settings.envelfos[binding.reference], Stages
-            ):
-                continue
-            seen.add(index)
-            staged.append((binding.name, index, settings.envelfos[binding.reference]))
-        patch_starts = _patch_start_connections(settings, sources)
-        envelope_targets = {
-            target
-            for _, _, target, _, _, _, _, _, capture in patch_starts
-            if capture is None
-        }
-        latch_targets = {
-            target
-            for _, _, target, _, _, _, _, _, capture in patch_starts
-            if capture is not None
-        }
-        for parent_name, parent in settings.envelfos.items():
-            if not isinstance(parent, Patch):
-                continue
-            for connection in parent.events:
-                if (
-                    isinstance(
-                        parent.envelfos[connection.source.partition(".")[0]], Threshold
+            if isinstance(body, Patch):
+                voice_id = self.patches[-1 - index].voice_id
+            elif isinstance(body, (Envelope, Stages, SampleHold)):
+                voice_id = self.envelopes[index].voice_id
+            else:
+                voice_id = self.lfos[index].voice_id
+            if voice_id is not None:
+                break
+        external: dict[str, np.ndarray] = {}
+        for binding in bindings:
+            body = settings.envelfos[binding.reference]
+            if isinstance(body, LFO) and body.scope != "voice":
+                index = sources[binding.name]
+                if index not in self.cached_lfos:
+                    state = self.lfos[index].state
+                    assert state is not None
+                    self.cached_lfos[index] = self._source_samples(
+                        body, state, start, frames
                     )
-                    and connection.action != "cue"
-                ):
-                    if connection.action == "capture":
-                        latch_targets.update(
-                            sources[b.name]
-                            for b in settings.bindings
-                            if isinstance(b, processing.GeneratorBinding)
-                            and b.reference == parent_name
-                        )
-                        continue
-                    target = f"patch-{parent_name}-{connection.target}"
-                    envelope_targets.update(
-                        sources[b.name]
-                        for b in settings.bindings
-                        if isinstance(b, processing.GeneratorBinding)
-                        and b.reference == target
-                    )
-        envelfo_indices = {index for _, index, _ in staged} | envelope_targets
-        if (not envelfo_indices and not latch_targets) or (
-            not latch_targets
-            and all(index in self.cached_envelopes for index in envelfo_indices)
-        ):
-            return
-        values = {index: np.empty(frames) for index in envelfo_indices}
-        bindings = {binding.name: binding for binding in settings.bindings}
-        lfo_ports = list(
-            dict.fromkeys(
-                [
-                    (connection.source, connection.port)
-                    for connection in settings.event_connections
-                    if isinstance(
-                        (binding := bindings[connection.source]),
-                        processing.GeneratorBinding,
-                    )
-                    and isinstance(settings.envelfos[binding.reference], LFO)
-                ]
-                + [
-                    (source, port)
-                    for source, port, _, _, _, _, _, _, _ in patch_starts
-                    if isinstance(
-                        (binding := bindings[source]), processing.GeneratorBinding
-                    )
-                    and isinstance(settings.envelfos[binding.reference], LFO)
-                ]
-            )
+                external[program.outputs[binding.name]] = self.cached_lfos[index]
+        if voice_id is None:
+            return {b.name: external[program.outputs[b.name]] for b in bindings}
+        key = f"{setting}:{voice_id}"
+        result = {b.name: np.empty((frames, 2)) for b in bindings}
+        retained = any(
+            isinstance(b, (Latch, Threshold, Slew)) for b in program.envelfos.values()
         )
-        voice_id = (
-            self.envelopes[min(envelfo_indices)]
-            if envelfo_indices
-            else self.patches[-1 - min(latch_targets)]
-        ).voice_id
-        queue_index, _ = self._event_queue(voice_id)
+        transformed = any(
+            isinstance(b, (Sum, Product, Affine, Quantize))
+            for b in program.envelfos.values()
+        )
         i = 0
         while i < frames:
-            boundary = Fraction(start + i, self.sample_rate)
-            events_seen = 0
-            sample_values: dict[int, float] = {}
-            pending_starts: list[tuple[Fraction, int, int, str | None]] = []
-            lfo_events: list[tuple[Fraction, int, str, str]] = []
-            for order, (source_name, port) in enumerate(lfo_ports):
-                binding = bindings[source_name]
-                assert isinstance(binding, processing.GeneratorBinding)
-                envelfo = settings.envelfos[binding.reference]
-                assert isinstance(envelfo, LFO)
-                source = self.lfos[sources[source_name]]
-                assert isinstance(source.state.runtime, LFOState)
-                position = source.state.runtime.position
-                origin = position.at
-                previous = max(origin, boundary - Fraction(1, self.sample_rate))
-                if boundary <= previous:
-                    continue
-                marker = next(m.position for m in envelfo.markers if m.name == port)
-                first = position.coordinate + position.rate * (previous - origin)
-                last = position.coordinate + position.rate * (boundary - origin)
-                first_turn = floor(first - marker) + 1
-                last_turn = floor(last - marker)
-                if last_turn - first_turn + 1 > 4096 - len(lfo_events):
-                    raise EngineError("Envelfo event capacity exceeded")
-                for turn in range(first_turn, last_turn + 1):
-                    at = origin + (turn + marker - position.coordinate) / position.rate
-                    lfo_events.append((at, order, source_name, port))
-            lfo_events.sort()
-            lfo_event_index = 0
-            while True:
-                attempts = [
-                    (
-                        name,
-                        index,
-                        envelfo,
-                        advance_envelfo(
-                            envelfo,
-                            self.envelopes[index].state,
-                            self.envelfo_time(envelfo, boundary),
-                        ),
-                    )
-                    for name, index, envelfo in staged
-                ]
-                next_staged_event = (
-                    min(
-                        (
-                            self.envelfo_seconds(envelfo, event.at)
-                            for _, _, envelfo, result in attempts
-                            for event in result.events
-                        ),
-                        default=None,
-                    )
-                    if settings.event_connections or patch_starts
-                    else None
+            at = Fraction(start + i, self.sample_rate)
+            due = sorted(
+                (e.pending_release, j)
+                for j, e in enumerate(self.envelopes)
+                if e.setting == setting
+                and e.voice_id == voice_id
+                and e.pending_release is not None
+                and e.pending_release <= at
+            )
+            for release_at, index in due:
+                source = self.envelopes[index]
+                self._graph_event(
+                    setting,
+                    voice_id,
+                    program.outputs[source.binding_name],
+                    EnvelfoEvent(at=release_at, ordinal=0, action="note_off"),
                 )
-                next_lfo_event = (
-                    lfo_events[lfo_event_index][0]
-                    if lfo_event_index < len(lfo_events)
-                    else None
+                self.envelopes[index] = source.model_copy(
+                    update={"pending_release": None}
                 )
-                next_event = min(
-                    (
-                        at
-                        for at in (
-                            next_staged_event,
-                            next_lfo_event,
-                            min(
-                                (
-                                    e.at
-                                    for e in (
-                                        self.envelopes[queue_index]
-                                        if queue_index >= 0
-                                        else self.patches[-1 - queue_index]
-                                    ).pending_events
-                                    if e.at <= boundary
-                                ),
-                                default=None,
-                            ),
-                        )
-                        if at is not None
-                    ),
-                    default=None,
+            if retained:
+                advanced = patch.advance_patch(
+                    program,
+                    self.graphs[key],
+                    at,
+                    next_delivery=at + Fraction(1, self.sample_rate),
+                    tempo_map=self.tempo_map,
+                    inputs={n: float(v[i, 0] * v[i, 1]) for n, v in external.items()},
                 )
-                if next_event is None:
-                    for _, index, _, result in attempts:
-                        self.envelopes[index] = self.envelopes[index].model_copy(
-                            update={"state": result.state}
-                        )
-                        sample_values[index] = result.value.value
-                    break
-                emitted: list[tuple[str, EnvelfoOutputEvent]] = []
-                for name, index, envelfo in staged:
-                    result = advance_envelfo(
-                        envelfo,
-                        self.envelopes[index].state,
-                        self.envelfo_time(envelfo, next_event),
-                    )
-                    self.envelopes[index] = self.envelopes[index].model_copy(
-                        update={"state": result.state}
-                    )
-                    emitted.extend((name, event) for event in result.events)
-                while (
-                    lfo_event_index < len(lfo_events)
-                    and lfo_events[lfo_event_index][0] == next_event
-                ):
-                    at, _, name, port = lfo_events[lfo_event_index]
-                    emitted.append(
-                        (
-                            name,
-                            EnvelfoOutputEvent(
-                                at=at,
-                                port=port,
-                                stage=name,
-                                activation=0,
-                            ),
-                        )
-                    )
-                    lfo_event_index += 1
-                events_seen += len(emitted)
-                if events_seen > 4096:
-                    raise EngineError("Envelfo event capacity exceeded")
-                if emitted:
-                    self._dispatch_staged_events(
-                        settings, sources, emitted, pending_starts
-                    )
-                queue = (
-                    self.envelopes[queue_index]
-                    if queue_index >= 0
-                    else self.patches[-1 - queue_index]
-                )
-                due = [e for e in queue.pending_events if e.at == next_event]
-                for event in due:
-                    queue = (
-                        self.envelopes[queue_index]
-                        if queue_index >= 0
-                        else self.patches[-1 - queue_index]
-                    )
-                    position = queue.pending_events.index(event)
-                    updated = queue.model_copy(
-                        update={
-                            "pending_events": queue.pending_events[:position]
-                            + queue.pending_events[position + 1 :]
-                        }
-                    )
-                    if queue_index >= 0:
-                        assert isinstance(updated, EnvelopeSource)
-                        self.envelopes[queue_index] = updated
-                    else:
-                        assert isinstance(updated, PatchState)
-                        self.patches[-1 - queue_index] = updated
-                    if event.cue is None:
-                        pending_starts.append(
-                            (event.at, event.order, event.target, event.capture)
+                self.graphs[key] = advanced.state
+                for binding in bindings:
+                    body = settings.envelfos[binding.reference]
+                    node = program.outputs[binding.name]
+                    if isinstance(body, LFO):
+                        result[binding.name][i] = (
+                            external[node][i]
+                            if node in external
+                            else self._source_samples(
+                                body, advanced.state.children[node], start + i, 1
+                            )[0]
                         )
                     else:
-                        emitted = self._deliver_cue(
-                            settings, event.target, event.cue, event.at
-                        )
-                        self._dispatch_staged_events(
-                            settings, sources, emitted, pending_starts
-                        )
-                events_seen += len(due)
-                if events_seen > 4096:
-                    raise EngineError("Envelfo event capacity exceeded")
-            self._start_patch_envelopes(settings, pending_starts)
-            for _, index, _ in staged:
-                values[index][i] = sample_values[index]
-            for index in envelope_targets:
-                envelfo = settings.envelfos[self.envelopes[index].name]
-                values[index][i] = envelfo_at(
-                    envelfo,
-                    self.envelopes[index].state,
-                    self.envelfo_time(envelfo, boundary),
-                ).value
-            # Events change state; empty audio frames do not. Render up to the
-            # next event frame, then let the same exact delivery loop handle it.
+                        result[binding.name][i] = advanced.values[binding.name], 1
+                i += 1
+                continue
+            state, _ = patch.settle_patch(
+                program, self.graphs[key], at, tempo_map=self.tempo_map
+            )
             count = frames - i
-            if (
-                count > 1
-                and not latch_targets
-                and all(
-                    settings.envelfos[self.envelopes[index].name].clock == "seconds"
-                    for index in envelfo_indices
-                )
-            ):
+            if count > 1:
                 limit = Fraction(start + frames - 1, self.sample_rate)
-                boundaries: list[Fraction] = []
-                for _, index, envelfo in staged:
-                    runtime = self.envelopes[index].state.runtime
-                    assert isinstance(runtime, StageState)
-                    assert isinstance(envelfo, Stages)
-                    if natural := next_stage_event(envelfo, runtime, limit):
-                        boundaries.append(natural[0])
-                for source_name, port in lfo_ports:
-                    binding = bindings[source_name]
-                    assert isinstance(binding, processing.GeneratorBinding)
-                    envelfo = settings.envelfos[binding.reference]
-                    runtime = self.lfos[sources[source_name]].state.runtime
-                    assert isinstance(runtime, LFOState)
-                    assert isinstance(envelfo, LFO)
-                    position = runtime.position
-                    if position.rate:
-                        marker = next(
-                            m.position for m in envelfo.markers if m.name == port
-                        )
-                        coordinate = position.coordinate + position.rate * (
-                            boundary - position.at
-                        )
-                        turn = floor(coordinate - marker) + 1
-                        boundaries.append(
-                            position.at
-                            + (turn + marker - position.coordinate) / position.rate
-                        )
-                queue = (
-                    self.envelopes[queue_index]
-                    if queue_index >= 0
-                    else self.patches[-1 - queue_index]
+                boundary = patch.next_patch_event(
+                    program, state, limit, tempo_map=self.tempo_map
                 )
-                boundaries.extend(e.at for e in queue.pending_events)
-                if boundaries:
+                releases = [
+                    e.pending_release
+                    for e in self.envelopes
+                    if e.setting == setting
+                    and e.voice_id == voice_id
+                    and e.pending_release is not None
+                ]
+                if boundary is not None:
+                    releases.append(boundary)
+                if releases:
                     count = min(
                         count,
-                        max(1, ceil(min(boundaries) * self.sample_rate) - (start + i)),
+                        max(1, ceil(min(releases) * self.sample_rate) - start - i),
                     )
-                # Check every participant before allocating full spans. One
-                # scalar-only child must not cause block-sized work per frame.
-                supported = all(
-                    self._envelfo_span(
-                        settings.envelfos[self.envelopes[index].name],
-                        self.envelopes[index].state,
-                        start + i,
-                        0,
+            samples = {n: v[i : i + count] for n, v in external.items()}
+            for name, child_state in state.children.items():
+                body = program.envelfos[name]
+                assert isinstance(body, EnveLFO)
+                samples[name] = self._source_samples(
+                    body, child_state, start + i, count
+                )
+            if transformed:
+                observed = patch.observe_block(
+                    program,
+                    {n: (v[:, 0] * v[:, 1]).tolist() for n, v in samples.items()},
+                )
+                outputs = {n: np.asarray(v) for n, v in observed.items()}
+            else:
+                outputs = {}
+            for binding in bindings:
+                if isinstance(settings.envelfos[binding.reference], Patch):
+                    node = program.outputs[binding.name]
+                    result[binding.name][i : i + count, 0] = (
+                        samples[node][:, 0] * samples[node][:, 1]
+                        if node in samples
+                        else outputs[binding.name]
                     )
-                    is not None
-                    for index in envelfo_indices
+                    result[binding.name][i : i + count, 1] = 1
+                else:
+                    result[binding.name][i : i + count] = samples[
+                        program.outputs[binding.name]
+                    ]
+            if count > 1:
+                state, _ = patch.settle_patch(
+                    program,
+                    state,
+                    Fraction(start + i + count - 1, self.sample_rate),
+                    tempo_map=self.tempo_map,
                 )
-                spans = (
-                    {
-                        index: self._envelfo_span(
-                            settings.envelfos[self.envelopes[index].name],
-                            self.envelopes[index].state,
-                            start + i,
-                            count,
-                        )
-                        for index in envelfo_indices
-                    }
-                    if supported
-                    else {}
+            self.graphs[key] = state
+            i += count
+        return result
+
+    def _source_samples(
+        self, body: EnveLFO, state: EnvelfoState, start: int, frames: int
+    ) -> np.ndarray:
+        if isinstance(body, LFO):
+            current = state.runtime
+            assert isinstance(current, LFOState)
+            position = current.position
+            if (
+                body.clock == "seconds"
+                and not position.paused
+                and position.direction == 1
+            ):
+                if id(body) not in self.lfo_definitions:
+                    self.lfo_definitions[id(body)] = lfo_definition(body)
+                values = lfo_samples(
+                    self.lfo_definitions[id(body)],
+                    lfo.LFOState(
+                        at=position.at,
+                        started_at=position.at - position.age,
+                        phase=position.coordinate % 1,
+                        rate=position.rate,
+                    ),
+                    start,
+                    frames,
+                    self.sample_rate,
+                    self.backend,
+                    self.control_interval,
                 )
-                if supported:
-                    for index, samples in spans.items():
-                        assert samples is not None
-                        values[index][i : i + count] = samples
-                    if count > 1:
-                        last = Fraction(start + i + count - 1, self.sample_rate)
-                        for _, index, envelfo in staged:
-                            source = self.envelopes[index]
-                            result = advance_envelfo(envelfo, source.state, last)
-                            assert not result.events
-                            self.envelopes[index] = source.model_copy(
-                                update={"state": result.state}
-                            )
-                    i += count
-                    continue
-            i += 1
-        for index, samples in values.items():
-            self.cached_envelopes[index] = np.column_stack((samples, np.ones(frames)))
+                values[:, 0] = body.center + body.depth * values[:, 0]
+                return values
+            values = [
+                envelfo_at(
+                    body,
+                    state,
+                    self.envelfo_time(body, Fraction(start + i, self.sample_rate)),
+                )
+                for i in range(frames)
+            ]
+            return np.array([[v.value, v.weight] for v in values])
+        if (
+            body.clock == "seconds"
+            and (span := self._envelfo_span(body, state, start, frames)) is not None
+        ):
+            return np.column_stack((span, np.ones(frames)))
+        return np.array(
+            [
+                [
+                    envelfo_at(
+                        body,
+                        state,
+                        self.envelfo_time(body, Fraction(start + i, self.sample_rate)),
+                    ).value,
+                    1,
+                ]
+                for i in range(frames)
+            ]
+        )
 
     def _envelfo_span(
         self, envelfo: EnveLFO, state: EnvelfoState, start: int, frames: int
@@ -1996,269 +1537,11 @@ class ControlRenderer:
         )
         return _envelope_values(initial, scaled, elapsed, frames, self.sample_rate)
 
-    def _threshold_event(
-        self,
-        settings: SoundSettings,
-        sources: dict[str, int],
-        parent_name: str,
-        child: str,
-        port: str,
-        at: Fraction,
-    ) -> None:
-        parent = settings.envelfos[parent_name]
-        assert isinstance(parent, Patch)
-        bindings = {
-            b.reference: b.name
-            for b in settings.bindings
-            if isinstance(b, processing.GeneratorBinding)
-            and not isinstance(settings.envelfos[b.reference], Patch)
-        }
-        for order, connection in enumerate(parent.events):
-            if connection.source != f"{child}.{port}":
-                continue
-            capture = connection.target if connection.action == "capture" else None
-            target = (
-                next(
-                    sources[b.name]
-                    for b in settings.bindings
-                    if isinstance(b, processing.GeneratorBinding)
-                    and b.reference == parent_name
-                )
-                if capture is not None
-                else sources[bindings[f"patch-{parent_name}-{connection.target}"]]
-            )
-            if self._forward_event(
-                target,
-                f"capture-{capture}-{order}"
-                if capture is not None
-                else f"cue-{order}"
-                if connection.action == "cue"
-                else f"start-{order}",
-                connection.every,
-                connection.offset,
-                connection.probability,
-            ):
-                self._delay_event(
-                    target, at + connection.delay, order, connection.cue, capture
-                )
-        for order, connection in enumerate(settings.event_connections):
-            binding = next(b for b in settings.bindings if b.name == connection.source)
-            if (
-                not isinstance(binding, processing.GeneratorBinding)
-                or binding.reference != parent_name
-                or parent.event_outputs.get(connection.port) != f"{child}.{port}"
-            ):
-                continue
-            target = sources[connection.destination]
-            if self._forward_event(
-                target,
-                f"cue-{order}",
-                connection.every,
-                connection.offset,
-                connection.probability,
-            ):
-                self._delay_event(target, at + connection.delay, order, connection.cue)
-
-    def _dispatch_staged_events(
-        self,
-        settings: SoundSettings,
-        sources: dict[str, int],
-        emitted: list[tuple[str, EnvelfoOutputEvent]],
-        starts: list[tuple[Fraction, int, int, str | None]] | None = None,
-    ) -> None:
-        pending = deque(emitted)
-        delivered = 0
-        bindings = {b.name: b for b in settings.bindings}
-        patch_starts = _patch_start_connections(settings, sources)
-        pending_starts = [] if starts is None else starts
-        while pending:
-            name, event = pending.popleft()
-            source_binding = bindings[name]
-            assert isinstance(source_binding, processing.GeneratorBinding)
-            source_envelfo = settings.envelfos[source_binding.reference]
-            seconds = self.envelfo_seconds(source_envelfo, event.at)
-            for (
-                source_name,
-                port,
-                target_index,
-                order,
-                every,
-                offset,
-                probability,
-                delay,
-                capture,
-            ) in patch_starts:
-                if source_name == name and port == event.port:
-                    if not self._forward_event(
-                        target_index,
-                        f"capture-{capture}-{order}"
-                        if capture is not None
-                        else f"start-{order}",
-                        every,
-                        offset,
-                        probability,
-                    ):
-                        continue
-                    if delay:
-                        self._delay_event(
-                            target_index, seconds + delay, order, None, capture
-                        )
-                    else:
-                        pending_starts.append((seconds, order, target_index, capture))
-                    delivered += 1
-                    if delivered > 4096:
-                        raise EngineError("Envelfo event connection capacity exceeded")
-            for order, connection in enumerate(settings.event_connections):
-                if connection.source != name or connection.port != event.port:
-                    continue
-                target_index = sources[connection.destination]
-                if not self._forward_event(
-                    target_index,
-                    f"cue-{order}",
-                    connection.every,
-                    connection.offset,
-                    connection.probability,
-                ):
-                    continue
-                if connection.delay:
-                    self._delay_event(
-                        target_index, seconds + connection.delay, order, connection.cue
-                    )
-                else:
-                    pending.extend(
-                        self._deliver_cue(
-                            settings, target_index, connection.cue, seconds
-                        )
-                    )
-                delivered += 1
-                if delivered > 4096:
-                    raise EngineError("Envelfo event connection capacity exceeded")
-        if starts is None:
-            self._start_patch_envelopes(settings, pending_starts)
-
-    def _event_queue(self, voice_id: str) -> tuple[int, EnvelopeSource | PatchState]:
-        # Keep one bounded queue per voice, including graphs without envelopes.
-        for i, source in enumerate(self.envelopes):
-            if source.voice_id == voice_id:
-                return i, source
-        for i, patch in enumerate(self.patches):
-            if patch.voice_id == voice_id:
-                return -1 - i, patch
-        raise EngineError("Envelfo event voice has no state owner")
-
-    def _delay_event(
-        self,
-        target: int,
-        at: Fraction,
-        order: int,
-        cue: str | None,
-        capture: str | None = None,
-    ) -> None:
-        voice_id = (
-            self.envelopes[target] if target >= 0 else self.patches[-1 - target]
-        ).voice_id
-        index, source = self._event_queue(voice_id)
-        if len(source.pending_events) == 4096:
-            raise EngineError("Delayed Envelfo event capacity exceeded")
-        event = DelayedEnvelfoEvent(
-            at=at, target=target, order=order, cue=cue, capture=capture
-        )
-        updated = source.model_copy(
-            update={"pending_events": [*source.pending_events, event]}
-        )
-        if index >= 0:
-            assert isinstance(updated, EnvelopeSource)
-            self.envelopes[index] = updated
-        else:
-            assert isinstance(updated, PatchState)
-            self.patches[-1 - index] = updated
-
-    def _deliver_cue(
-        self, settings: SoundSettings, index: int, cue: str, seconds: Fraction
-    ) -> list[tuple[str, EnvelfoOutputEvent]]:
-        source = self.envelopes[index]
-        envelfo = settings.envelfos[source.name]
-        at = self.envelfo_time(envelfo, seconds)
-        assert isinstance(source.state.runtime, StageState)
-        result = advance_envelfo(
-            envelfo,
-            source.state,
-            at,
-            EnvelfoEvent(
-                at=at, ordinal=source.state.runtime.ordinal + 1, action="cue", cue=cue
-            ),
-        )
-        self.envelopes[index] = source.model_copy(update={"state": result.state})
-        return [(source.binding_name, e) for e in result.events]
-
-    def _forward_event(
-        self, index: int, connection: str, every: int, offset: int, probability: float
-    ) -> bool:
-        source = self.envelopes[index] if index >= 0 else self.patches[-1 - index]
-        count, state, forwarded = connection_gate(
-            source.event_counts.get(connection),
-            source.event_random.get(connection),
-            every,
-            offset,
-            probability,
-            source.envelfo_key,
-            f"{source.name}:{connection}",
-        )
-        source = source.model_copy(
-            update={
-                "event_counts": source.event_counts | {connection: count},
-                "event_random": source.event_random
-                if state is None
-                else source.event_random | {connection: state},
-            }
-        )
-        if index >= 0:
-            assert isinstance(source, EnvelopeSource)
-            self.envelopes[index] = source
-        else:
-            assert isinstance(source, PatchState)
-            self.patches[-1 - index] = source
-        return forwarded
-
-    def _start_patch_envelopes(
-        self,
-        settings: SoundSettings,
-        starts: list[tuple[Fraction, int, int, str | None]],
-    ) -> None:
-        if len(starts) > 4096:
-            raise EngineError("Patch event capacity exceeded")
-        for seconds, _, index, capture in sorted(starts):
-            if capture is not None:
-                patch = self.patches[-1 - index]
-                self.patches[-1 - index] = patch.model_copy(
-                    update={
-                        "values": {
-                            n: v for n, v in patch.values.items() if n != capture
-                        }
-                    }
-                )
-                continue
-            source = self.envelopes[index]
-            envelfo = settings.envelfos[source.name]
-            at = self.envelfo_time(envelfo, seconds)
-            assert isinstance(source.state.runtime, (EnvelopeState, SampleHoldState))
-            state = envelfo_event(
-                envelfo,
-                source.state,
-                EnvelfoEvent(
-                    at=at,
-                    ordinal=source.state.runtime.ordinal + 1,
-                    action="sample" if isinstance(envelfo, SampleHold) else "start",
-                ),
-            )
-            self.envelopes[index] = source.model_copy(update={"state": state})
-
     def clear_cache(self) -> None:
         """Discard ephemeral arrays after an event, restore, or new render span."""
         self.cached_span = None
         self.cached_values.clear()
         self.cached_lfos.clear()
-        self.cached_envelopes.clear()
         self.cached_controls.clear()
 
     def parameters(
@@ -2335,6 +1618,7 @@ class OfflineSynth:
             lfos=self.controls.lfos,
             envelopes=self.controls.envelopes,
             patches=self.controls.patches,
+            graphs=self.controls.graphs,
             tempo_map=self.controls.tempo_map,
         ).model_copy(deep=True)
 
@@ -2355,6 +1639,7 @@ class OfflineSynth:
         self.controls.lfos = snapshot.lfos
         self.controls.envelopes = snapshot.envelopes
         self.controls.patches = snapshot.patches
+        self.controls.graphs = snapshot.graphs
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if apply_amplitude_event(
