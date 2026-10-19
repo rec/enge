@@ -22,6 +22,7 @@ class PreparedSampler(Model, frozen=True):
     channels: list[str]
     samples: dict[str, sampler.PreparedSample]
     settings: dict[str, processing.SoundSettings]
+    routes: dict[str, list[list[float]]]
     audio_digests: dict[str, str]
 
 
@@ -101,6 +102,7 @@ def prepare(
     filters.parameters(score.body.settings.processing.filters, sample_rate, 1)
     samples: dict[str, sampler.PreparedSample] = {}
     settings: dict[str, processing.SoundSettings] = {}
+    routes: dict[str, list[list[float]]] = {}
     for slot in score.body.slots:
         settings[slot.name] = instrument.effective_settings(
             slot, groups.get(slot.group) if slot.group is not None else None
@@ -120,6 +122,28 @@ def prepare(
         if any(c.mode == "fade" for c in slot.chokes):
             raise synth.EngineError("Fade retirement is not implemented")
         selection = slices[slot.slice]
+        source_channels = assets[selection.asset].audio.channels
+        gains = [1.0] * len(output.channels)
+        if output.channels == ["left", "right"] and source_channels in (
+            ["mono"],
+            ["left", "right"],
+        ):
+            stereo = source_channels == ["left", "right"]
+            parameter = "stereo_balance" if stereo else "pan"
+            position = getattr(score.body.settings.processing, parameter) + getattr(
+                settings[slot.name].processing, parameter
+            )
+            gains = processing.pan_gains(position, score.body.pan_law, stereo=stereo)
+            if not stereo:
+                gains = [g / 2**-0.5 for g in gains]
+        routes[slot.name] = [
+            [
+                sum(r.gain for r in slot.channels if r.input == s and r.output == c)
+                * gains[i]
+                for i, c in enumerate(output.channels)
+            ]
+            for s in source_channels
+        ]
         samples[slot.name] = sampler.PreparedSample(
             samples=decoded[selection.asset],
             native_rate=rates[assets[selection.asset].audio.timebase].numerator,
@@ -137,6 +161,7 @@ def prepare(
         channels=output.channels,
         samples=samples,
         settings=settings,
+        routes=routes,
         audio_digests=digests,
     )
 
@@ -314,11 +339,6 @@ class OfflineSampler:
         common = self.definition.document.body.settings
         envelope = settings.envelope or common.envelope
         assert envelope is not None
-        source_channels = next(
-            a.audio.channels
-            for a in self.definition.document.assets
-            if a.name == sample.slice.asset
-        )
         return (
             slot,
             sample,
@@ -342,17 +362,7 @@ class OfflineSampler:
                     )
                     / 20
                 ),
-                routes=[
-                    [
-                        sum(
-                            r.gain
-                            for r in slot.channels
-                            if r.input == s and r.output == c
-                        )
-                        for c in self.definition.channels
-                    ]
-                    for s in source_channels
-                ],
+                routes=self.definition.routes[slot.name],
             ),
         )
 
@@ -517,23 +527,8 @@ class PersistentSampler(OfflineSampler):
                 False,
                 None,
             )
-            source_channels = next(
-                a.audio.channels
-                for a in self.definition.document.assets
-                if a.name == sample.slice.asset
-            )
             routes = np.array(
-                [
-                    [
-                        sum(
-                            r.gain
-                            for r in slot.channels
-                            if r.input == source and r.output == output
-                        )
-                        for output in self.definition.channels
-                    ]
-                    for source in source_channels
-                ],
+                self.definition.routes[slot.name],
                 dtype=np.float64,
             )
             self.native_sources[slot.name] = runtime.add_sample(
@@ -708,11 +703,14 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
     if settings.processing != processing.Processing(
         volume_db=settings.processing.volume_db,
         tuning_cents=settings.processing.tuning_cents,
+        pan=settings.processing.pan,
+        stereo_balance=settings.processing.stereo_balance,
         filters=settings.processing.filters,
         filter_order=settings.processing.filter_order,
     ):
         raise synth.EngineError(
-            "Only sample volume, tuning, and filter processing are implemented"
+            "Only sample volume, tuning, pan, balance, and filter processing "
+            "are implemented"
         )
     synth.validate_generators(settings, allow_velocity_bindings=True)
     synth.validate_modulation(settings)

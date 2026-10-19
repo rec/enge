@@ -150,6 +150,15 @@ full rate when they reach the selected control-rate Nyquist frequency. This is
 independent of audio buffer size, and snapshots reject a different interval.
 See [control evaluation and measurements](plan/engine-execution.md#vectorized-control-evaluation).
 
+Sample instruments select `body.pan_law`: `native` (default) uses unboosted
+cosine/sine mono pan and attenuation-only linear stereo balance; `sfizz` uses
+the audited +3 dB mono and +6 dB stereo compensation equations. Instrument
+and effective slot/group positions add before the law is applied once.
+Both offline backends and persistent/native live samplers use the same prepared
+channel gains. These are static pan/balance controls; modulation of their
+positions remains unsupported. The sfizz convention does not reproduce its
+lookup quantization, architecture differences or client timing.
+
 Both backends render ordered lowpass, highpass, bandpass, and notch filters with
 one or two stages. Cutoff and Q follow per-sample control/LFO routes. Each source
 channel owns trapezoidal integrator state, preserved through parameter changes
