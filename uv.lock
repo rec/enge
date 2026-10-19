@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-10-12T11:20:41.520855Z"
+exclude-newer = "2026-10-12T12:23:13.183267Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -127,7 +127,7 @@ wheels = [
 [[package]]
 name = "meedee"
 version = "0.2.0"
-source = { git = "https://github.com/rec/meedee?branch=main#2f444e311a558dc8ada9bb89530639aaa6e04c87" }
+source = { git = "https://github.com/rec/meedee?branch=main#28b68ba3048607d4f0f6c766130dfc71e07e05a8" }
 
 [[package]]
 name = "numpy"
