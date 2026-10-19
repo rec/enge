@@ -377,3 +377,10 @@ which retains all converted events. Invalid files or exceeded reader limits rais
 `OSError`; unsupported performance messages raise `ValueError`. Source installs
 of meedee require Rust, CMake and a C++20 compiler, as described in
 [meedee's build instructions](https://github.com/rec/meedee#build-and-qualification).
+
+`enge.performance.MidiConverter` converts decoded meedee messages through an
+explicit uFor performance binding, with declared CC/bend targets, tuning,
+oldest/newest repeated-key pairing and bounded per-source state. Hosts supply
+resolved definitions and exact destination ticks/ordinals. It owns no transport
+or audio and does not yet replace `read_midi()`; see the
+[converter contract](doc/performance-binding.md) for loss and restart behavior.
