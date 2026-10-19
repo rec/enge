@@ -228,6 +228,25 @@ class MidiConverter:
         raise ValueError(message)
 
 
+def converter_parts(converters: list[MidiConverter]) -> list[str]:
+    """Validate a fresh converter group and return its distinct named routes."""
+    if not converters:
+        raise ValueError("MIDI requires at least one converter")
+    sources: set[str] = set()
+    parts: list[str] = []
+    for converter in converters:
+        if not converter.ready:
+            raise ValueError("MIDI converters must be fresh or explicitly restarted")
+        if converter.source in sources:
+            raise ValueError("MIDI converter sources must be distinct")
+        sources.add(converter.source)
+        for part in converter.parts:
+            if part in parts:
+                raise ValueError("MIDI parts must be distinct across converters")
+            parts.append(part)
+    return parts
+
+
 _IGNORED_MESSAGES = (
     messages.PolyPressure,
     messages.ChannelPressure,

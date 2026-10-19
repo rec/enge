@@ -1,20 +1,96 @@
-"""Offline MIDI timing and dispatch to configured uFor performance converters."""
+"""File and caller-polled live MIDI dispatch to uFor performance converters."""
 
 from contextlib import closing
 from fractions import Fraction
 from pathlib import Path
 
-from meedee import messages, smf
+from meedee import events, messages, midi, smf
 from pydantic import BaseModel
 from ufor.events import ControlChange, PerformanceEvent, Release, Trigger
 
-from .performance import MidiConverter
+from .performance import MidiConverter, converter_parts
 
 
 class MidiPerformance(BaseModel, frozen=True):
     sample_rate: int
     frames: int
     parts: dict[str, list[PerformanceEvent]]
+
+
+class LiveInput:
+    """Drain a caller-owned queue-mode connection on one host control thread.
+
+    Native timestamps are not mapped to frames. Each drain assigns the supplied
+    frame to its messages and retains order within each named destination part.
+    """
+
+    def __init__(
+        self,
+        connection: midi.TypedInputConnection,
+        *,
+        converters: list[MidiConverter],
+        message_limit: int = 128,
+    ) -> None:
+        if type(message_limit) is not int or message_limit < 1:
+            raise ValueError("message_limit must be a positive integer")
+        self._parts = converter_parts(converters)
+        self._connection = connection
+        self._converters = converters.copy()
+        self._limit = message_limit
+        self._ordinal = 0
+        self._frame: int | None = None
+        self._stopped = False
+
+    def drain(self, *, frame: int) -> dict[str, list[PerformanceEvent]]:
+        """Poll a bounded prefix without waiting for incoming MIDI."""
+        if self._stopped:
+            raise RuntimeError("Live MIDI input is stopped; create a new adapter")
+        if type(frame) is not int:
+            raise TypeError("frame must be a built-in integer")
+        if self._frame is not None and frame < self._frame:
+            raise ValueError("Live MIDI frames must not move backward")
+        parts: dict[str, list[PerformanceEvent]] = {n: [] for n in self._parts}
+        completed = False
+        try:
+            self._check_connection()
+            for _ in range(self._limit):
+                item = self._connection.receive(timeout=0)
+                self._check_connection()
+                if item is None:
+                    break
+                if isinstance(item, events.StreamDiagnostic):
+                    raise ValueError(f"Live MIDI {item.kind}: {item.reason}")
+                for converter in self._converters:
+                    for event in converter.feed(
+                        item.message, tick=frame, ordinal=self._ordinal
+                    ):
+                        assert isinstance(event, Trigger | Release | ControlChange)
+                        assert event.part is not None
+                        parts[event.part].append(event)
+                self._ordinal += 1
+            self._check_connection()
+            self._frame = frame
+            completed = True
+            return parts
+        finally:
+            if not completed:
+                self.stop()
+
+    def stop(self) -> None:
+        """Stop observation; leave the connection and musical cleanup to its host."""
+        self._stopped = True
+        for converter in self._converters:
+            converter.report_loss()
+
+    def _check_connection(self) -> None:
+        if self._connection.dropped_packets:
+            raise RuntimeError(
+                "Live MIDI receive loss; restart with a fresh connection"
+            )
+        if (failure := self._connection.failure) is not None:
+            raise RuntimeError("Live MIDI connection failed") from failure
+        if self._connection.closed:
+            raise RuntimeError("Live MIDI connection is closed")
 
 
 def read_midi(
@@ -28,20 +104,9 @@ def read_midi(
     """
     if type(sample_rate) is not int or sample_rate <= 0:
         raise ValueError("MIDI requires a positive integer sample rate")
-    if not converters:
-        raise ValueError("MIDI requires at least one converter")
-    sources: set[str] = set()
-    parts: dict[str, list[PerformanceEvent]] = {}
-    for converter in converters:
-        if not converter.ready:
-            raise ValueError("MIDI converters must be fresh or explicitly restarted")
-        if converter.source in sources:
-            raise ValueError("MIDI converter sources must be distinct")
-        sources.add(converter.source)
-        for part in converter.parts:
-            if part in parts:
-                raise ValueError("MIDI parts must be distinct across converters")
-            parts[part] = []
+    parts: dict[str, list[PerformanceEvent]] = {
+        n: [] for n in converter_parts(converters)
+    }
     tempo = 500000
     elapsed = Fraction(0)
     frame = 0

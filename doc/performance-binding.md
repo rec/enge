@@ -139,3 +139,48 @@ synthetic named control. Offline oscillator, FM and noise rendering retain onset
 velocity in their shared control-context snapshots; sampler slot velocities
 continue to use the sampler's resolved onset values. Persistent oscillator/FM/
 noise renderers retain their existing supported binding profile.
+
+## Caller-polled live input
+
+`enge.midi.LiveInput(connection, converters=[...], message_limit=128)` wraps a
+caller-owned, queue-mode MIDI 1.0 `meedee.midi.TypedInputConnection`. UMP is
+unsupported by this converter and fails explicitly. Configure fresh or
+explicitly restarted converters with distinct source names and destination parts,
+as for file import. Use one adapter per independent input connection. The host
+opens and closes the connection, selects meedee's isolation mode and must be its
+only queue consumer. Do not share its converters with another active adapter or
+file import. The adapter adds no queue, thread or audio-device ownership.
+
+Call `drain(frame=destination_frame)` on one host control thread. It polls at most
+`message_limit` typed items without waiting for MIDI, including ignored messages,
+and returns a dictionary of named parts with their ordered uFor events. Frames
+must be integers and must not decrease; equal frames retain input order through
+increasing ordinals across calls. Every message in a drain receives that frame.
+Backend timestamps are not mapped to an audio clock. This is block-quantized
+scheduling, not a hard real-time audio callback API.
+
+The adapter checks receive-drop counts, connection failure and closure before and
+after receiving. Any observed loss, decoder diagnostic, conversion failure or
+interruption invalidates all participating converters, permanently stops the
+adapter and discards that drain's result. In isolated mode drop updates are
+asynchronous: detection cannot retract events returned by an earlier drain.
+Silence alone does not establish device health. Previously returned events and
+musical cleanup remain the host's responsibility.
+
+`stop()` is idempotent and invalidates conversion state. It sends no messages,
+closes no ports and generates no releases. Recovery requires a fresh healthy
+connection, fresh or explicitly restarted converters, and a new adapter. Do not
+reuse queued events from a failed session. The adapter does not produce sound or
+add an audio-device host.
+
+For supervised macOS qualification using only temporary test-created virtual
+endpoints in both process modes, run explicitly:
+
+```bash
+uv run --frozen pytest -q -s -n 0 test/qualification/midi_input.py
+```
+
+Each native case has a 45-second outer deadline. The checks cover note/control/
+bend conversion, release pairing, host-frame ordering, caller-owned close and
+receive loss followed by silence. They do not qualify physical devices or other
+operating systems.

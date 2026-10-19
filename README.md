@@ -392,3 +392,13 @@ oldest/newest repeated-key pairing and bounded per-source state. Hosts supply
 resolved definitions and exact destination ticks/ordinals. It owns no transport
 or audio; the file importer delegates conversion to it. See the
 [converter contract](doc/performance-binding.md) for loss and restart behavior.
+
+`enge.midi.LiveInput(connection, converters=[...])` adapts a caller-owned,
+queue-mode meedee MIDI 1.0 typed connection. `drain(frame=...)` polls at most 128
+messages
+by default and returns named-part uFor events at the supplied host frame. Native
+MIDI timestamps are not converted to audio time. Observed drops, diagnostics or
+connection/conversion failures stop the adapter without returning that batch.
+`stop()` leaves port closure and musical cleanup to the host. This is an event
+adapter, not an audible synth host. See the
+[live-input contract](doc/performance-binding.md#caller-polled-live-input).
