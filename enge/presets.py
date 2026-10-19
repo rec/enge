@@ -40,7 +40,6 @@ class Patch(BaseModel, frozen=True):
             "channels": routes,
         }
         controls = {
-            "velocity": {"default": 1},
             "expression": {"default": 1},
             "modulation": {"default": 0.5},
             "bend": {"default": 0, "polarity": "bipolar"},
@@ -160,7 +159,7 @@ def _settings(engine: str, index: float) -> dict[str, object]:
     sources = [
         {
             "name": n,
-            "scope": "trigger" if n == "velocity" else "part",
+            "scope": "voice" if n == "velocity" else "part",
             "minimum": -1 if n == "bend" else 0,
             "maximum": 1,
         }
@@ -249,14 +248,15 @@ def _settings(engine: str, index: float) -> dict[str, object]:
             else [{"name": "tone", "response": "lowpass", "cutoff_hz": 4500, "q": 0.7}]
         },
         "modulation": {"sources": sources, "parameters": parameters, "routes": routes},
-        "bindings": [
+        "bindings": [{"name": "velocity", "kind": "velocity"}]
+        + [
             {
                 "name": n,
                 "kind": "control",
                 "control": n,
-                "smoothing": 0 if n == "velocity" else "1/10",
+                "smoothing": "1/10",
             }
-            for n in ("velocity", "expression", "bend", "modulation")
+            for n in ("expression", "bend", "modulation")
             if engine != "noise" or n != "bend"
         ],
     }

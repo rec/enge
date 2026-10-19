@@ -69,6 +69,21 @@ class MidiConverter:
         self._failed = False
         self._last: tuple[int, int] | None = None
 
+    @property
+    def source(self) -> str:
+        """The host-selected identity used to namespace emitted triggers."""
+        return self._source
+
+    @property
+    def parts(self) -> list[str]:
+        """Configured destination names, including parts with no observations."""
+        return list(dict.fromkeys(e.part for e in self._inputs.values()))
+
+    @property
+    def ready(self) -> bool:
+        """Whether a new observation sequence can start without implicit reset."""
+        return not self._failed and self._last is None
+
     def feed(
         self, message: messages.Message, *, tick: int, ordinal: int
     ) -> list[events.PerformanceEvent]:

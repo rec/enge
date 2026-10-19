@@ -16,10 +16,10 @@ from ufor import synth_trace
 from ufor.events import Trigger
 from ufor.instrument_trace import TraceAction
 from ufor.samples import instrument, trace
+from ufor.synth import FMVoice, NoiseVoice, SynthInstrumentScore
 
 from . import fm, noise, sample_instrument, synth
 from .midi import MidiPerformance
-from .presets import Patch
 
 
 class RenderReport(BaseModel, frozen=True):
@@ -32,21 +32,29 @@ class RenderReport(BaseModel, frozen=True):
 
 def render_midi(
     performance: MidiPerformance,
-    patches: dict[int, Patch],
+    instruments: dict[
+        str,
+        tuple[
+            SynthInstrumentScore | instrument.SampleInstrumentScore,
+            dict[str, np.ndarray],
+        ],
+    ],
     destination: Path,
     block_size: int = 4096,
     backend: Literal["numpy", "native"] = "numpy",
     progress: bool = False,
     control_interval: int = 1,
 ) -> RenderReport:
-    """Render fixed channel patches, including their 80ms tails and 170ms silence.
+    """Render resolved named parts with a fixed 250ms tail budget.
 
     Native selection applies to oscillator, sampler, and FM engines.
     Runtime includes preparation, rendering, and FLAC encoding. No normalization
     is applied; a non-finite or overloaded mix fails before replacing output.
     """
-    if block_size <= 0 or performance.parts.keys() != patches.keys():
-        raise ValueError("Positive block size and one patch per MIDI channel required")
+    if block_size <= 0 or performance.parts.keys() != instruments.keys():
+        raise ValueError(
+            "Positive block size and one instrument per named part required"
+        )
     started = perf_counter()
     streams: list[
         tuple[
@@ -57,9 +65,8 @@ def render_midi(
             list[TraceAction],
         ]
     ] = []
-    for channel, patch in patches.items():
-        score, assets = patch.prepare_score(performance.sample_rate)
-        events = performance.parts[channel]
+    for part, (score, assets) in instruments.items():
+        events = performance.parts[part]
         renderer: (
             fm.OfflineFM
             | noise.OfflineNoise
@@ -72,9 +79,9 @@ def render_midi(
             )
             actions = trace.prepare(score.body, events, seed=0).actions
         else:
-            if patch.engine == "fm":
+            if isinstance(score.body.voices[0], FMVoice):
                 renderer = fm.OfflineFM(fm.prepare(score), backend, control_interval)
-            elif patch.engine == "noise":
+            elif isinstance(score.body.voices[0], NoiseVoice):
                 renderer = noise.OfflineNoise(
                     noise.prepare(score), backend, control_interval
                 )
@@ -83,6 +90,13 @@ def render_midi(
                     synth.prepare(score), backend, control_interval
                 )
             actions = synth_trace.prepare(score.body, events, seed=0).actions
+        if (
+            renderer.definition.sample_rate != performance.sample_rate
+            or renderer.definition.channels != ["left", "right"]
+        ):
+            raise ValueError(
+                "Instruments must match the performance rate and stereo layout"
+            )
         streams.append((renderer, list(actions)))
     frames = performance.frames + round(performance.sample_rate / 4)
 

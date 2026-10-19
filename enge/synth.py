@@ -112,6 +112,7 @@ class ControlContext(Model, frozen=True):
     trigger_id: str | None
     voice_id: str | None = None
     ramps: list[ControlRamp]
+    velocity: float | None = Field(default=None, strict=True, ge=0, le=1)
 
 
 class LFOSource(Model, frozen=True):
@@ -796,6 +797,8 @@ class ControlRenderer:
         trigger_id: str | None,
         frame: int,
         values: dict[str, float],
+        *,
+        velocity: float | None = None,
     ) -> int:
         ramps: list[ControlRamp] = []
         for setting in self.settings:
@@ -821,7 +824,13 @@ class ControlRenderer:
                     )
                 )
         self.contexts.append(
-            ControlContext(scope=scope, part=part, trigger_id=trigger_id, ramps=ramps)
+            ControlContext(
+                scope=scope,
+                part=part,
+                trigger_id=trigger_id,
+                ramps=ramps,
+                velocity=velocity,
+            )
         )
         return len(self.contexts) - 1
 
@@ -941,7 +950,12 @@ class ControlRenderer:
             for name, value in action.controls.items():
                 self.declarations[name].validate_value(value)
             self.new_context(
-                "trigger", action.part, action.trigger_id, action.tick, action.controls
+                "trigger",
+                action.part,
+                action.trigger_id,
+                action.tick,
+                action.controls,
+                velocity=action.velocity,
             )
         elif isinstance(action, instrument_trace.ControlObservation):
             if action.control not in self.declarations:
@@ -1024,9 +1038,13 @@ class ControlRenderer:
         for source in settings.modulation.sources:
             binding = bindings[source.name]
             if isinstance(binding, processing.EventBinding):
+                if velocity is None and action.trigger_id is not None:
+                    context_id = self.context("trigger", action.part, action.trigger_id)
+                    if context_id is not None:
+                        velocity = self.contexts[context_id].velocity
                 if velocity is None:
                     raise EngineError(
-                        "Velocity binding requires resolved sample velocity"
+                        "Velocity binding requires resolved onset velocity"
                     )
                 index = len(self.contexts)
                 self.contexts.append(
@@ -2723,7 +2741,7 @@ def _validate_voice(voice: SynthVoice) -> None:
         filter_order=voice.processing.filter_order,
     ):
         raise EngineError("Only tuning and filter processing are implemented")
-    validate_generators(voice, allow_beat_envelfos=True)
+    validate_generators(voice, allow_beat_envelfos=True, allow_velocity_bindings=True)
     if any(c.mode == "fade" for c in voice.chokes):
         raise EngineError("Fade retirement is not implemented")
     validate_modulation(voice)

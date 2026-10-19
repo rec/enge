@@ -3,8 +3,8 @@
 `enge.performance.MidiConverter` is a caller-driven MIDI 1 adapter. It accepts
 decoded meedee messages and emits uFor `Trigger`, `Release` and `ControlChange`
 values. It opens no files, devices or audio streams and starts no threads.
-The existing `enge.midi.read_midi()` importer is unchanged; connecting that
-importer or a live host to this converter is a subsequent integration step.
+`enge.midi.read_midi()` supplies file timing to configured converters. Live
+transport and audio-clock integration remain host responsibilities.
 
 ## Preparation and reference ownership
 
@@ -92,5 +92,50 @@ restart emits releases or restores controls. The host retains responsibility
 for downstream voices and musical recovery. Never treat restarting observation
 as evidence that an instrument is silent or synchronized.
 
-This slice does not connect live transport, acquire an audio clock, render audio,
-add an interface or replace the file importer's existing musical policy.
+## MIDI-file import and rendering
+
+`read_midi(path, *, converters=[...], sample_rate=48000)` requires at least one
+ready converter. `ready` is true on construction or after an explicit restart;
+an instance already fed messages or finished is not ready. Read-only `source`
+and `parts` describe the converter's configured routing. Source names and part
+names must be distinct across converters. Channels may overlap across converters
+for deliberate layering; channels sharing a part within one converter remain
+supported. Each converter retains its own held-note budget.
+
+The importer checks arguments and routing before opening the file. It supports
+synchronous PPQN SMF types 0/1, merges tracks stably, accumulates tempo with exact
+rational arithmetic and rounds absolute times to frames, ties to even. Metadata
+and track ends retain their timing effects, including trailing silence. SysEx
+and escape file records are rejected: an escape record could contain arbitrary
+MIDI traffic rather than a decoded SysEx message. Type 2 and SMPTE remain
+unsupported by this adapter. The existing meedee reader defaults apply: 1 MiB
+per record, 128 tracks and 8 MiB of merge lookahead.
+
+Every primitive message is fed to each converter. Its binding chooses notes,
+tuning, pairing and CC/bend semantics. Unmapped controls and pressure are ignored,
+replacing the former importer's hard-coded rejection policy. Positive bend now
+reaches its declared maximum at +8191 rather than falling slightly short.
+
+`MidiPerformance.parts` maps binding names to event lists, including configured
+parts with no events. No channel numbers are inferred as part names. The importer
+finishes every converter on success. A failed file read, conversion, finish or
+interruption invalidates all participating converters and returns no partial
+performance. Argument/routing rejection before reading leaves their state alone.
+There is no implicit restart, retry or rollback of previously emitted identities.
+
+Prepare an instrument once with `Patch.prepare_score(sample_rate)` or supply an
+equivalent resolved `(score, assets)` pair. Use the score to configure its
+converter and pass that same pair to `render_midi`, keyed by the part name.
+The Bach example resolves selectors from its fixed in-memory instrument map;
+there is no implicit library discovery or score-file loading.
+
+The renderer requires one instrument per configured part, matching sample rates
+and the stereo `left`, `right` layout. It selects oscillator/FM/noise from the
+resolved voice type or uses the sampler for sample scores. Existing engine
+preparation rejects unsupported mixed-engine scores. Output retains the 250 ms
+tail budget; a voice still active afterward fails rendering before publication.
+Presets consume `Trigger.velocity` through uFor's velocity event binding, not a
+synthetic named control. Offline oscillator, FM and noise rendering retain onset
+velocity in their shared control-context snapshots; sampler slot velocities
+continue to use the sampler's resolved onset values. Persistent oscillator/FM/
+noise renderers retain their existing supported binding profile.

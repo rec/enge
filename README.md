@@ -362,14 +362,22 @@ presets, and streaming FLAC rendering live in
 `enge.midi`, `enge.presets`, and `enge.render`. Reccy is now a runtime dependency
 for atomic output publication.
 
-`enge.midi.read_midi()` uses meedee's streaming file reader without opening MIDI
-devices. Imported parts use channel keys 1–16 and labels `channel-1` through
-`channel-16`; patch dictionaries passed to `render_midi()` must use those same
-keys. This replaces the previous 0–15 import numbering. The importer retains
-synchronous PPQN timing, exact rational tempo accumulation, FIFO note pairing,
-CC1/CC11 and centered pitch bend. Program changes and metadata are ignored for
-sound selection; other musical messages are rejected. Type 2 and SMPTE files
-remain unsupported by this adapter, even though meedee can read them.
+`enge.midi.read_midi(path, *, converters=[...], sample_rate=48000)` uses
+meedee's streaming reader and configured `MidiConverter` instances. Bindings
+select channels, named parts, tuning, repeated-key pairing and CC/bend targets.
+Supply fresh or explicitly restarted converters with distinct source names and
+parts across converters. The importer preserves exact rational PPQN timing,
+frame rounding, stable order and trailing silence. Type 2, SMPTE and SMF
+SysEx/escape records remain unsupported. Unmapped CCs and pressure follow the
+binding policy and are ignored. A failed read invalidates all participants;
+success finishes them. There are no partial results or implicit restarts.
+
+`MidiPerformance.parts` now uses binding names, replacing numeric channel keys.
+Prepare instruments once with `Patch.prepare_score()` and supply the same
+resolved `(score, assets)` pairs both to converter setup and to `render_midi()`,
+keyed by those part names. Rendering requires the performance's sample rate and
+stereo `left`/`right` layout. Presets use `Trigger.velocity` directly. See the
+[Bach example](scripts/bach.py) for explicit four-instrument configuration.
 
 meedee's default reader limits apply: 1 MiB per record, 128 tracks and 8 MiB of
 merge lookahead. These bound parser working data, not the returned performance,
@@ -382,5 +390,5 @@ of meedee require Rust, CMake and a C++20 compiler, as described in
 explicit uFor performance binding, with declared CC/bend targets, tuning,
 oldest/newest repeated-key pairing and bounded per-source state. Hosts supply
 resolved definitions and exact destination ticks/ordinals. It owns no transport
-or audio and does not yet replace `read_midi()`; see the
+or audio; the file importer delegates conversion to it. See the
 [converter contract](doc/performance-binding.md) for loss and restart behavior.
