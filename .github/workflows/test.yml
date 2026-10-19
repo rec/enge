@@ -22,19 +22,19 @@ jobs:
       run:
         shell: bash
     env:
-      RUSTUP_TOOLCHAIN: "1.85.0"
+      RUSTUP_TOOLCHAIN: "1.87.0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           python-version: "3.13"
       - name: Install Rust tools
-        run: rustup toolchain install 1.85.0 --profile minimal --component clippy --component rustfmt
-      - name: Install FLAC on Linux
+        run: rustup toolchain install 1.87.0 --profile minimal --component clippy --component rustfmt
+      - name: Install FLAC and MIDI build prerequisites on Linux
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes flac
+          sudo apt-get install --yes flac libasound2-dev pkg-config
       - name: Install FLAC on macOS
         if: runner.os == 'macOS'
         run: brew install flac

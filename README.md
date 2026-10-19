@@ -246,7 +246,8 @@ partially consumed batches from the abandoned timeline. Rejected restoration
 leaves both state and queued actions untouched. Hosts must resubmit any events
 they want to apply after restoration.
 
-Build with `uv sync`; Rust/Cargo 1.85 or newer is required. Python packaging uses
+Build with `uv sync`; Rust/Cargo 1.87 or newer is required for meedee (enge's own
+Rust code retains its 1.85 minimum). Python packaging uses
 [maturin](https://www.maturin.rs/project_layout.html),
 [PyO3](https://pyo3.rs/v0.29.0/), and
 [rust-numpy](https://docs.rs/numpy/0.29.0/numpy/).
@@ -268,11 +269,14 @@ See [test performance](doc/test-performance.md) for measurements and profiling
 instructions. Audio regressions retain at least one second at 48 kHz.
 
 Linux, Windows, and macOS use the same Python and Rust engine code. Source builds
-need Python 3.13 or newer and Rust/Cargo 1.85 or newer. On Windows, use the Rust
+need Python 3.13 or newer, Rust/Cargo 1.87 or newer, CMake 3.22 or newer and a
+C++20 compiler for meedee. On Windows, use the Rust
 MSVC toolchain and install Visual Studio Build Tools with the C++ build tools and
 Windows SDK. On macOS, install the Xcode Command Line Tools; on Linux, install
-your distribution's compiler build tools. Hosts own audio devices, so the engine
-does not require a platform-specific audio driver or device library.
+your distribution's compiler build tools, ALSA development headers and pkg-config
+(`libasound2-dev` and `pkg-config` on Debian/Ubuntu). Linux needs `libasound.so.2`
+at runtime because meedee includes MIDI transport, even for file-only imports.
+Hosts still own audio devices; the engine does not require an audio device driver.
 
 FLAC export, listening demos, and their tests require the `flac` executable on
 `PATH`. The demos encode 32-bit PCM, which requires FLAC 1.4 or newer. Install it
@@ -357,3 +361,19 @@ expression, timbre, and pitch automation. `--block-size` controls render blocks;
 presets, and streaming FLAC rendering live in
 `enge.midi`, `enge.presets`, and `enge.render`. Reccy is now a runtime dependency
 for atomic output publication.
+
+`enge.midi.read_midi()` uses meedee's streaming file reader without opening MIDI
+devices. Imported parts use channel keys 1–16 and labels `channel-1` through
+`channel-16`; patch dictionaries passed to `render_midi()` must use those same
+keys. This replaces the previous 0–15 import numbering. The importer retains
+synchronous PPQN timing, exact rational tempo accumulation, FIFO note pairing,
+CC1/CC11 and centered pitch bend. Program changes and metadata are ignored for
+sound selection; other musical messages are rejected. Type 2 and SMPTE files
+remain unsupported by this adapter, even though meedee can read them.
+
+meedee's default reader limits apply: 1 MiB per record, 128 tracks and 8 MiB of
+merge lookahead. These bound parser working data, not the returned performance,
+which retains all converted events. Invalid files or exceeded reader limits raise
+`OSError`; unsupported performance messages raise `ValueError`. Source installs
+of meedee require Rust, CMake and a C++20 compiler, as described in
+[meedee's build instructions](https://github.com/rec/meedee#build-and-qualification).

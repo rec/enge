@@ -22,10 +22,10 @@ def main() -> None:
     options = tyro.cli(Options)
     performance = read_midi(Path(__file__).with_name("bwv-578.mid"))
     patches = {
-        0: Patch(engine="fm", gain=0.24, pan=-0.2, ratio=1, index=0.65),
-        1: Patch(engine="synth", gain=0.20, pan=-0.55),
-        2: Patch(engine="sample", gain=0.23, pan=0.45),
-        3: Patch(engine="fm", gain=0.20, pan=0.15, ratio=2, index=0.85),
+        1: Patch(engine="fm", gain=0.24, pan=-0.2, ratio=1, index=0.65),
+        2: Patch(engine="synth", gain=0.20, pan=-0.55),
+        3: Patch(engine="sample", gain=0.23, pan=0.45),
+        4: Patch(engine="fm", gain=0.20, pan=0.15, ratio=2, index=0.85),
     }
     report = render_midi(
         performance,
