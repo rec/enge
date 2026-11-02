@@ -19,6 +19,35 @@ use patch_host::{PatchHost, clock_at};
 mod patch_host;
 
 #[derive(Clone, PartialEq)]
+struct RouteMap {
+    interpolation: usize,
+    points: Vec<(f64, f64)>,
+}
+
+impl RouteMap {
+    fn value(&self, value: f64) -> PyResult<f64> {
+        if !value.is_finite() {
+            return Err(PyValueError::new_err("Non-finite modulation source"));
+        }
+        let index = self.points.partition_point(|(input, _)| *input <= value);
+        if index == 0 {
+            return Ok(self.points[0].1);
+        }
+        let (input, amount) = self.points[index - 1];
+        if index == self.points.len() || self.interpolation == 1 {
+            return Ok(amount);
+        }
+        let (next_input, next_amount) = self.points[index];
+        let progress = (value - input) / (next_input - input);
+        Ok(if self.interpolation == 2 {
+            ((1.0 - progress) * amount.ln() + progress * next_amount.ln()).exp()
+        } else {
+            amount + progress * (next_amount - amount)
+        })
+    }
+}
+
+#[derive(Clone, PartialEq)]
 struct ControlDefinition {
     default: f64,
     smoothing_numerator: u64,
@@ -28,8 +57,6 @@ struct ControlDefinition {
     operation: usize,
     minimum: f64,
     maximum: f64,
-    intercept: f64,
-    slope: f64,
 }
 
 #[derive(Clone)]
@@ -69,8 +96,6 @@ struct NamedEnvelopeDefinition {
     body: Envelope,
     parameter: usize,
     operation: usize,
-    intercept: f64,
-    slope: f64,
     release_with_voice: bool,
     beat_clock: bool,
     event_started: bool,
@@ -109,8 +134,6 @@ struct StagedEnvelfoDefinition {
     body: stages::Stages,
     parameter: Option<usize>,
     operation: usize,
-    intercept: f64,
-    slope: f64,
     beat_clock: bool,
 }
 
@@ -165,7 +188,7 @@ type StageStartInput = (
 );
 
 type EnvelfoTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64, Option<f64>);
-type EnvelfoTransformRoute = (usize, usize, usize, f64, f64);
+type EnvelfoTransformRoute = (usize, usize, usize);
 
 type StageInput = (
     u8,
@@ -182,8 +205,6 @@ type StageInput = (
 type NamedEnvelopeInput = (
     usize,
     usize,
-    f64,
-    f64,
     bool,
     usize,
     (i64, i64),
@@ -199,8 +220,6 @@ type StagedEnvelfoInput = (
     usize,
     Option<usize>,
     usize,
-    f64,
-    f64,
     bool,
 );
 
@@ -251,6 +270,7 @@ pub struct SynthRuntimeSnapshot {
     graph_carrier_parameter: usize,
     minimum_hold_frames: Time,
     routes: Array2<f64>,
+    route_maps: Vec<Vec<RouteMap>>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
@@ -320,6 +340,7 @@ pub struct SynthRuntime {
     graph_carrier_parameter: usize,
     minimum_hold_frames: Time,
     routes: Array2<f64>,
+    route_maps: Vec<Vec<RouteMap>>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
@@ -369,6 +390,42 @@ pub struct SynthRuntime {
 
 #[pymethods]
 impl SynthRuntime {
+    fn set_route_maps(&mut self, kind: usize, maps: Vec<(usize, Vec<(f64, f64)>)>) -> PyResult<()> {
+        let count = match kind {
+            0 => self.control_definitions.len(),
+            1 => self.lfo_definitions.len(),
+            2 => self.named_envelopes.len(),
+            3 => self.staged_envelfos.len(),
+            4 => self.envelfo_transform_routes.len(),
+            _ => return Err(PyValueError::new_err("Invalid modulation mapping kind")),
+        };
+        if self.frame != 0 || self.active.iter().any(|v| *v) || maps.len() != count {
+            return Err(PyValueError::new_err(
+                "Invalid modulation mapping count or state",
+            ));
+        }
+        let maps = maps
+            .into_iter()
+            .map(|(interpolation, points)| {
+                if interpolation > 2
+                    || points.is_empty()
+                    || points.iter().any(|(x, y)| {
+                        !x.is_finite() || !y.is_finite() || (interpolation == 2 && *y <= 0.0)
+                    })
+                    || points.windows(2).any(|p| p[0].0 >= p[1].0)
+                {
+                    return Err(PyValueError::new_err("Invalid modulation mapping points"));
+                }
+                Ok(RouteMap {
+                    interpolation,
+                    points,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        self.route_maps[kind] = maps;
+        Ok(())
+    }
+
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (rate, waveform, duty, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameters, context_capacity, filter_after_amplitude=false))]
@@ -463,6 +520,7 @@ impl SynthRuntime {
             graph_carrier_parameter: 0,
             minimum_hold_frames,
             routes: routes.as_array().to_owned(),
+            route_maps: vec![vec![]; 5],
             control_definitions,
             control_states,
             lfo_definitions,
@@ -736,8 +794,6 @@ impl SynthRuntime {
                     (
                         parameter,
                         operation,
-                        intercept,
-                        slope,
                         release_with_voice,
                         playback,
                         loop_start,
@@ -747,11 +803,7 @@ impl SynthRuntime {
                         (hold, retrigger, bipolar),
                     ),
                 )| {
-                    if parameter >= self.parameter_definitions.len() / 3
-                        || operation > 1
-                        || !intercept.is_finite()
-                        || !slope.is_finite()
-                    {
+                    if parameter >= self.parameter_definitions.len() / 3 || operation > 1 {
                         return Err(PyValueError::new_err("Invalid named envelope definition"));
                     }
                     let convert = |parts: AmplitudeSegments| -> PyResult<Vec<CoreSegment>> {
@@ -839,8 +891,6 @@ impl SynthRuntime {
                         body,
                         parameter,
                         operation,
-                        intercept,
-                        slope,
                         release_with_voice,
                         beat_clock: false,
                         event_started,
@@ -907,24 +957,12 @@ impl SynthRuntime {
         connections: Vec<StageConnectionInput>,
     ) -> PyResult<()> {
         let mut definitions = Vec::with_capacity(inputs.len());
-        for (
-            inputs,
-            transitions,
-            initial_stage,
-            parameter,
-            operation,
-            intercept,
-            slope,
-            beat_clock,
-        ) in inputs
-        {
+        for (inputs, transitions, initial_stage, parameter, operation, beat_clock) in inputs {
             if inputs.is_empty()
                 || initial_stage >= inputs.len()
                 || (beat_clock && self.beat_points.is_empty())
                 || parameter.is_some_and(|p| p >= self.parameter_definitions.len() / 3)
                 || operation > 1
-                || !intercept.is_finite()
-                || !slope.is_finite()
                 || transitions
                     .iter()
                     .any(|(source, _, target)| *source >= inputs.len() || *target > inputs.len())
@@ -1052,8 +1090,6 @@ impl SynthRuntime {
                 body,
                 parameter,
                 operation,
-                intercept,
-                slope,
                 beat_clock,
             });
         }
@@ -1167,15 +1203,11 @@ impl SynthRuntime {
                                 }
                         })
                 })
-            || routes
-                .iter()
-                .any(|(node, parameter, operation, intercept, slope)| {
-                    *node >= nodes.len()
-                        || *parameter >= self.parameter_definitions.len() / 3
-                        || *operation > 1
-                        || !intercept.is_finite()
-                        || !slope.is_finite()
-                })
+            || routes.iter().any(|(node, parameter, operation)| {
+                *node >= nodes.len()
+                    || *parameter >= self.parameter_definitions.len() / 3
+                    || *operation > 1
+            })
         {
             return Err(PyValueError::new_err("Invalid Envelfo transform graph"));
         }
@@ -1541,6 +1573,7 @@ impl SynthRuntime {
             graph_carrier_parameter: self.graph_carrier_parameter,
             minimum_hold_frames: self.minimum_hold_frames,
             routes: self.routes.clone(),
+            route_maps: self.route_maps.clone(),
             control_definitions: self.control_definitions.clone(),
             control_states: self.control_states.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
@@ -1647,6 +1680,7 @@ impl SynthRuntime {
             || self.graph_carrier_parameter != snapshot.graph_carrier_parameter
             || self.minimum_hold_frames != snapshot.minimum_hold_frames
             || self.routes != snapshot.routes
+            || self.route_maps != snapshot.route_maps
             || self.control_definitions != snapshot.control_definitions
             || self.lfo_definitions != snapshot.lfo_definitions
             || self.lfo_owners != snapshot.lfo_owners
@@ -2370,6 +2404,13 @@ impl SynthRuntime {
         Ok((value.value, value.weight))
     }
 
+    fn mapped(&self, kind: usize, source: usize, value: f64) -> PyResult<f64> {
+        self.route_maps[kind]
+            .get(source)
+            .ok_or_else(|| PyValueError::new_err("Unprepared modulation mapping"))?
+            .value(value)
+    }
+
     fn parameter(&self, voice: usize, parameter: usize) -> PyResult<f64> {
         let mut addition = 0.0;
         let mut product = 1.0;
@@ -2382,7 +2423,7 @@ impl SynthRuntime {
                 1 => self.context_state(self.voice_part_contexts[voice], source, 1)?,
                 _ => self.context_state(self.voice_trigger_contexts[voice], source, 2)?,
             };
-            let amount = definition.intercept + definition.slope * control_value(definition, state);
+            let amount = self.mapped(0, source, control_value(definition, state))?;
             if definition.operation == 0 {
                 addition += amount;
             } else {
@@ -2394,7 +2435,7 @@ impl SynthRuntime {
                 continue;
             }
             let (value, weight) = self.lfo_signal(voice, source)?;
-            let amount = definition.intercept + definition.slope * value;
+            let amount = self.mapped(1, source, definition.intercept + definition.slope * value)?;
             if definition.operation == 0 {
                 addition += weight * amount;
             } else {
@@ -2406,7 +2447,7 @@ impl SynthRuntime {
                 continue;
             }
             let value = self.patch_value(voice, 1, source)?.value;
-            let amount = definition.intercept + definition.slope * value;
+            let amount = self.mapped(2, source, value)?;
             if definition.operation == 0 {
                 addition += amount;
             } else {
@@ -2418,20 +2459,23 @@ impl SynthRuntime {
                 continue;
             }
             let value = self.patch_value(voice, 2, source)?.value;
-            let amount = definition.intercept + definition.slope * value;
+            let amount = self.mapped(3, source, value)?;
             if definition.operation == 0 {
                 addition += amount;
             } else {
                 product *= amount;
             }
         }
-        for (source, target, operation, intercept, slope) in &self.envelfo_transform_routes {
+        for (index, (source, target, operation)) in self.envelfo_transform_routes.iter().enumerate()
+        {
             if *target != parameter {
                 continue;
             }
-            let amount = intercept
-                + slope
-                    * self.envelfo_transform_values[voice * self.envelfo_transforms.len() + source];
+            let amount = self.mapped(
+                4,
+                index,
+                self.envelfo_transform_values[voice * self.envelfo_transforms.len() + source],
+            )?;
             if *operation == 0 {
                 addition += amount;
             } else {
@@ -2573,7 +2617,7 @@ fn control_definitions(
     values: PyReadonlyArray2<'_, f64>,
     smoothing: &[(u64, u64)],
 ) -> PyResult<(Vec<ControlDefinition>, Vec<ControlState>)> {
-    if values.shape()[1] != 8
+    if values.shape()[1] != 6
         || values.shape()[0] != smoothing.len()
         || smoothing.iter().any(|(_, denominator)| *denominator == 0)
         || values.as_array().iter().any(|v| !v.is_finite())
@@ -2608,8 +2652,6 @@ fn control_definitions(
             operation,
             minimum: row[4],
             maximum: row[5],
-            intercept: row[6],
-            slope: row[7],
         });
         states.push(ControlState {
             start: row[0],

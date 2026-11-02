@@ -593,6 +593,7 @@ class PersistentFM(synth.PersistentSynth):
             staged_envelfos,
             self.staged_envelfo_sources,
             event_connections,
+            route_maps,
         ) = synth._persistent_modulation(shared, template, source_parameters)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
@@ -678,6 +679,8 @@ class PersistentFM(synth.PersistentSynth):
             self.runtime, template, self.named_envelfo_sources
         )
         self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
+        for kind, mappings in enumerate(route_maps):
+            self.runtime.set_route_maps(kind, mappings)
 
     def snapshot(self) -> PersistentFMSnapshot:  # ty: ignore[invalid-method-override]
         return PersistentFMSnapshot(

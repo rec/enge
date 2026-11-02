@@ -148,8 +148,9 @@ mappings. Larger intervals interpolate sine LFO values on an event-anchored grid
 constants, linear ramps, envelopes, square/triangle edges, and activation weights
 remain exact. Route mappings still operate per sample. Offline NumPy and Rust
 renderers accept linear, step, and positive-valued exponential mappings, with
-activation weights applied after mapping. The persistent synth retains its
-explicit restriction to direct linear routes. Audio-rate LFOs stay at
+activation weights applied after mapping. Persistent synth, FM and noise also
+support those mappings with prepared knot tables and snapshot identity checks.
+Their existing one-route-per-source/target restriction remains. Audio-rate LFOs stay at
 full rate when they reach the selected control-rate Nyquist frequency. This is
 independent of audio buffer size, and snapshots reject a different interval.
 See [control integration](plan/engine-execution.md#control-integration).

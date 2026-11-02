@@ -35,7 +35,7 @@ def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> No
         [((0, 1), 1.0, 0.0)],
         [((0, 1), 0.0, 0.0)],
         (0, 1),
-        np.empty((0, 8), dtype=np.float64),
+        np.empty((0, 6), dtype=np.float64),
         [],
         np.empty((0, 7), dtype=np.float64),
         [],
@@ -87,7 +87,7 @@ def test_persistent_runtime_applies_voice_actions_at_exact_frames() -> None:
         [((4, 1), 1.0, 0.0)],
         [((4, 1), 0.0, 0.0)],
         (0, 1),
-        np.empty((0, 8), dtype=np.float64),
+        np.empty((0, 6), dtype=np.float64),
         [],
         np.empty((0, 7), dtype=np.float64),
         [],
@@ -194,8 +194,23 @@ def test_persistent_synth_matches_offline_synth_across_blocks_and_restore(
     np.testing.assert_array_equal(first, saved)
 
 
-def test_persistent_synth_evolves_instrument_controls_in_rust(tmp_path: Path) -> None:
-    document = dynamic_score(scope="instrument", smoothing="4801/96000")
+@pytest.mark.parametrize("interpolation", ["linear", "step", "exponential"])
+def test_persistent_synth_evolves_instrument_controls_in_rust(
+    tmp_path: Path, interpolation: str
+) -> None:
+    raw = dynamic_score(scope="instrument", smoothing="4801/96000").model_dump(
+        mode="json"
+    )
+    route = raw["body"]["voices"][0]["modulation"]["routes"][0]
+    route.update(
+        interpolation=interpolation,
+        points=[
+            {"input": 0.2, "amount": 0.1},
+            {"input": 0.5, "amount": 0.75},
+            {"input": 0.8, "amount": 0.5},
+        ],
+    )
+    document = SynthInstrumentScore.model_validate(raw)
     events = [
         change(0, 1, scope="instrument"),
         onset(120, "a", gain=0, pitch=100),

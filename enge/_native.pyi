@@ -86,6 +86,9 @@ class LiveRuntime:
     def failed(self) -> bool: ...
 
 class SynthRuntime:
+    def set_route_maps(
+        self, kind: int, maps: list[tuple[int, list[tuple[float, float]]]]
+    ) -> None: ...
     def __init__(
         self,
         rate: float,
@@ -202,8 +205,6 @@ class SynthRuntime:
             tuple[
                 int,
                 int,
-                float,
-                float,
                 bool,
                 int,
                 tuple[int, int],
@@ -243,8 +244,6 @@ class SynthRuntime:
                 int,
                 int | None,
                 int,
-                float,
-                float,
                 bool,
             ]
         ],
@@ -263,7 +262,7 @@ class SynthRuntime:
         nodes: list[
             tuple[int, list[tuple[int, int, float, float]], float, float, float | None]
         ],
-        routes: list[tuple[int, int, int, float, float]],
+        routes: list[tuple[int, int, int]],
     ) -> None: ...
     def set_patch_events(
         self,

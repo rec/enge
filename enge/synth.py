@@ -88,8 +88,6 @@ StagedRuntimeDefinition = tuple[
     int,
     int | None,
     int,
-    float,
-    float,
     bool,
 ]
 
@@ -1873,6 +1871,7 @@ class PersistentSynth:
             staged_envelfos,
             self.staged_envelfo_sources,
             event_connections,
+            route_maps,
         ) = _persistent_modulation(definition, template)
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
@@ -1940,6 +1939,8 @@ class PersistentSynth:
                 ]
             )
         self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
+        for kind, mappings in enumerate(route_maps):
+            self.runtime.set_route_maps(kind, mappings)
         patch_children = _patch_child_names(template)
         self.runtime.set_envelfo_state_owners(
             _envelfo_state_owners(
@@ -2943,9 +2944,9 @@ def _configure_patch_transforms(
     for i, body in enumerate(template.processing.filters):
         parameters[f"filter-{body.name}", "cutoff_hz"] = 2 + 2 * i
         parameters[f"filter-{body.name}", "q"] = 3 + 2 * i
-    routes: list[tuple[int, int, int, float, float]] = []
+    routes: list[tuple[int, int, int]] = []
     bindings = {b.name: b for b in template.bindings}
-    sources = {s.name: s for s in template.modulation.sources}
+    mappings: list[tuple[int, list[tuple[float, float]]]] = []
     for route in sorted(template.modulation.routes, key=lambda r: (r.source, r.name)):
         binding = bindings[route.source]
         if (
@@ -2953,20 +2954,25 @@ def _configure_patch_transforms(
             or binding.output is None
         ):
             continue
-        source = sources[route.source]
-        slope = (route.points[1].amount - route.points[0].amount) / (
-            source.maximum - source.minimum
-        )
         routes.append(
             (
                 outputs[binding.reference, binding.output],
                 parameters[route.target.name, route.target.parameter],
                 0 if route.operation == modulation.Operation.add else 1,
-                route.points[0].amount - slope * source.minimum,
-                slope,
+            )
+        )
+        mappings.append(
+            (
+                [
+                    modulation.Interpolation.linear,
+                    modulation.Interpolation.step,
+                    modulation.Interpolation.exponential,
+                ].index(route.interpolation),
+                [(float(p.input), float(p.amount)) for p in route.points],
             )
         )
     runtime.set_envelfo_transforms(nodes, routes)
+    runtime.set_route_maps(4, mappings)
     return detectors
 
 
@@ -3098,8 +3104,6 @@ def _persistent_modulation(
         tuple[
             int,
             int,
-            float,
-            float,
             bool,
             int,
             tuple[int, int],
@@ -3115,6 +3119,7 @@ def _persistent_modulation(
     list[StagedRuntimeDefinition],
     dict[str, list[int]],
     list[tuple[int, str, int, str, int, int, int, int, tuple[int, int]]],
+    list[list[tuple[int, list[tuple[float, float]]]]],
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
@@ -3261,8 +3266,6 @@ def _persistent_modulation(
         tuple[
             int,
             int,
-            float,
-            float,
             bool,
             int,
             tuple[int, int],
@@ -3277,6 +3280,7 @@ def _persistent_modulation(
     staged_bindings: dict[str, int] = {}
     staged_envelfo_sources: dict[str, list[int]] = {}
     source_scopes: set[str] = set()
+    route_maps: list[list[tuple[int, list[tuple[float, float]]]]] = [[], [], [], []]
     for route in routes:
         source = sources.get(route.source)
         binding = bindings.get(route.source)
@@ -3284,15 +3288,6 @@ def _persistent_modulation(
         if source is None or binding is None or target not in supported:
             raise EngineError("Persistent synth modulation route is unresolved")
         parameter, _ = supported[target]
-        if (
-            route.interpolation != modulation.Interpolation.linear
-            or len(route.points) != 2
-            or route.points[0].input != source.minimum
-            or route.points[1].input != source.maximum
-        ):
-            raise EngineError(
-                "Persistent synth modulation routes must be direct linear maps"
-            )
         operation = route.operation
         source_scopes.add(source.scope)
         declaration = (
@@ -3300,20 +3295,16 @@ def _persistent_modulation(
             if isinstance(binding, ControlBinding)
             else None
         )
-        input_minimum = (
-            (-1 if declaration is not None and declaration.polarity == "bipolar" else 0)
-            if declaration is not None
-            else source.minimum
-        )
-        slope = (route.points[1].amount - route.points[0].amount) / (
-            source.maximum - source.minimum
-        )
-        intercept = route.points[0].amount - slope * source.minimum
         target_parameter = parameters[target]
-        mapped = [
-            intercept + slope * input_minimum,
-            intercept + slope * (1 if declaration is not None else source.maximum),
-        ]
+        mapped = [p.amount for p in route.points]
+        mapping = (
+            [
+                modulation.Interpolation.linear,
+                modulation.Interpolation.step,
+                modulation.Interpolation.exponential,
+            ].index(route.interpolation),
+            [(float(p.input), float(p.amount)) for p in route.points],
+        )
         outcomes = (
             [target_parameter.default + v for v in mapped]
             if operation == modulation.Operation.add
@@ -3333,6 +3324,7 @@ def _persistent_modulation(
                 raise EngineError(
                     "Persistent synth source must cover its control declaration"
                 )
+            route_maps[0].append(mapping)
             index = len(rows)
             rows.append(
                 [
@@ -3342,8 +3334,6 @@ def _persistent_modulation(
                     0 if operation == modulation.Operation.add else 1,
                     source.minimum,
                     source.maximum,
-                    intercept,
-                    slope,
                 ]
             )
             duration = binding.smoothing * definition.sample_rate
@@ -3357,6 +3347,7 @@ def _persistent_modulation(
             if isinstance(envelfo, Patch):
                 continue
             if isinstance(envelfo, SampleHold):
+                route_maps[2].append(mapping)
                 named_envelfo_sources.setdefault(binding.reference, []).append(
                     len(envelope_initials)
                 )
@@ -3367,8 +3358,6 @@ def _persistent_modulation(
                     (
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
-                        intercept,
-                        slope,
                         False,
                         0,
                         (0, 1),
@@ -3380,6 +3369,7 @@ def _persistent_modulation(
                 )
                 continue
             if isinstance(envelfo, Envelope):
+                route_maps[2].append(mapping)
                 generator = envelfo
                 assert isinstance(generator.initial, float)
                 if source.scope != "voice":
@@ -3401,14 +3391,13 @@ def _persistent_modulation(
                     (
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
-                        intercept,
-                        slope,
                         binding.release_timing == ReleaseTiming.voice,
                         *_runtime_named_envelope_options(generator),
                     )
                 )
                 continue
             if isinstance(envelfo, Stages):
+                route_maps[3].append(mapping)
                 staged_bindings[binding.name] = len(staged_envelfos)
                 staged_envelfo_sources.setdefault(binding.reference, []).append(
                     len(staged_envelfos)
@@ -3419,15 +3408,14 @@ def _persistent_modulation(
                         definition.sample_rate,
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
-                        intercept,
-                        slope,
                         envelfo.clock == "beats",
                     )
                 )
                 continue
             assert isinstance(envelfo, LFO)
-            intercept += slope * envelfo.center
-            slope *= envelfo.depth
+            route_maps[1].append(mapping)
+            intercept = envelfo.center
+            slope = envelfo.depth
             generator = envelfo
             index = len(lfo_rows)
             lfo_rows.append(
@@ -3477,7 +3465,7 @@ def _persistent_modulation(
             envelope_attacks.append([])
             envelope_releases.append([])
             envelope_parameters.append(
-                (0, 1, 1, 0, False, 0, (0, 1), (1, 1), None, True, (True, 0, True))
+                (0, 1, False, 0, (0, 1), (1, 1), None, True, (True, 0, True))
             )
             continue
         if isinstance(envelfo, LFO):
@@ -3534,8 +3522,6 @@ def _persistent_modulation(
                 (
                     0,
                     1,
-                    1,
-                    0,
                     binding.release_timing == ReleaseTiming.voice,
                     *_runtime_named_envelope_options(generator),
                 )
@@ -3549,7 +3535,7 @@ def _persistent_modulation(
         )
         staged_envelfos.append(
             _runtime_staged_envelfo(
-                envelfo, definition.sample_rate, None, 0, 0, 0, envelfo.clock == "beats"
+                envelfo, definition.sample_rate, None, 0, envelfo.clock == "beats"
             )
         )
     event_connections = [
@@ -3579,8 +3565,14 @@ def _persistent_modulation(
                 parameter.minimum,
                 parameter.maximum,
             ]
+    for mappings, count in zip(
+        route_maps,
+        (len(rows), len(lfo_rows), len(envelope_initials), len(staged_envelfos)),
+        strict=True,
+    ):
+        mappings.extend((0, [(0.0, 1.0)]) for _ in range(count - len(mappings)))
     return (
-        np.asarray(rows, dtype=np.float64).reshape(-1, 8),
+        np.asarray(rows, dtype=np.float64).reshape(-1, 6),
         smoothing,
         parameter_values,
         control_sources,
@@ -3600,6 +3592,7 @@ def _persistent_modulation(
         staged_envelfos,
         staged_envelfo_sources,
         event_connections,
+        route_maps,
     )
 
 
@@ -3648,8 +3641,6 @@ def _runtime_staged_envelfo(
     sample_rate: int,
     parameter: int | None,
     operation: int,
-    intercept: float,
-    slope: float,
     beat_clock: bool,
 ) -> StagedRuntimeDefinition:
     names = {stage.name: index for index, stage in enumerate(body.stages)}
@@ -3723,8 +3714,6 @@ def _runtime_staged_envelfo(
         names[body.initial_stage],
         parameter,
         operation,
-        intercept,
-        slope,
         beat_clock,
     )
 

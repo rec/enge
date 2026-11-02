@@ -7,11 +7,14 @@ coverage, including snapshots, named envelopes and stages. Shared execution now
 belongs to enveLFO; enge supplies audio observation and voice lifecycle policy.
 Do not treat the original event-integration proposal as wholly unimplemented.
 
-Persistent route preparation still requires direct two-point linear maps.
+Persistent routes now accept piecewise linear, step and positive exponential
+maps with endpoint clamping. Native prepared tables also cover Patch outputs;
+LFO activation weights apply after mapping. The existing one-route-per-source
+and one-route-per-target admission restriction remains.
 Amplitude, named and staged envelope adapters now preserve authored curves in
 NumPy/native block and persistent rendering. Regression coverage includes large
 positive/negative curves, held segments, release, partitions and continuation.
-Extend remaining route mappings using existing portable contracts.
+Multiple-route composition remains a separate parity gap.
 
 ## Sampler coverage
 
