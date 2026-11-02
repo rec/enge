@@ -20,7 +20,10 @@ Multiple-route composition remains a separate parity gap.
 
 The offline NumPy/native sampler and its Python persistent adapter already
 support control routes, generators, filters, pan laws and key/velocity bindings.
-Remaining preparation restrictions include layer crossfades, delayed/offset
+Static key/velocity crossfades now use onset-latched linear or equal-power gains
+in offline and native live rendering, including zero-weight voice ownership and
+snapshot continuation. Remaining preparation restrictions include control-driven
+layer crossfades, delayed/offset
 starts and fade retirement. Audit each
 against current code before editing because separate work may land concurrently.
 

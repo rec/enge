@@ -1,7 +1,7 @@
 """Offline sample instruments driven by prepared uFor actions."""
 
 from hashlib import sha256
-from math import isfinite
+from math import cos, isfinite, pi, sin
 from typing import Literal, cast
 
 import numpy as np
@@ -9,7 +9,7 @@ from envelfo import patch
 from pydantic import Field
 from ufor import instrument_trace
 from ufor.base import Model
-from ufor.samples import instrument, playback, processing, trace
+from ufor.samples import enums, instrument, playback, processing, trace
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
 
@@ -121,8 +121,10 @@ def prepare(
         )
         _validate_settings(settings[slot.name])
         filters.parameters(settings[slot.name].processing.filters, sample_rate, 1)
-        if slot.crossfades:
-            raise synth.EngineError("Sample layer crossfades are not implemented")
+        if any(c.input == enums.CrossfadeInput.control for c in slot.crossfades):
+            raise synth.EngineError(
+                "Control-driven sample crossfades are not implemented"
+            )
         if (
             slot.alignment_frames
             or slot.variation.delay_seconds
@@ -367,7 +369,8 @@ class OfflineSampler:
                 pitch_ratio=playback.pitch_ratio(
                     slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
                 ),
-                gain=10
+                gain=_layer_gain(slot, action)
+                * 10
                 ** (
                     (
                         common.processing.volume_db
@@ -768,6 +771,26 @@ def _safe_render_frames(
     remaining = distance * source.sample_rate - state.position
     known = int(np.floor(np.nextafter(remaining / step, -np.inf)))
     return max(1, min(frames, known))
+
+
+def _layer_gain(slot: instrument.SampleSlot, action: trace.VoiceStart) -> float:
+    gain = 1.0
+    for fade in slot.crossfades:
+        value = (
+            action.key if fade.input == enums.CrossfadeInput.key else action.velocity
+        )
+        if value is None:
+            raise synth.EngineError("Key crossfade requires resolved onset key")
+        position = min(1.0, max(0.0, (value - fade.start) / (fade.end - fade.start)))
+        inward = fade.direction == enums.FadeDirection.fade_in
+        if fade.curve == enums.FadeCurve.linear or position in (0.0, 1.0):
+            weight = position if inward else 1 - position
+        elif inward:
+            weight = sin(pi * position / 2)
+        else:
+            weight = cos(pi * position / 2)
+        gain *= weight
+    return gain
 
 
 def _maximum_tuning(settings: processing.SoundSettings) -> float:
