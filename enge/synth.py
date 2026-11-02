@@ -1038,14 +1038,23 @@ class ControlRenderer:
         for source in settings.modulation.sources:
             binding = bindings[source.name]
             if isinstance(binding, processing.EventBinding):
-                if velocity is None and action.trigger_id is not None:
-                    context_id = self.context("trigger", action.part, action.trigger_id)
-                    if context_id is not None:
-                        velocity = self.contexts[context_id].velocity
-                if velocity is None:
-                    raise EngineError(
-                        "Velocity binding requires resolved onset velocity"
-                    )
+                if binding.kind == "key":
+                    if action.key is None:
+                        raise EngineError("Key binding requires resolved onset key")
+                    # Control snapshots store unit-range values; routes use MIDI keys.
+                    value = action.key / 127
+                else:
+                    if velocity is None and action.trigger_id is not None:
+                        context_id = self.context(
+                            "trigger", action.part, action.trigger_id
+                        )
+                        if context_id is not None:
+                            velocity = self.contexts[context_id].velocity
+                    if velocity is None:
+                        raise EngineError(
+                            "Velocity binding requires resolved onset velocity"
+                        )
+                    value = velocity
                 index = len(self.contexts)
                 self.contexts.append(
                     ControlContext(
@@ -1055,9 +1064,9 @@ class ControlRenderer:
                         voice_id=action.voice_id,
                         ramps=[
                             ControlRamp(
-                                control="velocity",
+                                control=binding.kind,
                                 state=controls.initial_control(
-                                    controls.ControlDeclaration(default=velocity),
+                                    controls.ControlDeclaration(default=value),
                                     Fraction(action.tick, self.sample_rate),
                                     Fraction(0),
                                 ),
@@ -1253,6 +1262,8 @@ class ControlRenderer:
                 continue
             if isinstance(binding, processing.EventBinding):
                 value = self.contexts[sources[binding.name]].ramps[0].state.value
+                if binding.kind == "key":
+                    value *= 127
                 signals[binding.name] = np.column_stack(
                     (np.full(frames, value), np.ones(frames))
                 )
@@ -2673,6 +2684,7 @@ def validate_generators(
     settings: SoundSettings,
     allow_beat_envelfos: bool = False,
     allow_velocity_bindings: bool = False,
+    allow_key_bindings: bool = False,
 ) -> None:
     """Validate the Envelfo clocks supported by the selected renderer."""
     if any(isinstance(g, EnveLFOReference) for g in settings.envelfos.values()):
@@ -2698,9 +2710,11 @@ def validate_generators(
         not isinstance(b, ControlBinding)
         and not isinstance(b, processing.GeneratorBinding)
         and not (
-            allow_velocity_bindings
-            and isinstance(b, processing.EventBinding)
-            and b.kind == "velocity"
+            isinstance(b, processing.EventBinding)
+            and (
+                (allow_velocity_bindings and b.kind == "velocity")
+                or (allow_key_bindings and b.kind == "key")
+            )
         )
         for b in settings.bindings
     ):

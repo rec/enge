@@ -15,9 +15,9 @@ with exact action ordering, partitions and snapshot continuation.
 ## Sampler coverage
 
 The offline NumPy/native sampler and its Python persistent adapter already
-support control routes, generators, filters, pan laws and velocity bindings.
+support control routes, generators, filters, pan laws and key/velocity bindings.
 Remaining preparation restrictions include layer crossfades, delayed/offset
-starts, fade retirement, curved amplitude segments and key bindings. Audit each
+starts, fade retirement and curved amplitude segments. Audit each
 against current code before editing because separate work may land concurrently.
 
 Native live registration currently rejects controls, generators and filters.

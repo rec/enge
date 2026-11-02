@@ -712,7 +712,9 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
             "Only sample volume, tuning, pan, balance, and filter processing "
             "are implemented"
         )
-    synth.validate_generators(settings, allow_velocity_bindings=True)
+    synth.validate_generators(
+        settings, allow_velocity_bindings=True, allow_key_bindings=True
+    )
     synth.validate_modulation(settings)
 
 

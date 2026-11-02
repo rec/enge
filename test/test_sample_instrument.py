@@ -60,17 +60,19 @@ def sample_score(
 
 
 @pytest.mark.parametrize("location", ["instrument", "slot"])
-def test_velocity_bindings_keep_each_voice_value_through_controls_and_restore(
-    backend: Literal["numpy", "native"], tmp_path: Path, location: str
+@pytest.mark.parametrize("kind", ["velocity", "key"])
+def test_event_bindings_keep_each_voice_value_through_controls_and_restore(
+    backend: Literal["numpy", "native"], tmp_path: Path, location: str, kind: str
 ) -> None:
+    scale = 127 if kind == "key" else 1
     raw = sample_score(frames=96000).model_dump(mode="json")
-    raw["body"]["settings"]["controls"] = {"velocity": {"default": 0.8}}
+    raw["body"]["settings"]["controls"] = {kind: {"default": 0.8}}
     settings = (
         raw["body"]["settings"] if location == "instrument" else raw["body"]["slots"][0]
     )
     settings["modulation"] = {
         "sources": [
-            {"name": "note-velocity", "scope": "voice", "minimum": 0, "maximum": 1}
+            {"name": "note-event", "scope": "voice", "minimum": 0, "maximum": scale}
         ],
         "parameters": [
             {
@@ -84,18 +86,19 @@ def test_velocity_bindings_keep_each_voice_value_through_controls_and_restore(
         ],
         "routes": [
             {
-                "name": "velocity-gain",
-                "source": "note-velocity",
+                "name": "event-gain",
+                "source": "note-event",
                 "target": {"name": "processing", "parameter": "amplitude"},
                 "unit": "ratio",
                 "operation": "multiply",
                 "points": [
-                    {"input": v / 127, "amount": (v / 127) ** 2} for v in range(128)
+                    {"input": v * scale / 127, "amount": (v / 127) ** 2}
+                    for v in range(128)
                 ],
             }
         ],
     }
-    settings["bindings"] = [{"name": "note-velocity", "kind": "velocity"}]
+    settings["bindings"] = [{"name": "note-event", "kind": kind}]
     document = instrument.SampleInstrumentScore.model_validate(raw)
     prepared = sample_instrument.prepare(
         document,
@@ -106,8 +109,9 @@ def test_velocity_bindings_keep_each_voice_value_through_controls_and_restore(
     events: list[PerformanceEvent] = [
         onset(frame=f, trigger_id=n, pitch=440).model_copy(
             update={
-                "velocity": v,
-                "controls": {"velocity": 0.8},
+                "velocity": v if kind == "velocity" else 1 - v,
+                "key": round(v * 127) if kind == "key" else 69,
+                "controls": {kind: 0.8},
             }
         )
         for f, n, v in [
@@ -119,7 +123,7 @@ def test_velocity_bindings_keep_each_voice_value_through_controls_and_restore(
     ]
     events.append(
         ControlChange(
-            tick=6000, ordinal=0, scope="part", part="main", control="velocity", value=0
+            tick=6000, ordinal=0, scope="part", part="main", control=kind, value=0
         )
     )
     releases = [
@@ -150,47 +154,7 @@ def test_velocity_bindings_keep_each_voice_value_through_controls_and_restore(
     gain[12000:30000] += 1
     gain[24000:42000] += (1 / 127) ** 2
     expected = gain[:, None] * [0.125, 0.09375]
-    check_audio(tmp_path / "voice-velocity.wav", np.concatenate(chunks), expected)
-
-
-def test_sample_key_event_bindings_remain_unsupported() -> None:
-    raw = sample_score(frames=48000).model_dump(mode="json")
-    raw["body"]["slots"][0].update(
-        {
-            "bindings": [{"name": "key", "kind": "key"}],
-            "modulation": {
-                "sources": [
-                    {"name": "key", "scope": "voice", "minimum": 0, "maximum": 127}
-                ],
-                "parameters": [
-                    {
-                        "target": {"name": "processing", "parameter": "amplitude"},
-                        "scope": "voice",
-                        "unit": "ratio",
-                        "minimum": 0,
-                        "maximum": 1,
-                        "default": 1,
-                    }
-                ],
-                "routes": [
-                    {
-                        "name": "key-gain",
-                        "source": "key",
-                        "operation": "multiply",
-                        "target": {"name": "processing", "parameter": "amplitude"},
-                        "unit": "ratio",
-                        "points": [
-                            {"input": 0, "amount": 0},
-                            {"input": 127, "amount": 1},
-                        ],
-                    }
-                ],
-            },
-        }
-    )
-    document = instrument.SampleInstrumentScore.model_validate(raw)
-    with pytest.raises(EngineError, match="Unsupported binding"):
-        sample_instrument.prepare(document, {"asset": np.ones((48000, 2))})
+    check_audio(tmp_path / f"voice-{kind}.wav", np.concatenate(chunks), expected)
 
 
 @pytest.mark.parametrize("release_seconds", [Fraction(0), Fraction(1, 4)])
