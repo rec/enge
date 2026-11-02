@@ -133,8 +133,6 @@ def prepare(
             raise synth.EngineError(
                 "Delayed or offset sample starts are not implemented"
             )
-        if any(c.mode == "fade" for c in slot.chokes):
-            raise synth.EngineError("Fade retirement is not implemented")
         selection = slices[slot.slice]
         source_channels = assets[selection.asset].audio.channels
         gains = [1.0] * len(output.channels)
@@ -271,8 +269,10 @@ class OfflineSampler:
             self._start_voice(action)
         elif isinstance(action, instrument_trace.VoiceRetirement):
             if action.action == "fade":
-                raise synth.EngineError("Fade retirement is not implemented")
-            if action.action == "stop":
+                if voice := self.voices.get(action.voice_id):
+                    assert action.fade_seconds is not None
+                    voice.renderer.fade(action.fade_seconds)
+            elif action.action == "stop":
                 self.voices.pop(action.voice_id, None)
                 self.controls.stop(action.voice_id)
             elif voice := self.voices.get(action.voice_id):
@@ -638,11 +638,16 @@ class PersistentSampler(OfflineSampler):
                     ]
                 )
             elif isinstance(action, instrument_trace.VoiceRetirement):
-                if action.action == "fade":
-                    raise synth.EngineError("Fade retirement is not implemented")
                 if (voice := self.native_voices.get(action.voice_id)) is not None:
-                    kind = 2 if action.action == "stop" else 1
-                    encoded[voice.source].append([offset, kind, voice.slot, 0, 0, 0])
+                    kind = {"release": 1, "stop": 2, "fade": 5}[action.action]
+                    duration = (
+                        0.0
+                        if action.fade_seconds is None
+                        else action.fade_seconds * self.definition.sample_rate
+                    )
+                    encoded[voice.source].append(
+                        [offset, kind, voice.slot, duration, 0, 0]
+                    )
                     if kind == 2:
                         active[voice.source][voice.slot] = False
                         del self.native_voices[action.voice_id]

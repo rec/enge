@@ -178,8 +178,12 @@ Zero-duration amplitude-envelope phases jump immediately to their endpoints;
 their curve values do not affect playback. Nonzero-duration phases use their
 authored curves. Decoding remains with the caller. Equalizers,
 control-driven layer crossfades, delayed or offset sample starts, other
-modulation targets, and fade
-retirements fail explicitly.
+modulation targets fail explicitly.
+
+Sampler fade retirement multiplies the rendered voice output by a linear ramp
+to zero. Repeated fades start from the current fade gain over the new duration.
+Source exhaustion, envelope completion and explicit stops can end the voice
+earlier. Offline and native live snapshots preserve fades.
 
 Key and velocity layer crossfades latch their weights at onset in offline and
 native live samplers. Linear and equal-power curves clamp at their endpoints;

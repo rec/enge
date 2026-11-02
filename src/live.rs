@@ -39,6 +39,9 @@ struct SampleRuntime {
     active: Vec<bool>,
     ages: Vec<usize>,
     release_frames: Vec<Option<f64>>,
+    fade_starts: Vec<Option<usize>>,
+    fade_frames: Vec<f64>,
+    fade_gains: Vec<f64>,
     source_values: Vec<f64>,
     frame: usize,
 }
@@ -335,6 +338,9 @@ impl LiveRuntime {
             active: vec![false; voices],
             ages: vec![0; voices],
             release_frames: vec![None; voices],
+            fade_starts: vec![None; voices],
+            fade_frames: vec![1.0; voices],
+            fade_gains: vec![1.0; voices],
             source_values: vec![0.0; source_channels],
             frame: 0,
         };
@@ -1431,6 +1437,15 @@ impl SampleRuntime {
                     continue;
                 }
                 let age = self.ages[voice] as f64;
+                let fade = self.fade_starts[voice].map_or(1.0, |start| {
+                    self.fade_gains[voice]
+                        * (1.0 - (self.ages[voice] - start) as f64 / self.fade_frames[voice])
+                            .max(0.0)
+                });
+                if fade == 0.0 {
+                    self.active[voice] = false;
+                    continue;
+                }
                 if let Some(release_frame) = self.release_frames[voice] {
                     if age >= release_frame.ceil() && !self.cursors[voice].released {
                         self.cursors[voice].release();
@@ -1486,7 +1501,7 @@ impl SampleRuntime {
                         .enumerate()
                         .map(|(source, value)| value * self.routes[[source, channel]])
                         .sum::<f64>();
-                    output[[offset, channel]] += mixed * level * self.gains[voice];
+                    output[[offset, channel]] += mixed * level * self.gains[voice] * fade;
                 }
                 cursor.advance(self.steps[voice], frame + 1);
                 self.ages[voice] += 1;
@@ -1522,6 +1537,8 @@ impl SampleRuntime {
                 self.ages[voice] = 0;
                 self.amplitude_states[voice] = self.amplitude.start()?;
                 self.release_frames[voice] = None;
+                self.fade_starts[voice] = None;
+                self.fade_gains[voice] = 1.0;
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
@@ -1560,6 +1577,24 @@ impl SampleRuntime {
                     command,
                     action[4],
                 )?;
+            }
+            5 => {
+                if !action[3].is_finite()
+                    || action[3] <= 0.0
+                    || action[4] != 0.0
+                    || action[5] != 0.0
+                {
+                    return Err(PyValueError::new_err("Invalid live sample fade"));
+                }
+                if self.active[voice] {
+                    if let Some(start) = self.fade_starts[voice] {
+                        self.fade_gains[voice] *= (1.0
+                            - (self.ages[voice] - start) as f64 / self.fade_frames[voice])
+                            .max(0.0);
+                    }
+                    self.fade_starts[voice] = Some(self.ages[voice]);
+                    self.fade_frames[voice] = action[3];
+                }
             }
             _ => return Err(PyValueError::new_err("Unknown live sample action")),
         }

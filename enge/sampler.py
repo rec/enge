@@ -3,6 +3,7 @@
 from copy import copy
 from fractions import Fraction
 from functools import cached_property
+from math import ceil, isfinite
 from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
@@ -124,6 +125,9 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
     source: SampleState
     filter_states: list[filters.FilterState] = Field(default_factory=list)
     backend: Literal["numpy", "native"] = "numpy"
+    fade_at: int | None = Field(default=None, ge=0)
+    fade_frames: float = Field(default=1, gt=0)
+    fade_gain: float = Field(default=1, ge=0, le=1)
 
     @classmethod
     def start(
@@ -150,6 +154,11 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
 
     @property
     def complete(self) -> bool:
+        if (
+            self.fade_at is not None
+            and self.frame_count - self.fade_at >= self.fade_frames
+        ):
+            return True
         source = self.source
         loop = self.definition.slice.loop
         looping = source.looping and not (
@@ -173,7 +182,27 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
         return super().release()
 
     def active_frames(self, frames: int) -> int:
-        return 0 if self.complete else super().active_frames(frames)
+        if self.complete:
+            return 0
+        count = super().active_frames(frames)
+        if self.fade_at is not None:
+            count = min(
+                count, ceil(self.fade_frames) - (self.frame_count - self.fade_at)
+            )
+        return count
+
+    def fade(self, seconds: float) -> None:
+        frames = seconds * self.definition.sample_rate
+        if not isfinite(frames) or frames <= 0:
+            raise EngineError("Fade duration must be finite and positive")
+        if self.complete:
+            return
+        if self.fade_at is not None:
+            self.fade_gain *= max(
+                0.0, 1 - (self.frame_count - self.fade_at) / self.fade_frames
+            )
+        self.fade_at = self.frame_count
+        self.fade_frames = frames
 
     def render(
         self,
@@ -190,6 +219,17 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
         Filter parameters have shape (active frames, filters, 2): cutoff Hz, Q.
         """
         count = self.active_frames(frames)
+        fade = (
+            None
+            if self.fade_at is None
+            else self.fade_gain
+            * np.maximum(
+                0.0,
+                1
+                - (self.frame_count - self.fade_at + np.arange(frames))
+                / self.fade_frames,
+            )
+        )
         values = filters.parameters(
             self.definition.filters,
             self.definition.sample_rate,
@@ -223,6 +263,8 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                 self.definition.filter_order == FilterOrder.after_amplitude,
             )
             self.filter_states = filters.restored_states(memory)
+            if fade is not None:
+                output *= fade[:, None]
             self.frame_count += frames
             return output
         output = np.zeros((frames, len(self.definition.routes[0])))
@@ -258,6 +300,8 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
             output[:count] = synth.route_samples(audio, self.definition.routes)
             if self.definition.filter_order == FilterOrder.before_amplitude:
                 output[:count] *= amplitude[:, None]
+        if fade is not None:
+            output *= fade[:, None]
         self.frame_count += frames
         return output
 

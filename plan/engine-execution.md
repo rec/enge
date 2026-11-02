@@ -24,7 +24,9 @@ Static key/velocity crossfades now use onset-latched linear or equal-power gains
 in offline and native live rendering, including zero-weight voice ownership and
 snapshot continuation. Remaining preparation restrictions include control-driven
 layer crossfades, delayed/offset
-starts and fade retirement. Audit each
+starts. Fade retirement now works offline and in native live playback; repeated
+requests retime continuously from the current fade gain. Earlier source or
+envelope completion still ends the voice. Audit remaining restrictions
 against current code before editing because separate work may land concurrently.
 
 Native live registration currently rejects controls, generators and filters.
