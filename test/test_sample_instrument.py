@@ -60,6 +60,93 @@ def sample_score(
 
 
 @pytest.mark.parametrize("location", ["instrument", "slot"])
+def test_sample_patch_signal_survives_partitioned_snapshot_restore(
+    backend: Literal["numpy", "native"], tmp_path: Path, location: str
+) -> None:
+    raw = sample_score().model_dump(mode="json")
+    settings = (
+        raw["body"]["settings"] if location == "instrument" else raw["body"]["slots"][0]
+    )
+    settings.update(
+        envelfos={
+            "fade": {
+                "kind": "patch",
+                "envelfos": {
+                    "lfo": {
+                        "kind": "lfo",
+                        "shape": "triangle",
+                        "rate": 2,
+                        "phase": "1/4",
+                        "center": 0.5,
+                        "depth": 0.5,
+                    },
+                    "gate": {
+                        "kind": "envelope",
+                        "initial": 0,
+                        "segments": [{"duration": "1/2 s", "to": 1}],
+                    },
+                    "product": {"kind": "product", "inputs": ["lfo", "gate"]},
+                },
+                "outputs": {"signal": "product"},
+            }
+        },
+        bindings=[
+            {"kind": "envelfo", "name": "fade", "reference": "fade", "output": "signal"}
+        ],
+        modulation={
+            "sources": [
+                {"name": "fade", "scope": "voice", "minimum": -1, "maximum": 1}
+            ],
+            "parameters": [
+                {
+                    "target": {"name": "processing", "parameter": "amplitude"},
+                    "scope": "voice",
+                    "unit": "ratio",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 1,
+                }
+            ],
+            "routes": [
+                {
+                    "name": "fade",
+                    "source": "fade",
+                    "target": {"name": "processing", "parameter": "amplitude"},
+                    "unit": "ratio",
+                    "operation": "multiply",
+                    "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": 1}],
+                }
+            ],
+        },
+    )
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    prepared = sample_instrument.prepare(
+        document, {"asset": np.tile([0.125, 0.0625], (96000, 1))}
+    )
+    actions = trace.prepare(
+        document.body, [onset(pitch=440).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
+    chunks = []
+    for start, end in pairwise([0, 1, 11999, 24000, 48000, 96000]):
+        chunks.append(
+            renderer.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        snapshot = sample_instrument.SamplerSnapshot.model_validate_json(
+            renderer.snapshot().model_dump_json()
+        )
+        renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
+        renderer.restore(snapshot)
+    age = np.arange(96000) / 48000
+    gain = (1 - 2 * np.abs((2 * age + 0.25) % 1 - 0.5)) * np.minimum(1, age / 0.5)
+    check_audio(
+        tmp_path / "sample-patch.wav",
+        np.concatenate(chunks),
+        gain[:, None] * [0.125, 0.09375],
+    )
+
+
+@pytest.mark.parametrize("location", ["instrument", "slot"])
 @pytest.mark.parametrize("kind", ["velocity", "key"])
 def test_event_bindings_keep_each_voice_value_through_controls_and_restore(
     backend: Literal["numpy", "native"], tmp_path: Path, location: str, kind: str

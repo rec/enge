@@ -45,6 +45,7 @@ class SamplerSnapshot(Model, frozen=True):
     contexts: list[synth.ControlContext]
     lfos: list[synth.LFOSource]
     envelopes: list[synth.EnvelopeSource]
+    patches: list[synth.PatchState]
     graphs: dict[str, patch.PatchState]
     backend: Literal["numpy", "native"]
 
@@ -98,14 +99,25 @@ def prepare(
         decoded[name] = sampler.PreparedSample.immutable_audio(audio[name])
         digests[name] = sha256(decoded[name].tobytes()).hexdigest()
 
+    score = score.model_copy(
+        update={
+            "body": score.body.model_copy(
+                update={
+                    "settings": synth.expand_patch_outputs(score.body.settings),
+                }
+            )
+        }
+    )
     _validate_settings(score.body.settings)
     filters.parameters(score.body.settings.processing.filters, sample_rate, 1)
     samples: dict[str, sampler.PreparedSample] = {}
     settings: dict[str, processing.SoundSettings] = {}
     routes: dict[str, list[list[float]]] = {}
     for slot in score.body.slots:
-        settings[slot.name] = instrument.effective_settings(
-            slot, groups.get(slot.group) if slot.group is not None else None
+        settings[slot.name] = synth.expand_patch_outputs(
+            instrument.effective_settings(
+                slot, groups.get(slot.group) if slot.group is not None else None
+            )
         )
         _validate_settings(settings[slot.name])
         filters.parameters(settings[slot.name].processing.filters, sample_rate, 1)
@@ -215,6 +227,7 @@ class OfflineSampler:
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
             envelopes=self.controls.envelopes,
+            patches=self.controls.patches,
             graphs=self.controls.graphs,
             backend=self.backend,
         ).model_copy(deep=True)
@@ -240,6 +253,7 @@ class OfflineSampler:
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
         self.controls.envelopes = snapshot.envelopes
+        self.controls.patches = snapshot.patches
         self.controls.graphs = snapshot.graphs
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
@@ -311,7 +325,7 @@ class OfflineSampler:
         settings = self.definition.settings[slot.name]
         if (
             action.slice != slot.slice
-            or action.settings != settings
+            or synth.expand_patch_outputs(action.settings) != settings
             or action.channels != slot.channels
             or action.start_frame != sample.slice.start_frame
         ):

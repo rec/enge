@@ -535,7 +535,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
     for voice in score.body.voices:
         if not isinstance(voice, SynthVoice):
             raise EngineError("Oscillator engine requires oscillator voice templates")
-        voice = _expand_patch_outputs(voice)
+        voice = expand_patch_outputs(voice)
         _validate_voice(voice)
         filters.parameters(voice.processing.filters, _sample_rate(timebase), 1)
         voices.append(voice)
@@ -547,7 +547,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
     )
 
 
-def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
+def expand_patch_outputs[T: SoundSettings](voice: T) -> T:
     envelfos = dict(voice.envelfos)
     bindings = list(voice.bindings)
     sources = list(voice.modulation.sources)
@@ -726,7 +726,7 @@ def _expand_patch_outputs(voice: SynthVoice) -> SynthVoice:
             changed = True
     if not changed:
         return voice
-    return SynthVoice.model_validate(
+    return type(voice).model_validate(
         voice.model_dump()
         | {
             "envelfos": envelfos,
