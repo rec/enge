@@ -1,5 +1,13 @@
 # Four-operator FM profile
 
+## Status as of 2026-11-02
+
+The graph profile below is implemented, including six operators, selectable
+waveforms and persistent graph state. Its numbered work list records the original
+delivery scope, not outstanding tasks. See `test/test_fm.py`, `test/test_runtime.py`
+and `conformance/fm-instrument.json`. Shared runtime limitations are tracked in
+[engine-execution.md](engine-execution.md); Yamaha emulation is separate.
+
 ## Scope
 
 Replace the fixed two-operator renderer with a portable graph profile supporting

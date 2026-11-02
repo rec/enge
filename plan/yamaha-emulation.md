@@ -1,5 +1,14 @@
 # Yamaha-compatible FM
 
+## Status as of 2026-11-02
+
+`enge/yamaha.py` already contains a Python DX7 note renderer, operator envelopes,
+frequency and level scaling, algorithm routing and feedback. This is partial
+implementation, not verified hardware equivalence. The requirements below remain
+the target contract; pitch-envelope/oscillator-sync behavior, reference
+qualification, TX81Z/WT11 rendering and full engine integration require further
+work. Do not restart the existing DX7 implementation.
+
 Implement a dedicated Yamaha renderer for the DX7 and TX81Z instead of
 projecting their patches into the general FM voice profile. The general graph
 remains useful for authored enge patches, but it cannot represent Yamaha's

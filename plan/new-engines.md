@@ -1,5 +1,14 @@
 # Synthesis engines: review, common design, and new directions
 
+## Historical review status
+
+The review below describes the 2026-09-28 checkout, not today's defect backlog.
+Since then, sampler snapshots have moved to shared Envelfo graph state and
+persistent FM uses graph-owned state. enveLFO extraction is complete. Reproduce
+any remaining finding against current code before implementing a repair.
+The common-process architecture and new-engine proposals remain unapproved.
+Current authorized work is tracked in [roadmap.md](roadmap.md).
+
 Design and static code review, 2026-09-28. This replaces the earlier candidate
 shortlist with a broader proposal. No runtime changes, performance measurements,
 listening tests, or crash reproductions were performed for this review.

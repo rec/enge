@@ -135,8 +135,10 @@ They support sine, square, and triangle shapes, delay/fade-in, and voice, part,
 or instrument ownership as allowed by uFor. Shared sources continue through
 silence, and snapshots retain their exact phase anchors. Standalone
 `enge.lfo.lfo_samples()` also samples canonical uFor rate/reset event states.
-Prepared instrument traces do not yet carry addressed LFO events; their LFO
-rates remain authored settings.
+Prepared instrument traces carry addressed LFO and Envelfo commands; offline
+and persistent runtimes apply supported rate/playback changes and preserve their
+state across snapshots. Native live samplers retain the restrictions described
+in [the callback audit](doc/live-callback-audit.md).
 
 All four offline engines accept `control_interval=1` (a positive integer), as does
 `render_midi`. The default uses full-resolution vectorized controls and route
@@ -148,7 +150,7 @@ activation weights applied after mapping. The persistent synth retains its
 explicit restriction to direct linear routes. Audio-rate LFOs stay at
 full rate when they reach the selected control-rate Nyquist frequency. This is
 independent of audio buffer size, and snapshots reject a different interval.
-See [control evaluation and measurements](plan/engine-execution.md#vectorized-control-evaluation).
+See [control integration](plan/engine-execution.md#control-integration).
 
 Sample instruments select `body.pan_law`: `native` (default) uses unboosted
 cosine/sine mono pan and attenuation-only linear stereo balance; `sfizz` uses
@@ -199,7 +201,7 @@ Load a `SynthInstrumentScore` containing `fm` voice definitions, such as
 `advance(actions, start, end)`, `snapshot()`, and `restore(snapshot)` operations
 as the other engines. Each engine rejects a score containing another source
 profile. Select Rust with `fm.OfflineFM(fm.prepare(score), backend="native")`.
-Rust computes both envelopes, operator phases, feedback, filters, gain, and
+Rust computes operator envelopes, phases, feedback, filters, gain, and
 routing in one call with owned buffers and the GIL released. Snapshots reject
 a different backend, including when no voices are active.
 
@@ -321,11 +323,9 @@ rather than skip when the feature is absent.
 CI uses the project's worker setting and allows 45 minutes for compilation and
 the full audio suite; Windows exceeded the previous 25-minute budget.
 
-The [proposed execution contract](plan/engine-execution.md) defines the common
-timing, dynamic-control, state, and conformance requirements for Python/NumPy
-reference engines and a native implementation. It also records the numerical
-function boundaries and verification requirements for a future `torch.compile`
-implementation.
+The [execution plan](plan/engine-execution.md) tracks remaining control/runtime
+parity and sampler coverage. Shared timing, state and conformance requirements
+apply to NumPy and Rust. PyTorch work is excluded.
 
 Run `uv run pytest test/test_synth_demo.py` to generate a 4.25-second stereo demo
 at 48 kHz: an arpeggio followed by a held note with smoothed volume and pitch

@@ -4,6 +4,15 @@ Design proposal, 2026-09-28. This document proposes a shared model; its TOML
 examples are proposed syntax, not files that today's engine can load. It does
 not authorize implementation or change the existing roadmap.
 
+## Current status
+
+This document is the original design proposal. Shared definitions now live in
+uFor and executable modulation lives in the standalone enveLFO project; enge's
+Python and Rust adapters consume those runtimes. See [envelfo.md](envelfo.md)'s
+completion criteria and `doc/envelfo-contract.md` for the implemented boundary.
+Examples and source inventories below describe the earlier design and should
+not be treated as current APIs or an outstanding extraction backlog.
+
 ## 1. Naming decision: call them envelfos
 
 An **envelfo** produces control signals over time, can receive events, and can

@@ -5,6 +5,11 @@ API contracts, test results and commit history are intentionally not repeated.
 
 ## What to do next
 
+Superseded on 2026-11-02: the user authorized correcting stale plans, followed by
+control/runtime parity and sampler rendering coverage. See `roadmap.md` for the
+current scope. The following paragraphs retain the earlier conversation context;
+their statement that no next slice is approved no longer applies.
+
 There is no approved next implementation slice in this chat. The latest user
 request is this handoff document, not permission to start another feature.
 

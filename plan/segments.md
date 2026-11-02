@@ -1,5 +1,13 @@
 # Human-facing segments
 
+## Historical migration plan
+
+enge now consumes shared `ufor.segments` definitions using `to`, including
+indefinite segments. Unit parsing belongs to reccy through uFor, as recorded in
+[pint-units.md](pint-units.md). The proposal below is retained as the original
+cross-project migration design, not a request to repeat that migration or create
+another parser. This review does not establish the current state of recs.
+
 Replace the separate authored envelope segments and mix-automation knots with
 one readable segment notation in ufor, consumed by enge and recs. This is a
 schema and renderer migration, not implementation of the broader envelfo system.

@@ -2,10 +2,27 @@
 
 ## Control integration
 
-Carry named envelopes and addressed LFO rate/reset actions through every
-offline and persistent runtime that supports their scopes. Add portable
-modulation targets individually, with exact action ordering, partitions, and
-snapshot continuation.
+Addressed LFO and Envelfo playback actions already have offline and persistent
+coverage, including snapshots, named envelopes and stages. Shared execution now
+belongs to enveLFO; enge supplies audio observation and voice lifecycle policy.
+Do not treat the original event-integration proposal as wholly unimplemented.
+
+Persistent route preparation still requires direct two-point linear maps and
+rejects curved named-envelope segments. General amplitude envelopes also reject
+nonzero-duration curves. Extend these adapters using existing portable contracts,
+with exact action ordering, partitions and snapshot continuation.
+
+## Sampler coverage
+
+The offline NumPy/native sampler and its Python persistent adapter already
+support control routes, generators, filters, pan laws and velocity bindings.
+Remaining preparation restrictions include layer crossfades, delayed/offset
+starts, fade retirement, curved amplitude segments and key bindings. Audit each
+against current code before editing because separate work may land concurrently.
+
+Native live registration currently rejects controls, generators and filters.
+The user approved extending that native sampler with the existing native
+control/filter machinery on 2026-11-02, preserving bounded callback storage.
 
 ## Dynamic filters
 
@@ -22,9 +39,11 @@ tail.
 
 ## Live execution
 
-Move remaining prepared-action orchestration into the native callback owner.
-Native hosts retain device ownership. Expand live sampler modulation only with
-explicit bounded-resource and callback contracts.
+The Rust LiveRuntime already owns mixing, supported effects, generated sources
+and static sample playback. Python still performs action admission/submission;
+the higher-level LiveEngine also has allocating orchestration paths. Native
+hosts retain device ownership. See [the callback audit](../doc/live-callback-audit.md)
+for the measured boundary; offline conformance is not device qualification.
 
 ## Additional work beyond the prompt
 

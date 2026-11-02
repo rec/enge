@@ -1,5 +1,14 @@
 # Possible new effect categories
 
+## Status as of 2026-11-02
+
+This is a selection catalogue, not a list of wholly missing processors. Existing
+implementations include gain, resonant filtering, multiply, granulation, soft
+clipping, tap delay and modulated delay. Optional Rubber Band offline and finite
+realtime adapters also exist. Check `enge/effects.py`, `enge/rubberband.py` and
+their tests before selecting a new slice. The descriptions below retain design
+requirements, including requirements beyond the implemented profiles.
+
 ## Purpose
 
 This is a catalogue for choosing the next effect after gain, resonant filtering,
