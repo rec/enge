@@ -1532,6 +1532,20 @@ impl SampleRuntime {
                 }
                 self.active[voice] = true;
                 self.cursors[voice] = self.initial_cursor;
+                let offset = action[5];
+                if !offset.is_finite() || offset.fract() != 0.0 || offset.abs() > 9007199254740992.0
+                {
+                    return Err(PyValueError::new_err("Invalid live sample offset"));
+                }
+                let cursor = &mut self.cursors[voice];
+                cursor.index = cursor
+                    .index
+                    .checked_add(offset as i64)
+                    .ok_or_else(|| PyValueError::new_err("Live sample offset overflow"))?;
+                if !(cursor.selection.0..cursor.selection.1).contains(&cursor.index) {
+                    cursor.exhausted = Some(self.frame as i64);
+                    self.active[voice] = false;
+                }
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;

@@ -125,14 +125,8 @@ def prepare(
             raise synth.EngineError(
                 "Control-driven sample crossfades are not implemented"
             )
-        if (
-            slot.alignment_frames
-            or slot.variation.delay_seconds
-            or slot.variation.offset_frames
-        ):
-            raise synth.EngineError(
-                "Delayed or offset sample starts are not implemented"
-            )
+        if slot.variation.delay_seconds:
+            raise synth.EngineError("Delayed sample starts are not implemented")
         selection = slices[slot.slice]
         source_channels = assets[selection.asset].audio.channels
         gains = [1.0] * len(output.channels)
@@ -312,6 +306,20 @@ class OfflineSampler:
             instrument_sources=self.controls.sources(common, action, action.velocity),
             slot_sources=self.controls.sources(settings, action, action.velocity),
         )
+        renderer = self.voices[action.voice_id].renderer
+        index = (
+            renderer.source.index
+            + action.alignment_frames
+            + renderer.source.direction * action.variation.offset_frames
+        )
+        renderer.source = renderer.source.model_copy(
+            update={
+                "index": index,
+                "exhaustion_frame": None
+                if sample.slice.start_frame <= index < sample.slice.end_frame
+                else 0,
+            }
+        )
 
     def _voice_definition(
         self, action: trace.VoiceStart
@@ -329,17 +337,12 @@ class OfflineSampler:
             action.slice != slot.slice
             or synth.expand_patch_outputs(action.settings) != settings
             or action.channels != slot.channels
-            or action.start_frame != sample.slice.start_frame
+            or action.start_frame != sample.slice.start_frame + slot.alignment_frames
+            or action.alignment_frames != slot.alignment_frames
         ):
             raise synth.EngineError("Voice start must match its prepared sample slot")
-        if (
-            action.alignment_frames
-            or action.variation.delay_seconds
-            or action.variation.offset_frames
-        ):
-            raise synth.EngineError(
-                "Delayed or offset sample starts are not implemented"
-            )
+        if action.variation.delay_seconds:
+            raise synth.EngineError("Delayed sample starts are not implemented")
         if action.parameters:
             raise synth.EngineError(
                 "Latched sample parameter overrides are not implemented"
@@ -625,6 +628,15 @@ class PersistentSampler(OfflineSampler):
                     self.definition.document.body.settings.processing.tuning_cents
                     + self.definition.settings[slot.name].processing.tuning_cents
                 )
+                position_offset = (
+                    action.alignment_frames
+                    + (-1 if sample.playback.direction == Direction.backward else 1)
+                    * action.variation.offset_frames
+                )
+                if abs(position_offset) > 2**53:
+                    raise synth.EngineError(
+                        "Native sample offset is not exactly representable"
+                    )
                 encoded[source].append(
                     [
                         offset,
@@ -634,7 +646,7 @@ class PersistentSampler(OfflineSampler):
                         * np.exp2(tuning / 1200)
                         * sample.native_rate,
                         definition.gain,
-                        0,
+                        position_offset,
                     ]
                 )
             elif isinstance(action, instrument_trace.VoiceRetirement):

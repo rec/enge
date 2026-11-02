@@ -23,11 +23,25 @@ support control routes, generators, filters, pan laws and key/velocity bindings.
 Static key/velocity crossfades now use onset-latched linear or equal-power gains
 in offline and native live rendering, including zero-weight voice ownership and
 snapshot continuation. Remaining preparation restrictions include control-driven
-layer crossfades, delayed/offset
+layer crossfades and delayed
 starts. Fade retirement now works offline and in native live playback; repeated
 requests retime continuously from the current fade gain. Earlier source or
 envelope completion still ends the voice. Audit remaining restrictions
 against current code before editing because separate work may land concurrently.
+
+Signed alignment and resolved random offsets now work offline and in native live
+playback, including snapshots. Random offsets follow playback direction; alignment
+adds to the source index. Out-of-slice positions exhaust immediately without
+clamping or changing slice/loop coordinates, as decided by the user.
+
+Delayed starts remain unfinished. The user selected rounding up to the next
+output frame, with traversal and envelopes beginning at age zero there. A shared
+prepared-action contract extension was approved by the user for cancellation:
+current
+uFor traces omit physical releases for one-shots and defer sustained releases,
+so the renderer cannot reliably cancel every pending start from those actions.
+Next implement explicit physical trigger-release observations in uFor and consume
+them in enge, without changing already-playing one-shot or sustain behavior.
 
 Native live registration currently rejects controls, generators and filters.
 The user approved extending that native sampler with the existing native

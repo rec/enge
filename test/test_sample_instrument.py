@@ -555,14 +555,11 @@ def test_preparation_shares_audio_but_restore_rejects_different_decoded_content(
         sample_instrument.OfflineSampler(different, backend=backend).restore(snapshot)
 
 
-@pytest.mark.parametrize("field,value", [("delay_seconds", 0.5), ("offset_frames", 1)])
-def test_unsupported_sample_start_variation_is_not_silently_ignored(
-    field: str, value: float | int
-) -> None:
+def test_delayed_sample_start_variation_is_not_silently_ignored() -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
-    raw["body"]["slots"][0]["variation"][field] = value
+    raw["body"]["slots"][0]["variation"]["delay_seconds"] = 0.5
     document = instrument.SampleInstrumentScore.model_validate(raw)
-    with pytest.raises(EngineError, match="Delayed or offset"):
+    with pytest.raises(EngineError, match="Delayed sample starts"):
         sample_instrument.prepare(document, {"asset": np.ones((4, 2))})
 
 
