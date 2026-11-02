@@ -15,8 +15,9 @@ from enge import synth
 
 
 @pytest.mark.parametrize("clock", ["seconds", "beats"])
+@pytest.mark.parametrize("curve", [-5, 0, 5])
 def test_rational_named_loop_bounds_and_continuation_match_reference(
-    tmp_path: Path, clock: str
+    tmp_path: Path, clock: str, curve: float
 ) -> None:
     raw = lfo_score("synth").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -26,7 +27,11 @@ def test_rational_named_loop_bounds_and_continuation_match_reference(
         "playback": "ping_pong",
         "repeat_count": 3,
         "segments": [
-            {"duration": f"1/7 {'s' if clock == 'seconds' else 'beat'}", "to": 1}
+            {
+                "duration": f"1/7 {'s' if clock == 'seconds' else 'beat'}",
+                "to": 1,
+                "curve": curve,
+            }
         ],
         "markers": [
             {"name": "start", "position": "1/3"},

@@ -70,8 +70,8 @@ def test_native_graph_runtime_rejects_invalid_execution_order(order: list[int]) 
             48000,
             np.ones((1, 1)),
             1,
-            [((0, 1), 1.0)],
-            [((0, 1), 0.0)],
+            [((0, 1), 1.0, 0.0)],
+            [((0, 1), 0.0, 0.0)],
             [0, 0],
             [1, 1],
             [[], []],
@@ -928,7 +928,7 @@ def test_native_fm_owns_strided_inputs(tmp_path: Path) -> None:
     phases = np.zeros((2, 4))[:, ::2]
     gains = np.ones(96000)[::2]
     routes = np.array([1, 0, 0.5, 0])[::2]
-    spans = np.array([[0, 48000, 1, 0, 0, 1, 0]], dtype=float)
+    spans = np.array([[0, 48000, 1, 0, 0, 1, 0, 0]], dtype=float)
     memory = np.zeros((0, 0, 2))
     values = np.zeros((48000, 0, 2))
     copies = [x.copy() for x in (parameters, phases, gains, routes, spans)]
@@ -976,7 +976,7 @@ def test_native_fm_rejects_invalid_inputs(case: str) -> None:
     phases = np.zeros((2, 2))
     gains = np.ones(1)
     routes = np.ones(1)
-    spans = np.array([[0, 1, 1, 0, 0, 1, 0]], dtype=float)
+    spans = np.array([[0, 1, 1, 0, 0, 1, 0, 0]], dtype=float)
     if case == "shape":
         parameters = parameters[:, :4]
     elif case == "frequency":

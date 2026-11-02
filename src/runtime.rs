@@ -757,14 +757,14 @@ impl SynthRuntime {
                     let convert = |parts: AmplitudeSegments| -> PyResult<Vec<CoreSegment>> {
                         parts
                             .into_iter()
-                            .map(|(duration, to)| {
+                            .map(|(duration, to, curve)| {
                                 Ok(CoreSegment {
                                     duration: duration
                                         .map(|(n, d)| Time::new(n, d))
                                         .transpose()
                                         .map_err(core_error)?,
                                     to,
-                                    curve: 0.0,
+                                    curve,
                                 })
                             })
                             .collect()
@@ -961,11 +961,11 @@ impl SynthRuntime {
                             },
                             segments: parts
                                 .into_iter()
-                                .map(|(duration, to)| {
+                                .map(|(duration, to, curve)| {
                                     Ok(CoreSegment {
                                         duration: duration.map(ratio_time).transpose()?,
                                         to,
-                                        curve: 0.0,
+                                        curve,
                                     })
                                 })
                                 .collect::<PyResult<_>>()?,

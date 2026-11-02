@@ -55,7 +55,9 @@ def lfo_samples(
     first = start if interval == 1 else start - offset
     spans = _phase_spans(definition, current, first, count, sample_rate, interval)
     sample_weights = (
-        weights if interval == 1 else np.array([[0, count, 1, 0, 0, 1, 0]], dtype=float)
+        weights
+        if interval == 1
+        else np.array([[0, count, 1, 0, 0, 1, 0, 0]], dtype=float)
     )
     if backend == "native":
         from . import _native
@@ -142,9 +144,9 @@ def _activation_spans(
 ) -> np.ndarray:
     position = state.position
     age = position.age + at - position.at - definition.delay
-    spans: list[list[float]] = [[0, frames, 1, 0, 0, 1, 0]]
+    spans: list[list[float]] = [[0, frames, 1, 0, 0, 1, 0, 0]]
     delayed = min(frames, max(0, ceil(-age * sample_rate)))
-    spans.append([0, delayed, 0, 0, 0, 1, 0])
+    spans.append([0, delayed, 0, 0, 0, 1, 0, 0])
     if definition.fade_in:
         last = min(frames, ceil((definition.fade_in - age) * sample_rate))
         if delayed < last:
@@ -157,6 +159,7 @@ def _activation_spans(
                     0,
                     1,
                     delayed,
+                    0,
                 ]
             )
     return np.array(spans, dtype=np.float64)

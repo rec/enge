@@ -48,7 +48,9 @@ until completion, stop, choke or stealing; exhausted sample sources still end.
 
 enge owns minimum hold, release timing and voice retirement. Amplitude envelopes
 currently require numeric initial values, activation start, voice seconds, held
-linear segments, an explicit release, and once playback without markers.
+segments, an explicit release, and once playback without markers. Finite segments
+support the shared normalized exponential curve in NumPy, native block rendering
+and persistent runtimes; zero-duration segments remain instantaneous.
 
 Persistent LFOs, named Envelopes, Stages and Patch graphs execute through
 `envelfo-core`.
@@ -68,7 +70,7 @@ connection gates or retained operators. Python synth, FM, noise and sampler
 snapshots store shared execution state under `graphs`. This replaces the old
 per-source snapshot layout, without a backwards reader.
 
-The NumPy reference and Rust backend render held linear-envelope voices with
+The NumPy reference and Rust backend render held envelope voices with
 live amplitude and tuning control routes. It consumes uFor trigger contexts,
 smooths controls in their declared scopes, preserves phase through pitch changes,
 and snapshots active ramps and release tails. Static tuning and the prepared Hz
@@ -102,7 +104,7 @@ later blocks silent. Looped sustain and a device callback adapter are not
 implemented.
 
 `OfflineSampler` in [sample_instrument.py](enge/sample_instrument.py) now
-consumes prepared uFor sample actions. It applies held linear envelopes,
+consumes prepared uFor sample actions. It applies held envelopes,
 instrument/slot amplitude and tuning controls, static dB gain, resolved pitch/gain
 variation, and explicit channel routes. Selection, sustain, replacement, and
 one-shot release decisions come from uFor. Source exhaustion or envelope
@@ -172,9 +174,8 @@ state without adding a tail. See the revised [uFor filter contract](../ufor/doc/
 and [enge's realization](plan/engine-execution.md#dynamic-filters).
 
 Zero-duration amplitude-envelope phases jump immediately to their endpoints;
-their curve values do not affect playback. Nonzero-duration phases remain linear.
-Decoding remains with the caller. Curved envelope phases with nonzero duration,
-equalizers,
+their curve values do not affect playback. Nonzero-duration phases use their
+authored curves. Decoding remains with the caller. Equalizers,
 layer crossfades, delayed or offset sample starts, other
 modulation targets, and fade
 retirements fail explicitly.

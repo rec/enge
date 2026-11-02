@@ -52,11 +52,11 @@ def envelope_spans(
     """Resolve half-open integer spans without rounding rational boundaries.
 
     Rows contain first, last, entry, delta, progress origin, denominator, and
-    local index origin. Rust evaluates the linear arithmetic for each sample.
+    local index origin, and curve. Rust evaluates each segment per sample.
     Later rows overwrite earlier rows, including the release's terminal level.
     """
     if not frames:
-        return np.empty((0, 7))
+        return np.empty((0, 8))
     runtime = state.runtime
     assert isinstance(runtime, EnvelopeState)
     position = runtime.position
@@ -78,6 +78,7 @@ def envelope_spans(
                     0,
                     1,
                     i,
+                    0,
                 ]
                 for i in range(frames)
             ],
@@ -86,7 +87,18 @@ def envelope_spans(
     if position.paused or not position.rate:
         value = envelfo_at(envelope, state, Fraction(start, sample_rate))
         return np.array(
-            [[0, frames, 0 if value.status == "complete" else value.value, 0, 0, 1, 0]],
+            [
+                [
+                    0,
+                    frames,
+                    0 if value.status == "complete" else value.value,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                ]
+            ],
             dtype=np.float64,
         )
     parts = envelope.release if runtime.phase == "release" else envelope.segments
@@ -100,7 +112,18 @@ def envelope_spans(
     if not speed:
         value = envelfo_at(envelope, state, Fraction(start, sample_rate))
         return np.array(
-            [[0, frames, 0 if value.status == "complete" else value.value, 0, 0, 1, 0]],
+            [
+                [
+                    0,
+                    frames,
+                    0 if value.status == "complete" else value.value,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                ]
+            ],
             dtype=np.float64,
         )
     elapsed = (
@@ -140,13 +163,13 @@ def _spans(
         if isinstance(segment, IndefiniteSegment):
             break
         terminal = segment.to
-    spans = [[offset, offset + frames, terminal, 0, 0, 1, offset]]
+    spans = [[offset, offset + frames, terminal, 0, 0, 1, offset, 0]]
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
         if isinstance(segment, IndefiniteSegment):
             first = min(frames, max(0, ceil((boundary - elapsed) * sample_rate)))
-            spans.append([first + offset, offset + frames, entry, 0, 0, 1, offset])
+            spans.append([first + offset, offset + frames, entry, 0, 0, 1, offset, 0])
             return spans
         end = boundary + segment.duration
         first = max(0, ceil((boundary - elapsed) * sample_rate))
@@ -161,10 +184,13 @@ def _spans(
                     float((elapsed - boundary) / segment.duration),
                     float(segment.duration * sample_rate),
                     offset,
+                    segment.curve,
                 ]
             )
         boundary, entry = end, segment.to
     if silence_after:
         first = max(0, ceil((boundary - elapsed) * sample_rate))
-        spans.append([min(first, frames) + offset, frames + offset, 0, 0, 0, 1, offset])
+        spans.append(
+            [min(first, frames) + offset, frames + offset, 0, 0, 0, 1, offset, 0]
+        )
     return spans

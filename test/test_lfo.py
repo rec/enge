@@ -229,7 +229,7 @@ def test_native_lfo_rejects_invalid_spans(invalid: str) -> None:
     elif invalid == "nan":
         phases[0, 2] = np.nan
     weights = np.array(
-        [[0, 2 if invalid == "weight" else 1, 1, 0, 0, 1, 0]], dtype=np.float64
+        [[0, 2 if invalid == "weight" else 1, 1, 0, 0, 1, 0, 0]], dtype=np.float64
     )
     with pytest.raises(ValueError):
         _native.render_lfo(0, phases, weights, 1)

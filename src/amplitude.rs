@@ -9,7 +9,7 @@ use envelfo_core::time::Time;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-pub(crate) type AmplitudeSegments = Vec<(Option<(i64, i64)>, f64)>;
+pub(crate) type AmplitudeSegments = Vec<(Option<(i64, i64)>, f64, f64)>;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Amplitude {
@@ -38,14 +38,14 @@ impl Amplitude {
             }
             parts
                 .into_iter()
-                .map(|(duration, to)| {
+                .map(|(duration, to, curve)| {
                     Ok(Segment {
                         duration: duration
                             .map(|(n, d)| Time::new(n, d))
                             .transpose()
                             .map_err(error)?,
                         to,
-                        curve: 0.0,
+                        curve,
                     })
                 })
                 .collect()

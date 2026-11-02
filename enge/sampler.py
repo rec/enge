@@ -288,7 +288,7 @@ def sample_frames(
             release_frame,
             1,
             np.ones(count),
-            np.array([[0, count, 1, 0, 0, 1, 0]], dtype=np.float64),
+            np.array([[0, count, 1, 0, 0, 1, 0, 0]], dtype=np.float64),
             np.eye(definition.samples.shape[1]),
             count,
         )

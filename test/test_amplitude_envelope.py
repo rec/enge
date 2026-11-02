@@ -8,6 +8,7 @@ import test_synth
 from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from ufor import synth_trace
+from ufor.envelope import curve_progress
 from ufor.events import EnvelfoChange, Release
 from ufor.samples import instrument, trace
 from ufor.synth import SynthInstrumentScore
@@ -15,7 +16,7 @@ from ufor.synth import SynthInstrumentScore
 from enge import fm, live, noise, sample_instrument, synth
 
 
-def document_for(family: str) -> SynthInstrumentScore:
+def document_for(family: str, curve: float = 0) -> SynthInstrumentScore:
     document = {
         "synth": test_synth.score,
         "fm": test_fm.score,
@@ -24,11 +25,11 @@ def document_for(family: str) -> SynthInstrumentScore:
     raw = document.model_dump(mode="json")
     envelope = {
         "segments": [
-            {"duration": "1/8 s", "to": 1},
+            {"duration": "1/8 s", "to": 1, "curve": curve},
             {"duration": None},
-            {"duration": "1/8 s", "to": 0.5},
+            {"duration": "1/8 s", "to": 0.5, "curve": -curve},
         ],
-        "release": [{"duration": None}, {"duration": "1/8 s", "to": 0}],
+        "release": [{"duration": None}, {"duration": "1/8 s", "to": 0, "curve": curve}],
     }
     voice = raw["body"]["voices"][0]
     if family == "fm":
@@ -55,10 +56,11 @@ def commands(op: str | None = None) -> list[EnvelfoChange]:
 
 
 @pytest.mark.parametrize("family", ["synth", "fm", "noise"])
+@pytest.mark.parametrize("curve", [0, -5, 5])
 def test_voice_holds_release_and_restore_match_all_backends(
-    tmp_path: Path, family: str
+    tmp_path: Path, family: str, curve: float
 ) -> None:
-    document = document_for(family)
+    document = document_for(family, curve)
     actions = synth_trace.prepare(
         document.body,
         [
@@ -175,12 +177,15 @@ def test_amplitude_command_targets_only_its_trigger(tmp_path: Path) -> None:
     np.testing.assert_allclose(actual - baseline, changed - unchanged, atol=1e-10)
 
 
-def test_sample_holds_and_native_live_snapshot_resume(tmp_path: Path) -> None:
+@pytest.mark.parametrize("curve", [0, -5, 5])
+def test_sample_holds_and_native_live_snapshot_resume(
+    tmp_path: Path, curve: float
+) -> None:
     raw = sample_score().model_dump(mode="json")
     raw["body"]["settings"]["envelope"] = {
         "initial": 1,
         "segments": [{"duration": None}],
-        "release": [{"duration": None}, {"duration": "1/8 s", "to": 0}],
+        "release": [{"duration": None}, {"duration": "1/8 s", "to": 0, "curve": curve}],
     }
     document = instrument.SampleInstrumentScore.model_validate(raw)
     definition = sample_instrument.prepare(
@@ -230,7 +235,8 @@ def test_sample_holds_and_native_live_snapshot_resume(tmp_path: Path) -> None:
     np.testing.assert_allclose(replay, actual[28000:], atol=0)
     assert np.all(reference[12000:30000, 0] == 0.25)
     np.testing.assert_allclose(
-        reference[30000:36000, 0], 0.25 * (1 - np.arange(6000) / 6000)
+        reference[30000:36000, 0],
+        [0.25 * (1 - curve_progress(i / 6000, curve)) for i in range(6000)],
     )
     assert np.all(reference[36000:] == 0)
 

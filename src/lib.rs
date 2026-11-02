@@ -32,11 +32,11 @@ type RenderedBlock<'py> = (
 );
 
 fn envelope_spans(envelope: PyReadonlyArray2<'_, f64>, count: usize) -> PyResult<Vec<f64>> {
-    if envelope.shape()[1] != 7 || !envelope.is_c_contiguous() {
+    if envelope.shape()[1] != 8 || !envelope.is_c_contiguous() {
         return Err(PyValueError::new_err("Invalid native envelope layout"));
     }
     let spans = envelope.as_slice()?.to_vec();
-    for span in spans.chunks_exact(7) {
+    for span in spans.chunks_exact(8) {
         let (first, last) = (span[0], span[1]);
         if !first.is_finite()
             || !last.is_finite()
@@ -45,6 +45,7 @@ fn envelope_spans(envelope: PyReadonlyArray2<'_, f64>, count: usize) -> PyResult
             || last > count as f64
             || first != first.floor()
             || last != last.floor()
+            || !span[7].is_finite()
             || !span[5].is_finite()
             || span[5] <= 0.0
         {
@@ -56,7 +57,7 @@ fn envelope_spans(envelope: PyReadonlyArray2<'_, f64>, count: usize) -> PyResult
 
 fn envelope_amplitudes(spans: &[f64], count: usize) -> Vec<f64> {
     let mut amplitude = vec![0.0; count];
-    for span in spans.chunks_exact(7) {
+    for span in spans.chunks_exact(8) {
         for (i, value) in amplitude
             .iter_mut()
             .enumerate()
@@ -64,6 +65,14 @@ fn envelope_amplitudes(spans: &[f64], count: usize) -> Vec<f64> {
             .skip(span[0] as usize)
         {
             let progress = span[4] + (i as f64 - span[6]) / span[5];
+            let curve = span[7];
+            let progress = if curve == 0.0 || progress == 0.0 || progress == 1.0 {
+                progress
+            } else if curve > 0.0 {
+                (curve * (progress - 1.0)).exp() * (-curve * progress).exp_m1() / (-curve).exp_m1()
+            } else {
+                (curve * progress).exp_m1() / curve.exp_m1()
+            };
             *value = span[2] + span[3] * progress;
         }
     }
@@ -98,7 +107,7 @@ fn render<'py>(
         || rate <= 0.0
         || states.shape() != [sources, 2]
         || gains.len() != count
-        || envelope.shape()[1] != 7
+        || envelope.shape()[1] != 8
         || routes.shape()[0] != sources
         || frames < count
         || !frequencies.is_c_contiguous()

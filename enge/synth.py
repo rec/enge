@@ -74,7 +74,7 @@ StagedRuntimeStage = tuple[
     int,
     float,
     bool,
-    list[tuple[tuple[int, int] | None, float]],
+    list[tuple[tuple[int, int] | None, float, float]],
     tuple[int, list[tuple[int, int]], float, float] | None,
     list[tuple[tuple[int, int], str]],
     int,
@@ -324,10 +324,11 @@ class VoiceEnvelopeRenderer(BaseModel):
             origin,
             denominator,
             offset,
+            curve,
         ) in self.amplitude_spans(frames, op):
             a, b = int(first), int(last)
-            values[a:b] = entry + delta * (
-                origin + (np.arange(a, b) - offset) / denominator
+            values[a:b] = entry + delta * _curve_progress(
+                origin + (np.arange(a, b) - offset) / denominator, curve
             )
         return values
 
@@ -1560,8 +1561,6 @@ class ControlRenderer:
             if isinstance(runtime, EnvelopeState) and runtime.phase == "release"
             else body.segments
         )
-        if any(s.curve for s in segments if isinstance(s, Segment)):
-            return None
         if not frames:
             return np.empty(0)
         indefinite = any(s.duration is None for s in [*body.segments, *body.release])
@@ -2637,7 +2636,7 @@ def oscillator_samples(
             sample_rate,
             1,
             np.ones(frames),
-            np.array([[0, frames, 1, 0, 0, 1, 0]], dtype=np.float64),
+            np.array([[0, frames, 1, 0, 0, 1, 0, 0]], dtype=np.float64),
             [[1]],
             frames,
         )
@@ -2673,11 +2672,8 @@ def validate_envelope(envelope: Envelope) -> None:
         raise EngineError(
             "Voice amplitude envelopes require once playback without markers"
         )
-    if not envelope.hold or any(
-        isinstance(s, Segment) and s.duration != 0 and s.curve != 0
-        for s in [*envelope.segments, *envelope.release]
-    ):
-        raise EngineError("Only held linear envelopes are implemented")
+    if not envelope.hold:
+        raise EngineError("Only held envelopes are implemented")
 
 
 def validate_generators(
@@ -2783,10 +2779,26 @@ def _envelope_values(
             progress = float((elapsed - boundary) / segment.duration) + np.arange(
                 first, last
             ) / float(segment.duration * sample_rate)
-            values[first:last] = entry + (segment.to - entry) * progress
+            values[first:last] = entry + (segment.to - entry) * _curve_progress(
+                progress, segment.curve
+            )
         boundary, entry = end, segment.to
     values[max(0, ceil((boundary - elapsed) * sample_rate)) :] = entry
     return values
+
+
+def _curve_progress(progress: np.ndarray, curve: float) -> np.ndarray:
+    # The portable normalized exponential, evaluated in arrays with stable
+    # arithmetic for both signs, including very large curve magnitudes.
+    if curve == 0:
+        return progress
+    if curve > 0:
+        return (
+            np.exp(curve * (progress - 1))
+            * np.expm1(-curve * progress)
+            / np.expm1(-curve)
+        )
+    return np.expm1(curve * progress) / np.expm1(curve)
 
 
 def _duration(segments: list[Segment | IndefiniteSegment]) -> Fraction:
@@ -2797,11 +2809,15 @@ def _duration(segments: list[Segment | IndefiniteSegment]) -> Fraction:
 
 def _runtime_segments(
     segments: list[Segment | IndefiniteSegment], sample_rate: int
-) -> list[tuple[tuple[int, int] | None, float]]:
+) -> list[tuple[tuple[int, int] | None, float, float]]:
     return [
-        (((d := s.duration * sample_rate).numerator, d.denominator), float(s.to))
+        (
+            ((d := s.duration * sample_rate).numerator, d.denominator),
+            float(s.to),
+            s.curve,
+        )
         if isinstance(s, Segment)
-        else (None, 0.0)
+        else (None, 0.0, 0.0)
         for s in segments
     ]
 
@@ -3076,8 +3092,8 @@ def _persistent_modulation(
     dict[str, list[int]],
     dict[str, list[int]],
     list[float],
-    list[list[tuple[tuple[int, int] | None, float]]],
-    list[list[tuple[tuple[int, int] | None, float]]],
+    list[list[tuple[tuple[int, int] | None, float, float]]],
+    list[list[tuple[tuple[int, int] | None, float, float]]],
     list[
         tuple[
             int,
@@ -3239,8 +3255,8 @@ def _persistent_modulation(
     lfo_sources: dict[str, list[int]] = {}
     voice_lfo_sources: dict[str, list[int]] = {}
     envelope_initials: list[float] = []
-    envelope_attacks: list[list[tuple[tuple[int, int] | None, float]]] = []
-    envelope_releases: list[list[tuple[tuple[int, int] | None, float]]] = []
+    envelope_attacks: list[list[tuple[tuple[int, int] | None, float, float]]] = []
+    envelope_releases: list[list[tuple[tuple[int, int] | None, float, float]]] = []
     envelope_parameters: list[
         tuple[
             int,
@@ -3366,13 +3382,8 @@ def _persistent_modulation(
             if isinstance(envelfo, Envelope):
                 generator = envelfo
                 assert isinstance(generator.initial, float)
-                if source.scope != "voice" or any(
-                    isinstance(segment, Segment) and segment.curve != 0
-                    for segment in [*generator.segments, *generator.release]
-                ):
-                    raise EngineError(
-                        "Persistent named envelopes require linear voice segments"
-                    )
+                if source.scope != "voice":
+                    raise EngineError("Persistent named envelopes require voice scope")
                 named_envelfo_sources.setdefault(binding.reference, []).append(
                     len(envelope_initials)
                 )
@@ -3506,13 +3517,8 @@ def _persistent_modulation(
         if isinstance(envelfo, Envelope):
             generator = envelfo
             assert isinstance(generator.initial, float)
-            if envelfo.scope != "voice" or any(
-                isinstance(s, Segment) and s.curve != 0
-                for s in [*generator.segments, *generator.release]
-            ):
-                raise EngineError(
-                    "Persistent named envelopes require linear voice segments"
-                )
+            if envelfo.scope != "voice":
+                raise EngineError("Persistent named envelopes require voice scope")
             duration_scale = 1 if envelfo.clock == "beats" else definition.sample_rate
             named_envelfo_sources.setdefault(binding.reference, []).append(
                 len(envelope_initials)
@@ -3656,8 +3662,6 @@ def _runtime_staged_envelfo(
             for m in envelfo.markers
         ]
         if isinstance(envelfo, Envelope):
-            if any(s.curve != 0 for s in envelfo.segments if isinstance(s, Segment)):
-                raise EngineError("Persistent staged envelopes require linear segments")
             options = _runtime_named_envelope_options(envelfo)
             stages.append(
                 (

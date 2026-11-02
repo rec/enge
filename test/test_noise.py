@@ -94,7 +94,7 @@ def test_noise_portable_vectors_and_exhaustion() -> None:
             v["index"],
             48000,
             np.ones(1),
-            np.array([[0, 1, 1, 0, 0, 1, 0]], dtype=float),
+            np.array([[0, 1, 1, 0, 0, 1, 0, 0]], dtype=float),
             np.ones(1),
             ([], np.zeros((0, 0, 2)), np.zeros((1, 0, 2))),
         )
@@ -448,7 +448,7 @@ def test_native_noise_owns_strided_buffers(tmp_path: Path) -> None:
 
     gains = np.ones(96000)[::2]
     routes = np.array([1, 0, 0.5, 0])[::2]
-    spans = np.array([[0, 48000, 1, 0, 0, 1, 0]], dtype=float)
+    spans = np.array([[0, 48000, 1, 0, 0, 1, 0, 0]], dtype=float)
     memory = np.zeros((1, 1, 2))
     values = np.tile([[[1200, 0.7]]], (96000, 1, 1))[::2]
     originals = [a.copy() for a in (gains, routes, spans, memory, values)]
@@ -479,7 +479,7 @@ def test_native_noise_rejects_invalid_buffers(case: str) -> None:
             2**64 if case == "counter" else 0,
             0 if case == "rate" else 48000,
             np.array([np.nan if case == "gain" else 1.0]),
-            np.array([[0, 1, 1, 0, 0, 1, 0]], dtype=float),
+            np.array([[0, 1, 1, 0, 0, 1, 0, 0]], dtype=float),
             np.empty(0) if case == "routes" else np.ones(1),
             (
                 [],

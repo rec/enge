@@ -99,7 +99,7 @@ def test_native_rejects_invalid_buffers_before_changing_state(invalid: str) -> N
     frequencies = np.ones((1, 2 if invalid == "sources" else 1))
     gains = np.ones(2 if invalid == "gains" else 1)
     spans = np.array(
-        [[0, 2 if invalid == "span" else 1, 1, 0, 0, 1, 0]], dtype=np.float64
+        [[0, 2 if invalid == "span" else 1, 1, 0, 0, 1, 0, 0]], dtype=np.float64
     )
     if invalid == "dtype":
         states = states.astype(np.float32)
@@ -119,7 +119,7 @@ def test_native_returns_owned_audio_and_state_from_readonly_inputs(
     states.flags.writeable = False
     frequencies = np.full((48000, 1), 100.25)
     gains = np.ones(48000)
-    spans = np.array([[0, 48000, 1, 0, 0, 1, 0]], dtype=np.float64)
+    spans = np.array([[0, 48000, 1, 0, 0, 1, 0, 0]], dtype=np.float64)
     actual, next_states, _ = native.render(
         Oscillator(waveform=Waveform.sine),
         states,

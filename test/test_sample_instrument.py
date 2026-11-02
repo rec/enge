@@ -307,17 +307,50 @@ def test_zero_duration_curves_jump_between_linear_phases(
 
 
 @pytest.mark.parametrize("phase", ["segments", "release"])
-def test_nonzero_duration_curves_remain_unsupported(phase: str) -> None:
+@pytest.mark.parametrize("curve", [-1000, -5, 5, 1000])
+def test_curved_amplitude_matches_portable_segments(
+    phase: str, curve: float, backend: Literal["numpy", "native"], tmp_path: Path
+) -> None:
+    from ufor.envelope import curve_progress
+
     raw = sample_score(frames=48000).model_dump(mode="json")
     definition = Envelope(
         segments=[Segment(duration=Fraction(1, 4), to=1)],
         release=[Segment(duration=Fraction(1, 4), to=0)],
     ).model_dump(mode="json")
-    definition[phase][0]["curve"] = -5
+    definition[phase][0]["curve"] = curve
     raw["body"]["settings"]["envelope"] = definition
     document = instrument.SampleInstrumentScore.model_validate(raw)
-    with pytest.raises(EngineError, match="Only held linear envelopes are implemented"):
-        sample_instrument.prepare(document, {"asset": np.ones((48000, 2))})
+    prepared = sample_instrument.prepare(document, {"asset": np.ones((48000, 2))})
+    actions = trace.prepare(
+        document.body,
+        [
+            onset(pitch=440).model_copy(update={"controls": {}}),
+            Release(tick=24000, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    renderer = sample_instrument.OfflineSampler(prepared, backend)
+    prefix = renderer.advance([a for a in actions if a.tick < 27001], 0, 27001)
+    restored = sample_instrument.OfflineSampler(prepared, backend)
+    restored.restore(renderer.snapshot())
+    tail = renderer.advance([], 27001, 48000)
+    np.testing.assert_array_equal(restored.advance([], 27001, 48000), tail)
+    expected = np.ones(48000)
+    expected[:12000] = [
+        curve_progress(i / 12000, curve if phase == "segments" else 0)
+        for i in range(12000)
+    ]
+    expected[24000:36000] = [
+        1 - curve_progress(i / 12000, curve if phase == "release" else 0)
+        for i in range(12000)
+    ]
+    expected[36000:] = 0
+    check_audio(
+        tmp_path / "curved-amplitude.wav",
+        np.concatenate([prefix, tail]),
+        np.column_stack([expected, expected * 1.25]),
+    )
 
 
 @pytest.mark.parametrize("block", [64, 997, 1024])

@@ -125,7 +125,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
         (123, False, 0, 48000),
         1,
         np.ones(48000),
-        np.array([[0, 48000, 1, 0, 0, 1, 0]], dtype=np.float64),
+        np.array([[0, 48000, 1, 0, 0, 1, 0, 0]], dtype=np.float64),
         np.eye(2),
         48000,
     )
@@ -141,7 +141,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
         None,
         1,
         np.ones(1),
-        np.array([[0, 1, 1, 0, 0, 1, 0]], dtype=np.float64),
+        np.array([[0, 1, 1, 0, 0, 1, 0, 0]], dtype=np.float64),
         np.eye(2),
         1,
     )
@@ -194,7 +194,7 @@ def test_native_sample_rejects_invalid_inputs(invalid: str) -> None:
             1,
             np.ones(2 if invalid == "gains" else 1),
             np.array(
-                [[0, 2 if invalid == "span" else 1, 1, 0, 0, 1, 0]], dtype=np.float64
+                [[0, 2 if invalid == "span" else 1, 1, 0, 0, 1, 0, 0]], dtype=np.float64
             ),
             np.ones((2 if invalid == "routes" else 1, 1)),
             1,

@@ -7,17 +7,18 @@ coverage, including snapshots, named envelopes and stages. Shared execution now
 belongs to enveLFO; enge supplies audio observation and voice lifecycle policy.
 Do not treat the original event-integration proposal as wholly unimplemented.
 
-Persistent route preparation still requires direct two-point linear maps and
-rejects curved named-envelope segments. General amplitude envelopes also reject
-nonzero-duration curves. Extend these adapters using existing portable contracts,
-with exact action ordering, partitions and snapshot continuation.
+Persistent route preparation still requires direct two-point linear maps.
+Amplitude, named and staged envelope adapters now preserve authored curves in
+NumPy/native block and persistent rendering. Regression coverage includes large
+positive/negative curves, held segments, release, partitions and continuation.
+Extend remaining route mappings using existing portable contracts.
 
 ## Sampler coverage
 
 The offline NumPy/native sampler and its Python persistent adapter already
 support control routes, generators, filters, pan laws and key/velocity bindings.
 Remaining preparation restrictions include layer crossfades, delayed/offset
-starts, fade retirement and curved amplitude segments. Audit each
+starts and fade retirement. Audit each
 against current code before editing because separate work may land concurrently.
 
 Native live registration currently rejects controls, generators and filters.

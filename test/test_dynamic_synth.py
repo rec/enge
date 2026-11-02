@@ -404,7 +404,7 @@ def test_static_tuning_and_hz_offset_are_applied_once(
     assert state.voices[0].frequency_hz == 445
 
 
-@pytest.mark.parametrize("feature", ["pan", "generator", "curve", "fade"])
+@pytest.mark.parametrize("feature", ["pan", "generator", "fade"])
 def test_preparation_rejects_unsupported_features(feature: str) -> None:
     raw = dynamic_score().model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -428,9 +428,6 @@ def test_preparation_rejects_unsupported_features(feature: str) -> None:
                 "clock": "beats",
             }
         }
-    elif feature == "curve":
-        voice["envelope"]["segments"][0]["duration"] = "1/10 s"
-        voice["envelope"]["segments"][0]["curve"] = 5
     else:
         voice["choke_group"] = "self"
         voice["chokes"] = [{"group": "self", "mode": "fade", "fade_seconds": 0.1}]
