@@ -13,11 +13,44 @@ from enge.yamaha import (
     DX7Renderer,
     DX7Snapshot,
     TX81ZEnvelope,
+    TX81ZEnvelopeBank,
     TX81ZState,
     tx81z_base_frequency,
     tx81z_operator_samples,
     tx81z_wave_samples,
 )
+
+
+@pytest.mark.parametrize("clock_hz", [3579545, 9216000])
+def test_tx81z_envelope_clock_survives_partitioned_json_continuation(
+    tmp_path: Path, clock_hz: int
+) -> None:
+    bank = TX81ZEnvelopeBank(
+        envelopes=[
+            TX81ZEnvelope(rates=[62, 62, 0, 62], sustain=0, shift=i, attenuation=0)
+            for i in range(4)
+        ],
+        clock_hz=clock_hz,
+    )
+    bank.release()
+    initial = bank.model_dump_json()
+    actual = bank.attenuation_samples(48000)
+    ticks = np.arange(48000, dtype=np.int64) * clock_hz // (192 * 48000)
+    expected = np.minimum(ticks[:, None] * 8, 1023) >> np.arange(4)
+    np.testing.assert_array_equal(actual, expected)
+    assert bank.counter == 48000 * clock_hz // (192 * 48000)
+    split = TX81ZEnvelopeBank.model_validate_json(initial)
+    first = split.attenuation_samples(97)
+    split = TX81ZEnvelopeBank.model_validate_json(split.model_dump_json())
+    tail = split.attenuation_samples(47903)
+    np.testing.assert_array_equal(np.concatenate([first, tail]), actual)
+    assert split == bank
+    carrier = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000)[:, None]
+    check_audio(
+        tmp_path / "tx81z-envelope-clock.wav",
+        carrier * 2 ** (-actual / 64),
+        carrier * 2 ** (-expected / 64),
+    )
 
 
 @pytest.mark.parametrize("feedback", [1, 7])

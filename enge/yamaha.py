@@ -93,6 +93,40 @@ class TX81ZEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class TX81ZEnvelopeBank(BaseModel):
+    """Four envelopes on one clock; preserve counter/remainder across host calls.
+
+    OPZ envelope ticks divide the input clock by 2 * 32 * 3. Rows observe the
+    current attenuation before advancing one output-frame interval.
+    """
+
+    envelopes: list[TX81ZEnvelope] = Field(min_length=4, max_length=4)
+    sample_rate: int = Field(default=48000, gt=0)
+    clock_hz: int = Field(default=3579545, gt=0)
+    counter: int = Field(default=0, ge=0)
+    remainder: int = Field(default=0, ge=0)
+
+    def release(self) -> None:
+        for envelope in self.envelopes:
+            envelope.release()
+
+    def attenuation_samples(self, frames: int) -> np.ndarray:
+        if frames < 0:
+            raise EngineError("TX81Z frame count must be nonnegative")
+        output = np.empty((frames, 4), dtype=np.int64)
+        divisor = 192 * self.sample_rate
+        for frame in range(frames):
+            output[frame] = [e.attenuation >> e.shift for e in self.envelopes]
+            ticks, self.remainder = divmod(self.remainder + self.clock_hz, divisor)
+            for _ in range(ticks):
+                self.counter += 1
+                for envelope in self.envelopes:
+                    envelope.clock(self.counter)
+        return output
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class DX7Envelope(BaseModel):
     """A DX7 operator envelope in the chip's logarithmic level units."""
 

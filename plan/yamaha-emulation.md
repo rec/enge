@@ -113,8 +113,18 @@ as described by the Yamaha manual. Increment sequencing follows
 [ymfm's envelope clock](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp)
 and [OPZ rate preparation](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_opz.cpp).
 One-second WAV regressions cover full-level sustain, release and every shift,
-including JSON state continuation. Host clock conversion, lower-rate timing,
-output-level scaling and complete voice integration remain unqualified.
+including JSON state continuation. Lower-rate timing, output-level scaling and
+complete voice integration remain unqualified.
+
+`TX81ZEnvelopeBank` now places four envelopes on a shared integer counter and
+converts chip-clock intervals to output frames with an integer remainder.
+The nominal clock is 3,579,545 Hz; clock and output rates remain explicit state.
+The envelope divider is 2 * 32 * 3, following ymfm's OPZ engine constants.
+Rows observe attenuation before advancing the next output-frame interval.
+Counter/remainder values can be retained by a host across voice/block boundaries.
+One-second 48 kHz regressions verify exact and fractional clock ratios, all four
+shifts and partitioned JSON continuation. This establishes clock conversion,
+not measured hardware phase alignment or the complete patch renderer.
 
 `tx81z_base_frequency` now prepares nominal frequency from matching VCED/ACED
 operators. Ratio mode orders the 64 multiplier/coarse-detune combinations and
