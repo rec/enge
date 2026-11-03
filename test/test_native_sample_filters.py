@@ -5,7 +5,7 @@ import pytest
 from test_dynamic_synth import onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio
-from ufor.events import Release
+from ufor.events import ControlChange, Release
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
 from ufor.samples import instrument, trace
 
@@ -19,6 +19,7 @@ def test_native_sample_filters_preserve_channels_voice_reuse_and_snapshots(
 ) -> None:
     raw = sample_score(frames=30000).model_dump(mode="json")
     raw["body"]["settings"] = {
+        "controls": {"expression": {"default": 0.25}},
         "processing": {
             "volume_db": -3,
             "filter_order": order,
@@ -42,6 +43,18 @@ def test_native_sample_filters_preserve_channels_voice_reuse_and_snapshots(
             }
         ],
     }
+    raw["body"]["slots"][0]["crossfades"] = [
+        {
+            "input": "control",
+            "control": "expression",
+            "scope": "instrument",
+            "start": 0.2,
+            "end": 0.8,
+            "direction": "in",
+            "curve": "equal_power",
+            "smoothing_seconds": 0.025,
+        }
+    ]
     document = instrument.SampleInstrumentScore.model_validate(raw)
     time = np.arange(30000) / 48000
     definition = sample_instrument.prepare(
@@ -61,6 +74,9 @@ def test_native_sample_filters_preserve_channels_voice_reuse_and_snapshots(
     ]
     events.extend(
         [
+            ControlChange(
+                tick=12500, ordinal=0, control="expression", value=1, scope="instrument"
+            ),
             Release(tick=6000, ordinal=0, part="main", trigger_id="first"),
             Release(tick=18000, ordinal=0, part="main", trigger_id="second"),
         ]

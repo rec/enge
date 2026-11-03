@@ -203,12 +203,13 @@ Key and velocity layer crossfades latch their weights at onset in offline and
 native live samplers. Linear and equal-power curves clamp at their endpoints;
 weights multiply within a slot and layers sum without normalization. Zero-weight
 voices retain selection, lifetime and snapshot ownership.
-Offline NumPy/native rendering and the Python persistent sampler also evaluate
-control-driven crossfades. Instrument, part and trigger controls use their
+Offline NumPy/native rendering, the Python persistent sampler and native live
+rendering also evaluate control-driven crossfades. Instrument, part and trigger
+controls use their
 declared source smoothing before the fade law, including independent smoothing
 durations for one control. Snapshots retain the ramps and each voice's context.
-Native live control crossfades remain unimplemented. Native live samplers support
-authored amplitude and tuning control routes in instrument, part and trigger
+Native live samplers support authored amplitude and tuning control routes in
+instrument, part and trigger
 scopes, including common/slot composition, independent smoothing and snapshots.
 `PersistentSampler.context_capacity` bounds each slot's native context storage;
 exhaustion is reported during action admission. Part controls persist while

@@ -145,6 +145,7 @@ def test_sample_controls_follow_scopes_delays_and_snapshot_continuation(
         [1, 0, 2, 0, -120000, 120000, 0.5, 0, 2, 0, -120000, 120000],
         [(interpolation, [(0, 0.1), (0.5, 0.75), (1, 1)]), (0, [(0, 0), (1, 1200)])],
         1,
+        [],
     )
     context = -1 if scope == 0 else 0
     actions = [] if scope == 0 else [[0, 9, 0, scope, 0, 0]]

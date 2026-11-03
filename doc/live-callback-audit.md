@@ -40,8 +40,8 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
   tuning/gain/envelope/traversal profile and fixed multichannel filter
   chains. Filter banks are prepared per voice, reset on reuse and retained in
   snapshots. Unsupported dynamic sample settings are rejected during setup.
-  The sampler adapter prepares scoped amplitude/tuning controls through
-  `set_sample_controls` and admits addressed actions before native processing.
+  The sampler adapter prepares scoped amplitude/tuning and crossfade controls
+  through `set_sample_controls` and admits addressed actions before native processing.
   Context and route scratch storage remain bounded; snapshot ownership includes
   the Python addresses and native control state.
 - `OfflineEffects` still builds parameter and output arrays for every block.
@@ -56,8 +56,8 @@ validates and encodes oscillator, FM, noise, and supported sampler trace actions
 plus effect actions, submits bounded batches, then invokes the single Rust owner.
 This removes Python DSP, mixing, and effect-array construction from its callback
 body. Python still performs admission and submission synchronously before that
-call. The native sampler profile currently excludes control crossfades, event
-bindings, generators and dynamically controlled filter parameters.
+call. The native sampler profile currently excludes event bindings, generators
+and dynamically controlled filter parameters.
 
 Granulators allocate circular history and a fixed captured-grain pool during
 setup. Duration, density, lookback, playback ratio, jitter, wet/dry, bypass, and

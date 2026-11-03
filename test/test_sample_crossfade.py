@@ -103,11 +103,13 @@ def test_latched_layer_weights_preserve_silent_voices_and_sum_without_normalizin
 
 @pytest.mark.parametrize("curve", ["linear", "equal_power"])
 @pytest.mark.parametrize("scope", ["instrument", "part", "trigger"])
+@pytest.mark.parametrize("delay", [0, 600])
 def test_live_layer_weights_smooth_before_mapping_and_restore(
-    tmp_path: Path, curve: str, scope: str
+    tmp_path: Path, curve: str, scope: str, delay: int
 ) -> None:
     raw = sample_score().model_dump(mode="json")
     raw["body"]["settings"]["controls"] = {"expression": {"default": 0.25}}
+    raw["body"]["slots"][0]["playback"]["start_delay_seconds"] = delay / 48000
     slot = raw["body"]["slots"][0]
     raw["body"]["slots"] = [
         slot
@@ -175,7 +177,7 @@ def test_live_layer_weights_smooth_before_mapping_and_restore(
             outgoing = np.where(position == 1, 0, np.cos(pi * position / 2))
         weights.append((incoming, outgoing))
     gain = 2 * weights[0][0] * weights[1][1] + weights[0][1] * weights[1][0]
-    gain[:2000] = 0
+    gain[: 2000 + delay] = 0
     expected = gain[:, None] * [0.1, 0.225]
     for backend in ("numpy", "native", "persistent"):
         renderer = (
@@ -203,3 +205,30 @@ def test_live_layer_weights_smooth_before_mapping_and_restore(
                 )
             )
         np.testing.assert_allclose(np.concatenate(pieces), tail, atol=1e-14, rtol=0)
+    source = sample_instrument.PersistentSampler(definition)
+    engine = live.NativeLiveEngine({"sample": source}, 48000)
+    actual = np.empty((48000, 2))
+    engine.advance_into(
+        {"sample": [a for a in actions if a.tick < 5501]}, [], 0, 5501, actual[:5501]
+    )
+    snapshot = engine.snapshot()
+    engine.advance_into(
+        {"sample": [a for a in actions if a.tick >= 5501]},
+        [],
+        5501,
+        48000,
+        actual[5501:],
+    )
+    check_audio(tmp_path / "control-layers-native-live.wav", actual, expected)
+    engine.restore(snapshot)
+    replay = np.empty((48000 - 5501, 2))
+    for start in range(5501, 48000, 997):
+        end = min(start + 997, 48000)
+        engine.advance_into(
+            {"sample": [a for a in actions if start <= a.tick < end]},
+            [],
+            start,
+            end,
+            replay[start - 5501 : end - 5501],
+        )
+    np.testing.assert_array_equal(replay, actual[5501:])

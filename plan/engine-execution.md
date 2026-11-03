@@ -29,10 +29,12 @@ support control routes, generators, filters, pan laws and key/velocity bindings.
 Static key/velocity crossfades now use onset-latched linear or equal-power gains
 in offline and native live rendering, including zero-weight voice ownership and
 snapshot continuation. Control-driven crossfades now work in offline NumPy/native
-rendering and the Python persistent adapter, using existing scoped control ramps.
+rendering, the Python persistent adapter and native live rendering, using
+existing scoped control ramps.
 Smoothing precedes the fade law, differing durations remain independent, and
-snapshots retain ramps and voice context ownership. Native live control
-crossfades remain part of the native control integration below.
+snapshots retain ramps and voice context ownership. Native crossfades use prepared
+position mappings and scalar fade laws with bounded storage. Coverage includes
+delayed onset and the fade's amplitude ordering through fixed filter chains.
 Fade retirement now works offline and in native live playback;
 repeated requests retime continuously from the current fade gain. Earlier source or
 envelope completion still ends the voice. Audit remaining restrictions
@@ -73,7 +75,7 @@ authored amplitude/tuning controls. Context capacity is explicit and snapshots
 retain Python address ownership alongside native state. Regressions cover common
 and inherited slot routes with different smoothing, controls while silent,
 overlapping parts, reused trigger names with release tails and capacity rejection.
-Dynamic filter targets, crossfades, event bindings and generators remain work.
+Dynamic filter targets, event bindings and generators remain work.
 
 The completion audit also found authored playback fields that are not yet
 consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,

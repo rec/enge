@@ -31,7 +31,8 @@ enum SourceRuntime {
 struct SampleRuntime {
     controls: ControlBank,
     control_maps: Vec<RouteMap>,
-    // Common amplitude/tuning followed by slot amplitude/tuning, each with a domain.
+    crossfades: Vec<(bool, bool)>,
+    // Common and slot amplitude/tuning, then crossfade positions, each with a domain.
     parameters: Vec<f64>,
     parameter_partials: Vec<f64>,
     filters: Vec<FilterBank>,
@@ -341,6 +342,7 @@ impl LiveRuntime {
         let runtime = SampleRuntime {
             controls: ControlBank::new(Vec::new(), Vec::new(), voices, 0),
             control_maps: Vec::new(),
+            crossfades: Vec::new(),
             parameters: vec![
                 1.0, 0.0, 1e300, 0.0, -120000.0, 120000.0, 1.0, 0.0, 1e300, 0.0, -120000.0,
                 120000.0,
@@ -401,6 +403,7 @@ impl LiveRuntime {
         parameters: Vec<f64>,
         maps: Vec<(usize, Vec<(f64, f64)>)>,
         context_capacity: usize,
+        crossfades: Vec<(bool, bool)>,
     ) -> PyResult<()> {
         let Some(Source {
             runtime: SourceRuntime::Sample(runtime),
@@ -410,7 +413,7 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Invalid live sample source"));
         };
         if self.frame != 0
-            || parameters.len() != 12
+            || parameters.len() != 3 * (4 + crossfades.len())
             || parameters.iter().any(|v| !v.is_finite())
             || parameters
                 .chunks_exact(3)
@@ -421,7 +424,11 @@ impl LiveRuntime {
             ));
         }
         let (definitions, states) = control_definitions(controls, &smoothing)?;
-        if maps.len() != definitions.len() || definitions.iter().any(|d| d.parameter >= 4) {
+        if maps.len() != definitions.len()
+            || definitions
+                .iter()
+                .any(|d| d.parameter >= parameters.len() / 3)
+        {
             return Err(PyValueError::new_err("Invalid live sample control routes"));
         }
         let maps = maps
@@ -433,6 +440,7 @@ impl LiveRuntime {
             ControlBank::new(definitions, states, runtime.active.len(), context_capacity);
         runtime.control_maps = maps;
         runtime.parameters = parameters;
+        runtime.crossfades = crossfades;
         Ok(())
     }
 
@@ -1451,6 +1459,7 @@ impl SourceRuntime {
                     || runtime.controls.control_definitions != state.controls.control_definitions
                     || runtime.controls.context_kinds.len() != state.controls.context_kinds.len()
                     || runtime.control_maps != state.control_maps
+                    || runtime.crossfades != state.crossfades
                     || runtime.parameters != state.parameters
                     || runtime.filter_after_amplitude != state.filter_after_amplitude
                     || !runtime
@@ -1569,7 +1578,24 @@ impl SampleRuntime {
                     self.active[voice] = false;
                     continue;
                 }
-                let level = value.value * self.parameter(voice, 0)? * self.parameter(voice, 2)?;
+                let mut level =
+                    value.value * self.parameter(voice, 0)? * self.parameter(voice, 2)?;
+                for index in 0..self.crossfades.len() {
+                    let position = self.parameter(voice, 4 + index)?.clamp(0.0, 1.0);
+                    let (inward, equal_power) = self.crossfades[index];
+                    let weight = if equal_power && position > 0.0 && position < 1.0 {
+                        if inward {
+                            (PI * position / 2.0).sin()
+                        } else {
+                            (PI * position / 2.0).cos()
+                        }
+                    } else if inward {
+                        position
+                    } else {
+                        1.0 - position
+                    };
+                    level *= weight;
+                }
                 let step = self.steps[voice]
                     * ((self.parameter(voice, 1)? + self.parameter(voice, 3)?) / 1200.0).exp2();
                 let frame = i64::try_from(self.frame + offset)

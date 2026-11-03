@@ -610,14 +610,6 @@ class PersistentSampler(OfflineSampler):
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         common = self.definition.document.body.settings
-        if any(
-            isinstance(f, crossfade.ControlCrossfade)
-            for s in self.slots.values()
-            for f in s.crossfades
-        ):
-            raise synth.EngineError(
-                "Native live sampler control crossfades are not implemented"
-            )
         all_settings = [common, *self.definition.settings.values()]
         if any(
             s.envelfos
@@ -721,6 +713,40 @@ class PersistentSampler(OfflineSampler):
                 names.extend(prepared[5])
                 maps.extend(prepared[-1][0])
             source = self.native_sources[slot.name]
+            fades = []
+            for fade in slot.crossfades:
+                if not isinstance(fade, crossfade.ControlCrossfade):
+                    continue
+                declaration = common.controls[fade.control]
+                duration = (
+                    Fraction(str(fade.smoothing_seconds)) * self.definition.sample_rate
+                )
+                rows.append(
+                    np.array(
+                        [
+                            [
+                                declaration.default,
+                                ["instrument", "part", "trigger"].index(fade.scope),
+                                4 + len(fades),
+                                0,
+                                -1 if declaration.polarity == "bipolar" else 0,
+                                1,
+                            ]
+                        ],
+                        dtype=np.float64,
+                    )
+                )
+                smoothing.append((duration.numerator, duration.denominator))
+                parameters.extend([0, 0, 1])
+                scopes.append(fade.scope)
+                names.append(fade.control)
+                maps.append((0, [(fade.start, 0.0), (fade.end, 1.0)]))
+                fades.append(
+                    (
+                        fade.direction == enums.FadeDirection.fade_in,
+                        fade.curve == enums.FadeCurve.equal_power,
+                    )
+                )
             runtime.set_sample_controls(
                 source,
                 np.concatenate(rows),
@@ -728,6 +754,7 @@ class PersistentSampler(OfflineSampler):
                 parameters,
                 maps,
                 self.context_capacity,
+                fades,
             )
             self.native_controls[source] = NativeSampleControls(
                 names=names, scopes=scopes
