@@ -83,6 +83,51 @@ section use the same definitions as above. CSV error columns are fractions;
 maximum absolute error and signal RMS values use unscaled upstream Q24/2**24
 amplitude units.
 
+## Feedback sweep
+
+The [feedback sweep](feedback-sweep.csv), measured on 2026-11-04 with enge
+`273def5`, uses the same pinned MSFA source and render timing. Algorithms
+1, 2, 16 and 32 each run at feedback settings 1, 4 and 7, covering different
+feedback operators, modulator chains and a feedback carrier. Every case has
+two profiles:
+
+- `asymmetric` retains the ratios and levels from the asymmetric sweep.
+- `high-output` changes only the feedback operator's output level to 99:
+  OP2 for algorithm 2, OP6 for the other selected algorithms.
+
+Construct each patch from ENGE-ASY16 by setting offset 134 to `algorithm - 1`,
+offset 135 to the feedback setting and the ten title bytes to `ENG-FBnn-f`.
+For `high-output`, also set byte `(6 - operator) * 21 + 16` to 99, where
+`operator` is the visible feedback operator above. All other parameters,
+controller inputs, rendering, WAV scaling and CSV units are unchanged.
+
+The twelve `asymmetric` cases have held-section relative RMS errors from
+0.2599% to 0.6702%. The twelve `high-output` cases range from 0.5855% to
+133.0160%. At feedback 7, their held-section errors are 24.6804%, 113.2326%,
+83.2009% and 133.0160% for algorithms 1, 2, 16 and 32 respectively.
+The worst whole-file error is 132.5152%, also algorithm 32 at feedback 7.
+High-output feedback is therefore an explicit failing qualification case.
+The comparison does not isolate quantization, gain interpolation or nonlinear
+feedback sensitivity as the cause, and the earlier low-level results cannot
+be generalized to this profile.
+
+The matching raw payloads and WAV pairs retain algorithm 32 at feedback 7:
+
+- Asymmetric: [VCED](ENG-FB32-7.vced), [MSFA](ENG-FB32-7-msfa.wav),
+  [enge](ENG-FB32-7-enge.wav).
+- High output: [VCED](ENG-FB32-7-high-output.vced),
+  [MSFA](ENG-FB32-7-high-output-msfa.wav),
+  [enge](ENG-FB32-7-high-output-enge.wav).
+
+Algorithms 4 and 6 are excluded from this reference sweep. The pinned
+[MSFA core](https://github.com/google/music-synthesizer-for-android/blob/f67d41d313b7dc85f6fb99e79e515cc9d208cfff/app/src/main/jni/fm_core.cc)
+explicitly leaves multi-operator feedback unimplemented: its feedback kernel
+requires a single operator with both feedback flags. Its algorithm 4/6 tables
+put those flags on different operators. uFor's current single-operator feedback
+field also cannot express those return paths. Extending that shared topology
+contract requires a decision; comparison against this MSFA revision cannot
+qualify those loops even after enge implements them.
+
 ## Reproducing the reference
 
 Use the pinned [upstream source](https://github.com/google/music-synthesizer-for-android/tree/f67d41d313b7dc85f6fb99e79e515cc9d208cfff).

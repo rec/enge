@@ -1,12 +1,12 @@
 # Yamaha-compatible FM
 
-## Status as of 2026-11-02
+## Status as of 2026-11-04
 
 `enge/yamaha.py` already contains a Python DX7 note renderer, operator envelopes,
 frequency and level scaling, algorithm routing and feedback. This is partial
 implementation, not verified hardware equivalence. The requirements below remain
 the target contract; oscillator-sync behavior, reference
-qualification, TX81Z/WT11 rendering and full engine integration require further
+qualification, completion of TX81Z/WT11 rendering and full engine integration require further
 work. Do not restart the existing DX7 implementation.
 
 An initial [pinned MSFA comparison](../doc/yamaha-reference/README.md) now includes
@@ -46,8 +46,18 @@ delayed operator outputs and the power-of-two level scaling described by
 [MSFA's feedback kernel](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/fm_op_kernel.cc).
 Both history samples survive snapshots. Analytic one-second WAV regressions
 cover feedback off, minimum and maximum levels, with both a feedback carrier
-and a feedback modulator. Integer sine/gain quantization and multi-operator
-feedback loops still require reference qualification.
+and a feedback modulator. A subsequent pinned MSFA sweep now covers algorithms
+1, 2, 16 and 32 at feedback 1/4/7, with asymmetric and maximum-feedback-operator
+output profiles. Held-section errors remain below 0.671% in the former profile
+but reach 133.016% in the latter. The report preserves raw patches and paired
+WAVs for the worst case; this is a failing qualification result whose cause
+has not yet been isolated.
+
+Multi-operator feedback in algorithms 4 and 6 requires separate work. uFor's
+current topology exposes only one feedback operator, and extending that API
+to describe distinct return endpoints awaits approval. The pinned MSFA core
+also explicitly omits those loops, so it cannot qualify their implementation.
+Integer sine/gain quantization and feedback reference qualification remain work.
 
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above
