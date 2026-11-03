@@ -9,6 +9,12 @@ the target contract; pitch-envelope/oscillator-sync behavior, reference
 qualification, TX81Z/WT11 rendering and full engine integration require further
 work. Do not restart the existing DX7 implementation.
 
+The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
+errors before preparing DSP state. It also rejects envelope rates/levels above
+99, which raw voice inspection preserves. Tests exercise packed and unpacked
+voices without changing their stored bytes. This does not yet qualify all
+global Yamaha parameters or dump-to-engine integration.
+
 Implement a dedicated Yamaha renderer for the DX7 and TX81Z instead of
 projecting their patches into the general FM voice profile. The general graph
 remains useful for authored enge patches, but it cannot represent Yamaha's

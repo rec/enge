@@ -2,8 +2,10 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 from ufor.dx7 import DX7Voice
 
+from enge.synth import EngineError
 from enge.yamaha import DX7Renderer
 
 
@@ -17,6 +19,31 @@ def voice() -> DX7Voice:
         data[start + 20] = 7
     data[134] = 31
     return DX7Voice(data=bytes(data))
+
+
+@pytest.mark.parametrize(
+    "packed,field",
+    [(False, f) for f in ("algorithm", "feedback", "output", "rate", "level")]
+    + [(True, f) for f in ("algorithm", "output", "rate", "level")],
+)
+def test_malformed_parameters_remain_inspectable_but_cannot_render(
+    packed: bool, field: str
+) -> None:
+    data = bytearray(128 if packed else 155)
+    positions = {
+        "algorithm": (110 if packed else 134, 32),
+        "feedback": (111 if packed else 135, 8),
+        "output": (13 if packed else 16, 100),
+        "rate": (0, 100),
+        "level": (4, 100),
+    }
+    index, value = positions[field]
+    data[index] = value
+    malformed = DX7Voice(data=bytes(data))
+    assert malformed.data == bytes(data)
+    assert len(malformed.title) == 10
+    with pytest.raises(EngineError):
+        DX7Renderer(malformed, note=69, velocity=100)
 
 
 def test_dx7_renderer_has_deterministic_one_second_wav_regression(

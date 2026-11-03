@@ -94,6 +94,10 @@ class DX7Renderer:
         velocity: int,
         sample_rate: int = 48000,
     ) -> None:
+        if (diagnostic := voice.parameter_diagnostic) is not None:
+            raise EngineError(diagnostic)
+        if any(v > 99 for o in voice.operators for v in (*o.rates, *o.levels)):
+            raise EngineError("DX7 envelope rates and levels must be from 0 through 99")
         if not 0 <= note <= 127:
             raise EngineError("DX7 note must be from 0 through 127")
         if not 0 <= velocity <= 127:
