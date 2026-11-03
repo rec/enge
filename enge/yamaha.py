@@ -169,8 +169,16 @@ class TX81ZRenderer:
                 raise EngineError(diagnostic)
         if not 0 <= note <= 127 or not 0 <= velocity <= 127 or sample_rate <= 0:
             raise EngineError("Invalid TX81Z note, velocity or sample rate")
-        if voice.data[62] > 48:
-            raise EngineError("TX81Z transpose must be from 0 through 48")
+        for index, maximum in enumerate(_TX_GLOBAL_LIMITS, start=54):
+            if voice.data[index] > maximum:
+                raise EngineError(
+                    f"TX81Z VCED parameter {index} must be from 0 through {maximum}"
+                )
+        for index, maximum in enumerate([7, 99, 99], start=20):
+            if additional.data[index] > maximum:
+                raise EngineError(
+                    f"TX81Z ACED parameter {index} must be from 0 through {maximum}"
+                )
         if any(o.level_scaling or o.key_velocity_sensitivity for o in voice.operators):
             raise EngineError(
                 "TX81Z key-level and velocity scaling are not implemented"
@@ -1349,4 +1357,31 @@ _TX_VELOCITY_ATTENUATION = [
     [6, 5, 4, 3, 2, 1, 0],
     [6, 5, 4, 3, 2, 1, 0],
     [6, 5, 4, 3, 2, 1, 0],
+]
+
+# VCED global parameters 54..76, from the TX81Z manual's edit-buffer table.
+_TX_GLOBAL_LIMITS = [
+    99,  # LFO speed
+    99,  # LFO delay
+    99,  # Pitch modulation depth
+    99,  # Amplitude modulation depth
+    1,  # LFO sync
+    3,  # LFO waveform
+    7,  # Pitch modulation sensitivity
+    3,  # Amplitude modulation sensitivity
+    48,  # Transpose
+    1,  # Poly/mono
+    12,  # Pitch bend range
+    1,  # Portamento mode
+    99,  # Portamento time
+    99,  # Foot control volume
+    1,  # Sustain
+    1,  # Portamento
+    1,  # Chorus
+    99,  # Modulation wheel pitch
+    99,  # Modulation wheel amplitude
+    99,  # Breath control pitch
+    99,  # Breath control amplitude
+    99,  # Breath control pitch bias
+    99,  # Breath control EG bias
 ]

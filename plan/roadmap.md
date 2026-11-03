@@ -46,8 +46,10 @@ ambiguous musical behavior require a decision before implementation.
 The user confirmed on 2026-11-03 that the completion goal covers the concrete
 roadmap and Yamaha requirements, while optional catalogues remain deferred.
 
-- Complete and qualify [Yamaha emulation](yamaha-emulation.md); the dedicated
-  Python DX7 renderer is already started.
+- Finish sampler end fades and native generator support under the unresolved
+  contracts in [engine-execution.md](engine-execution.md).
+- Complete and qualify [Yamaha emulation](yamaha-emulation.md); dedicated
+  offline DX7 and provisional TX81Z renderers are already started.
 
 ## Deferred choices
 

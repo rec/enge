@@ -96,8 +96,14 @@ The initial supported pitch span after transpose is MIDI 13–108 (chip key code
 modulation are rejected until implemented. Velocity is accepted as
 note metadata but has no gain effect when KVS is zero. This is an incomplete
 profile, not completion of the full TX81Z/WT11 requirement. Controller integration,
-DAC/integer quantization, broader malformed-global checks and hardware/reference
+DAC/integer quantization and hardware/reference
 qualification remain work.
+
+VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
+documented parameter ranges before note preparation. Unused payload bytes and
+voice-name bytes remain losslessly owned by the imported edit buffers. Boundary
+tests cover LFO controls, transpose, performance controls and ACED foot controls.
+Range validation does not imply those external controller paths are implemented.
 
 ACED reverb rate now prepares a capped effective envelope rate and selects an
 additional post-release stage once raw attenuation reaches 192 (-18 dB in the
@@ -114,8 +120,9 @@ five-bit chip key code to the signed OPZ phase-step offset. It follows
 and the [OPZ ordering before the frequency multiplier](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_opz.cpp).
 Tests cover sign, neutral, low-key zero offsets and high-key limits, and render
 the resulting offset through the operator bank at 48 kHz. This primitive takes
-chip key codes explicitly; MIDI-to-chip key mapping, multiplier quantization
-and the complete patch-frequency preparation path still need integration.
+chip key codes explicitly; the note renderer now supplies MIDI-to-chip key
+mapping and applies detune before ratio multiplication. Multiplier/phase
+quantization and hardware qualification remain work.
 Fixed-frequency mode bypasses this detune path in the reference model.
 
 `tx81z_output_gain` now converts the VCED 0–99 output control through
@@ -148,9 +155,9 @@ mutating the caller's saved state. Routing/modulation scaling follows
 [ymfm's four-operator output path](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp).
 Analytic 48 kHz WAV regressions cover all graphs, asymmetric operators,
 feedback, waveform selection and partitioned continuation. This is raw carrier
-mixing, not the completed patch renderer: DAC saturation, detune integration,
-velocity/key scaling and the full voice profile remain work. Nominal VCED gain conversion
-and the envelope clock are now connected in the component integration test.
+mixing. The note renderer now connects chip detune, nominal VCED gain conversion
+and the envelope clock. DAC saturation, velocity/key scaling integration and
+the full voice profile remain work.
 
 The user approved ymfm's waveform model provisionally on 2026-11-03, including
 the inferred signed sine-squared shape. `tx81z_wave_samples` now realizes all
@@ -193,8 +200,9 @@ register model and [DXconvert's `fix_4op`](https://github.com/richotero/dxconver
 the [Yamaha manual](https://www.polynominal.com/site/studio/gear/sold/yamaha_tx81z/yamaha-tx81z-manual.pdf)
 and [TX81Z Programmer ratio displays](https://github.com/mgregory22/tx81z-programmer/blob/master/src/freqratios.c)
 corroborate the control mapping. Audio regressions cover ratio,
-fine, fixed-frequency boundaries and different played keys. Applying the chip
-detune primitive, phase quantization and complete voice integration remain work.
+fine, fixed-frequency boundaries and different played keys. The note renderer
+now applies the chip detune primitive. Phase quantization and full voice-profile
+qualification remain work.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,

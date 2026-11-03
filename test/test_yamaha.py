@@ -34,6 +34,21 @@ from enge.yamaha import (
         ("additional", 20, 8),
         ("voice", 10, 100),
         ("additional", 3, 8),
+        ("voice", 54, 100),
+        ("voice", 58, 2),
+        ("voice", 59, 4),
+        ("voice", 60, 8),
+        ("voice", 61, 4),
+        ("voice", 62, 49),
+        ("voice", 63, 2),
+        ("voice", 64, 13),
+        ("voice", 65, 2),
+        ("voice", 66, 100),
+        ("voice", 68, 2),
+        ("voice", 70, 2),
+        ("voice", 75, 100),
+        ("additional", 21, 100),
+        ("additional", 22, 100),
     ],
 )
 def test_tx81z_renderer_rejects_unimplemented_or_invalid_parameters(
@@ -50,6 +65,35 @@ def test_tx81z_renderer_rejects_unimplemented_or_invalid_parameters(
             69,
             100,
         )
+
+
+@pytest.mark.parametrize(
+    "source,index,value",
+    [
+        ("voice", 54, 99),
+        ("voice", 58, 1),
+        ("voice", 59, 3),
+        ("voice", 60, 7),
+        ("voice", 61, 3),
+        ("voice", 62, 48),
+        ("voice", 64, 12),
+        ("additional", 21, 99),
+        ("additional", 22, 99),
+    ],
+)
+def test_tx81z_renderer_preserves_valid_global_boundaries(
+    source: str, index: int, value: int
+) -> None:
+    raw = bytearray(93)
+    raw[62] = 24
+    extra = bytearray(23)
+    (raw if source == "voice" else extra)[index] = value
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    additional = tx81z.TX81ZAdditional(data=bytes(extra))
+    renderer = TX81ZRenderer(voice, additional, 60, 100)
+    saved = renderer.snapshot()
+    assert saved.voice.data == voice.data
+    assert saved.additional.data == additional.data
 
 
 @pytest.mark.parametrize("algorithm", range(1, 9))
