@@ -14,6 +14,7 @@ pub type Inputs<'py> = (
 );
 type RenderedFilters<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray3<f64>>);
 
+#[derive(Clone)]
 pub struct FilterBank {
     responses: Vec<u8>,
     pub states: Array3<f64>,
@@ -22,6 +23,10 @@ pub struct FilterBank {
 }
 
 impl FilterBank {
+    pub fn same_definition(&self, other: &Self) -> bool {
+        self.responses == other.responses && self.values == other.values && self.rate == other.rate
+    }
+
     pub fn new(
         inputs: Option<Inputs<'_>>,
         rate: f64,

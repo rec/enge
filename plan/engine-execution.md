@@ -52,9 +52,19 @@ and consume bounded persistent voice capacity. Retirement before delayed onset,
 including a fade choke, cancels the pending voice without sounding. At or after
 onset, fade retirement applies the normal continuous ramp.
 
-Native live registration currently rejects controls, generators and filters.
-The user approved extending that native sampler with the existing native
-control/filter machinery on 2026-11-02, preserving bounded callback storage.
+Native live sample voices now reuse the block renderer's multichannel filter
+bank for fixed filter chains. Each voice has preallocated integrator state,
+reset on slot reuse and retained in snapshots. Slot filters precede instrument
+filters; both amplitude orders are supported, without a tail after exhaustion.
+Native live registration still rejects controls, generators and control-driven
+filter parameters. The user approved extending that sampler with the existing
+native control/filter machinery on 2026-11-02, preserving bounded callback storage.
+
+The completion audit also found authored playback fields that are not yet
+consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,
+and `end_fade_seconds`. These remain required rendering work. The final-fade
+contract leaves loop/repetition interactions unspecified; changing pitch also
+needs an explicit timing decision before implementation.
 
 ## Dynamic filters
 

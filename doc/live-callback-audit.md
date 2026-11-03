@@ -34,8 +34,9 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
 - `LiveEngine.advance_into()` currently calls the allocating `advance()` path.
 - The higher-level `PersistentSampler` still orchestrates its general dynamic
   control/filter profile in Python. `NativeLiveEngine` directly encodes the
-  static tuning/gain/envelope/traversal profile and rejects unsupported dynamic
-  sample settings during setup.
+  static tuning/gain/envelope/traversal profile and fixed multichannel filter
+  chains. Filter banks are prepared per voice, reset on reuse and retained in
+  snapshots. Unsupported dynamic sample settings are rejected during setup.
 - `OfflineEffects` still builds parameter and output arrays for every block.
   The live adapter now prepares the supported graph once and encodes parameter
   and bypass actions into bounded batches, but `LiveEngine` does not yet own and

@@ -1,6 +1,7 @@
 //! One native owner for persistent generated sources and callback scratch.
 
 use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
+use crate::filters::{FilterBank, Inputs};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot};
 use crate::sampler::{Cursor, SampleBuffer, Selection, State};
@@ -27,6 +28,8 @@ enum SourceRuntime {
 
 #[derive(Clone)]
 struct SampleRuntime {
+    filters: Vec<FilterBank>,
+    filter_after_amplitude: bool,
     buffer: SampleBuffer,
     initial_cursor: Cursor,
     routes: Array2<f64>,
@@ -302,6 +305,8 @@ impl LiveRuntime {
         minimum_hold_frames: f64,
         voices: usize,
         batch_capacity: usize,
+        filters: Inputs<'_>,
+        filter_after_amplitude: bool,
     ) -> PyResult<usize> {
         if self.frame != 0
             || voices == 0
@@ -322,11 +327,14 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Live sample starts exhausted"));
         }
         let source_channels = buffer.audio.ncols();
+        let filters = FilterBank::new(Some(filters), rate, 1, source_channels)?;
         let amplitude = Amplitude::new(initial, attack, release)?;
         let amplitude_states = (0..voices)
             .map(|_| amplitude.start())
             .collect::<PyResult<_>>()?;
         let runtime = SampleRuntime {
+            filters: vec![filters; voices],
+            filter_after_amplitude,
             buffer,
             initial_cursor: cursor,
             routes: routes.as_array().to_owned(),
@@ -1380,6 +1388,12 @@ impl SourceRuntime {
             }
             (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
                 if runtime.routes != state.routes
+                    || runtime.filter_after_amplitude != state.filter_after_amplitude
+                    || !runtime
+                        .filters
+                        .iter()
+                        .zip(&state.filters)
+                        .all(|(a, b)| a.same_definition(b))
                     || runtime.amplitude != state.amplitude
                     || runtime.minimum_hold_frames != state.minimum_hold_frames
                     || runtime.cursors.len() != state.cursors.len()
@@ -1500,6 +1514,19 @@ impl SampleRuntime {
                         first + (cursor.position / cursor.rate) * (last - first)
                     };
                 }
+                let amplitude = level * self.gains[voice];
+                if self.filter_after_amplitude {
+                    for value in &mut self.source_values {
+                        *value *= amplitude;
+                    }
+                }
+                self.filters[voice].process(0, &mut self.source_values)?;
+                let output_gain = fade
+                    * if self.filter_after_amplitude {
+                        1.0
+                    } else {
+                        amplitude
+                    };
                 for channel in 0..channels {
                     let mixed = self
                         .source_values
@@ -1507,7 +1534,7 @@ impl SampleRuntime {
                         .enumerate()
                         .map(|(source, value)| value * self.routes[[source, channel]])
                         .sum::<f64>();
-                    output[[offset, channel]] += mixed * level * self.gains[voice] * fade;
+                    output[[offset, channel]] += mixed * output_gain;
                 }
                 cursor.advance(self.steps[voice], frame + 1);
                 self.ages[voice] += 1;
@@ -1555,6 +1582,7 @@ impl SampleRuntime {
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;
+                self.filters[voice].states.fill(0.0);
                 self.delays[voice] = 0;
                 self.amplitude_states[voice] = self.amplitude.start()?;
                 self.release_frames[voice] = None;

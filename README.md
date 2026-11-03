@@ -208,6 +208,10 @@ control-driven crossfades. Instrument, part and trigger controls use their
 declared source smoothing before the fade law, including independent smoothing
 durations for one control. Snapshots retain the ramps and each voice's context.
 Native live control crossfades still require the planned native control integration.
+Native live sample voices support fixed slot and instrument filter chains using
+the shared multichannel filter bank, before or after amplitude. Filter state is
+independent per voice, resets on reuse, and survives snapshots. Dynamic native
+sampler filter parameters remain part of the control integration work.
 
 Offline sample instruments accept voice-scoped key and velocity EventBindings in both
 NumPy and native rendering. Each voice retains its prepared start key (0–127)

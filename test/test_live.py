@@ -596,6 +596,8 @@ def test_native_live_runtime_owns_sample_asset_and_traversal(tmp_path: Path) -> 
             0,
             2,
             4,
+            ([], np.empty((0, 1, 2)), np.empty((1, 0, 2))),
+            False,
         )
         return runtime, source
 

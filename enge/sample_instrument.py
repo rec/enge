@@ -598,12 +598,10 @@ class PersistentSampler(OfflineSampler):
             or s.modulation.sources
             or s.modulation.parameters
             or s.modulation.routes
-            or s.processing.filters
             for s in all_settings
         ):
             raise synth.EngineError(
-                "Native live sampler controls, generators, and filters are not "
-                "implemented"
+                "Native live sampler controls and generators are not implemented"
             )
         for slot in self.definition.document.body.slots:
             sample = self.definition.samples[slot.name]
@@ -639,6 +637,21 @@ class PersistentSampler(OfflineSampler):
                 self.definition.routes[slot.name],
                 dtype=np.float64,
             )
+            filter_definitions = [
+                *settings.processing.filters,
+                *common.processing.filters,
+            ]
+            filter_values = filters.parameters(
+                filter_definitions, self.definition.sample_rate, 1
+            )
+            filter_states = filters.initial_states(
+                filter_definitions, sample.samples.shape[1]
+            )
+            filter_order = (
+                settings.processing.filter_order
+                if settings.processing.filters
+                else common.processing.filter_order
+            )
             self.native_sources[slot.name] = runtime.add_sample(
                 sample.native_buffer,
                 selection,
@@ -651,6 +664,8 @@ class PersistentSampler(OfflineSampler):
                 0,
                 self.voice_capacity,
                 batch_capacity,
+                filters.native_inputs(filter_definitions, filter_states, filter_values),
+                filter_order == processing.FilterOrder.after_amplitude,
             )
 
     def native_live_actions(
