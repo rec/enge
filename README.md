@@ -150,7 +150,8 @@ remain exact. Route mappings still operate per sample. Offline NumPy and Rust
 renderers accept linear, step, and positive-valued exponential mappings, with
 activation weights applied after mapping. Persistent synth, FM and noise also
 support those mappings with prepared knot tables and snapshot identity checks.
-Their existing one-route-per-source/target restriction remains. Audio-rate LFOs stay at
+Multiple routes may share sources and targets; generator state remains shared
+across their routes. Audio-rate LFOs stay at
 full rate when they reach the selected control-rate Nyquist frequency. This is
 independent of audio buffer size, and snapshots reject a different interval.
 See [control integration](plan/engine-execution.md#control-integration).

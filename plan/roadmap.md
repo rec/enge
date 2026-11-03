@@ -1,6 +1,6 @@
 # Roadmap
 
-Reconciled with local implementation on 2026-11-02. Current code and tests take
+Reconciled with local implementation on 2026-11-03. Current code and tests take
 precedence over historical proposals in the other plans.
 
 ## Completed foundations
@@ -23,8 +23,9 @@ Audit supported behavior against code and tests before treating old limitations
 as missing features. Addressed LFO and Envelfo actions already have persistent
 runtime coverage; do not implement a second event path.
 
-1. Persistent modulation now supports piecewise linear, step and exponential
-   mappings with bounded prepared storage. Multiple-route composition remains.
+1. Persistent modulation supports piecewise linear, step and exponential
+   mappings and multiple-route composition with bounded prepared storage and
+   shared generator state.
 2. Extend sampler rendering for control-driven crossfades. Delayed starts,
    alignment, directional random offsets, fade retirement, amplitude curves,
    key-event bindings, static key/velocity crossfades and Patch-child
@@ -39,11 +40,17 @@ Track verified details and remaining restrictions in
 [engine-execution.md](engine-execution.md). Changes to portable schemas or
 ambiguous musical behavior require a decision before implementation.
 
-## Later choices
+## Remaining committed work
 
-- Select further effects from [new-effects.md](new-effects.md).
+The user confirmed on 2026-11-03 that the completion goal covers the concrete
+roadmap and Yamaha requirements, while optional catalogues remain deferred.
+
 - Complete and qualify [Yamaha emulation](yamaha-emulation.md); the dedicated
   Python DX7 renderer is already started.
+
+## Deferred choices
+
+- Select further effects from [new-effects.md](new-effects.md).
 - Choose sound-quality improvements or new synthesis from
   [new-engines.md](new-engines.md). Its architectural proposals are not approved.
 - PyTorch work remains excluded.

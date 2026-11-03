@@ -107,6 +107,8 @@ def modulation_samples(
 
 
 def _sum(terms: list[np.ndarray], frames: int) -> np.ndarray:
+    if len(terms) < 2:
+        return terms[0] if terms else np.zeros(frames)
     # Error-free two-sum expansions retain small terms under cancellation, as
     # scalar math.fsum does. Loop over routes, never over audio samples.
     partials: list[np.ndarray] = []
@@ -120,6 +122,19 @@ def _sum(terms: list[np.ndarray], frames: int) -> np.ndarray:
             partials[i] = small - (value - large)
         partials.append(value)
     total = np.zeros(frames)
+    rounding = np.zeros(frames)
+    tail = np.zeros(frames)
+    exact = np.ones(frames, dtype=bool)
     for partial in reversed(partials):
-        total = total + partial
-    return total
+        tail = np.where(~exact & (tail == 0), partial, tail)
+        combined = total + partial
+        error = partial - (combined - total)
+        total = np.where(exact, combined, total)
+        rounding = np.where(exact, error, rounding)
+        exact &= error == 0
+    # A lower remainder in the same direction resolves a halfway tie. Double
+    # the rounding error only when it lands exactly on the adjacent float.
+    adjustment = 2 * rounding
+    adjusted = total + adjustment
+    same_direction = ((rounding > 0) & (tail > 0)) | ((rounding < 0) & (tail < 0))
+    return np.where(same_direction & (adjusted - total == adjustment), adjusted, total)

@@ -1221,8 +1221,10 @@ def test_staged_envelope_events_cue_another_envelfo_in_native_runtime(
     assert abs(expected[boundary + 1, 0]) > abs(expected[boundary - 1, 0])
 
 
+@pytest.mark.parametrize("fanout", [False, True])
 def test_reversed_envelope_markers_repeat_across_native_snapshot(
     tmp_path: Path,
+    fanout: bool,
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     voice = raw["body"]["voices"][0]
@@ -1327,6 +1329,11 @@ def test_reversed_envelope_markers_repeat_across_native_snapshot(
             action="reverse",
         ),
     ]
+    if fanout:
+        raw = document.model_dump(mode="json")
+        routes = raw["body"]["voices"][0]["modulation"]["routes"]
+        routes.append({**routes[0], "name": "second-level"})
+        document = SynthInstrumentScore.model_validate(raw)
     actions = prepare_trace(document.body, events, seed=0).actions
     definition = prepare(document)
     expected = OfflineSynth(definition, "numpy").advance(actions, 0, 48000)

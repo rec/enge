@@ -1941,27 +1941,9 @@ class PersistentSynth:
         self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
-        patch_children = _patch_child_names(template)
-        self.runtime.set_envelfo_state_owners(
-            _envelfo_state_owners(
-                len(lfos), patch_children, self.lfo_sources, self.voice_lfo_sources
-            ),
-            _envelfo_state_owners(
-                len(envelope_initials), patch_children, self.named_envelfo_sources
-            ),
-            _envelfo_state_owners(
-                len(staged_envelfos), patch_children, self.staged_envelfo_sources
-            ),
+        self._share_envelfo_sources(
+            len(lfos), len(envelope_initials), len(staged_envelfos)
         )
-        for source_map in (
-            self.lfo_sources,
-            self.voice_lfo_sources,
-            self.named_envelfo_sources,
-            self.staged_envelfo_sources,
-        ):
-            for name, indices in source_map.items():
-                if name in patch_children:
-                    source_map[name] = indices[:1]
         patch_events: list[
             tuple[
                 int,
@@ -2420,6 +2402,21 @@ class PersistentSynth:
             n: s for n, s in self.trigger_contexts.items() if contexts[s]
         }
         self.frame = end
+
+    def _share_envelfo_sources(self, lfos: int, envelopes: int, stages: int) -> None:
+        self.runtime.set_envelfo_state_owners(
+            _envelfo_state_owners(lfos, self.lfo_sources, self.voice_lfo_sources),
+            _envelfo_state_owners(envelopes, self.named_envelfo_sources),
+            _envelfo_state_owners(stages, self.staged_envelfo_sources),
+        )
+        for source_map in (
+            self.lfo_sources,
+            self.voice_lfo_sources,
+            self.named_envelfo_sources,
+            self.staged_envelfo_sources,
+        ):
+            for name, indices in source_map.items():
+                source_map[name] = indices[:1]
 
     def snapshot(self) -> PersistentSynthSnapshot:
         return PersistentSynthSnapshot(
@@ -3244,12 +3241,8 @@ def _persistent_modulation(
         and binding.reference in patch_children | event_only_patch_outputs
     )
     routed_sources = {route.source for route in routes}
-    if (
-        len(routed_sources) != len(routes)
-        or len({r.target for r in routes}) != len(routes)
-        or sources.keys() - routed_sources != event_sources - routed_sources
-    ):
-        raise EngineError("Persistent synth requires one modulation route per target")
+    if sources.keys() - routed_sources != event_sources - routed_sources:
+        raise EngineError("Persistent synth requires routes for modulation sources")
     rows: list[list[float]] = []
     smoothing: list[tuple[int, int]] = []
     control_sources: dict[str, list[int]] = {}
@@ -3295,8 +3288,6 @@ def _persistent_modulation(
             if isinstance(binding, ControlBinding)
             else None
         )
-        target_parameter = parameters[target]
-        mapped = [p.amount for p in route.points]
         mapping = (
             [
                 modulation.Interpolation.linear,
@@ -3305,18 +3296,6 @@ def _persistent_modulation(
             ].index(route.interpolation),
             [(float(p.input), float(p.amount)) for p in route.points],
         )
-        outcomes = (
-            [target_parameter.default + v for v in mapped]
-            if operation == modulation.Operation.add
-            else [target_parameter.default * v for v in mapped]
-        )
-        if any(
-            v < target_parameter.minimum or v > target_parameter.maximum
-            for v in outcomes
-        ):
-            raise EngineError(
-                "Persistent synth modulation route exceeds its target domain"
-            )
         if isinstance(binding, ControlBinding):
             assert declaration is not None
             control_minimum = -1 if declaration.polarity == "bipolar" else 0
@@ -3398,7 +3377,7 @@ def _persistent_modulation(
                 continue
             if isinstance(envelfo, Stages):
                 route_maps[3].append(mapping)
-                staged_bindings[binding.name] = len(staged_envelfos)
+                staged_bindings.setdefault(binding.name, len(staged_envelfos))
                 staged_envelfo_sources.setdefault(binding.reference, []).append(
                     len(staged_envelfos)
                 )
@@ -3596,15 +3575,12 @@ def _persistent_modulation(
     )
 
 
-def _envelfo_state_owners(
-    count: int, names: set[str], *source_maps: dict[str, list[int]]
-) -> list[int]:
+def _envelfo_state_owners(count: int, *source_maps: dict[str, list[int]]) -> list[int]:
     owners = list(range(count))
     for source_map in source_maps:
-        for name in names:
-            if indices := source_map.get(name):
-                for index in indices[1:]:
-                    owners[index] = indices[0]
+        for indices in source_map.values():
+            for index in indices[1:]:
+                owners[index] = indices[0]
     return owners
 
 

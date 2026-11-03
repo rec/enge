@@ -13,7 +13,13 @@ from ufor.instrument_trace import TraceAction, VoiceRetirement
 from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 
-from enge.synth import EngineError, OfflineSynth, SynthSnapshot, prepare
+from enge.synth import (
+    EngineError,
+    OfflineSynth,
+    PersistentSynth,
+    SynthSnapshot,
+    prepare,
+)
 
 
 def dynamic_score(
@@ -322,6 +328,8 @@ def test_bindings_with_different_smoothing_keep_separate_trajectories(
         * (0.5 + 0.5 * np.minimum(frames / 120, 1))
     )
     check_audio(tmp_path / "two-smoothing-times.wav", actual, expected)
+    persistent = PersistentSynth(prepare(document)).advance(actions, 0, 48000)
+    check_audio(tmp_path / "two-smoothing-times-persistent.wav", persistent, expected)
 
 
 def test_equal_frame_control_order_and_stop_are_exact(

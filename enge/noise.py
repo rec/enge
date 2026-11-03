@@ -437,6 +437,9 @@ class PersistentNoise(synth.PersistentSynth):
         self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
+        self._share_envelfo_sources(
+            len(lfos), len(envelope_initials), len(staged_envelfos)
+        )
 
     def snapshot(self) -> PersistentNoiseSnapshot:  # ty: ignore[invalid-method-override]
         return PersistentNoiseSnapshot(

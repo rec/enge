@@ -9,12 +9,18 @@ Do not treat the original event-integration proposal as wholly unimplemented.
 
 Persistent routes now accept piecewise linear, step and positive exponential
 maps with endpoint clamping. Native prepared tables also cover Patch outputs;
-LFO activation weights apply after mapping. The existing one-route-per-source
-and one-route-per-target admission restriction remains.
+LFO activation weights apply after mapping. Multiple routes can share a source
+or target: additive contributions combine with the base before multiplication,
+and domain validation applies to the composed value. Routes share generator
+state, so marker events, playback commands and snapshots affect every route.
+Offline and native route sums retain small terms under cancellation and resolve
+halfway rounding using lower remainders. Native scratch is allocated when routes
+are prepared, never during parameter evaluation. Regression coverage compares
+scalar, block, persistent and native live output against scalar `fsum` results,
+including snapshot replay.
 Amplitude, named and staged envelope adapters now preserve authored curves in
 NumPy/native block and persistent rendering. Regression coverage includes large
 positive/negative curves, held segments, release, partitions and continuation.
-Multiple-route composition remains a separate parity gap.
 
 ## Sampler coverage
 

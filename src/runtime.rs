@@ -321,6 +321,7 @@ pub struct SynthRuntimeSnapshot {
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntime {
+    parameter_partials: Vec<f64>,
     patch_host: Option<PatchHost>,
     patch_states: Vec<Option<PatchState>>,
     pending_releases: Vec<Vec<Option<Time>>>,
@@ -423,6 +424,8 @@ impl SynthRuntime {
             })
             .collect::<PyResult<Vec<_>>>()?;
         self.route_maps[kind] = maps;
+        self.parameter_partials
+            .resize(self.route_maps.iter().map(Vec::len).sum(), 0.0);
         Ok(())
     }
 
@@ -521,6 +524,7 @@ impl SynthRuntime {
             minimum_hold_frames,
             routes: routes.as_array().to_owned(),
             route_maps: vec![vec![]; 5],
+            parameter_partials: Vec::new(),
             control_definitions,
             control_states,
             lfo_definitions,
@@ -1885,10 +1889,11 @@ impl SynthRuntime {
                     let mut carrier_sample = 0.0;
                     let edge_base = voice * edges;
                     let process_tuning = self.parameter(voice, 1)?;
-                    for operator in &self.graph_order {
-                        let definition = &self.graph_operators[*operator];
-                        let amplitude = &self.amplitude_definitions[*operator];
-                        let state = &self.amplitude_states[voice][*operator];
+                    for order in 0..self.graph_order.len() {
+                        let operator = self.graph_order[order];
+                        let definition = self.graph_operators[operator].clone();
+                        let amplitude = &self.amplitude_definitions[operator];
+                        let state = &self.amplitude_states[voice][operator];
                         let observed = amplitude.value(state, self.ages[voice])?;
                         let level = if amplitude.complete(state, &observed) {
                             0.0
@@ -1896,8 +1901,9 @@ impl SynthRuntime {
                             observed.value
                         };
                         let mut offset = 0.0;
-                        for (index, edge) in self.graph_edges.iter().enumerate() {
-                            if edge.destination == *operator {
+                        for index in 0..self.graph_edges.len() {
+                            let edge = self.graph_edges[index].clone();
+                            if edge.destination == operator {
                                 offset += self.parameter(voice, edge.parameter)?
                                     * if edge.delayed {
                                         self.graph_history[edge_base + index]
@@ -1907,7 +1913,7 @@ impl SynthRuntime {
                             }
                         }
                         let angle =
-                            TAU * self.graph_phases[operator_base + *operator] / self.rate + offset;
+                            TAU * self.graph_phases[operator_base + operator] / self.rate + offset;
                         let phase = (angle / TAU).rem_euclid(1.0);
                         let value = match definition.waveform {
                             0 => angle.sin(),
@@ -1926,8 +1932,8 @@ impl SynthRuntime {
                                 }
                             }
                         };
-                        self.graph_outputs[operator_base + *operator] = level * value;
-                        if *operator == self.graph_carrier {
+                        self.graph_outputs[operator_base + operator] = level * value;
+                        if operator == self.graph_carrier {
                             carrier_sample = value;
                         }
                     }
@@ -1937,7 +1943,7 @@ impl SynthRuntime {
                             self.graph_outputs[operator_base + edge.source];
                     }
                     for operator in 0..operators {
-                        let definition = &self.graph_operators[operator];
+                        let definition = self.graph_operators[operator].clone();
                         let frequency = self.frequencies[voice]
                             * self.parameter(voice, definition.ratio_parameter)?
                             * 2_f64.powf(
@@ -2411,8 +2417,8 @@ impl SynthRuntime {
             .value(value)
     }
 
-    fn parameter(&self, voice: usize, parameter: usize) -> PyResult<f64> {
-        let mut addition = 0.0;
+    fn parameter(&mut self, voice: usize, parameter: usize) -> PyResult<f64> {
+        let mut partial_count = 0;
         let mut product = 1.0;
         for (source, definition) in self.control_definitions.iter().enumerate() {
             if definition.parameter != parameter {
@@ -2425,7 +2431,7 @@ impl SynthRuntime {
             };
             let amount = self.mapped(0, source, control_value(definition, state))?;
             if definition.operation == 0 {
-                addition += amount;
+                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
             } else {
                 product *= amount;
             }
@@ -2437,7 +2443,11 @@ impl SynthRuntime {
             let (value, weight) = self.lfo_signal(voice, source)?;
             let amount = self.mapped(1, source, definition.intercept + definition.slope * value)?;
             if definition.operation == 0 {
-                addition += weight * amount;
+                add_partial(
+                    &mut self.parameter_partials,
+                    &mut partial_count,
+                    weight * amount,
+                );
             } else {
                 product *= 1.0 + weight * (amount - 1.0);
             }
@@ -2449,7 +2459,7 @@ impl SynthRuntime {
             let value = self.patch_value(voice, 1, source)?.value;
             let amount = self.mapped(2, source, value)?;
             if definition.operation == 0 {
-                addition += amount;
+                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
             } else {
                 product *= amount;
             }
@@ -2461,7 +2471,7 @@ impl SynthRuntime {
             let value = self.patch_value(voice, 2, source)?.value;
             let amount = self.mapped(3, source, value)?;
             if definition.operation == 0 {
-                addition += amount;
+                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
             } else {
                 product *= amount;
             }
@@ -2477,12 +2487,13 @@ impl SynthRuntime {
                 self.envelfo_transform_values[voice * self.envelfo_transforms.len() + source],
             )?;
             if *operation == 0 {
-                addition += amount;
+                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
             } else {
                 product *= amount;
             }
         }
         let definition = &self.parameter_definitions[parameter * 3..parameter * 3 + 3];
+        let addition = sum_partials(&self.parameter_partials[..partial_count]);
         let value = (definition[0] + addition) * product;
         if !value.is_finite() || value < definition[1] || value > definition[2] {
             return Err(PyValueError::new_err(
@@ -2611,6 +2622,43 @@ fn decode_context(value: f64, capacity: usize) -> PyResult<Option<usize>> {
         return Err(PyValueError::new_err("Invalid synth control context"));
     }
     Ok(Some(context))
+}
+
+fn add_partial(partials: &mut [f64], count: &mut usize, mut value: f64) {
+    // Error-free two-sum expansions, matching the offline route accumulator.
+    // Storage is prepared once, with at most one partial per route.
+    for partial in &mut partials[..*count] {
+        let (large, small) = if value.abs() >= partial.abs() {
+            (value, *partial)
+        } else {
+            (*partial, value)
+        };
+        value = large + small;
+        *partial = small - (value - large);
+    }
+    partials[*count] = value;
+    *count += 1;
+}
+
+fn sum_partials(partials: &[f64]) -> f64 {
+    let mut total = 0.0;
+    for (index, partial) in partials.iter().enumerate().rev() {
+        let combined = total + partial;
+        let error = partial - (combined - total);
+        total = combined;
+        if error != 0.0 {
+            let tail = partials[..index].iter().rev().find(|v| **v != 0.0);
+            if tail.is_some_and(|v| (error > 0.0 && *v > 0.0) || (error < 0.0 && *v < 0.0)) {
+                let adjustment = 2.0 * error;
+                let adjusted = total + adjustment;
+                if adjusted - total == adjustment {
+                    total = adjusted;
+                }
+            }
+            break;
+        }
+    }
+    total
 }
 
 fn control_definitions(
