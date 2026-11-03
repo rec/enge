@@ -357,6 +357,20 @@ class DX7Renderer:
         return output
 
 
+def tx81z_output_gain(level: int, algorithm: int, operator: int) -> float:
+    """Convert VCED output level to normalized gain, including carrier headroom.
+
+    The TL curve and algorithm headroom follow DXconvert's measured TX81Z
+    mapping. This excludes velocity, key scaling and envelope attenuation.
+    """
+    if not 0 <= level <= 99 or not 1 <= algorithm <= 8 or not 1 <= operator <= 4:
+        raise EngineError("Invalid TX81Z output level, algorithm or operator")
+    attenuation = _TX_OUTPUT_ATTENUATION[level]
+    if operator in _TX_ALGORITHMS[algorithm - 1][1]:
+        attenuation += _TX_CARRIER_ATTENUATION[algorithm - 1]
+    return 2 ** (-min(127, attenuation) / 8)
+
+
 def tx81z_operator_samples(
     algorithm: int,
     waveforms: list[int],
@@ -634,6 +648,30 @@ def _key_curve(group: int, depth: int, curve: int) -> int:
     return -scale if curve < 2 else scale
 
 
+# DXconvert's total-level curve and reported TX81Z carrier headroom measurements.
+_TX_CARRIER_ATTENUATION = [0, 0, 0, 0, 8, 13, 13, 16]
+_TX_OUTPUT_ATTENUATION = [
+    127,
+    122,
+    118,
+    114,
+    110,
+    107,
+    104,
+    102,
+    100,
+    98,
+    96,
+    94,
+    92,
+    90,
+    88,
+    86,
+    85,
+    84,
+    82,
+    81,
+] + list(range(79, -1, -1))
 # TX81Z visible operator numbers; OP4 is the feedback operator in every graph.
 _TX_ALGORITHMS = [
     ([(4, 3), (3, 2), (2, 1)], [1]),

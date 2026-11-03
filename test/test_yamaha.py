@@ -17,8 +17,88 @@ from enge.yamaha import (
     TX81ZState,
     tx81z_base_frequency,
     tx81z_operator_samples,
+    tx81z_output_gain,
     tx81z_wave_samples,
 )
+
+
+@pytest.mark.parametrize(
+    "level,algorithm,operator,expected",
+    [
+        (99, 1, 1, 1),
+        (91, 1, 1, 0.5),
+        (20, 1, 1, 2 ** (-79 / 8)),
+        (19, 1, 1, 2 ** (-81 / 8)),
+        (1, 1, 1, 2 ** (-122 / 8)),
+        (0, 1, 1, 2 ** (-127 / 8)),
+        (99, 5, 1, 0.5),
+        (99, 5, 3, 0.5),
+        (99, 5, 2, 1),
+        (99, 5, 4, 1),
+        (99, 6, 3, 2 ** (-13 / 8)),
+        (99, 7, 3, 2 ** (-13 / 8)),
+        (99, 6, 4, 1),
+        (99, 8, 4, 0.25),
+    ],
+)
+def test_tx81z_output_level_curve_and_carrier_headroom(
+    tmp_path: Path, level: int, algorithm: int, operator: int, expected: float
+) -> None:
+    gain = tx81z_output_gain(level, algorithm, operator)
+    assert gain == expected
+    carrier = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000)[:, None]
+    check_audio(tmp_path / "tx81z-output-level.wav", carrier * gain, carrier * expected)
+
+
+def test_tx81z_prepared_patch_components_render_and_release(tmp_path: Path) -> None:
+    raw = bytearray(93)
+    for i in range(0, 52, 13):
+        raw[i] = 31
+        raw[i + 3] = raw[i + 4] = 15
+        raw[i + 10] = 99
+        raw[i + 11] = 4
+        raw[i + 12] = 3
+    raw[52] = 7
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    additional = tx81z.TX81ZAdditional(data=bytes(23))
+    bank = TX81ZEnvelopeBank(
+        envelopes=[
+            TX81ZEnvelope.start(voice.operator(i), additional.operator(i), 0)
+            for i in range(1, 5)
+        ]
+    )
+    frequencies = np.tile(
+        [
+            tx81z_base_frequency(voice.operator(i), additional.operator(i), 69)
+            for i in range(1, 5)
+        ],
+        (24000, 1),
+    )
+    levels = np.array(
+        [
+            tx81z_output_gain(voice.operator(i).output_level, voice.algorithm, i)
+            for i in range(1, 5)
+        ]
+    )
+    attack = 2 ** (-bank.attenuation_samples(24000) / 64) * levels
+    first, state = tx81z_operator_samples(
+        voice.algorithm, [0] * 4, TX81ZState(), frequencies, attack
+    )
+    bank.release()
+    release = 2 ** (-bank.attenuation_samples(24000) / 64) * levels
+    tail, _ = tx81z_operator_samples(
+        voice.algorithm, [0] * 4, state, frequencies, release
+    )
+    ticks = np.arange(48000, dtype=np.int64) * bank.clock_hz // (192 * 48000)
+    attenuation = np.minimum(np.maximum(ticks - ticks[24000], 0) * 8, 1023)
+    expected = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000) * 2 ** (
+        -attenuation / 64
+    )
+    check_audio(
+        tmp_path / "tx81z-paired-components.wav",
+        np.concatenate([first, tail]),
+        expected[:, None],
+    )
 
 
 @pytest.mark.parametrize("clock_hz", [3579545, 9216000])

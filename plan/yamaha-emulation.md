@@ -84,6 +84,17 @@ or feedback arithmetic.
 
 ## TX81Z / WT11
 
+`tx81z_output_gain` now converts the VCED 0–99 output control through
+[DXconvert's total-level curve](https://github.com/richotero/dxconvert/blob/master/DXconvert/dxcommon.py)
+and its [reported TX81Z carrier-headroom measurements](https://github.com/richotero/dxconvert/blob/master/DXconvert/fb01.py).
+Carrier offsets are 8, 13 and 16 TL steps for two-, three- and four-carrier
+algorithms; modulators retain the unadjusted level curve. Saturation is at TL
+127. This nominal floating gain does not include integer DAC/sine quantization,
+velocity, key scaling or envelope attenuation. Regressions cover curve boundaries
+and headroom, plus a one-second paired VCED/ACED integration through nominal
+frequency, shared envelope clock, gain conversion, operator mixing and release.
+These are model-level checks, not new hardware measurements.
+
 The numeric `tx81z_operator_samples` kernel now renders all eight four-operator
 graphs in visible OP1–OP4 order, with OP4 two-sample feedback, independent
 waveform selections and caller-prepared per-frame frequency/gain rows. Its
@@ -92,8 +103,9 @@ mutating the caller's saved state. Routing/modulation scaling follows
 [ymfm's four-operator output path](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp).
 Analytic 48 kHz WAV regressions cover all graphs, asymmetric operators,
 feedback, waveform selection and partitioned continuation. This is raw carrier
-mixing, not the completed patch renderer: VCED level conversion, DAC saturation,
-chip-clock integration, detune and the enclosing voice lifecycle remain work.
+mixing, not the completed patch renderer: DAC saturation, detune, velocity/key
+scaling and the enclosing voice API remain work. Nominal VCED gain conversion
+and the envelope clock are now connected in the component integration test.
 
 The user approved ymfm's waveform model provisionally on 2026-11-03, including
 the inferred signed sine-squared shape. `tx81z_wave_samples` now realizes all
