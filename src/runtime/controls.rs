@@ -1,4 +1,5 @@
 //! Shared bounded control ramps, addressed contexts and voice bindings.
+use super::{RouteMap, add_partial};
 use numpy::{PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -33,6 +34,32 @@ pub(crate) struct ControlBank {
 }
 
 impl ControlBank {
+    pub(crate) fn contributions(
+        &self,
+        voice: usize,
+        parameter: usize,
+        maps: &[RouteMap],
+        partials: &mut [f64],
+        count: &mut usize,
+    ) -> PyResult<f64> {
+        let mut product = 1.0;
+        for (source, definition) in self.control_definitions.iter().enumerate() {
+            if definition.parameter != parameter {
+                continue;
+            }
+            let mapping = maps
+                .get(source)
+                .ok_or_else(|| PyValueError::new_err("Missing modulation mapping"))?;
+            let amount = mapping.value(self.value(voice, source)?)?;
+            if definition.operation == 0 {
+                add_partial(partials, count, amount);
+            } else {
+                product *= amount;
+            }
+        }
+        Ok(product)
+    }
+
     pub(crate) fn new(
         control_definitions: Vec<ControlDefinition>,
         control_states: Vec<ControlState>,

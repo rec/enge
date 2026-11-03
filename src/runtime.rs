@@ -21,13 +21,29 @@ mod patch_host;
 use controls::{ControlBank, ControlDefinition, ControlState, control_definitions};
 
 #[derive(Clone, PartialEq)]
-struct RouteMap {
+pub(crate) struct RouteMap {
     interpolation: usize,
     points: Vec<(f64, f64)>,
 }
 
 impl RouteMap {
-    fn value(&self, value: f64) -> PyResult<f64> {
+    pub(crate) fn new(interpolation: usize, points: Vec<(f64, f64)>) -> PyResult<Self> {
+        if interpolation > 2
+            || points.is_empty()
+            || points
+                .iter()
+                .any(|(x, y)| !x.is_finite() || !y.is_finite() || (interpolation == 2 && *y <= 0.0))
+            || points.windows(2).any(|p| p[0].0 >= p[1].0)
+        {
+            return Err(PyValueError::new_err("Invalid modulation mapping points"));
+        }
+        Ok(Self {
+            interpolation,
+            points,
+        })
+    }
+
+    pub(crate) fn value(&self, value: f64) -> PyResult<f64> {
         if !value.is_finite() {
             return Err(PyValueError::new_err("Non-finite modulation source"));
         }
@@ -385,21 +401,7 @@ impl SynthRuntime {
         }
         let maps = maps
             .into_iter()
-            .map(|(interpolation, points)| {
-                if interpolation > 2
-                    || points.is_empty()
-                    || points.iter().any(|(x, y)| {
-                        !x.is_finite() || !y.is_finite() || (interpolation == 2 && *y <= 0.0)
-                    })
-                    || points.windows(2).any(|p| p[0].0 >= p[1].0)
-                {
-                    return Err(PyValueError::new_err("Invalid modulation mapping points"));
-                }
-                Ok(RouteMap {
-                    interpolation,
-                    points,
-                })
-            })
+            .map(|(interpolation, points)| RouteMap::new(interpolation, points))
             .collect::<PyResult<Vec<_>>>()?;
         self.route_maps[kind] = maps;
         self.parameter_partials
@@ -2332,18 +2334,13 @@ impl SynthRuntime {
 
     fn parameter(&mut self, voice: usize, parameter: usize) -> PyResult<f64> {
         let mut partial_count = 0;
-        let mut product = 1.0;
-        for (source, definition) in self.controls.control_definitions.iter().enumerate() {
-            if definition.parameter != parameter {
-                continue;
-            }
-            let amount = self.mapped(0, source, self.controls.value(voice, source)?)?;
-            if definition.operation == 0 {
-                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
-            } else {
-                product *= amount;
-            }
-        }
+        let mut product = self.controls.contributions(
+            voice,
+            parameter,
+            &self.route_maps[0],
+            &mut self.parameter_partials,
+            &mut partial_count,
+        )?;
         for (source, definition) in self.lfo_definitions.iter().enumerate() {
             if definition.parameter != parameter {
                 continue;
@@ -2471,7 +2468,7 @@ impl SynthRuntime {
     }
 }
 
-fn add_partial(partials: &mut [f64], count: &mut usize, mut value: f64) {
+pub(crate) fn add_partial(partials: &mut [f64], count: &mut usize, mut value: f64) {
     // Error-free two-sum expansions, matching the offline route accumulator.
     // Storage is prepared once, with at most one partial per route.
     for partial in &mut partials[..*count] {
@@ -2487,7 +2484,7 @@ fn add_partial(partials: &mut [f64], count: &mut usize, mut value: f64) {
     *count += 1;
 }
 
-fn sum_partials(partials: &[f64]) -> f64 {
+pub(crate) fn sum_partials(partials: &[f64]) -> f64 {
     let mut total = 0.0;
     for (index, partial) in partials.iter().enumerate().rev() {
         let combined = total + partial;

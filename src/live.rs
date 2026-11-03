@@ -3,7 +3,8 @@
 use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
 use crate::filters::{FilterBank, Inputs};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
-use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot};
+use crate::runtime::controls::{ControlBank, control_definitions};
+use crate::runtime::{RouteMap, SynthRuntime, SynthRuntimeSnapshot, sum_partials};
 use crate::sampler::{Cursor, SampleBuffer, Selection, State};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
@@ -28,6 +29,11 @@ enum SourceRuntime {
 
 #[derive(Clone)]
 struct SampleRuntime {
+    controls: ControlBank,
+    control_maps: Vec<RouteMap>,
+    // Common amplitude/tuning followed by slot amplitude/tuning, each with a domain.
+    parameters: Vec<f64>,
+    parameter_partials: Vec<f64>,
     filters: Vec<FilterBank>,
     filter_after_amplitude: bool,
     buffer: SampleBuffer,
@@ -333,6 +339,13 @@ impl LiveRuntime {
             .map(|_| amplitude.start())
             .collect::<PyResult<_>>()?;
         let runtime = SampleRuntime {
+            controls: ControlBank::new(Vec::new(), Vec::new(), voices, 0),
+            control_maps: Vec::new(),
+            parameters: vec![
+                1.0, 0.0, 1e300, 0.0, -120000.0, 120000.0, 1.0, 0.0, 1e300, 0.0, -120000.0,
+                120000.0,
+            ],
+            parameter_partials: Vec::new(),
             filters: vec![filters; voices],
             filter_after_amplitude,
             buffer,
@@ -377,6 +390,50 @@ impl LiveRuntime {
             .get(source)
             .map(|v| v.runtime.active_slots())
             .ok_or_else(|| PyValueError::new_err("Unknown live runtime source"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set_sample_controls(
+        &mut self,
+        source: usize,
+        controls: PyReadonlyArray2<'_, f64>,
+        smoothing: Vec<(u64, u64)>,
+        parameters: Vec<f64>,
+        maps: Vec<(usize, Vec<(f64, f64)>)>,
+        context_capacity: usize,
+    ) -> PyResult<()> {
+        let Some(Source {
+            runtime: SourceRuntime::Sample(runtime),
+            ..
+        }) = self.sources.get_mut(source)
+        else {
+            return Err(PyValueError::new_err("Invalid live sample source"));
+        };
+        if self.frame != 0
+            || parameters.len() != 12
+            || parameters.iter().any(|v| !v.is_finite())
+            || parameters
+                .chunks_exact(3)
+                .any(|p| p[0] < p[1] || p[0] > p[2])
+        {
+            return Err(PyValueError::new_err(
+                "Invalid live sample parameters or state",
+            ));
+        }
+        let (definitions, states) = control_definitions(controls, &smoothing)?;
+        if maps.len() != definitions.len() || definitions.iter().any(|d| d.parameter >= 4) {
+            return Err(PyValueError::new_err("Invalid live sample control routes"));
+        }
+        let maps = maps
+            .into_iter()
+            .map(|(kind, points)| RouteMap::new(kind, points))
+            .collect::<PyResult<Vec<_>>>()?;
+        runtime.parameter_partials = vec![0.0; definitions.len()];
+        runtime.controls =
+            ControlBank::new(definitions, states, runtime.active.len(), context_capacity);
+        runtime.control_maps = maps;
+        runtime.parameters = parameters;
+        Ok(())
     }
 
     fn active_contexts(&self, source: usize) -> PyResult<Vec<bool>> {
@@ -1361,9 +1418,12 @@ impl SourceRuntime {
     fn active_contexts(&self) -> PyResult<Vec<bool>> {
         match self {
             Self::Generated(runtime) => Ok(runtime.active_contexts()),
-            Self::Sample(_) => Err(PyValueError::new_err(
-                "Live sample sources do not own control contexts",
-            )),
+            Self::Sample(runtime) => Ok(runtime
+                .controls
+                .context_kinds
+                .iter()
+                .map(|k| *k != 0)
+                .collect()),
         }
     }
 
@@ -1388,6 +1448,10 @@ impl SourceRuntime {
             }
             (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
                 if runtime.routes != state.routes
+                    || runtime.controls.control_definitions != state.controls.control_definitions
+                    || runtime.controls.context_kinds.len() != state.controls.context_kinds.len()
+                    || runtime.control_maps != state.control_maps
+                    || runtime.parameters != state.parameters
                     || runtime.filter_after_amplitude != state.filter_after_amplitude
                     || !runtime
                         .filters
@@ -1425,6 +1489,25 @@ impl SourceRuntime {
 }
 
 impl SampleRuntime {
+    fn parameter(&mut self, voice: usize, parameter: usize) -> PyResult<f64> {
+        let mut count = 0;
+        let product = self.controls.contributions(
+            voice,
+            parameter,
+            &self.control_maps,
+            &mut self.parameter_partials,
+            &mut count,
+        )?;
+        let domain = &self.parameters[parameter * 3..parameter * 3 + 3];
+        let value = (domain[0] + sum_partials(&self.parameter_partials[..count])) * product;
+        if !value.is_finite() || value < domain[1] || value > domain[2] {
+            return Err(PyValueError::new_err(
+                "Modulated sample parameter is outside its domain",
+            ));
+        }
+        Ok(value)
+    }
+
     fn render_into(&mut self, mut output: ArrayViewMut2<'_, f64>, actions: &[f64]) -> PyResult<()> {
         let frames = output.nrows();
         if output.ncols() != self.routes.ncols()
@@ -1486,7 +1569,9 @@ impl SampleRuntime {
                     self.active[voice] = false;
                     continue;
                 }
-                let level = value.value;
+                let level = value.value * self.parameter(voice, 0)? * self.parameter(voice, 2)?;
+                let step = self.steps[voice]
+                    * ((self.parameter(voice, 1)? + self.parameter(voice, 3)?) / 1200.0).exp2();
                 let frame = i64::try_from(self.frame + offset)
                     .map_err(|_| PyValueError::new_err("Live sample frame overflow"))?;
                 let cursor = &mut self.cursors[voice];
@@ -1536,10 +1621,12 @@ impl SampleRuntime {
                         .sum::<f64>();
                     output[[offset, channel]] += mixed * output_gain;
                 }
-                cursor.advance(self.steps[voice], frame + 1);
+                cursor.advance(step, frame + 1);
                 self.ages[voice] += 1;
             }
+            self.controls.advance();
         }
+        self.controls.retire_trigger_contexts(&self.active);
         self.frame = self
             .frame
             .checked_add(frames)
@@ -1549,6 +1636,12 @@ impl SampleRuntime {
 
     fn apply_action(&mut self, action: &[f64]) -> PyResult<()> {
         let kind = action[1] as usize;
+        if (7..=10).contains(&kind) {
+            let mut control_action = [0.0; 6];
+            control_action.copy_from_slice(action);
+            control_action[1] -= 3.0;
+            return self.controls.apply(&control_action);
+        }
         let voice = action[2] as usize;
         if action[1] != kind as f64 || action[2] != voice as f64 || voice >= self.active.len() {
             return Err(PyValueError::new_err("Invalid live sample action"));
@@ -1582,6 +1675,8 @@ impl SampleRuntime {
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;
+                self.controls.voice_part_contexts[voice] = usize::MAX;
+                self.controls.voice_trigger_contexts[voice] = usize::MAX;
                 self.filters[voice].states.fill(0.0);
                 self.delays[voice] = 0;
                 self.amplitude_states[voice] = self.amplitude.start()?;

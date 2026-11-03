@@ -61,8 +61,15 @@ filter parameters. The user approved extending that sampler with the existing
 native control/filter machinery on 2026-11-02, preserving bounded callback storage.
 The generated runtimes' existing control ramps, scoped contexts and voice
 bindings now live in a shared native `ControlBank`, including context retirement
-and snapshot state. Sampler admission and parameter evaluation still need to be
-connected to that component; this extraction does not expand sampler support.
+and snapshot state. The native sampler now consumes that component through
+`LiveRuntime.set_sample_controls`: common and slot amplitude/tuning routes retain
+separate domains, support all three scopes and mapping modes, and share the
+generated runtimes' precise route accumulation. Ramps advance during delayed
+starts, trigger contexts retire with their voices, and snapshots retain ramps
+and bindings. Direct native regressions cover interrupted fractional smoothing,
+context initialization and partition-independent continuation. Python sampler
+admission still rejects these settings until its preparation and action encoding
+are connected; dynamic filter targets, crossfades and generators remain work.
 
 The completion audit also found authored playback fields that are not yet
 consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,

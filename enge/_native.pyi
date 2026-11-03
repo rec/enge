@@ -65,6 +65,15 @@ class LiveRuntime:
     def submit_effects(self, actions: np.ndarray) -> None: ...
     def active_slots(self, source: int) -> list[bool]: ...
     def active_contexts(self, source: int) -> list[bool]: ...
+    def set_sample_controls(
+        self,
+        source: int,
+        controls: np.ndarray,
+        smoothing: list[tuple[int, int]],
+        parameters: list[float],
+        maps: list[tuple[int, list[tuple[float, float]]]],
+        context_capacity: int,
+    ) -> None: ...
     def add_sample(
         self,
         buffer: SampleBuffer,

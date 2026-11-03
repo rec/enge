@@ -40,6 +40,10 @@ The complete `LiveEngine` path is not yet ready for a system audio callback:
   static tuning/gain/envelope/traversal profile and fixed multichannel filter
   chains. Filter banks are prepared per voice, reset on reuse and retained in
   snapshots. Unsupported dynamic sample settings are rejected during setup.
+  The lower-level native sampler now accepts prepared scoped amplitude/tuning
+  controls through `set_sample_controls`, with bounded context and route scratch
+  storage. The Python sampler adapter does not yet prepare or submit these
+  control actions.
 - `OfflineEffects` still builds parameter and output arrays for every block.
   The live adapter now prepares the supported graph once and encodes parameter
   and bypass actions into bounded batches, but `LiveEngine` does not yet own and
