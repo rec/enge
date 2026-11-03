@@ -9,6 +9,12 @@ the target contract; oscillator-sync behavior, reference
 qualification, TX81Z/WT11 rendering and full engine integration require further
 work. Do not restart the existing DX7 implementation.
 
+An initial [pinned MSFA comparison](../doc/yamaha-reference/README.md) now includes
+constructed named patches, the reference harness and paired 48 kHz WAV files.
+It found whole-file relative RMS differences of 5.20% and 4.13% for algorithms
+1 and 32. Qualification is not passed; onset/release timing and the intended
+reference target require resolution before treating these as passing fixtures.
+
 Pitch envelopes now decode the packed/unpacked four-rate/four-level fields,
 start from level four, hold level three and release toward level four. Integer
 Q24 octave state and a fractional tick carry adapt
