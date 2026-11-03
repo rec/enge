@@ -26,6 +26,14 @@ and one-second audio regressions cover held and released notes, feedback and
 partitioned continuation. These snapshots remain specific to the dedicated
 Yamaha renderer, separate from general FM snapshots.
 
+Operator modulation now uses cycles before sine conversion. Feedback uses two
+delayed operator outputs and the power-of-two level scaling described by
+[MSFA's feedback kernel](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/fm_op_kernel.cc).
+Both history samples survive snapshots. Analytic one-second WAV regressions
+cover feedback off, minimum and maximum levels, with both a feedback carrier
+and a feedback modulator. Integer sine/gain quantization and multi-operator
+feedback loops still require reference qualification.
+
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above
 99, which raw voice inspection preserves. Tests exercise packed and unpacked

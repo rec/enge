@@ -126,7 +126,7 @@ class DX7Snapshot(BaseModel, frozen=True):
     envelopes: list[DX7Envelope] = Field(min_length=6, max_length=6)
     pitch_envelope: DX7PitchEnvelope
     phases: list[float] = Field(min_length=6, max_length=6)
-    feedback: float
+    feedback: list[float] = Field(min_length=2, max_length=2)
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -175,7 +175,7 @@ class DX7Renderer:
             [_operator_frequency(operator, note) for operator in voice.operators]
         )
         self.phases = np.zeros(6)
-        self.feedback = 0.0
+        self.feedback = [0.0, 0.0]
         self.order = _operator_order(voice)
 
     def snapshot(self) -> DX7Snapshot:
@@ -187,7 +187,7 @@ class DX7Renderer:
             envelopes=[e.model_copy(deep=True) for e in self.envelopes],
             pitch_envelope=self.pitch_envelope.model_copy(deep=True),
             phases=self.phases.tolist(),
-            feedback=self.feedback,
+            feedback=self.feedback.copy(),
         )
 
     def restore(self, snapshot: DX7Snapshot) -> None:
@@ -201,7 +201,7 @@ class DX7Renderer:
         self.envelopes = [e.model_copy(deep=True) for e in snapshot.envelopes]
         self.pitch_envelope = snapshot.pitch_envelope.model_copy(deep=True)
         self.phases = np.array(snapshot.phases)
-        self.feedback = snapshot.feedback
+        self.feedback = snapshot.feedback.copy()
 
     def release(self) -> None:
         self.pitch_envelope.release()
@@ -224,14 +224,15 @@ class DX7Renderer:
                     for edge in topology.edges
                     if edge.destination - 1 == operator
                 )
-                if operator == feedback_operator:
-                    modulation += self.feedback * self.voice.feedback / 7
+                if operator == feedback_operator and self.voice.feedback:
+                    modulation += sum(self.feedback) / 2 ** (9 - self.voice.feedback)
                 gain = self.envelopes[operator].sample()
                 values[operator] = gain * sin(
-                    2 * pi * self.phases[operator] + modulation
+                    2 * pi * (self.phases[operator] + modulation)
                 )
             output[frame, 0] = sum(values[carrier] for carrier in carriers)
-            self.feedback = values[feedback_operator]
+            self.feedback[0] = self.feedback[1]
+            self.feedback[1] = float(values[feedback_operator])
             self.phases = np.remainder(
                 self.phases + self.frequencies * pitch_ratio / self.sample_rate, 1
             )

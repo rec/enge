@@ -7,7 +7,36 @@ from test_synth import check_audio
 from ufor.dx7 import DX7Voice
 
 from enge.synth import EngineError
-from enge.yamaha import DX7Renderer, DX7Snapshot
+from enge.yamaha import DX7Envelope, DX7Renderer, DX7Snapshot
+
+
+@pytest.mark.parametrize("feedback", [0, 1, 7])
+@pytest.mark.parametrize("algorithm", [31, 32])
+def test_dx7_feedback_uses_two_delayed_cycle_samples(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feedback: int, algorithm: int
+) -> None:
+    def gain(self: DX7Envelope) -> float:
+        return 0.01
+
+    monkeypatch.setattr(DX7Envelope, "sample", gain)
+    data = bytearray(voice().data)
+    data[135] = feedback
+    data[134] = algorithm - 1
+    renderer = DX7Renderer(DX7Voice(data=bytes(data)), note=69, velocity=100)
+    expected = np.empty((48000, 1))
+    sine = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000) * 0.01
+    previous = older = 0.0
+    for i in range(48000):
+        offset = (older + previous) / 2 ** (9 - feedback) if feedback else 0.0
+        value = 0.01 * np.sin(2 * np.pi * (i * 440 / 48000 + offset))
+        expected[i, 0] = (
+            5 * sine[i] + value
+            if algorithm == 32
+            else 4 * sine[i] + 0.01 * np.sin(2 * np.pi * (i * 440 / 48000 + value))
+        )
+        older, previous = previous, value
+    actual = renderer.render(48000)
+    check_audio(tmp_path / "feedback.wav", actual, expected)
 
 
 @pytest.mark.parametrize("released", [False, True])
