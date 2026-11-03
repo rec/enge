@@ -18,6 +18,14 @@ Tests cover octave calibration, release, partitioned continuation and invalid
 pitch parameters. This is not yet a comparison against a complete reference
 renderer's WAV output.
 
+`DX7Renderer.snapshot()` now captures the patch/note definition, six operator
+envelopes, pitch envelope, oscillator phases and delayed feedback. Restore
+rejects a different patch, note, velocity or sample rate and copies mutable
+state so repeated restores do not mutate the saved snapshot. JSON round-trip
+and one-second audio regressions cover held and released notes, feedback and
+partitioned continuation. These snapshots remain specific to the dedicated
+Yamaha renderer, separate from general FM snapshots.
+
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above
 99, which raw voice inspection preserves. Tests exercise packed and unpacked

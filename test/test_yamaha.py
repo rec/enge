@@ -7,7 +7,46 @@ from test_synth import check_audio
 from ufor.dx7 import DX7Voice
 
 from enge.synth import EngineError
-from enge.yamaha import DX7Renderer
+from enge.yamaha import DX7Renderer, DX7Snapshot
+
+
+@pytest.mark.parametrize("released", [False, True])
+def test_dx7_snapshot_replays_feedback_and_envelopes(
+    tmp_path: Path, released: bool
+) -> None:
+    data = bytearray(voice().data)
+    data[134] = 0
+    data[135] = 7
+    data[126:130] = bytes([50] * 4)
+    data[130:134] = bytes([82, 40, 70, 50])
+    renderer = DX7Renderer(DX7Voice(data=bytes(data)), note=69, velocity=100)
+    renderer.render(12345)
+    if released:
+        renderer.release()
+    snapshot = DX7Snapshot.model_validate_json(renderer.snapshot().model_dump_json())
+    saved = snapshot.model_dump_json()
+    expected = renderer.render(48000)
+    assert snapshot.model_dump_json() == saved
+    renderer.restore(snapshot)
+    actual = np.concatenate([renderer.render(997), renderer.render(47003)])
+    check_audio(tmp_path / "dx7-snapshot.wav", actual, expected)
+    renderer.restore(snapshot)
+    check_audio(tmp_path / "dx7-snapshot-reused.wav", renderer.render(48000), expected)
+    assert snapshot.model_dump_json() == saved
+
+
+@pytest.mark.parametrize("difference", ["voice", "note", "velocity", "sample_rate"])
+def test_dx7_snapshot_rejects_different_note_definition(difference: str) -> None:
+    renderer = DX7Renderer(voice(), note=69, velocity=100)
+    raw = renderer.snapshot().model_dump()
+    if difference == "voice":
+        data = bytearray(voice().data)
+        data[135] = 1
+        raw["voice"] = DX7Voice(data=bytes(data))
+    else:
+        raw[difference] += 1
+    with pytest.raises(EngineError, match="different note definition"):
+        renderer.restore(DX7Snapshot.model_validate(raw))
 
 
 def test_pitch_envelope_octave_calibration(tmp_path: Path) -> None:

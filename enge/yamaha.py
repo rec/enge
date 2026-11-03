@@ -118,6 +118,19 @@ class DX7PitchEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class DX7Snapshot(BaseModel, frozen=True):
+    voice: DX7Voice
+    note: int
+    velocity: int
+    sample_rate: int
+    envelopes: list[DX7Envelope] = Field(min_length=6, max_length=6)
+    pitch_envelope: DX7PitchEnvelope
+    phases: list[float] = Field(min_length=6, max_length=6)
+    feedback: float
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class DX7Renderer:
     """Render one DX7 note with native algorithms and Yamaha envelope timing."""
 
@@ -164,6 +177,31 @@ class DX7Renderer:
         self.phases = np.zeros(6)
         self.feedback = 0.0
         self.order = _operator_order(voice)
+
+    def snapshot(self) -> DX7Snapshot:
+        return DX7Snapshot(
+            voice=self.voice.model_copy(deep=True),
+            note=self.note,
+            velocity=self.velocity,
+            sample_rate=self.sample_rate,
+            envelopes=[e.model_copy(deep=True) for e in self.envelopes],
+            pitch_envelope=self.pitch_envelope.model_copy(deep=True),
+            phases=self.phases.tolist(),
+            feedback=self.feedback,
+        )
+
+    def restore(self, snapshot: DX7Snapshot) -> None:
+        if (
+            snapshot.voice.data != self.voice.data
+            or snapshot.note != self.note
+            or snapshot.velocity != self.velocity
+            or snapshot.sample_rate != self.sample_rate
+        ):
+            raise EngineError("DX7 snapshot belongs to a different note definition")
+        self.envelopes = [e.model_copy(deep=True) for e in snapshot.envelopes]
+        self.pitch_envelope = snapshot.pitch_envelope.model_copy(deep=True)
+        self.phases = np.array(snapshot.phases)
+        self.feedback = snapshot.feedback
 
     def release(self) -> None:
         self.pitch_envelope.release()
