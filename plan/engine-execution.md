@@ -28,8 +28,12 @@ The offline NumPy/native sampler and its Python persistent adapter already
 support control routes, generators, filters, pan laws and key/velocity bindings.
 Static key/velocity crossfades now use onset-latched linear or equal-power gains
 in offline and native live rendering, including zero-weight voice ownership and
-snapshot continuation. Remaining preparation restrictions include control-driven
-layer crossfades. Fade retirement now works offline and in native live playback;
+snapshot continuation. Control-driven crossfades now work in offline NumPy/native
+rendering and the Python persistent adapter, using existing scoped control ramps.
+Smoothing precedes the fade law, differing durations remain independent, and
+snapshots retain ramps and voice context ownership. Native live control
+crossfades remain part of the native control integration below.
+Fade retirement now works offline and in native live playback;
 repeated requests retime continuously from the current fade gain. Earlier source or
 envelope completion still ends the voice. Audit remaining restrictions
 against current code before editing because separate work may land concurrently.

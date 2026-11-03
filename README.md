@@ -177,8 +177,7 @@ and [enge's realization](plan/engine-execution.md#dynamic-filters).
 
 Zero-duration amplitude-envelope phases jump immediately to their endpoints;
 their curve values do not affect playback. Nonzero-duration phases use their
-authored curves. Decoding remains with the caller. Equalizers,
-control-driven layer crossfades, and other
+authored curves. Decoding remains with the caller. Equalizers and unsupported
 modulation targets fail explicitly.
 
 Sampler fade retirement multiplies the rendered voice output by a linear ramp
@@ -204,6 +203,11 @@ Key and velocity layer crossfades latch their weights at onset in offline and
 native live samplers. Linear and equal-power curves clamp at their endpoints;
 weights multiply within a slot and layers sum without normalization. Zero-weight
 voices retain selection, lifetime and snapshot ownership.
+Offline NumPy/native rendering and the Python persistent sampler also evaluate
+control-driven crossfades. Instrument, part and trigger controls use their
+declared source smoothing before the fade law, including independent smoothing
+durations for one control. Snapshots retain the ramps and each voice's context.
+Native live control crossfades still require the planned native control integration.
 
 Offline sample instruments accept voice-scoped key and velocity EventBindings in both
 NumPy and native rendering. Each voice retains its prepared start key (0–127)

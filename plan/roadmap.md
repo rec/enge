@@ -26,7 +26,8 @@ runtime coverage; do not implement a second event path.
 1. Persistent modulation supports piecewise linear, step and exponential
    mappings and multiple-route composition with bounded prepared storage and
    shared generator state.
-2. Extend sampler rendering for control-driven crossfades. Delayed starts,
+2. Control-driven crossfades now work offline and in the Python persistent
+   sampler; native live coverage depends on item 3. Delayed starts,
    alignment, directional random offsets, fade retirement, amplitude curves,
    key-event bindings, static key/velocity crossfades and Patch-child
    continuation are implemented.

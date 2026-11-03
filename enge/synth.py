@@ -756,6 +756,7 @@ class ControlRenderer:
         backend: Literal["numpy", "native"] = "numpy",
         control_interval: int = 1,
         tempo_map: TempoMap | None = None,
+        control_sources: list[tuple[str, str, Fraction]] | None = None,
     ) -> None:
         if type(control_interval) is not int or control_interval <= 0:
             raise EngineError("Control interval must be a positive integer")
@@ -778,6 +779,15 @@ class ControlRenderer:
         self.patches: list[PatchState] = []
         self.graphs: dict[str, patch.PatchState] = {}
         self.programs = [envelfo_graph.prepare_graph(s) for s in settings]
+        self.control_sources = list(control_sources or [])
+        for setting in settings:
+            scopes = {s.name: s.scope for s in setting.modulation.sources}
+            self.control_sources.extend(
+                (scopes[b.name], b.control, b.smoothing)
+                for b in setting.bindings
+                if isinstance(b, ControlBinding)
+            )
+        self.control_sources = list(dict.fromkeys(self.control_sources))
         self.new_context("instrument", None, None, 0, {})
 
     def envelfo_time(self, envelfo: EnveLFO, seconds: Fraction) -> Fraction:
@@ -800,28 +810,20 @@ class ControlRenderer:
         velocity: float | None = None,
     ) -> int:
         ramps: list[ControlRamp] = []
-        for setting in self.settings:
-            sources = {s.name: s.scope for s in setting.modulation.sources}
-            for binding in setting.bindings:
-                if not isinstance(binding, ControlBinding):
-                    continue
-                if sources[binding.name] != scope or any(
-                    r.control == binding.control
-                    and r.state.smoothing == binding.smoothing
-                    for r in ramps
-                ):
-                    continue
-                ramps.append(
-                    ControlRamp(
-                        control=binding.control,
-                        state=controls.initial_control(
-                            self.declarations[binding.control],
-                            Fraction(frame, self.sample_rate),
-                            binding.smoothing,
-                            values.get(binding.control),
-                        ),
-                    )
+        for source_scope, name, smoothing in self.control_sources:
+            if source_scope != scope:
+                continue
+            ramps.append(
+                ControlRamp(
+                    control=name,
+                    state=controls.initial_control(
+                        self.declarations[name],
+                        Fraction(frame, self.sample_rate),
+                        smoothing,
+                        values.get(name),
+                    ),
                 )
+            )
         self.contexts.append(
             ControlContext(
                 scope=scope,

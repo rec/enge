@@ -2,7 +2,7 @@
 
 from fractions import Fraction
 from hashlib import sha256
-from math import ceil, cos, isfinite, pi, sin
+from math import ceil, isfinite, pi
 from typing import Literal, cast
 
 import numpy as np
@@ -10,11 +10,11 @@ from envelfo import patch
 from pydantic import Field
 from ufor import instrument_trace
 from ufor.base import Model
-from ufor.samples import enums, instrument, playback, processing, trace
+from ufor.samples import crossfade, enums, instrument, playback, processing, trace
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
 
-from . import filters, sampler, synth
+from . import control, filters, sampler, synth
 
 
 class PreparedSampler(Model, frozen=True):
@@ -35,6 +35,7 @@ class SampleVoiceSnapshot(Model, frozen=True):
     renderer: sampler.SampleVoiceRenderer
     instrument_sources: dict[str, int]
     slot_sources: dict[str, int]
+    crossfade_sources: list[int]
 
 
 class SamplerSnapshot(Model, frozen=True):
@@ -125,10 +126,6 @@ def prepare(
         )
         _validate_settings(settings[slot.name])
         filters.parameters(settings[slot.name].processing.filters, sample_rate, 1)
-        if any(c.input == enums.CrossfadeInput.control for c in slot.crossfades):
-            raise synth.EngineError(
-                "Control-driven sample crossfades are not implemented"
-            )
         selection = slices[slot.slice]
         source_channels = assets[selection.asset].audio.channels
         gains = [1.0] * len(output.channels)
@@ -197,6 +194,12 @@ class OfflineSampler:
             [definition.document.body.settings, *definition.settings.values()],
             backend,
             control_interval,
+            control_sources=[
+                (f.scope, f.control, Fraction(str(f.smoothing_seconds)))
+                for s in self.slots.values()
+                for f in s.crossfades
+                if isinstance(f, crossfade.ControlCrossfade)
+            ],
         )
 
     def advance(
@@ -317,6 +320,16 @@ class OfflineSampler:
         slot, sample, definition = self._voice_definition(action)
         settings = self.definition.settings[slot.name]
         common = self.definition.document.body.settings
+        crossfade_sources: list[int] = []
+        for fade in slot.crossfades:
+            if not isinstance(fade, crossfade.ControlCrossfade):
+                continue
+            part = None if fade.scope == "instrument" else action.part
+            trigger = action.trigger_id if fade.scope == "trigger" else None
+            index = self.controls.context(fade.scope, part, trigger)
+            if index is None:
+                index = self.controls.new_context(fade.scope, part, trigger, 0, {})
+            crossfade_sources.append(index)
         self.voices[action.voice_id] = SampleVoiceSnapshot(
             voice_id=action.voice_id,
             part=action.part,
@@ -329,6 +342,7 @@ class OfflineSampler:
             ),
             instrument_sources=self.controls.sources(common, action, action.velocity),
             slot_sources=self.controls.sources(settings, action, action.velocity),
+            crossfade_sources=crossfade_sources,
         )
         renderer = self.voices[action.voice_id].renderer
         index = (
@@ -462,7 +476,9 @@ class OfflineSampler:
                     self.definition.samples[voice.template],
                     size,
                     ratios,
-                    gains * slot_gains,
+                    gains
+                    * slot_gains
+                    * self._crossfade_gain(voice, start + offset, size),
                     np.concatenate((slot_filters, common_filters), axis=1),
                 )
                 offset += size
@@ -470,6 +486,28 @@ class OfflineSampler:
                 del self.voices[voice.voice_id]
                 self.controls.stop(voice.voice_id)
         return output
+
+    def _crossfade_gain(
+        self, voice: SampleVoiceSnapshot, start: int, frames: int
+    ) -> np.ndarray:
+        gain = np.ones(frames)
+        fades = [
+            f
+            for f in self.slots[voice.template].crossfades
+            if isinstance(f, crossfade.ControlCrossfade)
+        ]
+        for fade, index in zip(fades, voice.crossfade_sources, strict=True):
+            state = next(
+                r.state
+                for r in self.controls.contexts[index].ramps
+                if r.control == fade.control
+                and r.state.smoothing == Fraction(str(fade.smoothing_seconds))
+            )
+            values = control.control_samples(
+                state, start, frames, self.definition.sample_rate
+            )
+            gain *= _crossfade_weight(fade, values)
+        return gain
 
 
 class PersistentSampler(OfflineSampler):
@@ -545,6 +583,14 @@ class PersistentSampler(OfflineSampler):
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         common = self.definition.document.body.settings
+        if any(
+            isinstance(f, crossfade.ControlCrossfade)
+            for s in self.slots.values()
+            for f in s.crossfades
+        ):
+            raise synth.EngineError(
+                "Native live sampler control crossfades are not implemented"
+            )
         all_settings = [common, *self.definition.settings.values()]
         if any(
             s.envelfos
@@ -873,21 +919,25 @@ def _safe_render_frames(
 def _layer_gain(slot: instrument.SampleSlot, action: trace.VoiceStart) -> float:
     gain = 1.0
     for fade in slot.crossfades:
+        if isinstance(fade, crossfade.ControlCrossfade):
+            continue
         value = (
             action.key if fade.input == enums.CrossfadeInput.key else action.velocity
         )
         if value is None:
             raise synth.EngineError("Key crossfade requires resolved onset key")
-        position = min(1.0, max(0.0, (value - fade.start) / (fade.end - fade.start)))
-        inward = fade.direction == enums.FadeDirection.fade_in
-        if fade.curve == enums.FadeCurve.linear or position in (0.0, 1.0):
-            weight = position if inward else 1 - position
-        elif inward:
-            weight = sin(pi * position / 2)
-        else:
-            weight = cos(pi * position / 2)
-        gain *= weight
+        gain *= float(_crossfade_weight(fade, np.asarray(value)))
     return gain
+
+
+def _crossfade_weight(fade: crossfade.Crossfade, values: np.ndarray) -> np.ndarray:
+    position = np.clip((values - fade.start) / (fade.end - fade.start), 0, 1)
+    inward = fade.direction == enums.FadeDirection.fade_in
+    weight = position if inward else 1 - position
+    if fade.curve == enums.FadeCurve.equal_power:
+        curved = np.sin(pi * position / 2) if inward else np.cos(pi * position / 2)
+        weight = np.where((position == 0) | (position == 1), weight, curved)
+    return weight
 
 
 def _maximum_tuning(settings: processing.SoundSettings) -> float:
