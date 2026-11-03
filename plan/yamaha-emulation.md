@@ -92,12 +92,21 @@ owned JSON continuation. Snapshot identity includes both edit buffers, key,
 velocity and output rate. Tests cover all algorithms, mixed waveforms, fixed
 and ratio operators, detune, held/released snapshots and mismatched definitions.
 The initial supported pitch span after transpose is MIDI 13–108 (chip key codes
-0–31); out-of-span notes are rejected. Nonzero key-level/velocity scaling, LFO
-modulation and reverb are rejected until implemented. Velocity is accepted as
+0–31); out-of-span notes are rejected. Nonzero key-level/velocity scaling and LFO
+modulation are rejected until implemented. Velocity is accepted as
 note metadata but has no gain effect when KVS is zero. This is an incomplete
 profile, not completion of the full TX81Z/WT11 requirement. Controller integration,
 DAC/integer quantization, broader malformed-global checks and hardware/reference
 qualification remain work.
+
+ACED reverb rate now prepares a capped effective envelope rate and selects an
+additional post-release stage once raw attenuation reaches 192 (-18 dB in the
+model). Rate zero remains off; a nonzero reverb rate cannot accelerate release.
+The implementation follows ymfm's OPZ rate preparation and envelope transition.
+WAV regressions cover the exact threshold/increment schedule, a slow release,
+repeated key release and JSON continuation. The note-renderer integration also
+covers reverb tails. This parameter controls envelope decay; hardware
+qualification of that behavior remains incomplete.
 
 `tx81z_detune_step` now maps the seven VCED detune settings (neutral 3) and a
 five-bit chip key code to the signed OPZ phase-step offset. It follows

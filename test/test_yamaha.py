@@ -31,7 +31,7 @@ from enge.yamaha import (
         ("voice", 5, 1),
         ("voice", 9, 1),
         ("voice", 56, 1),
-        ("additional", 20, 1),
+        ("additional", 20, 8),
         ("voice", 10, 100),
         ("additional", 3, 8),
     ],
@@ -70,6 +70,7 @@ def test_tx81z_note_renderer_pairs_buffers_and_restores_release_tails(
         extra[(4 - i) * 5 + 3] = [0, 2, 4, 7][i - 1]
     raw[52], raw[53], raw[62] = algorithm - 1, 5, 24
     extra[0], extra[1] = 1, 1
+    extra[20] = 7 if algorithm == 8 else 0
     voice = tx81z.TX81ZVoice(data=bytes(raw))
     additional = tx81z.TX81ZAdditional(data=bytes(extra))
     whole = TX81ZRenderer(voice, additional, 69, 100)
@@ -91,6 +92,70 @@ def test_tx81z_note_renderer_pairs_buffers_and_restores_release_tails(
     np.testing.assert_array_equal(replay.render(24000), tail)
     assert replay.snapshot() == whole.snapshot()
     assert np.max(np.abs(tail[-1000:])) < 0.001
+
+
+def test_tx81z_reverb_cannot_accelerate_a_slow_release(tmp_path: Path) -> None:
+    raw = bytearray(93)
+    raw[39] = 31
+    envelope = TX81ZEnvelope.start(
+        tx81z.TX81ZVoice(data=bytes(raw)).operator(1),
+        tx81z.TX81ZAdditional(data=bytes(23)).operator(1),
+        0,
+        7,
+    )
+    envelope.attenuation = 200
+    plain = envelope.model_copy(deep=True, update={"reverb_rate": 0})
+    bank = TX81ZEnvelopeBank(
+        envelopes=[
+            plain,
+            envelope,
+            plain.model_copy(deep=True),
+            envelope.model_copy(deep=True),
+        ],
+        clock_hz=9216000,
+    )
+    bank.release()
+    actual = bank.attenuation_samples(48000)
+    expected = np.repeat(actual[:, :1], 4, axis=1)
+    np.testing.assert_array_equal(actual, expected)
+    carrier = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000)[:, None]
+    check_audio(
+        tmp_path / "tx81z-slow-release.wav",
+        carrier * 2 ** (-actual / 64),
+        carrier * 2 ** (-expected / 64),
+    )
+
+
+def test_tx81z_reverb_changes_only_the_post_release_decay(tmp_path: Path) -> None:
+    envelope = TX81ZEnvelope(
+        rates=[62, 62, 0, 62], sustain=0, shift=0, attenuation=0, reverb_rate=30
+    )
+    bank = TX81ZEnvelopeBank(
+        envelopes=[envelope.model_copy(deep=True) for _ in range(4)], clock_hz=9216000
+    )
+    bank.release()
+    first = bank.attenuation_samples(25)
+    assert all(e.stage == 4 for e in bank.envelopes)
+    assert first[-1, 0] == 192
+    bank.release()
+    assert all(e.stage == 4 for e in bank.envelopes)
+    saved = TX81ZEnvelopeBank.model_validate_json(bank.model_dump_json())
+    tail = bank.attenuation_samples(47975)
+    actual = np.concatenate([first, tail])
+    frames = np.arange(48000)
+    counts = frames // 16
+    after_threshold = np.maximum(counts - counts // 4 - 1, 0)
+    expected = np.where(
+        frames < 24, frames * 8, np.minimum(192 + after_threshold, 1023)
+    )
+    np.testing.assert_array_equal(actual[:, 0], expected)
+    np.testing.assert_array_equal(saved.attenuation_samples(47975), tail)
+    carrier = np.sin(2 * np.pi * frames * 440 / 48000)[:, None]
+    check_audio(
+        tmp_path / "tx81z-reverb-envelope.wav",
+        carrier * 2 ** (-actual / 64),
+        carrier * 2 ** (-expected[:, None] / 64) * np.ones((1, 4)),
+    )
 
 
 @pytest.mark.parametrize(

@@ -33,8 +33,9 @@ class TX81ZEnvelope(BaseModel):
     rates: list[int] = Field(min_length=4, max_length=4)
     sustain: int = Field(ge=0, le=1023)
     shift: int = Field(ge=0, le=3)
+    reverb_rate: int = Field(default=0, ge=0, le=63)
     attenuation: int = Field(default=1023, ge=0, le=1023)
-    stage: int = Field(default=0, ge=0, le=3)
+    stage: int = Field(default=0, ge=0, le=4)
 
     @classmethod
     def start(
@@ -42,11 +43,14 @@ class TX81ZEnvelope(BaseModel):
         operator: tx81z.TX81ZOperator,
         additional: tx81z.TX81ZAdditionalOperator,
         key_code: int,
+        reverb: int = 0,
     ) -> "TX81ZEnvelope":
         if operator.number != additional.number:
             raise EngineError("TX81Z envelope requires matching VCED/ACED operators")
         if not 0 <= key_code <= 31:
             raise EngineError("TX81Z key code must be from 0 through 31")
+        if not 0 <= reverb <= 7:
+            raise EngineError("TX81Z reverb rate must be from 0 through 7")
         scaling = key_code >> (operator.rate_scaling ^ 3)
         rates = [
             min(63, r + scaling) if r else 0
@@ -63,11 +67,15 @@ class TX81ZEnvelope(BaseModel):
             rates=rates,
             sustain=sustain * 32,
             shift=0 if operator.number == 1 else additional.eg_shift,
+            reverb_rate=min(rates[3], min(63, reverb * 4 + 2 + scaling))
+            if reverb
+            else 0,
             attenuation=0 if rates[0] >= 62 else 1023,
         )
 
     def release(self) -> None:
-        self.stage = 3
+        if self.stage < 3:
+            self.stage = 3
 
     def clock(self, counter: int) -> int:
         """Advance one shared envelope observation and return shifted attenuation."""
@@ -77,7 +85,7 @@ class TX81ZEnvelope(BaseModel):
             self.stage = 1
         if self.stage == 1 and self.attenuation >= self.sustain:
             self.stage = 2
-        rate = self.rates[self.stage]
+        rate = self.reverb_rate if self.stage == 4 else self.rates[self.stage]
         shift = rate >> 2
         scaled = counter << shift
         if scaled & 2047 == 0:
@@ -88,6 +96,8 @@ class TX81ZEnvelope(BaseModel):
                     self.attenuation += (~self.attenuation * increment) >> 4
             else:
                 self.attenuation = min(1023, self.attenuation + increment)
+                if self.stage == 3 and self.reverb_rate and self.attenuation >= 192:
+                    self.stage = 4
         return self.attenuation >> self.shift
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -142,7 +152,7 @@ class TX81ZSnapshot(BaseModel, frozen=True):
 class TX81ZRenderer:
     """Offline provisional four-operator note renderer with explicit edit buffers.
 
-    LFO modulation, reverb and velocity/key-level scaling remain unsupported.
+    LFO modulation and velocity/key-level scaling remain unsupported.
     Frequencies and waveforms use the nominal floating-point OPZ model.
     """
 
@@ -165,8 +175,8 @@ class TX81ZRenderer:
             raise EngineError(
                 "TX81Z key-level and velocity scaling are not implemented"
             )
-        if voice.data[56] or voice.data[57] or additional.data[20]:
-            raise EngineError("TX81Z LFO modulation and reverb are not implemented")
+        if voice.data[56] or voice.data[57]:
+            raise EngineError("TX81Z LFO modulation is not implemented")
         sounding_note = note + voice.data[62] - 24
         key_code = (sounding_note - 13) // 3
         if not 0 <= key_code <= 31:
@@ -180,7 +190,12 @@ class TX81ZRenderer:
         self.sample_rate = sample_rate
         self.envelopes = TX81ZEnvelopeBank(
             envelopes=[
-                TX81ZEnvelope.start(voice.operator(i), additional.operator(i), key_code)
+                TX81ZEnvelope.start(
+                    voice.operator(i),
+                    additional.operator(i),
+                    key_code,
+                    additional.data[20],
+                )
                 for i in range(1, 5)
             ],
             sample_rate=sample_rate,
