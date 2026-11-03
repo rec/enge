@@ -594,7 +594,9 @@ class PersistentFM(synth.PersistentSynth):
             self.staged_envelfo_sources,
             event_connections,
             route_maps,
-        ) = synth._persistent_modulation(shared, template, source_parameters)
+        ) = synth._persistent_modulation(
+            shared.sample_rate, shared.instrument.controls, template, source_parameters
+        )
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
         self.runtime = _native.SynthRuntime.fm_graph(

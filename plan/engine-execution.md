@@ -56,8 +56,8 @@ Native live sample voices now reuse the block renderer's multichannel filter
 bank for fixed filter chains. Each voice has preallocated integrator state,
 reset on slot reuse and retained in snapshots. Slot filters precede instrument
 filters; both amplitude orders are supported, without a tail after exhaustion.
-Native live registration still rejects controls, generators and control-driven
-filter parameters. The user approved extending that sampler with the existing
+Native live registration still rejects generators and control-driven filter
+parameters. The user approved extending that sampler with the existing
 native control/filter machinery on 2026-11-02, preserving bounded callback storage.
 The generated runtimes' existing control ramps, scoped contexts and voice
 bindings now live in a shared native `ControlBank`, including context retirement
@@ -68,8 +68,12 @@ generated runtimes' precise route accumulation. Ramps advance during delayed
 starts, trigger contexts retire with their voices, and snapshots retain ramps
 and bindings. Direct native regressions cover interrupted fractional smoothing,
 context initialization and partition-independent continuation. Python sampler
-admission still rejects these settings until its preparation and action encoding
-are connected; dynamic filter targets, crossfades and generators remain work.
+preparation now shares the generated-source modulation compiler and admits
+authored amplitude/tuning controls. Context capacity is explicit and snapshots
+retain Python address ownership alongside native state. Regressions cover common
+and inherited slot routes with different smoothing, controls while silent,
+overlapping parts, reused trigger names with release tails and capacity rejection.
+Dynamic filter targets, crossfades, event bindings and generators remain work.
 
 The completion audit also found authored playback fields that are not yet
 consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,

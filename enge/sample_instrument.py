@@ -58,6 +58,20 @@ class PersistentSamplerSnapshot(Model, frozen=True):
     voice_capacity: int
     action_capacity: int
     native_voices: dict[str, "NativeSampleVoice"]
+    context_capacity: int
+    native_contexts: list["NativeSampleContext"]
+
+
+class NativeSampleContext(Model, frozen=True):
+    source: int
+    index: int
+    part: str
+    trigger_id: str | None
+
+
+class NativeSampleControls(Model, frozen=True):
+    names: list[str]
+    scopes: list[str]
 
 
 class NativeSampleVoice(Model, frozen=True):
@@ -518,6 +532,7 @@ class PersistentSampler(OfflineSampler):
         definition: PreparedSampler,
         voices: int = 16,
         action_capacity: int = 64,
+        context_capacity: int = 64,
     ) -> None:
         if type(voices) is not int or voices <= 0:
             raise synth.EngineError(
@@ -528,10 +543,17 @@ class PersistentSampler(OfflineSampler):
                 "Persistent sampler action capacity must be positive"
             )
         super().__init__(definition, backend="native")
+        if type(context_capacity) is not int or context_capacity <= 0:
+            raise synth.EngineError(
+                "Persistent sampler context capacity must be positive"
+            )
+        self.context_capacity = context_capacity
         self.voice_capacity = voices
         self.action_capacity = action_capacity
         self.native_sources: dict[str, int] = {}
         self.native_voices: dict[str, NativeSampleVoice] = {}
+        self.native_controls: dict[int, NativeSampleControls] = {}
+        self.native_contexts: list[NativeSampleContext] = []
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -565,6 +587,8 @@ class PersistentSampler(OfflineSampler):
             voice_capacity=self.voice_capacity,
             action_capacity=self.action_capacity,
             native_voices=self.native_voices.copy(),
+            context_capacity=self.context_capacity,
+            native_contexts=self.native_contexts.copy(),
         )
 
     def restore(  # ty: ignore[invalid-method-override]
@@ -574,8 +598,11 @@ class PersistentSampler(OfflineSampler):
             raise synth.EngineError("Snapshot belongs to a different voice capacity")
         if snapshot.action_capacity != self.action_capacity:
             raise synth.EngineError("Snapshot belongs to a different action capacity")
+        if snapshot.context_capacity != self.context_capacity:
+            raise synth.EngineError("Snapshot belongs to a different context capacity")
         super().restore(snapshot.state)
         self.native_voices = snapshot.native_voices.copy()
+        self.native_contexts = snapshot.native_contexts.copy()
 
     def add_to_native_live(self, runtime: object, batch_capacity: int) -> None:
         from . import _native
@@ -594,14 +621,14 @@ class PersistentSampler(OfflineSampler):
         all_settings = [common, *self.definition.settings.values()]
         if any(
             s.envelfos
-            or s.bindings
-            or s.modulation.sources
-            or s.modulation.parameters
-            or s.modulation.routes
+            or any(not isinstance(b, processing.ControlBinding) for b in s.bindings)
+            or any(r.target.name != "processing" for r in s.modulation.routes)
+            or any(p.target.name != "processing" for p in s.modulation.parameters)
             for s in all_settings
         ):
             raise synth.EngineError(
-                "Native live sampler controls and generators are not implemented"
+                "Native live sampler generators, event bindings and dynamic filters "
+                "are not implemented"
             )
         for slot in self.definition.document.body.slots:
             sample = self.definition.samples[slot.name]
@@ -667,6 +694,44 @@ class PersistentSampler(OfflineSampler):
                 filters.native_inputs(filter_definitions, filter_states, filter_values),
                 filter_order == processing.FilterOrder.after_amplitude,
             )
+            rows = []
+            smoothing = []
+            parameters = []
+            maps = []
+            names = []
+            scopes = []
+            for group, template in enumerate((common, settings)):
+                prepared = synth._persistent_modulation(
+                    self.definition.sample_rate,
+                    common.controls,
+                    template.model_copy(
+                        update={
+                            "processing": template.processing.model_copy(
+                                update={"filters": []}
+                            )
+                        }
+                    ),
+                )
+                controls = prepared[0]
+                controls[:, 2] += 2 * group
+                rows.append(controls)
+                smoothing.extend(prepared[1])
+                parameters.extend(prepared[2])
+                scopes.extend(prepared[4])
+                names.extend(prepared[5])
+                maps.extend(prepared[-1][0])
+            source = self.native_sources[slot.name]
+            runtime.set_sample_controls(
+                source,
+                np.concatenate(rows),
+                smoothing,
+                parameters,
+                maps,
+                self.context_capacity,
+            )
+            self.native_controls[source] = NativeSampleControls(
+                names=names, scopes=scopes
+            )
 
     def native_live_actions(
         self,
@@ -692,6 +757,10 @@ class PersistentSampler(OfflineSampler):
             source: runtime.active_slots(source)
             for source in self.native_sources.values()
         }
+        contexts = {s: runtime.active_contexts(s) for s in self.native_sources.values()}
+        self.native_contexts = [
+            c for c in self.native_contexts if contexts[c.source][c.index]
+        ]
         self.native_voices = {
             name: voice
             for name, voice in self.native_voices.items()
@@ -702,9 +771,79 @@ class PersistentSampler(OfflineSampler):
         }
         for action in ordered:
             offset = action.tick - start
-            if isinstance(action, instrument_trace.TriggerContext) or isinstance(
-                action, instrument_trace.Diagnostic
-            ):
+            if isinstance(action, instrument_trace.Diagnostic):
+                continue
+            if isinstance(action, instrument_trace.TriggerContext):
+                declarations = self.definition.document.body.settings.controls
+                if action.controls.keys() != declarations.keys():
+                    raise synth.EngineError(
+                        "Trigger context must contain all declared controls"
+                    )
+                for name, value in action.controls.items():
+                    declarations[name].validate_value(value)
+                for source, controls in self.native_controls.items():
+                    if "trigger" not in controls.scopes:
+                        continue
+                    context = self._native_context(
+                        source,
+                        action.part,
+                        action.trigger_id,
+                        contexts[source],
+                        encoded[source],
+                        offset,
+                    )
+                    for index, (name, scope) in enumerate(
+                        zip(controls.names, controls.scopes, strict=True)
+                    ):
+                        if scope == "trigger":
+                            encoded[source].append(
+                                [offset, 10, context, index, action.controls[name], 0]
+                            )
+                continue
+            if isinstance(action, instrument_trace.ControlObservation):
+                declaration = self.definition.document.body.settings.controls.get(
+                    action.control
+                )
+                if declaration is None:
+                    raise synth.EngineError(f"Unknown control: {action.control}")
+                declaration.validate_value(action.value)
+                for source, controls in self.native_controls.items():
+                    indices = [
+                        i
+                        for i, (n, s) in enumerate(
+                            zip(controls.names, controls.scopes, strict=True)
+                        )
+                        if (n, s) == (action.control, action.scope)
+                    ]
+                    if not indices:
+                        continue
+                    context = -1
+                    if action.scope == "part":
+                        assert action.part is not None
+                        context = self._native_context(
+                            source,
+                            action.part,
+                            None,
+                            contexts[source],
+                            encoded[source],
+                            offset,
+                        )
+                    elif action.scope == "trigger":
+                        context = next(
+                            (
+                                c.index
+                                for c in self.native_contexts
+                                if (c.source, c.part, c.trigger_id)
+                                == (source, action.part, action.trigger_id)
+                            ),
+                            -1,
+                        )
+                        if context == -1:
+                            continue
+                    for index in indices:
+                        encoded[source].append(
+                            [offset, 7, index, action.value, context, 0]
+                        )
                 continue
             if isinstance(action, instrument_trace.TriggerRelease):
                 for name, voice in list(self.native_voices.items()):
@@ -746,10 +885,6 @@ class PersistentSampler(OfflineSampler):
                     started_frame=action.tick + delay,
                     trigger=slot.trigger,
                 )
-                tuning = (
-                    self.definition.document.body.settings.processing.tuning_cents
-                    + self.definition.settings[slot.name].processing.tuning_cents
-                )
                 position_offset = (
                     action.alignment_frames
                     + (-1 if sample.playback.direction == Direction.backward else 1)
@@ -764,13 +899,40 @@ class PersistentSampler(OfflineSampler):
                         offset,
                         0,
                         voice,
-                        definition.pitch_ratio
-                        * np.exp2(tuning / 1200)
-                        * sample.native_rate,
+                        definition.pitch_ratio * sample.native_rate,
                         definition.gain,
                         position_offset,
                     ]
                 )
+                scopes = self.native_controls[source].scopes
+                part_context = -1
+                if "part" in scopes:
+                    part_context = self._native_context(
+                        source,
+                        action.part,
+                        None,
+                        contexts[source],
+                        encoded[source],
+                        offset,
+                    )
+                trigger_context = next(
+                    (
+                        c.index
+                        for c in self.native_contexts
+                        if "trigger" in scopes
+                        and (c.source, c.part, c.trigger_id)
+                        == (source, action.part, action.trigger_id)
+                    ),
+                    -1,
+                )
+                if "trigger" in scopes and trigger_context == -1:
+                    raise synth.EngineError(
+                        "Voice is missing its trigger control context"
+                    )
+                if part_context != -1 or trigger_context != -1:
+                    encoded[source].append(
+                        [offset, 8, voice, part_context, trigger_context, 0]
+                    )
                 if delay:
                     encoded[source].append([offset, 6, voice, delay, 0, 0])
             elif isinstance(action, instrument_trace.VoiceRetirement):
@@ -830,6 +992,8 @@ class PersistentSampler(OfflineSampler):
                     f"Unsupported native live sampler action at frame {action.tick}: "
                     f"{type(action).__name__}"
                 )
+        if any(len(r) > self.action_capacity for r in encoded.values()):
+            raise synth.EngineError("Persistent sampler action capacity exceeded")
         return {
             source: np.asarray(rows, dtype=np.float64).reshape(-1, 6)
             for source, rows in encoded.items()
@@ -850,6 +1014,39 @@ class PersistentSampler(OfflineSampler):
             if active[voice.source][voice.slot]
         }
         self.frame = end
+
+    def _native_context(
+        self,
+        source: int,
+        part: str,
+        trigger_id: str | None,
+        used: list[bool],
+        rows: list[list[float]],
+        offset: int,
+    ) -> int:
+        previous = next(
+            (
+                c
+                for c in self.native_contexts
+                if (c.source, c.part, c.trigger_id) == (source, part, trigger_id)
+            ),
+            None,
+        )
+        if previous is not None and trigger_id is None:
+            return previous.index
+        index = next((i for i, u in enumerate(used) if not u), None)
+        if index is None:
+            raise synth.EngineError("Persistent sampler context capacity exceeded")
+        used[index] = True
+        if previous is not None:
+            self.native_contexts.remove(previous)
+        self.native_contexts.append(
+            NativeSampleContext(
+                source=source, index=index, part=part, trigger_id=trigger_id
+            )
+        )
+        rows.append([offset, 9, index, 1 if trigger_id is None else 2, 0, 0])
+        return index
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if (

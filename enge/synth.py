@@ -1874,7 +1874,9 @@ class PersistentSynth:
             self.staged_envelfo_sources,
             event_connections,
             route_maps,
-        ) = _persistent_modulation(definition, template)
+        ) = _persistent_modulation(
+            definition.sample_rate, definition.instrument.controls, template
+        )
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
         self.runtime = _native.SynthRuntime(
@@ -3079,7 +3081,8 @@ def _threshold_runtime_connections(
 
 
 def _persistent_modulation(
-    definition: PreparedSynth,
+    sample_rate: int,
+    declarations: dict[str, controls.ControlDeclaration],
     template: SoundSettings,
     source_parameters: list[
         tuple[tuple[str, str], int, modulation.Operation, float, float, float]
@@ -3160,7 +3163,7 @@ def _persistent_modulation(
         parameter_values[index * 3 : index * 3 + 3] = [default, minimum, maximum]
     runtime_filters: list[list[float]] = []
     for filter_definition in template.processing.filters:
-        cutoff_maximum = definition.sample_rate / 2 * filter_definition.nyquist_ratio
+        cutoff_maximum = sample_rate / 2 * filter_definition.nyquist_ratio
         cutoff_default = min(
             max(filter_definition.cutoff_hz, filter_definition.minimum_hz),
             cutoff_maximum,
@@ -3286,7 +3289,7 @@ def _persistent_modulation(
         operation = route.operation
         source_scopes.add(source.scope)
         declaration = (
-            definition.instrument.controls[binding.control]
+            declarations[binding.control]
             if isinstance(binding, ControlBinding)
             else None
         )
@@ -3317,7 +3320,7 @@ def _persistent_modulation(
                     source.maximum,
                 ]
             )
-            duration = binding.smoothing * definition.sample_rate
+            duration = binding.smoothing * sample_rate
             smoothing.append((duration.numerator, duration.denominator))
             control_sources.setdefault(binding.control, []).append(index)
             control_scopes.append(source.scope)
@@ -3359,9 +3362,7 @@ def _persistent_modulation(
                     len(envelope_initials)
                 )
                 envelope_initials.append(generator.initial)
-                duration_scale = (
-                    1 if envelfo.clock == "beats" else definition.sample_rate
-                )
+                duration_scale = 1 if envelfo.clock == "beats" else sample_rate
                 envelope_attacks.append(
                     _runtime_segments(generator.segments, duration_scale)
                 )
@@ -3386,7 +3387,7 @@ def _persistent_modulation(
                 staged_envelfos.append(
                     _runtime_staged_envelfo(
                         envelfo,
-                        definition.sample_rate,
+                        sample_rate,
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
                         envelfo.clock == "beats",
@@ -3420,10 +3421,8 @@ def _persistent_modulation(
                 generator.duty_cycle,
                 generator.rate,
                 generator.phase,
-                generator.delay
-                * (1 if envelfo.clock == "beats" else definition.sample_rate),
-                generator.fade_in
-                * (1 if envelfo.clock == "beats" else definition.sample_rate),
+                generator.delay * (1 if envelfo.clock == "beats" else sample_rate),
+                generator.fade_in * (1 if envelfo.clock == "beats" else sample_rate),
             ):
                 assert isinstance(value, Fraction)
                 lfo_rationals.append((value.numerator, value.denominator))
@@ -3475,10 +3474,8 @@ def _persistent_modulation(
                 generator.duty_cycle,
                 generator.rate,
                 generator.phase,
-                generator.delay
-                * (1 if envelfo.clock == "beats" else definition.sample_rate),
-                generator.fade_in
-                * (1 if envelfo.clock == "beats" else definition.sample_rate),
+                generator.delay * (1 if envelfo.clock == "beats" else sample_rate),
+                generator.fade_in * (1 if envelfo.clock == "beats" else sample_rate),
             ):
                 assert isinstance(value, Fraction)
                 lfo_rationals.append((value.numerator, value.denominator))
@@ -3488,7 +3485,7 @@ def _persistent_modulation(
             assert isinstance(generator.initial, float)
             if envelfo.scope != "voice":
                 raise EngineError("Persistent named envelopes require voice scope")
-            duration_scale = 1 if envelfo.clock == "beats" else definition.sample_rate
+            duration_scale = 1 if envelfo.clock == "beats" else sample_rate
             named_envelfo_sources.setdefault(binding.reference, []).append(
                 len(envelope_initials)
             )
@@ -3516,7 +3513,7 @@ def _persistent_modulation(
         )
         staged_envelfos.append(
             _runtime_staged_envelfo(
-                envelfo, definition.sample_rate, None, 0, envelfo.clock == "beats"
+                envelfo, sample_rate, None, 0, envelfo.clock == "beats"
             )
         )
     event_connections = [
@@ -3533,7 +3530,7 @@ def _persistent_modulation(
                 cast(processing.GeneratorBinding, bindings[c.destination]).reference
                 + f":cue-{order}",
             ),
-            _runtime_event_delay(c.delay, definition.sample_rate),
+            _runtime_event_delay(c.delay, sample_rate),
         )
         for order, c in enumerate(template.event_connections)
         if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)
