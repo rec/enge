@@ -65,6 +65,13 @@ errors before preparing DSP state. It also rejects envelope rates/levels above
 voices without changing their stored bytes. This does not yet qualify all
 global Yamaha parameters or dump-to-engine integration.
 
+DX7 note admission now validates oscillator sync, LFO speed/delay/depth,
+LFO sync/waveform, pitch sensitivity and transpose ranges in both packed and
+unpacked inputs. Unpacked oscillator mode must also be 0 or 1. Rejected voices
+remain losslessly inspectable. Boundary tests include waveform 5 (sample and
+hold), which is implemented in the pinned MSFA reference. Validation does not
+implement the missing LFO, transpose or oscillator-sync behavior.
+
 Fixed-frequency operators now use the low two coarse bits and key-independent,
 positive-only logarithmic detune, following the frequency equations in
 [MSFA's DX7 note implementation](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/dx7note.cc).

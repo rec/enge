@@ -409,6 +409,27 @@ class DX7Renderer:
             raise EngineError(diagnostic)
         if any(v > 99 for o in voice.operators for v in (*o.rates, *o.levels)):
             raise EngineError("DX7 envelope rates and levels must be from 0 through 99")
+        if voice.packed:
+            data = voice.data
+            parameters = [
+                (data[111] >> 3) & 1,
+                *data[112:116],
+                data[116] & 1,
+                (data[116] >> 1) & 7,
+                data[116] >> 4,
+                data[117],
+            ]
+        else:
+            parameters = list(voice.data[136:145])
+            if any(voice.data[i + 17] > 1 for i in range(0, 126, 21)):
+                raise EngineError("DX7 oscillator mode must be 0 or 1")
+        for index, (value, maximum) in enumerate(
+            zip(parameters, _DX7_GLOBAL_LIMITS, strict=True), start=136
+        ):
+            if value > maximum:
+                raise EngineError(
+                    f"DX7 parameter {index} must be from 0 through {maximum}"
+                )
         if not 0 <= note <= 127:
             raise EngineError("DX7 note must be from 0 through 127")
         if not 0 <= velocity <= 127:
@@ -1384,4 +1405,17 @@ _TX_GLOBAL_LIMITS = [
     99,  # Breath control amplitude
     99,  # Breath control pitch bias
     99,  # Breath control EG bias
+]
+
+# Unpacked DX7 globals 136..144; packed globals decode to the same order.
+_DX7_GLOBAL_LIMITS = [
+    1,  # Oscillator sync
+    99,  # LFO speed
+    99,  # LFO delay
+    99,  # Pitch modulation depth
+    99,  # Amplitude modulation depth
+    1,  # LFO sync
+    5,  # LFO waveform, including sample-and-hold
+    7,  # Pitch modulation sensitivity
+    48,  # Transpose
 ]
