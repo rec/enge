@@ -19,6 +19,10 @@ in uFor. Its correction reduced held-section relative RMS error from 35.234%
 to 0.2432%; the other algorithms were unchanged. The report includes sweep
 measurements and the corrected algorithm 23 recordings. Uniform operator
 settings and disabled feedback limit what this sweep proves.
+An asymmetric all-algorithm sweep now gives each operator a distinct ratio and
+level. Held-section relative RMS errors range from 0.213% to 0.665%, with no
+new routing outlier. Whole-file errors remain 4.16% to 5.86%; qualification is
+still incomplete. The report includes the sweep and worst-held-case audio pair.
 
 Pitch envelopes now decode the packed/unpacked four-rate/four-level fields,
 start from level four, hold level three and release toward level four. Integer

@@ -36,8 +36,8 @@ enge updates envelopes per sample. MSFA also uses integer frequency and sine
 lookup tables, whereas enge uses floating-point oscillators. These observations
 identify candidate causes, not a complete attribution of the measured error.
 Matching those block artifacts versus retaining per-sample execution requires
-a target decision. Hardware qualification, nonzero feedback, modulation,
-other algorithms and arbitrary patches remain unverified.
+a target decision. Hardware qualification, nonzero feedback, time-varying
+pitch/LFO modulation and arbitrary patches remain unverified.
 
 ## All-algorithm sweep and algorithm 23 correction
 
@@ -61,6 +61,27 @@ The corrected [ENGE-REF23 MSFA](ENGE-REF23-msfa.wav) and
 Construct each sweep patch from ENGE-REF01 by changing offset 134 to
 `algorithm - 1` and the ten title bytes to `ENGE-REFnn`, where `nn` is the
 two-digit algorithm number.
+
+## Asymmetric operator sweep
+
+The [asymmetric sweep](asymmetric-algorithm-sweep.csv) uses enge `bffac67` and
+the same pinned MSFA source, note, velocity, timing and neutral controller state.
+The six visible operators OP1 through OP6 use ratios 1/2/3/4/5/6 and output
+levels 80/77/74/71/68/65, respectively. Other patch parameters match ENGE-REF01.
+Titles are `ENGE-ASYnn`, with `nn` identifying the algorithm.
+
+Held-section relative RMS error ranges from 0.2135% (algorithm 26/27) to
+0.6655% (algorithm 16). Whole-file relative RMS error ranges from 4.1626%
+to 5.8586%. No further routing outlier appeared. Differing operators remove
+some symmetries of the uniform sweep, but this remains one constructed patch
+family with feedback disabled, not exhaustive topology or hardware proof.
+
+The raw ENGE-ASY16 VCED payload and paired
+[MSFA](ENGE-ASY16-msfa.wav) and [enge](ENGE-ASY16-enge.wav) recordings capture
+the largest held-section discrepancy in this sweep. WAV scaling and the held
+section use the same definitions as above. CSV error columns are fractions;
+maximum absolute error and signal RMS values use unscaled upstream Q24/2**24
+amplitude units.
 
 ## Reproducing the reference
 
