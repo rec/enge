@@ -123,11 +123,22 @@ Fixed-frequency mode bypasses this detune path in the reference model.
 and its [reported TX81Z carrier-headroom measurements](https://github.com/richotero/dxconvert/blob/master/DXconvert/fb01.py).
 Carrier offsets are 8, 13 and 16 TL steps for two-, three- and four-carrier
 algorithms; modulators retain the unadjusted level curve. Saturation is at TL
-127. This nominal floating gain does not include integer DAC/sine quantization,
-velocity, key scaling or envelope attenuation. Regressions cover curve boundaries
+127. This nominal floating gain does not include integer DAC/sine quantization
+or envelope attenuation. Regressions cover curve boundaries
 and headroom, plus a one-second paired VCED/ACED integration through nominal
 frequency, shared envelope clock, gain conversion, operator mixing and release.
 These are model-level checks, not new hardware measurements.
+
+The same gain preparer now accepts a decoded operator, MIDI key and velocity
+and sums key-level/velocity attenuation before the TL clamp. The discrete tables
+come from [androuet's TX81Z register analysis](https://nornand.hatenablog.com/entry/2020/11/21/201911),
+including three-key level-scaling groups, the documented high-key wrap and
+all seven nonzero KVS curves. KVS zero adds no attenuation. Velocity zero with
+nonzero KVS is rejected because the measurement table covers only 1–127.
+Focused WAV regressions cover boundaries and combined saturation. The note
+renderer still rejects nonzero scaling while the transpose/scaling rule and
+velocity-zero note-creation contract await a decision. Applying the table in
+the gain primitive does not establish audio or hardware qualification.
 
 The numeric `tx81z_operator_samples` kernel now renders all eight four-operator
 graphs in visible OP1–OP4 order, with OP4 two-sample feedback, independent

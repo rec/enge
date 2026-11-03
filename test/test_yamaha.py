@@ -235,10 +235,72 @@ def test_tx81z_detune_preserves_sign_and_key_dependent_chip_steps(
 def test_tx81z_output_level_curve_and_carrier_headroom(
     tmp_path: Path, level: int, algorithm: int, operator: int, expected: float
 ) -> None:
-    gain = tx81z_output_gain(level, algorithm, operator)
+    raw = bytearray(93)
+    raw[(4 - operator) * 13 + 10] = level
+    gain = tx81z_output_gain(
+        tx81z.TX81ZVoice(data=bytes(raw)).operator(operator), algorithm, 69, 127
+    )
     assert gain == expected
     carrier = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000)[:, None]
     check_audio(tmp_path / "tx81z-output-level.wav", carrier * gain, carrier * expected)
+
+
+@pytest.mark.parametrize(
+    "scaling,note,sensitivity,velocity,level,algorithm,attenuation",
+    [
+        (99, 0, 0, 127, 99, 1, 0),
+        (99, 30, 0, 127, 99, 1, 0),
+        (99, 31, 0, 127, 99, 1, 1),
+        (99, 36, 0, 127, 99, 1, 1),
+        (99, 37, 0, 127, 99, 1, 2),
+        (50, 69, 0, 127, 99, 1, 7),
+        (66, 84, 0, 127, 99, 1, 22),
+        (1, 108, 0, 127, 99, 1, 0),
+        (50, 108, 0, 127, 99, 1, 63),
+        (99, 108, 0, 127, 99, 1, 127),
+        (99, 109, 0, 127, 99, 1, 79),
+        (99, 120, 0, 127, 99, 1, 127),
+        (99, 121, 0, 127, 99, 1, 79),
+        (99, 127, 0, 127, 99, 1, 111),
+        (0, 69, 0, 1, 99, 1, 0),
+        (0, 69, 1, 1, 99, 1, 18),
+        (0, 69, 7, 1, 99, 1, 84),
+        (0, 69, 4, 2, 99, 1, 48),
+        (0, 69, 7, 50, 99, 1, 28),
+        (0, 69, 7, 100, 99, 1, 7),
+        (0, 69, 1, 127, 99, 1, 6),
+        (0, 69, 7, 127, 99, 1, 0),
+        (50, 69, 7, 1, 91, 8, 115),
+        (99, 108, 7, 1, 0, 8, 127),
+    ],
+)
+def test_tx81z_total_level_combines_measured_key_and_velocity_attenuation(
+    tmp_path: Path,
+    scaling: int,
+    note: int,
+    sensitivity: int,
+    velocity: int,
+    level: int,
+    algorithm: int,
+    attenuation: int,
+) -> None:
+    raw = bytearray(93)
+    raw[44], raw[48], raw[49] = scaling, sensitivity, level
+    operator = tx81z.TX81ZVoice(data=bytes(raw)).operator(1)
+    gain = tx81z_output_gain(operator, algorithm, note, velocity)
+    expected = 2 ** (-attenuation / 8)
+    assert gain == expected
+    carrier = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000)[:, None]
+    check_audio(tmp_path / "tx81z-key-level.wav", carrier * gain, carrier * expected)
+
+
+@pytest.mark.parametrize("velocity", [0, -1, 128])
+def test_tx81z_velocity_scaling_rejects_unmeasured_velocities(velocity: int) -> None:
+    raw = bytearray(93)
+    raw[48] = 7
+    operator = tx81z.TX81ZVoice(data=bytes(raw)).operator(1)
+    with pytest.raises(EngineError, match="note-on velocity"):
+        tx81z_output_gain(operator, 1, 69, velocity)
 
 
 def test_tx81z_prepared_patch_components_render_and_release(tmp_path: Path) -> None:
@@ -267,7 +329,7 @@ def test_tx81z_prepared_patch_components_render_and_release(tmp_path: Path) -> N
     )
     levels = np.array(
         [
-            tx81z_output_gain(voice.operator(i).output_level, voice.algorithm, i)
+            tx81z_output_gain(voice.operator(i), voice.algorithm, 69, 127)
             for i in range(1, 5)
         ]
     )
