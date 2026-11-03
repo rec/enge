@@ -38,6 +38,7 @@ struct SampleRuntime {
     gains: Vec<f64>,
     active: Vec<bool>,
     ages: Vec<usize>,
+    delays: Vec<usize>,
     release_frames: Vec<Option<f64>>,
     fade_starts: Vec<Option<usize>>,
     fade_frames: Vec<f64>,
@@ -337,6 +338,7 @@ impl LiveRuntime {
             gains: vec![0.0; voices],
             active: vec![false; voices],
             ages: vec![0; voices],
+            delays: vec![0; voices],
             release_frames: vec![None; voices],
             fade_starts: vec![None; voices],
             fade_frames: vec![1.0; voices],
@@ -1436,6 +1438,10 @@ impl SampleRuntime {
                 if !self.active[voice] {
                     continue;
                 }
+                if self.delays[voice] > 0 {
+                    self.delays[voice] -= 1;
+                    continue;
+                }
                 let age = self.ages[voice] as f64;
                 let fade = self.fade_starts[voice].map_or(1.0, |start| {
                     self.fade_gains[voice]
@@ -1549,6 +1555,7 @@ impl SampleRuntime {
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;
+                self.delays[voice] = 0;
                 self.amplitude_states[voice] = self.amplitude.start()?;
                 self.release_frames[voice] = None;
                 self.fade_starts[voice] = None;
@@ -1609,6 +1616,18 @@ impl SampleRuntime {
                     self.fade_starts[voice] = Some(self.ages[voice]);
                     self.fade_frames[voice] = action[3];
                 }
+            }
+            6 => {
+                if !action[3].is_finite()
+                    || action[3] < 0.0
+                    || action[3].fract() != 0.0
+                    || action[3] > 9007199254740992.0
+                    || action[4] != 0.0
+                    || action[5] != 0.0
+                {
+                    return Err(PyValueError::new_err("Invalid live sample delay"));
+                }
+                self.delays[voice] = action[3] as usize;
             }
             _ => return Err(PyValueError::new_err("Unknown live sample action")),
         }

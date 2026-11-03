@@ -60,10 +60,12 @@ def sample_score(
 
 
 @pytest.mark.parametrize("location", ["instrument", "slot"])
+@pytest.mark.parametrize("delay", [0, 6001])
 def test_sample_patch_signal_survives_partitioned_snapshot_restore(
-    backend: Literal["numpy", "native"], tmp_path: Path, location: str
+    backend: Literal["numpy", "native"], tmp_path: Path, location: str, delay: int
 ) -> None:
     raw = sample_score().model_dump(mode="json")
+    raw["body"]["slots"][0]["playback"]["start_delay_seconds"] = 0.12501 if delay else 0
     settings = (
         raw["body"]["settings"] if location == "instrument" else raw["body"]["slots"][0]
     )
@@ -137,7 +139,7 @@ def test_sample_patch_signal_survives_partitioned_snapshot_restore(
         )
         renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
         renderer.restore(snapshot)
-    age = np.arange(96000) / 48000
+    age = np.maximum(0, np.arange(96000) - delay) / 48000
     gain = (1 - 2 * np.abs((2 * age + 0.25) % 1 - 0.5)) * np.minimum(1, age / 0.5)
     check_audio(
         tmp_path / "sample-patch.wav",
@@ -553,14 +555,6 @@ def test_preparation_shares_audio_but_restore_rejects_different_decoded_content(
     snapshot = sample_instrument.OfflineSampler(prepared, backend=backend).snapshot()
     with pytest.raises(EngineError, match="decoded audio"):
         sample_instrument.OfflineSampler(different, backend=backend).restore(snapshot)
-
-
-def test_delayed_sample_start_variation_is_not_silently_ignored() -> None:
-    raw = sample_score(frames=4).model_dump(mode="json")
-    raw["body"]["slots"][0]["variation"]["delay_seconds"] = 0.5
-    document = instrument.SampleInstrumentScore.model_validate(raw)
-    with pytest.raises(EngineError, match="Delayed sample starts"):
-        sample_instrument.prepare(document, {"asset": np.ones((4, 2))})
 
 
 def test_prepared_replacement_and_transport_stop_apply_before_the_sample(

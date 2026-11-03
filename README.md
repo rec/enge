@@ -177,7 +177,7 @@ and [enge's realization](plan/engine-execution.md#dynamic-filters).
 Zero-duration amplitude-envelope phases jump immediately to their endpoints;
 their curve values do not affect playback. Nonzero-duration phases use their
 authored curves. Decoding remains with the caller. Equalizers,
-control-driven layer crossfades, delayed sample starts, other
+control-driven layer crossfades, and other
 modulation targets fail explicitly.
 
 Sampler fade retirement multiplies the rendered voice output by a linear ramp
@@ -190,6 +190,14 @@ index. Resolved random offsets skip in playback order, subtracting for backward
 playback. Slice and loop boundaries stay unchanged. A starting position outside
 the slice is immediately exhausted. Native live offsets must be exactly
 representable in its numeric action queue.
+
+Sampler start delay combines the slot's authored delay with its resolved random
+delay. Onset rounds up to the next output frame; sample traversal and voice
+envelopes begin at age zero there. Physical trigger release before onset cancels
+pending start-triggered voices even for one-shots and sustained notes. Release
+samples start their own delay at release and are not cancelled by that same
+event. Pending voices consume persistent capacity and survive snapshots.
+Retirement before onset, including a fade choke, cancels the pending voice.
 
 Key and velocity layer crossfades latch their weights at onset in offline and
 native live samplers. Linear and equal-power curves clamp at their endpoints;

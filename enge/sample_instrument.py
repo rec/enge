@@ -1,7 +1,8 @@
 """Offline sample instruments driven by prepared uFor actions."""
 
+from fractions import Fraction
 from hashlib import sha256
-from math import cos, isfinite, pi, sin
+from math import ceil, cos, isfinite, pi, sin
 from typing import Literal, cast
 
 import numpy as np
@@ -42,6 +43,7 @@ class SamplerSnapshot(Model, frozen=True):
     audio_digests: dict[str, str]
     frame: int
     voices: list[SampleVoiceSnapshot]
+    pending: list[trace.VoiceStart]
     contexts: list[synth.ControlContext]
     lfos: list[synth.LFOSource]
     envelopes: list[synth.EnvelopeSource]
@@ -62,6 +64,8 @@ class NativeSampleVoice(Model, frozen=True):
     trigger_id: str | None
     source: int
     slot: int
+    started_frame: int
+    trigger: enums.TriggerKind
 
 
 def prepare(
@@ -125,8 +129,6 @@ def prepare(
             raise synth.EngineError(
                 "Control-driven sample crossfades are not implemented"
             )
-        if slot.variation.delay_seconds:
-            raise synth.EngineError("Delayed sample starts are not implemented")
         selection = slices[slot.slice]
         source_channels = assets[selection.asset].audio.channels
         gains = [1.0] * len(output.channels)
@@ -187,6 +189,7 @@ class OfflineSampler:
         self.backend: Literal["numpy", "native"] = backend
         self.frame = 0
         self.voices: dict[str, SampleVoiceSnapshot] = {}
+        self.pending: dict[str, trace.VoiceStart] = {}
         self.slots = {s.name: s for s in definition.document.body.slots}
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
@@ -218,6 +221,7 @@ class OfflineSampler:
             audio_digests=self.definition.audio_digests,
             frame=self.frame,
             voices=list(self.voices.values()),
+            pending=list(self.pending.values()),
             contexts=self.controls.contexts,
             lfos=self.controls.lfos,
             envelopes=self.controls.envelopes,
@@ -243,6 +247,7 @@ class OfflineSampler:
         snapshot = snapshot.model_copy(deep=True)
         self.frame = snapshot.frame
         self.voices = {v.voice_id: v for v in snapshot.voices}
+        self.pending = {a.voice_id: a for a in snapshot.pending}
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.controls.lfos = snapshot.lfos
@@ -251,6 +256,15 @@ class OfflineSampler:
         self.controls.graphs = snapshot.graphs
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
+        self._activate_pending(action.tick)
+        if isinstance(action, instrument_trace.TriggerRelease):
+            self.pending = {
+                k: v
+                for k, v in self.pending.items()
+                if (v.part, v.trigger_id) != (action.part, action.trigger_id)
+                or self.slots[v.template].trigger != enums.TriggerKind.start
+            }
+            return
         if synth.apply_amplitude_event(
             action, ((v.renderer, v.part, v.trigger_id) for v in self.voices.values())
         ):
@@ -260,8 +274,18 @@ class OfflineSampler:
         ):
             return
         if isinstance(action, trace.VoiceStart):
-            self._start_voice(action)
+            slot, _, _ = self._voice_definition(action)
+            delay = _delay_frames(slot, action, self.definition.sample_rate)
+            if delay:
+                self.pending[action.voice_id] = action.model_copy(
+                    update={"tick": action.tick + delay}
+                )
+            else:
+                self._start_voice(action)
         elif isinstance(action, instrument_trace.VoiceRetirement):
+            if action.voice_id in self.pending:
+                del self.pending[action.voice_id]
+                return
             if action.action == "fade":
                 if voice := self.voices.get(action.voice_id):
                     assert action.fade_seconds is not None
@@ -326,7 +350,7 @@ class OfflineSampler:
     ) -> tuple[
         instrument.SampleSlot, sampler.PreparedSample, sampler.PreparedSampleVoice
     ]:
-        if action.voice_id in self.voices:
+        if action.voice_id in self.voices or action.voice_id in self.pending:
             raise synth.EngineError(f"Duplicate active voice: {action.voice_id}")
         slot = self.slots.get(action.template)
         if slot is None:
@@ -341,8 +365,6 @@ class OfflineSampler:
             or action.alignment_frames != slot.alignment_frames
         ):
             raise synth.EngineError("Voice start must match its prepared sample slot")
-        if action.variation.delay_seconds:
-            raise synth.EngineError("Delayed sample starts are not implemented")
         if action.parameters:
             raise synth.EngineError(
                 "Latched sample parameter overrides are not implemented"
@@ -387,6 +409,26 @@ class OfflineSampler:
         )
 
     def _render(self, start: int, frames: int) -> np.ndarray:
+        output = np.zeros((frames, len(self.definition.channels)))
+        cursor = start
+        for at in sorted(
+            {a.tick for a in self.pending.values() if a.tick < start + frames}
+        ):
+            output[cursor - start : at - start] = self._render_voices(
+                cursor, at - cursor
+            )
+            self._activate_pending(at)
+            cursor = at
+        output[cursor - start :] = self._render_voices(cursor, start + frames - cursor)
+        return output
+
+    def _activate_pending(self, frame: int) -> None:
+        for action in list(self.pending.values()):
+            if action.tick <= frame:
+                del self.pending[action.voice_id]
+                self._start_voice(action)
+
+    def _render_voices(self, start: int, frames: int) -> np.ndarray:
         output = np.zeros((frames, len(self.definition.channels)))
         for voice in list(self.voices.values()):
             count = voice.renderer.active_frames(frames)
@@ -603,6 +645,18 @@ class PersistentSampler(OfflineSampler):
                 action, instrument_trace.Diagnostic
             ):
                 continue
+            if isinstance(action, instrument_trace.TriggerRelease):
+                for name, voice in list(self.native_voices.items()):
+                    if (
+                        (voice.part, voice.trigger_id)
+                        == (action.part, action.trigger_id)
+                        and voice.trigger == enums.TriggerKind.start
+                        and action.tick < voice.started_frame
+                    ):
+                        encoded[voice.source].append([offset, 2, voice.slot, 0, 0, 0])
+                        active[voice.source][voice.slot] = False
+                        del self.native_voices[name]
+                continue
             if isinstance(action, trace.VoiceStart):
                 if action.voice_id in self.native_voices:
                     raise synth.EngineError(
@@ -618,11 +672,18 @@ class PersistentSampler(OfflineSampler):
                         "Persistent sampler voice capacity exceeded"
                     )
                 active[source][voice] = True
+                delay = _delay_frames(slot, action, self.definition.sample_rate)
+                if delay > 2**53:
+                    raise synth.EngineError(
+                        "Native sample delay is not exactly representable"
+                    )
                 self.native_voices[action.voice_id] = NativeSampleVoice(
                     source=source,
                     slot=voice,
                     part=action.part,
                     trigger_id=action.trigger_id,
+                    started_frame=action.tick + delay,
+                    trigger=slot.trigger,
                 )
                 tuning = (
                     self.definition.document.body.settings.processing.tuning_cents
@@ -649,9 +710,13 @@ class PersistentSampler(OfflineSampler):
                         position_offset,
                     ]
                 )
+                if delay:
+                    encoded[source].append([offset, 6, voice, delay, 0, 0])
             elif isinstance(action, instrument_trace.VoiceRetirement):
                 if (voice := self.native_voices.get(action.voice_id)) is not None:
                     kind = {"release": 1, "stop": 2, "fade": 5}[action.action]
+                    if action.tick < voice.started_frame:
+                        kind = 2
                     duration = (
                         0.0
                         if action.fade_seconds is None
@@ -678,7 +743,10 @@ class PersistentSampler(OfflineSampler):
                     "advance",
                 ).index(action.action)
                 for voice in self.native_voices.values():
-                    if (voice.part, voice.trigger_id) == (
+                    if voice.started_frame <= action.tick and (
+                        voice.part,
+                        voice.trigger_id,
+                    ) == (
                         action.part,
                         action.trigger_id,
                     ):
@@ -725,10 +793,22 @@ class PersistentSampler(OfflineSampler):
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if (
             isinstance(action, trace.VoiceStart)
-            and len(self.voices) >= self.voice_capacity
+            and len(self.voices) + len(self.pending) >= self.voice_capacity
         ):
             raise synth.EngineError("Persistent sampler voice capacity exceeded")
         super()._apply(action)
+
+
+def _delay_frames(
+    slot: instrument.SampleSlot, action: trace.VoiceStart, sample_rate: int
+) -> int:
+    return ceil(
+        (
+            Fraction(str(slot.playback.start_delay_seconds))
+            + Fraction(str(action.variation.delay_seconds))
+        )
+        * sample_rate
+    )
 
 
 def _validate_settings(settings: processing.SoundSettings) -> None:

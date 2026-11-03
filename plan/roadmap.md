@@ -25,10 +25,9 @@ runtime coverage; do not implement a second event path.
 
 1. Persistent modulation now supports piecewise linear, step and exponential
    mappings with bounded prepared storage. Multiple-route composition remains.
-2. Extend sampler rendering for existing authored contracts: amplitude curves,
-   control-driven crossfades and delayed starts. Alignment, directional random
-   offsets, fade retirement, amplitude
-   curves, key-event bindings, static key/velocity crossfades and Patch-child
+2. Extend sampler rendering for control-driven crossfades. Delayed starts,
+   alignment, directional random offsets, fade retirement, amplitude curves,
+   key-event bindings, static key/velocity crossfades and Patch-child
    continuation are implemented.
    Verify exact ordering, source exhaustion, partitions and snapshot continuation.
 3. Expand native live sampler controls, generators and filters by reusing the
