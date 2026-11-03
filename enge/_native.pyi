@@ -74,6 +74,7 @@ class LiveRuntime:
         maps: list[tuple[int, list[tuple[float, float]]]],
         context_capacity: int,
         crossfades: list[tuple[bool, bool]],
+        filters: list[tuple[int, int, int, bool, float, float]],
     ) -> None: ...
     def add_sample(
         self,

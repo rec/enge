@@ -215,10 +215,12 @@ scopes, including common/slot composition, independent smoothing and snapshots.
 exhaustion is reported during action admission. Part controls persist while
 silent, and repeated trigger names leave earlier release tails on their original
 contexts.
-Native live sample voices support fixed slot and instrument filter chains using
-the shared multichannel filter bank, before or after amplitude. Filter state is
-independent per voice, resets on reuse, and survives snapshots. Dynamic native
-sampler filter parameters remain part of the control integration work.
+Native live sample voices support fixed and control-routed slot and instrument
+filter chains using the shared multichannel filter bank, before or after
+amplitude. Cutoff and Q use scoped control ramps; authored cutoff boundaries
+either clamp or reject out-of-range values. Filter state is independent per
+voice, resets on reuse, and survives snapshots. Native generator modulation
+remains unimplemented.
 
 Offline sample instruments accept voice-scoped key and velocity EventBindings in both
 NumPy and native rendering. Each voice retains its prepared start key (0–127)

@@ -614,13 +614,10 @@ class PersistentSampler(OfflineSampler):
         if any(
             s.envelfos
             or any(not isinstance(b, processing.ControlBinding) for b in s.bindings)
-            or any(r.target.name != "processing" for r in s.modulation.routes)
-            or any(p.target.name != "processing" for p in s.modulation.parameters)
             for s in all_settings
         ):
             raise synth.EngineError(
-                "Native live sampler generators, event bindings and dynamic filters "
-                "are not implemented"
+                "Native live sampler generators and event bindings are not implemented"
             )
         for slot in self.definition.document.body.slots:
             sample = self.definition.samples[slot.name]
@@ -688,7 +685,8 @@ class PersistentSampler(OfflineSampler):
             )
             rows = []
             smoothing = []
-            parameters = []
+            parameters = [0.0] * 12
+            filter_groups: list[list[tuple[int, int, int, bool, float, float]]] = []
             maps = []
             names = []
             scopes = []
@@ -696,19 +694,32 @@ class PersistentSampler(OfflineSampler):
                 prepared = synth._persistent_modulation(
                     self.definition.sample_rate,
                     common.controls,
-                    template.model_copy(
-                        update={
-                            "processing": template.processing.model_copy(
-                                update={"filters": []}
-                            )
-                        }
-                    ),
+                    template,
                 )
                 controls = prepared[0]
-                controls[:, 2] += 2 * group
+                filter_offset = len(parameters) // 3
+                controls[:, 2] = np.where(
+                    controls[:, 2] < 2,
+                    controls[:, 2] + 2 * group,
+                    controls[:, 2] + filter_offset - 2,
+                )
                 rows.append(controls)
                 smoothing.extend(prepared[1])
-                parameters.extend(prepared[2])
+                parameters[group * 6 : group * 6 + 6] = prepared[2][:6]
+                parameters.extend(prepared[2][6:])
+                filter_groups.append(
+                    [
+                        (
+                            filter_offset + 2 * i,
+                            filter_offset + 2 * i + 1,
+                            f.stages,
+                            f.boundary == processing.FilterBoundary.clamp,
+                            f.minimum_hz,
+                            self.definition.sample_rate / 2 * f.nyquist_ratio,
+                        )
+                        for i, f in enumerate(template.processing.filters)
+                    ]
+                )
                 scopes.extend(prepared[4])
                 names.extend(prepared[5])
                 maps.extend(prepared[-1][0])
@@ -727,7 +738,7 @@ class PersistentSampler(OfflineSampler):
                             [
                                 declaration.default,
                                 ["instrument", "part", "trigger"].index(fade.scope),
-                                4 + len(fades),
+                                len(parameters) // 3,
                                 0,
                                 -1 if declaration.polarity == "bipolar" else 0,
                                 1,
@@ -755,6 +766,7 @@ class PersistentSampler(OfflineSampler):
                 maps,
                 self.context_capacity,
                 fades,
+                [f for g in reversed(filter_groups) for f in g],
             )
             self.native_controls[source] = NativeSampleControls(
                 names=names, scopes=scopes

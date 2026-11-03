@@ -55,11 +55,11 @@ including a fade choke, cancels the pending voice without sounding. At or after
 onset, fade retirement applies the normal continuous ramp.
 
 Native live sample voices now reuse the block renderer's multichannel filter
-bank for fixed filter chains. Each voice has preallocated integrator state,
-reset on slot reuse and retained in snapshots. Slot filters precede instrument
+bank for fixed and control-routed filter chains. Each voice has preallocated
+integrator state, reset on slot reuse and retained in snapshots. Slot filters precede instrument
 filters; both amplitude orders are supported, without a tail after exhaustion.
-Native live registration still rejects generators and control-driven filter
-parameters. The user approved extending that sampler with the existing
+Native live registration still rejects generators and event bindings.
+The user approved extending that sampler with the existing
 native control/filter machinery on 2026-11-02, preserving bounded callback storage.
 The generated runtimes' existing control ramps, scoped contexts and voice
 bindings now live in a shared native `ControlBank`, including context retirement
@@ -75,7 +75,12 @@ authored amplitude/tuning controls. Context capacity is explicit and snapshots
 retain Python address ownership alongside native state. Regressions cover common
 and inherited slot routes with different smoothing, controls while silent,
 overlapping parts, reused trigger names with release tails and capacity rejection.
-Dynamic filter targets, event bindings and generators remain work.
+Control-routed cutoff and Q now share the same parameter preparation and native
+stage kernel. Common/slot filter domains remain independent, stage order is
+preserved, and authored cutoff clamp/error policy runs after route composition.
+Regressions cover all four responses, both amplitude orders, changing Q,
+independent voices, reuse, exhaustion, snapshots and cutoff-boundary rejection.
+Event bindings and generators remain work.
 
 The completion audit also found authored playback fields that are not yet
 consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,

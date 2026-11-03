@@ -32,7 +32,8 @@ struct SampleRuntime {
     controls: ControlBank,
     control_maps: Vec<RouteMap>,
     crossfades: Vec<(bool, bool)>,
-    // Common and slot amplitude/tuning, then crossfade positions, each with a domain.
+    filter_routes: Vec<SampleFilter>,
+    // Common and slot amplitude/tuning, filter cutoff/Q, then crossfade positions.
     parameters: Vec<f64>,
     parameter_partials: Vec<f64>,
     filters: Vec<FilterBank>,
@@ -55,6 +56,16 @@ struct SampleRuntime {
     fade_gains: Vec<f64>,
     source_values: Vec<f64>,
     frame: usize,
+}
+
+#[derive(Clone, PartialEq)]
+struct SampleFilter {
+    cutoff: usize,
+    q: usize,
+    stages: usize,
+    clamp: bool,
+    minimum: f64,
+    maximum: f64,
 }
 
 #[derive(Clone)]
@@ -343,6 +354,7 @@ impl LiveRuntime {
             controls: ControlBank::new(Vec::new(), Vec::new(), voices, 0),
             control_maps: Vec::new(),
             crossfades: Vec::new(),
+            filter_routes: Vec::new(),
             parameters: vec![
                 1.0, 0.0, 1e300, 0.0, -120000.0, 120000.0, 1.0, 0.0, 1e300, 0.0, -120000.0,
                 120000.0,
@@ -404,6 +416,7 @@ impl LiveRuntime {
         maps: Vec<(usize, Vec<(f64, f64)>)>,
         context_capacity: usize,
         crossfades: Vec<(bool, bool)>,
+        filters: Vec<(usize, usize, usize, bool, f64, f64)>,
     ) -> PyResult<()> {
         let Some(Source {
             runtime: SourceRuntime::Sample(runtime),
@@ -413,7 +426,7 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Invalid live sample source"));
         };
         if self.frame != 0
-            || parameters.len() != 3 * (4 + crossfades.len())
+            || parameters.len() != 3 * (4 + 2 * filters.len() + crossfades.len())
             || parameters.iter().any(|v| !v.is_finite())
             || parameters
                 .chunks_exact(3)
@@ -424,6 +437,26 @@ impl LiveRuntime {
             ));
         }
         let (definitions, states) = control_definitions(controls, &smoothing)?;
+        if filters
+            .iter()
+            .any(|&(cutoff, q, stages, _, minimum, maximum)| {
+                cutoff >= parameters.len() / 3
+                    || q >= parameters.len() / 3
+                    || stages == 0
+                    || !minimum.is_finite()
+                    || !maximum.is_finite()
+                    || minimum <= 0.0
+                    || minimum >= maximum
+                    || maximum >= self.rate / 2.0
+            })
+            || (!filters.is_empty()
+                && filters
+                    .iter()
+                    .try_fold(0usize, |total, f| total.checked_add(f.2))
+                    != Some(runtime.filters[0].states.shape()[0]))
+        {
+            return Err(PyValueError::new_err("Invalid live sample filter routes"));
+        }
         if maps.len() != definitions.len()
             || definitions
                 .iter()
@@ -441,6 +474,19 @@ impl LiveRuntime {
         runtime.control_maps = maps;
         runtime.parameters = parameters;
         runtime.crossfades = crossfades;
+        runtime.filter_routes = filters
+            .into_iter()
+            .map(
+                |(cutoff, q, stages, clamp, minimum, maximum)| SampleFilter {
+                    cutoff,
+                    q,
+                    stages,
+                    clamp,
+                    minimum,
+                    maximum,
+                },
+            )
+            .collect();
         Ok(())
     }
 
@@ -1460,6 +1506,7 @@ impl SourceRuntime {
                     || runtime.controls.context_kinds.len() != state.controls.context_kinds.len()
                     || runtime.control_maps != state.control_maps
                     || runtime.crossfades != state.crossfades
+                    || runtime.filter_routes != state.filter_routes
                     || runtime.parameters != state.parameters
                     || runtime.filter_after_amplitude != state.filter_after_amplitude
                     || !runtime
@@ -1581,7 +1628,9 @@ impl SampleRuntime {
                 let mut level =
                     value.value * self.parameter(voice, 0)? * self.parameter(voice, 2)?;
                 for index in 0..self.crossfades.len() {
-                    let position = self.parameter(voice, 4 + index)?.clamp(0.0, 1.0);
+                    let position = self
+                        .parameter(voice, 4 + 2 * self.filter_routes.len() + index)?
+                        .clamp(0.0, 1.0);
                     let (inward, equal_power) = self.crossfades[index];
                     let weight = if equal_power && position > 0.0 && position < 1.0 {
                         if inward {
@@ -1631,7 +1680,34 @@ impl SampleRuntime {
                         *value *= amplitude;
                     }
                 }
-                self.filters[voice].process(0, &mut self.source_values)?;
+                if self.filter_routes.is_empty() {
+                    self.filters[voice].process(0, &mut self.source_values)?;
+                } else {
+                    let mut stage = 0;
+                    for index in 0..self.filter_routes.len() {
+                        let route = self.filter_routes[index].clone();
+                        let mut cutoff = self.parameter(voice, route.cutoff)?;
+                        let q = self.parameter(voice, route.q)?;
+                        if q <= 0.0
+                            || (!route.clamp && (cutoff < route.minimum || cutoff > route.maximum))
+                        {
+                            return Err(PyValueError::new_err(
+                                "Invalid live sample filter cutoff/Q",
+                            ));
+                        }
+                        cutoff = cutoff.clamp(route.minimum, route.maximum);
+                        for _ in 0..route.stages {
+                            self.filters[voice].process_stage(
+                                self.frame + offset,
+                                stage,
+                                cutoff,
+                                q,
+                                &mut self.source_values,
+                            )?;
+                            stage += 1;
+                        }
+                    }
+                }
                 let output_gain = fade
                     * if self.filter_after_amplitude {
                         1.0
@@ -1647,7 +1723,7 @@ impl SampleRuntime {
                         .sum::<f64>();
                     output[[offset, channel]] += mixed * output_gain;
                 }
-                cursor.advance(step, frame + 1);
+                self.cursors[voice].advance(step, frame + 1);
                 self.ages[voice] += 1;
             }
             self.controls.advance();

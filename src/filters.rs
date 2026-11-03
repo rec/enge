@@ -77,44 +77,61 @@ impl FilterBank {
     }
 
     pub fn process(&mut self, frame: usize, sources: &mut [f64]) -> PyResult<()> {
-        for (j, response) in self.responses.iter().enumerate() {
-            let cutoff = self.values[[frame, j, 0]];
-            let q = self.values[[frame, j, 1]];
-            let g = (PI * cutoff / self.rate).tan();
-            let d = q * (1.0 + g * g) + g;
-            let a1 = if q < 1.0 {
-                q / d
+        for j in 0..self.responses.len() {
+            self.process_stage(
+                frame,
+                j,
+                self.values[[frame, j, 0]],
+                self.values[[frame, j, 1]],
+                sources,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn process_stage(
+        &mut self,
+        frame: usize,
+        j: usize,
+        cutoff: f64,
+        q: f64,
+        sources: &mut [f64],
+    ) -> PyResult<()> {
+        let response = self.responses[j];
+        let g = (PI * cutoff / self.rate).tan();
+        let d = q * (1.0 + g * g) + g;
+        let a1 = if q < 1.0 {
+            q / d
+        } else {
+            1.0 / (1.0 + g * (g + 1.0 / q))
+        };
+        let a2 = g * a1;
+        let a3 = g * a2;
+        for (c, input) in sources.iter_mut().enumerate() {
+            let (s1, s2) = (self.states[[j, c, 0]], self.states[[j, c, 1]]);
+            let v3 = *input - s2;
+            let v1 = a1 * s1 + a2 * v3;
+            let v2 = s2 + a2 * s1 + a3 * v3;
+            let band = if q < 1.0 {
+                s1 / d + (g / d) * v3
             } else {
-                1.0 / (1.0 + g * (g + 1.0 / q))
+                v1 / q
             };
-            let a2 = g * a1;
-            let a3 = g * a2;
-            for (c, input) in sources.iter_mut().enumerate() {
-                let (s1, s2) = (self.states[[j, c, 0]], self.states[[j, c, 1]]);
-                let v3 = *input - s2;
-                let v1 = a1 * s1 + a2 * v3;
-                let v2 = s2 + a2 * s1 + a3 * v3;
-                let band = if q < 1.0 {
-                    s1 / d + (g / d) * v3
-                } else {
-                    v1 / q
-                };
-                *input = match response {
-                    0 => v2,
-                    1 => *input - band - v2,
-                    2 => band,
-                    _ => *input - band,
-                };
-                self.states[[j, c, 0]] = 2.0 * v1 - s1;
-                self.states[[j, c, 1]] = 2.0 * v2 - s2;
-                if !input.is_finite()
-                    || !self.states[[j, c, 0]].is_finite()
-                    || !self.states[[j, c, 1]].is_finite()
-                {
-                    return Err(PyValueError::new_err(format!(
-                        "Non-finite filter output or state at frame {frame}"
-                    )));
-                }
+            *input = match response {
+                0 => v2,
+                1 => *input - band - v2,
+                2 => band,
+                _ => *input - band,
+            };
+            self.states[[j, c, 0]] = 2.0 * v1 - s1;
+            self.states[[j, c, 1]] = 2.0 * v2 - s2;
+            if !input.is_finite()
+                || !self.states[[j, c, 0]].is_finite()
+                || !self.states[[j, c, 1]].is_finite()
+            {
+                return Err(PyValueError::new_err(format!(
+                    "Non-finite filter output or state at frame {frame}"
+                )));
             }
         }
         Ok(())
