@@ -80,7 +80,7 @@ class LiveRuntime:
         self,
         buffer: SampleBuffer,
         selection: tuple[int, int, bool, tuple[int, int, int, bool] | None],
-        state: tuple[int, float, float, int, bool, bool, bool, int | None],
+        state: tuple[int, float, float, int, bool, bool, bool, int | None, int | None],
         rate: float,
         routes: np.ndarray,
         initial: float,
@@ -386,7 +386,7 @@ class SampleBuffer:
     def __init__(self, samples: np.ndarray) -> None: ...
 
 type SampleState = tuple[
-    int, float, float, Literal[-1, 1], bool, bool, bool, int | None
+    int, float, float, Literal[-1, 1], bool, bool, bool, int | None, int | None
 ]
 
 def render_sample(

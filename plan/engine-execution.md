@@ -92,9 +92,17 @@ Preset and repeated-trigger regressions cover offline/persistent/native-live
 parity and exact partitioned snapshot replay. Key bindings remain outside the
 generated engines' existing supported profile.
 
+Finite loop `repeat_count` now counts additional traversals in both offline
+backends and the native live sampler, including mirrored and crossfaded loops.
+The remaining count survives snapshots, and exhaustion continues toward the
+trimmed source boundary. Counts use unsigned 64-bit storage, validated during
+preparation. Regression coverage includes zero repeats, fractional interpolation,
+steps crossing multiple loop boundaries, release coinciding with a turn, and
+release during an already committed overlap.
+
 The completion audit also found authored playback fields that are not yet
-consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,
-and `end_fade_seconds`. These remain required rendering work. The final-fade
+consumed by the sampler: whole-sample `play_count` and `end_fade_seconds`.
+These remain required rendering work. The final-fade
 contract leaves loop/repetition interactions unspecified; changing pitch also
 needs an explicit timing decision before implementation.
 

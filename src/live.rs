@@ -1502,6 +1502,9 @@ impl SourceRuntime {
             }
             (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
                 if runtime.routes != state.routes
+                    || runtime.initial_cursor.selection != state.initial_cursor.selection
+                    || runtime.initial_cursor.repeats_remaining
+                        != state.initial_cursor.repeats_remaining
                     || runtime.controls.control_definitions != state.controls.control_definitions
                     || runtime.controls.context_kinds.len() != state.controls.context_kinds.len()
                     || runtime.control_maps != state.control_maps

@@ -8,7 +8,17 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 
 // Integers stay integers across the binding, including frames beyond 2**53.
-pub(crate) type State = (i64, f64, f64, i64, bool, bool, bool, Option<i64>);
+pub(crate) type State = (
+    i64,
+    f64,
+    f64,
+    i64,
+    bool,
+    bool,
+    bool,
+    Option<i64>,
+    Option<u64>,
+);
 pub(crate) type Selection = (i64, i64, bool, Option<(i64, i64, i64, bool)>);
 type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
 
@@ -43,11 +53,22 @@ pub(crate) struct Cursor {
     pub(crate) overlap: bool,
     pub(crate) released: bool,
     pub(crate) exhausted: Option<i64>,
+    pub(crate) repeats_remaining: Option<u64>,
 }
 
 impl Cursor {
     pub(crate) fn new(selection: Selection, rate: f64, state: State) -> Self {
-        let (index, position, error, direction, looping, overlap, released, exhausted) = state;
+        let (
+            index,
+            position,
+            error,
+            direction,
+            looping,
+            overlap,
+            released,
+            exhausted,
+            repeats_remaining,
+        ) = state;
         Self {
             selection,
             rate,
@@ -59,6 +80,7 @@ impl Cursor {
             overlap,
             released,
             exhausted,
+            repeats_remaining,
         }
     }
 
@@ -67,6 +89,17 @@ impl Cursor {
         if self.selection.3.is_some_and(|l| l.3) {
             self.looping = false;
         }
+    }
+
+    fn take_repeat(&mut self) -> bool {
+        if let Some(remaining) = &mut self.repeats_remaining {
+            if *remaining == 0 {
+                self.looping = false;
+                return false;
+            }
+            *remaining -= 1;
+        }
+        true
     }
 
     pub(crate) fn settle(&mut self, frame: i64) {
@@ -85,9 +118,9 @@ impl Cursor {
                 }
             } else if self.looping {
                 if mirror {
-                    if self.direction == 1 && self.index == b - 1 {
+                    if self.direction == 1 && self.index == b - 1 && self.take_repeat() {
                         self.direction = -1;
-                    } else if self.direction == -1 && self.index == a {
+                    } else if self.direction == -1 && self.index == a && self.take_repeat() {
                         self.direction = 1;
                     }
                 } else if overlap != 0 {
@@ -96,10 +129,11 @@ impl Cursor {
                             b - overlap
                         } else {
                             a + overlap - 1
-                        };
-                } else if self.direction == 1 && self.index == b {
+                        }
+                        && self.take_repeat();
+                } else if self.direction == 1 && self.index == b && self.take_repeat() {
                     self.index = a;
-                } else if self.direction == -1 && self.index == a - 1 {
+                } else if self.direction == -1 && self.index == a - 1 && self.take_repeat() {
                     self.index = b - 1;
                 }
             }
@@ -195,20 +229,40 @@ impl Cursor {
         // Keep small moves separate from a huge integer-valued float count.
         // This avoids both integer overflow and loss of entry-path steps above 2**53.
         let mut consumed = 0.0;
-        while count > consumed {
+        let mut finite_count = self.repeats_remaining.map(|_| count as u128);
+        while finite_count.map_or(count > consumed, |c| c > 0) {
             let (boundary, period) = self.boundary();
             if period != 0 {
-                count = ((count % period as f64) - consumed).rem_euclid(period as f64);
-                if count == 0.0 {
-                    count = period as f64;
+                if let Some(left) = &mut finite_count {
+                    let traversals = if self.selection.2 { 2 } else { 1 };
+                    let remaining = self.repeats_remaining.as_mut().expect("finite count");
+                    let skipped =
+                        ((*left - 1) / period as u128).min((*remaining / traversals) as u128);
+                    *remaining -= skipped as u64 * traversals;
+                    *left -= skipped * period as u128;
+                    if skipped > 0 && *remaining == 0 {
+                        self.looping = false;
+                        continue;
+                    }
+                } else {
+                    count = ((count % period as f64) - consumed).rem_euclid(period as f64);
+                    if count == 0.0 {
+                        count = period as f64;
+                    }
+                    consumed = 0.0;
                 }
-                consumed = 0.0;
             }
             let distance = self.direction * (boundary - self.index);
-            let moved = (count - consumed).min(distance as f64) as i64;
+            let moved = finite_count.map_or_else(
+                || (count - consumed).min(distance as f64) as i64,
+                |c| c.min(distance as u128) as i64,
+            );
             self.index += self.direction * moved;
             consumed += moved as f64;
-            if count > consumed || self.position != 0.0 {
+            if let Some(left) = &mut finite_count {
+                *left -= moved as u128;
+            }
+            if finite_count.map_or(count > consumed, |c| c > 0) || self.position != 0.0 {
                 self.settle(frame);
                 if self.exhausted.is_some() {
                     return;
@@ -241,7 +295,17 @@ pub fn render_sample<'py>(
     let count = steps.len();
     let channels = routes.shape()[1];
     let (start, end, mirror, loop_) = selection;
-    let (index, position, error, direction, looping, overlap, released, exhausted) = state;
+    let (
+        index,
+        position,
+        error,
+        direction,
+        looping,
+        overlap,
+        released,
+        exhausted,
+        repeats_remaining,
+    ) = state;
     if start < 0 || end <= start || end as u64 > buffer.audio.nrows() as u64 {
         return Err(PyValueError::new_err("Invalid native sample slice"));
     }
@@ -305,6 +369,7 @@ pub fn render_sample<'py>(
         overlap,
         released,
         exhausted,
+        repeats_remaining,
     };
     let mut settled = initial;
     settled.settle(frame);
@@ -397,6 +462,7 @@ pub fn render_sample<'py>(
                 cursor.overlap,
                 cursor.released,
                 cursor.exhausted,
+                cursor.repeats_remaining,
             ),
             filters.states,
         ))

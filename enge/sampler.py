@@ -57,6 +57,10 @@ class PreparedSample(Model, frozen=True):
         if self.slice.end_frame > len(self.samples):
             raise EngineError("Sample slice exceeds decoded audio")
         if self.slice.loop is not None:
+            if (count := self.slice.loop.repeat_count) is not None and count >= 2**64:
+                raise EngineError(
+                    "Sample loop repeat_count must fit an unsigned 64-bit integer"
+                )
             if self.playback.mode != PlaybackMode.while_held:
                 raise EngineError("Sample loops require while_held playback")
             if (
@@ -86,6 +90,7 @@ class SampleState(Model, frozen=True):
     overlap: bool = False
     released: bool = False
     exhaustion_frame: int | None = None
+    repeats_remaining: int | None = Field(default=None, ge=0, le=2**64 - 1)
 
     @classmethod
     def start(cls, definition: PreparedSample) -> Self:
@@ -96,6 +101,9 @@ class SampleState(Model, frozen=True):
             else definition.slice.start_frame,
             direction=-1 if backward else 1,
             looping=definition.slice.loop is not None,
+            repeats_remaining=None
+            if definition.slice.loop is None
+            else definition.slice.loop.repeat_count,
         )
 
 
@@ -387,6 +395,7 @@ def sample_frames(
         overlap=cursor.overlap,
         released=cursor.released,
         exhaustion_frame=cursor.exhaustion_frame,
+        repeats_remaining=cursor.repeats_remaining,
     )
 
 
@@ -421,6 +430,15 @@ class _Cursor:
         self.overlap = state.overlap
         self.released = state.released
         self.exhaustion_frame = state.exhaustion_frame
+        self.repeats_remaining = state.repeats_remaining
+
+    def take_repeat(self) -> bool:
+        if self.repeats_remaining == 0:
+            self.looping = False
+            return False
+        if self.repeats_remaining is not None:
+            self.repeats_remaining -= 1
+        return True
 
     def release(self) -> None:
         self.released = True
@@ -444,19 +462,39 @@ class _Cursor:
                     self.overlap = False
             elif self.looping:
                 if mirror:
-                    if self.direction == 1 and self.index == loop.end_frame - 1:
+                    if (
+                        self.direction == 1
+                        and self.index == loop.end_frame - 1
+                        and self.take_repeat()
+                    ):
                         self.direction = -1
-                    elif self.direction == -1 and self.index == loop.start_frame:
+                    elif (
+                        self.direction == -1
+                        and self.index == loop.start_frame
+                        and self.take_repeat()
+                    ):
                         self.direction = 1
                 elif loop.crossfade_frames:
-                    self.overlap = self.index == (
-                        loop.end_frame - loop.crossfade_frames
-                        if self.direction == 1
-                        else loop.start_frame + loop.crossfade_frames - 1
+                    self.overlap = (
+                        self.index
+                        == (
+                            loop.end_frame - loop.crossfade_frames
+                            if self.direction == 1
+                            else loop.start_frame + loop.crossfade_frames - 1
+                        )
+                        and self.take_repeat()
                     )
-                elif self.direction == 1 and self.index == loop.end_frame:
+                elif (
+                    self.direction == 1
+                    and self.index == loop.end_frame
+                    and self.take_repeat()
+                ):
                     self.index = loop.start_frame
-                elif self.direction == -1 and self.index == loop.start_frame - 1:
+                elif (
+                    self.direction == -1
+                    and self.index == loop.start_frame - 1
+                    and self.take_repeat()
+                ):
                     self.index = loop.end_frame - 1
         elif (
             mirror
@@ -497,7 +535,17 @@ class _Cursor:
             # Skip complete repetitions but retain the last one. Its final
             # boundary may coincide exactly with a not-yet-delivered release.
             if period:
-                count -= max(0, (count - 1) // period) * period
+                skipped = max(0, (count - 1) // period)
+                traversals = (
+                    2 if self.definition.playback.direction == Direction.mirror else 1
+                )
+                if self.repeats_remaining is not None:
+                    skipped = min(skipped, self.repeats_remaining // traversals)
+                    self.repeats_remaining -= skipped * traversals
+                count -= skipped * period
+                if skipped and self.repeats_remaining == 0:
+                    self.looping = False
+                    continue
             move = min(count, self.direction * (boundary - self.index))
             self.index += self.direction * move
             count -= move

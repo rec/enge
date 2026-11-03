@@ -122,6 +122,11 @@ Decoded NumPy audio is shared across slots and instances. Each `PreparedSample`
 lazily retains one Rust-owned audio copy, reused by its voices and restored
 cursors across calls and engine instances.
 
+Finite loop `repeat_count` specifies additional loop traversals, then playback
+continues toward the trimmed sample boundary. Forward, backward, mirror and
+crossfaded loops preserve the remaining count through snapshots in both offline
+backends and native live rendering. Counts must fit an unsigned 64-bit integer.
+
 Rust computes sample traversal, loop overlap, interpolation, envelopes, gain, and
 routing while the GIL is released. Python resolves controls and exact rational
 release splits; frame/index coordinates cross the binding as signed 64-bit

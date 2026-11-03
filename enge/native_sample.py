@@ -63,6 +63,7 @@ def render(
             state.overlap,
             state.released,
             state.exhaustion_frame,
+            state.repeats_remaining,
         ),
         state.frame,
         definition.sample_rate,
@@ -76,7 +77,17 @@ def render(
         filters,
         filter_after_amplitude,
     )
-    index, position, error, direction, looping, overlap, released, exhaustion = values
+    (
+        index,
+        position,
+        error,
+        direction,
+        looping,
+        overlap,
+        released,
+        exhaustion,
+        repeats_remaining,
+    ) = values
     return (
         audio,
         sampler.SampleState(
@@ -89,6 +100,7 @@ def render(
             overlap=overlap,
             released=released,
             exhaustion_frame=exhaustion,
+            repeats_remaining=repeats_remaining,
         ),
         filter_states,
     )

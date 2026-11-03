@@ -126,7 +126,7 @@ def test_sample_controls_follow_scopes_delays_and_snapshot_continuation(
     source = runtime.add_sample(
         _native.SampleBuffer(audio),
         (0, len(audio), False, None),
-        (0, 0, 0, 1, False, False, False, None),
+        (0, 0, 0, 1, False, False, False, None, None),
         48000,
         np.ones((1, 1)),
         1,

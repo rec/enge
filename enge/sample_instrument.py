@@ -652,6 +652,7 @@ class PersistentSampler(OfflineSampler):
                 False,
                 False,
                 None,
+                None if loop is None else loop.repeat_count,
             )
             routes = np.array(
                 self.definition.routes[slot.name],
