@@ -18,6 +18,7 @@ pub(crate) type State = (
     bool,
     Option<i64>,
     Option<u64>,
+    u64,
 );
 pub(crate) type Selection = (i64, i64, bool, Option<(i64, i64, i64, bool)>);
 type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
@@ -54,6 +55,7 @@ pub(crate) struct Cursor {
     pub(crate) released: bool,
     pub(crate) exhausted: Option<i64>,
     pub(crate) repeats_remaining: Option<u64>,
+    pub(crate) plays_remaining: u64,
 }
 
 impl Cursor {
@@ -68,6 +70,7 @@ impl Cursor {
             released,
             exhausted,
             repeats_remaining,
+            plays_remaining,
         ) = state;
         Self {
             selection,
@@ -81,6 +84,7 @@ impl Cursor {
             released,
             exhausted,
             repeats_remaining,
+            plays_remaining,
         }
     }
 
@@ -141,6 +145,18 @@ impl Cursor {
             self.direction = -1;
         }
         if !(start..end).contains(&self.index) {
+            if self.plays_remaining > 0 {
+                self.plays_remaining -= 1;
+                self.index = if !mirror && self.direction == -1 {
+                    end - 1
+                } else {
+                    start
+                };
+                if mirror {
+                    self.direction = 1;
+                }
+                return;
+            }
             self.exhausted = Some(frame);
             self.position = 0.0;
             self.error = 0.0;
@@ -229,8 +245,21 @@ impl Cursor {
         // Keep small moves separate from a huge integer-valued float count.
         // This avoids both integer overflow and loss of entry-path steps above 2**53.
         let mut consumed = 0.0;
-        let mut finite_count = self.repeats_remaining.map(|_| count as u128);
+        let mut finite_count =
+            (self.repeats_remaining.is_some() || self.plays_remaining > 0).then_some(count as u128);
         while finite_count.map_or(count > consumed, |c| c > 0) {
+            if self.plays_remaining > 0 {
+                let length = (self.selection.1 - self.selection.0) as u128;
+                let period = if self.selection.2 {
+                    2 * length - 1
+                } else {
+                    length
+                };
+                let left = finite_count.as_mut().expect("finite play count");
+                let skipped = ((*left - 1) / period).min(self.plays_remaining as u128);
+                self.plays_remaining -= skipped as u64;
+                *left -= skipped * period;
+            }
             let (boundary, period) = self.boundary();
             if period != 0 {
                 if let Some(left) = &mut finite_count {
@@ -305,6 +334,7 @@ pub fn render_sample<'py>(
         released,
         exhausted,
         repeats_remaining,
+        plays_remaining,
     ) = state;
     if start < 0 || end <= start || end as u64 > buffer.audio.nrows() as u64 {
         return Err(PyValueError::new_err("Invalid native sample slice"));
@@ -370,6 +400,7 @@ pub fn render_sample<'py>(
         released,
         exhausted,
         repeats_remaining,
+        plays_remaining,
     };
     let mut settled = initial;
     settled.settle(frame);
@@ -463,6 +494,7 @@ pub fn render_sample<'py>(
                 cursor.released,
                 cursor.exhausted,
                 cursor.repeats_remaining,
+                cursor.plays_remaining,
             ),
             filters.states,
         ))

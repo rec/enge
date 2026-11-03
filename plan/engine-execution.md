@@ -100,8 +100,13 @@ preparation. Regression coverage includes zero repeats, fractional interpolation
 steps crossing multiple loop boundaries, release coinciding with a turn, and
 release during an already committed overlap.
 
-The completion audit also found authored playback fields that are not yet
-consumed by the sampler: whole-sample `play_count` and `end_fade_seconds`.
+Whole-sample `play_count` now runs in both offline backends and native live
+rendering, preserving voice state and remaining plays across snapshots.
+Only the first traversal uses alignment/random offsets; subsequent traversals
+restart at the trimmed boundary. Counts are bounded to 2**64 plays.
+
+The completion audit also found an authored playback field that is not yet
+consumed by the sampler: `end_fade_seconds`.
 These remain required rendering work. The final-fade
 contract leaves loop/repetition interactions unspecified; changing pitch also
 needs an explicit timing decision before implementation.

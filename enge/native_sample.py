@@ -64,6 +64,7 @@ def render(
             state.released,
             state.exhaustion_frame,
             state.repeats_remaining,
+            state.plays_remaining,
         ),
         state.frame,
         definition.sample_rate,
@@ -87,6 +88,7 @@ def render(
         released,
         exhaustion,
         repeats_remaining,
+        plays_remaining,
     ) = values
     return (
         audio,
@@ -101,6 +103,7 @@ def render(
             released=released,
             exhaustion_frame=exhaustion,
             repeats_remaining=repeats_remaining,
+            plays_remaining=plays_remaining,
         ),
         filter_states,
     )

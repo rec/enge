@@ -1505,6 +1505,8 @@ impl SourceRuntime {
                     || runtime.initial_cursor.selection != state.initial_cursor.selection
                     || runtime.initial_cursor.repeats_remaining
                         != state.initial_cursor.repeats_remaining
+                    || runtime.initial_cursor.plays_remaining
+                        != state.initial_cursor.plays_remaining
                     || runtime.controls.control_definitions != state.controls.control_definitions
                     || runtime.controls.context_kinds.len() != state.controls.context_kinds.len()
                     || runtime.control_maps != state.control_maps

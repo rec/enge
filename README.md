@@ -127,6 +127,11 @@ continues toward the trimmed sample boundary. Forward, backward, mirror and
 crossfaded loops preserve the remaining count through snapshots in both offline
 backends and native live rendering. Counts must fit an unsigned 64-bit integer.
 
+One-shot slots honor `play_count`: later traversals restart at the trimmed
+boundary, while alignment and random offsets apply only to the first traversal.
+Envelopes, filters and modulation continue across restarts. Snapshots retain
+the remaining plays. At most 2**64 plays are supported.
+
 Rust computes sample traversal, loop overlap, interpolation, envelopes, gain, and
 routing while the GIL is released. Python resolves controls and exact rational
 release splits; frame/index coordinates cross the binding as signed 64-bit

@@ -169,6 +169,7 @@ def prepare(
             native_rate=rates[assets[selection.asset].audio.timebase].numerator,
             sample_rate=sample_rate,
             slice=selection,
+            play_count=slot.playback.play_count or 1,
             playback=playback.Playback(
                 direction=slot.playback.direction
                 or score.body.settings.playback.direction,
@@ -653,6 +654,7 @@ class PersistentSampler(OfflineSampler):
                 False,
                 None,
                 None if loop is None else loop.repeat_count,
+                sample.play_count - 1,
             )
             routes = np.array(
                 self.definition.routes[slot.name],

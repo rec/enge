@@ -28,6 +28,7 @@ class PreparedSample(Model, frozen=True):
     sample_rate: int = Field(strict=True, gt=0)
     slice: Slice
     playback: Playback = Playback()
+    play_count: int = Field(default=1, ge=1, le=2**64)
 
     @cached_property
     def native_buffer(self) -> "SampleBuffer":
@@ -54,6 +55,8 @@ class PreparedSample(Model, frozen=True):
 
     @model_validator(mode="after")
     def supported_traversal(self) -> Self:
+        if self.play_count > 1 and self.playback.mode != PlaybackMode.one_shot:
+            raise EngineError("Repeated sample playback requires one_shot mode")
         if self.slice.end_frame > len(self.samples):
             raise EngineError("Sample slice exceeds decoded audio")
         if self.slice.loop is not None:
@@ -91,6 +94,7 @@ class SampleState(Model, frozen=True):
     released: bool = False
     exhaustion_frame: int | None = None
     repeats_remaining: int | None = Field(default=None, ge=0, le=2**64 - 1)
+    plays_remaining: int = Field(default=0, ge=0, le=2**64 - 1)
 
     @classmethod
     def start(cls, definition: PreparedSample) -> Self:
@@ -101,6 +105,7 @@ class SampleState(Model, frozen=True):
             else definition.slice.start_frame,
             direction=-1 if backward else 1,
             looping=definition.slice.loop is not None,
+            plays_remaining=definition.play_count - 1,
             repeats_remaining=None
             if definition.slice.loop is None
             else definition.slice.loop.repeat_count,
@@ -176,7 +181,8 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
             and self.release_frame <= self.frame_count
         )
         exhausted = source.exhaustion_frame is not None or (
-            not looping
+            source.plays_remaining == 0
+            and not looping
             and not source.overlap
             and not self.definition.slice.start_frame
             <= source.index
@@ -396,6 +402,7 @@ def sample_frames(
         released=cursor.released,
         exhaustion_frame=cursor.exhaustion_frame,
         repeats_remaining=cursor.repeats_remaining,
+        plays_remaining=cursor.plays_remaining,
     )
 
 
@@ -431,6 +438,7 @@ class _Cursor:
         self.released = state.released
         self.exhaustion_frame = state.exhaustion_frame
         self.repeats_remaining = state.repeats_remaining
+        self.plays_remaining = state.plays_remaining
 
     def take_repeat(self) -> bool:
         if self.repeats_remaining == 0:
@@ -504,6 +512,14 @@ class _Cursor:
         ):
             self.direction = -1
         if not selection.start_frame <= self.index < selection.end_frame:
+            if self.plays_remaining:
+                self.plays_remaining -= 1
+                backward = self.definition.playback.direction == Direction.backward
+                self.direction = -1 if backward else 1
+                self.index = (
+                    selection.end_frame - 1 if backward else selection.start_frame
+                )
+                return
             self.exhaustion_frame = frame
             self.position = self.error = 0
 
@@ -531,6 +547,18 @@ class _Cursor:
         whole, self.position = divmod(total, self.definition.sample_rate)
         count = int(whole)
         while count:
+            if self.plays_remaining:
+                length = (
+                    self.definition.slice.end_frame - self.definition.slice.start_frame
+                )
+                period = (
+                    2 * length - 1
+                    if self.definition.playback.direction == Direction.mirror
+                    else length
+                )
+                skipped = min((count - 1) // period, self.plays_remaining)
+                self.plays_remaining -= skipped
+                count -= skipped * period
             boundary, period = self.boundary()
             # Skip complete repetitions but retain the last one. Its final
             # boundary may coincide exactly with a not-yet-delivered release.

@@ -12,6 +12,66 @@ from ufor.samples.playback import Loop, Playback, Slice
 from enge import live, sample_instrument, sampler
 
 
+@pytest.mark.parametrize("direction", ["forward", "backward", "mirror"])
+@pytest.mark.parametrize("plays", [1, 2, 3])
+@pytest.mark.parametrize("step", [0.5, 1, 7, 100])
+def test_whole_sample_restarts_preserve_envelope_and_first_only_offset(
+    tmp_path: Path, direction: str, plays: int, step: float
+) -> None:
+    raw = sample_score(frames=12).model_dump(mode="json")
+    raw["body"]["slots"][0]["playback"].update(
+        mode="one_shot", direction=direction, play_count=plays
+    )
+    offset = -2 if direction == "backward" else 2
+    raw["body"]["slots"][0]["alignment_frames"] = offset
+    raw["body"]["slots"][0].update(selection="takes", take="one", microphone="close")
+    raw["body"]["settings"]["selections"] = [{"name": "takes", "mode": "cycle"}]
+    raw["body"]["settings"]["envelope"] = {
+        "initial": 0,
+        "segments": [{"duration": "1/100 s", "to": 1}],
+        "release": [{"duration": "1/100 s", "to": 0}],
+    }
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    audio = np.column_stack([np.arange(12) / 24, np.arange(12) / 48])
+    definition = sample_instrument.prepare(document, {"asset": audio})
+    actions = trace.prepare(
+        document.body,
+        [onset(pitch=440 * step).model_copy(update={"controls": {}})],
+        seed=0,
+    ).actions
+    cycle = list(range(11, -1, -1)) if direction == "backward" else list(range(12))
+    if direction == "mirror":
+        cycle += list(range(10, -1, -1))
+    indices = cycle[2:] + cycle * (plays - 1)
+    positions = np.arange(0, len(indices), step)
+    values = np.interp(positions, np.arange(len(indices)), indices)
+    expected = np.zeros((48000, 2))
+    expected[: len(values)] = (
+        values[:, None] * [1 / 24, 1 / 32] * (np.arange(len(values)) / 480)[:, None]
+    )
+    for backend in ("numpy", "native"):
+        renderer = sample_instrument.OfflineSampler(definition, backend)
+        first = renderer.advance(actions, 0, 11)
+        saved = renderer.snapshot()
+        tail = renderer.advance([], 11, 48000)
+        check_audio(
+            tmp_path / f"plays-{backend}.wav", np.concatenate([first, tail]), expected
+        )
+        renderer.restore(saved)
+        np.testing.assert_array_equal(renderer.advance([], 11, 48000), tail)
+    source = sample_instrument.PersistentSampler(definition)
+    engine = live.NativeLiveEngine({"sample": source}, 48000)
+    actual = np.empty_like(expected)
+    engine.advance_into({"sample": actions}, [], 0, 11, actual[:11])
+    saved = engine.snapshot()
+    engine.advance_into({"sample": []}, [], 11, 48000, actual[11:])
+    check_audio(tmp_path / "plays-live.wav", actual, expected)
+    engine.restore(saved)
+    replay = np.empty_like(actual[11:])
+    engine.advance_into({"sample": []}, [], 11, 48000, replay)
+    np.testing.assert_array_equal(replay, actual[11:])
+
+
 @pytest.mark.parametrize(
     "direction,overlap",
     [("forward", 0), ("backward", 0), ("mirror", 0), ("forward", 2), ("backward", 2)],
