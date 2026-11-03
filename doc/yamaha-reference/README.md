@@ -39,6 +39,29 @@ Matching those block artifacts versus retaining per-sample execution requires
 a target decision. Hardware qualification, nonzero feedback, modulation,
 other algorithms and arbitrary patches remain unverified.
 
+## All-algorithm sweep and algorithm 23 correction
+
+A follow-up sweep used the same uniform operator settings for all 32 algorithms,
+changing only the algorithm byte at offset 134 and the patch title. The
+[before/after measurements](algorithm-sweep.csv) store relative errors as
+fractions, not percentages. The baseline used uFor `68c693e`; the corrected run
+used `72e9002`. The enge DSP implementation and MSFA revision were unchanged.
+
+Algorithm 23 was the only held-section outlier: 35.234% error before correction.
+uFor duplicated algorithm 19's routing. Algorithm 23 instead has edges OP3 to
+OP2 and OP6 to OP4/OP5, with carriers OP1/OP2/OP4/OP5. Correcting the table reduced
+its held-section error to 0.2432% and whole-file error to 6.3522%.
+The other 31 algorithms' measured errors were unchanged; all corrected held
+sections are below 1% error for this patch family. This is not a general pass:
+uniform settings cannot distinguish every operator-numbering error, feedback
+is disabled and transient differences remain.
+
+The corrected [ENGE-REF23 MSFA](ENGE-REF23-msfa.wav) and
+[enge](ENGE-REF23-enge.wav) recordings and the raw VCED payload are included.
+Construct each sweep patch from ENGE-REF01 by changing offset 134 to
+`algorithm - 1` and the ten title bytes to `ENGE-REFnn`, where `nn` is the
+two-digit algorithm number.
+
 ## Reproducing the reference
 
 Use the pinned [upstream source](https://github.com/google/music-synthesizer-for-android/tree/f67d41d313b7dc85f6fb99e79e515cc9d208cfff).

@@ -14,6 +14,11 @@ constructed named patches, the reference harness and paired 48 kHz WAV files.
 It found whole-file relative RMS differences of 5.20% and 4.13% for algorithms
 1 and 32. Qualification is not passed; onset/release timing and the intended
 reference target require resolution before treating these as passing fixtures.
+An all-32-algorithm sweep subsequently exposed incorrect algorithm 23 routing
+in uFor. Its correction reduced held-section relative RMS error from 35.234%
+to 0.2432%; the other algorithms were unchanged. The report includes sweep
+measurements and the corrected algorithm 23 recordings. Uniform operator
+settings and disabled feedback limit what this sweep proves.
 
 Pitch envelopes now decode the packed/unpacked four-rate/four-level fields,
 start from level four, hold level three and release toward level four. Integer
