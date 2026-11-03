@@ -10,6 +10,42 @@ from enge.synth import EngineError
 from enge.yamaha import DX7Renderer
 
 
+def test_pitch_envelope_octave_calibration(tmp_path: Path) -> None:
+    data = bytearray(voice().data)
+    data[130:134] = bytes([82] * 4)
+    actual = DX7Renderer(DX7Voice(data=bytes(data)), note=69, velocity=100).render(
+        48000
+    )
+    expected = DX7Renderer(voice(), note=81, velocity=100).render(48000)
+    check_audio(tmp_path / "pitch-octave.wav", actual, expected)
+
+
+def test_pitch_envelope_release_and_partitioned_continuation(tmp_path: Path) -> None:
+    data = bytearray(voice().data)
+    data[126:130] = bytes([99] * 4)
+    data[130:134] = bytes([82, 82, 82, 50])
+    patch = DX7Voice(data=bytes(data))
+    whole = DX7Renderer(patch, note=69, velocity=100)
+    first = whole.render(24000)
+    assert whole.pitch_envelope.level == 2**24
+    whole.release()
+    tail = whole.render(24000)
+    assert whole.pitch_envelope.level == 0
+    split = DX7Renderer(patch, note=69, velocity=100)
+    chunks = [split.render(1001), split.render(22999)]
+    split.release()
+    # Envelope state is portable independently of the enclosing note renderer.
+    split.pitch_envelope = type(split.pitch_envelope).model_validate_json(
+        split.pitch_envelope.model_dump_json()
+    )
+    chunks.extend([split.render(321), split.render(23679)])
+    check_audio(
+        tmp_path / "pitch-release.wav",
+        np.concatenate(chunks),
+        np.concatenate([first, tail]),
+    )
+
+
 @pytest.mark.parametrize("coarse", [4, 31])
 @pytest.mark.parametrize("detune", [0, 7, 14])
 def test_fixed_operators_repeat_decades_and_ignore_played_key(
@@ -51,13 +87,28 @@ def voice() -> DX7Voice:
         data[start + 18] = 1
         data[start + 20] = 7
     data[134] = 31
+    data[130:134] = bytes([50] * 4)
     return DX7Voice(data=bytes(data))
 
 
 @pytest.mark.parametrize(
     "packed,field",
-    [(False, f) for f in ("algorithm", "feedback", "output", "rate", "level")]
-    + [(True, f) for f in ("algorithm", "output", "rate", "level")],
+    [
+        (False, f)
+        for f in (
+            "algorithm",
+            "feedback",
+            "output",
+            "rate",
+            "level",
+            "pitch_rate",
+            "pitch_level",
+        )
+    ]
+    + [
+        (True, f)
+        for f in ("algorithm", "output", "rate", "level", "pitch_rate", "pitch_level")
+    ],
 )
 def test_malformed_parameters_remain_inspectable_but_cannot_render(
     packed: bool, field: str
@@ -69,6 +120,8 @@ def test_malformed_parameters_remain_inspectable_but_cannot_render(
         "output": (13 if packed else 16, 100),
         "rate": (0, 100),
         "level": (4, 100),
+        "pitch_rate": (102 if packed else 126, 100),
+        "pitch_level": (106 if packed else 130, 100),
     }
     index, value = positions[field]
     data[index] = value

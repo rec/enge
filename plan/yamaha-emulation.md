@@ -5,9 +5,18 @@
 `enge/yamaha.py` already contains a Python DX7 note renderer, operator envelopes,
 frequency and level scaling, algorithm routing and feedback. This is partial
 implementation, not verified hardware equivalence. The requirements below remain
-the target contract; pitch-envelope/oscillator-sync behavior, reference
+the target contract; oscillator-sync behavior, reference
 qualification, TX81Z/WT11 rendering and full engine integration require further
 work. Do not restart the existing DX7 implementation.
+
+Pitch envelopes now decode the packed/unpacked four-rate/four-level fields,
+start from level four, hold level three and release toward level four. Integer
+Q24 octave state and a fractional tick carry adapt
+[MSFA's measured pitch rate/level data](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/pitchenv.cc)
+to this renderer's per-sample execution. Pitch affects fixed and ratio operators.
+Tests cover octave calibration, release, partitioned continuation and invalid
+pitch parameters. This is not yet a comparison against a complete reference
+renderer's WAV output.
 
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above

@@ -84,6 +84,40 @@ class DX7Envelope(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class DX7PitchEnvelope(BaseModel):
+    """Four-stage pitch envelope, in Q24 octaves with a fractional tick carry."""
+
+    rates: list[int] = Field(min_length=4, max_length=4)
+    levels: list[int] = Field(min_length=4, max_length=4)
+    sample_rate: int = Field(gt=0)
+    level: int
+    stage: int = 0
+    held: bool = True
+    remainder: int = 0
+
+    def release(self) -> None:
+        if self.held:
+            self.held = False
+            self.stage = 3
+
+    def sample(self) -> float:
+        if self.stage < 3 or (self.stage == 3 and not self.held):
+            target = _PITCH_LEVELS[self.levels[self.stage]] * 2**19
+            unit = int(64 * 2**24 / (21.3 * self.sample_rate) + 0.5)
+            increment, self.remainder = divmod(
+                _PITCH_RATES[self.rates[self.stage]] * unit + self.remainder, 64
+            )
+            if self.level < target:
+                self.level = min(target, self.level + increment)
+            else:
+                self.level = max(target, self.level - increment)
+            if self.level == target:
+                self.stage += 1
+        return 2 ** (self.level / 2**24)
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class DX7Renderer:
     """Render one DX7 note with native algorithms and Yamaha envelope timing."""
 
@@ -104,6 +138,18 @@ class DX7Renderer:
             raise EngineError("DX7 velocity must be from 0 through 127")
         if sample_rate <= 0:
             raise EngineError("DX7 sample rate must be positive")
+        pitch_start = 102 if voice.packed else 126
+        pitch = list(voice.data[pitch_start : pitch_start + 8])
+        if any(v > 99 for v in pitch):
+            raise EngineError(
+                "DX7 pitch envelope rates and levels must be from 0 through 99"
+            )
+        self.pitch_envelope = DX7PitchEnvelope(
+            rates=pitch[:4],
+            levels=pitch[4:],
+            sample_rate=sample_rate,
+            level=_PITCH_LEVELS[pitch[7]] * 2**19,
+        )
         self.voice = voice
         self.note = note
         self.velocity = velocity
@@ -120,6 +166,7 @@ class DX7Renderer:
         self.order = _operator_order(voice)
 
     def release(self) -> None:
+        self.pitch_envelope.release()
         for envelope in self.envelopes:
             envelope.release()
 
@@ -131,6 +178,7 @@ class DX7Renderer:
         carriers = [operator - 1 for operator in topology.carriers]
         feedback_operator = topology.feedback - 1
         for frame in range(frames):
+            pitch_ratio = self.pitch_envelope.sample()
             values = np.zeros(6)
             for operator in self.order:
                 modulation = sum(
@@ -147,7 +195,7 @@ class DX7Renderer:
             output[frame, 0] = sum(values[carrier] for carrier in carriers)
             self.feedback = values[feedback_operator]
             self.phases = np.remainder(
-                self.phases + self.frequencies / self.sample_rate, 1
+                self.phases + self.frequencies * pitch_ratio / self.sample_rate, 1
             )
         return output
 
@@ -338,3 +386,211 @@ def _key_curve(group: int, depth: int, curve: int) -> int:
         ][min(group, 32)]
         scale = exponent * depth * 329 >> 15
     return -scale if curve < 2 else scale
+
+
+# Measured DX7 rate/level data reported by MSFA, pitchenv.cc:
+# https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/pitchenv.cc
+_PITCH_RATES = [
+    1,
+    2,
+    3,
+    3,
+    4,
+    4,
+    5,
+    5,
+    6,
+    6,
+    7,
+    7,
+    8,
+    8,
+    9,
+    9,
+    10,
+    10,
+    11,
+    11,
+    12,
+    12,
+    13,
+    13,
+    14,
+    14,
+    15,
+    16,
+    16,
+    17,
+    18,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    30,
+    31,
+    33,
+    34,
+    36,
+    37,
+    38,
+    39,
+    41,
+    42,
+    44,
+    46,
+    47,
+    49,
+    51,
+    53,
+    54,
+    56,
+    58,
+    60,
+    62,
+    64,
+    66,
+    68,
+    70,
+    72,
+    74,
+    76,
+    79,
+    82,
+    85,
+    88,
+    91,
+    94,
+    98,
+    102,
+    106,
+    110,
+    115,
+    120,
+    125,
+    130,
+    135,
+    141,
+    147,
+    153,
+    159,
+    165,
+    171,
+    178,
+    185,
+    193,
+    202,
+    211,
+    232,
+    243,
+    254,
+    255,
+]
+_PITCH_LEVELS = [
+    -128,
+    -116,
+    -104,
+    -95,
+    -85,
+    -76,
+    -68,
+    -61,
+    -56,
+    -52,
+    -49,
+    -46,
+    -43,
+    -41,
+    -39,
+    -37,
+    -35,
+    -33,
+    -32,
+    -31,
+    -30,
+    -29,
+    -28,
+    -27,
+    -26,
+    -25,
+    -24,
+    -23,
+    -22,
+    -21,
+    -20,
+    -19,
+    -18,
+    -17,
+    -16,
+    -15,
+    -14,
+    -13,
+    -12,
+    -11,
+    -10,
+    -9,
+    -8,
+    -7,
+    -6,
+    -5,
+    -4,
+    -3,
+    -2,
+    -1,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    38,
+    40,
+    43,
+    46,
+    49,
+    53,
+    58,
+    65,
+    73,
+    82,
+    92,
+    103,
+    115,
+    127,
+]
