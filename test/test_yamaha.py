@@ -4,10 +4,51 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from ufor import tx81z
 from ufor.dx7 import DX7Voice
 
 from enge.synth import EngineError
-from enge.yamaha import DX7Envelope, DX7Renderer, DX7Snapshot, tx81z_wave_samples
+from enge.yamaha import (
+    DX7Envelope,
+    DX7Renderer,
+    DX7Snapshot,
+    TX81ZEnvelope,
+    tx81z_wave_samples,
+)
+
+
+@pytest.mark.parametrize("number,shift", [(1, 3), (2, 0), (2, 1), (2, 2), (2, 3)])
+def test_tx81z_envelope_holds_maximum_and_releases_with_shift(
+    tmp_path: Path, number: int, shift: int
+) -> None:
+    raw = bytearray(93)
+    start = (4 - number) * 13
+    raw[start] = raw[start + 1] = 31
+    raw[start + 3] = raw[start + 4] = 15
+    extra = bytearray(23)
+    extra[(4 - number) * 5 + 4] = shift
+    envelope = TX81ZEnvelope.start(
+        tx81z.TX81ZVoice(data=bytes(raw)).operator(number),
+        tx81z.TX81ZAdditional(data=bytes(extra)).operator(number),
+        0,
+    )
+    assert envelope.sustain == 0
+    attenuation = []
+    for i in range(48000):
+        if i == 24000:
+            envelope.release()
+            envelope = TX81ZEnvelope.model_validate_json(envelope.model_dump_json())
+        attenuation.append(envelope.clock(i))
+    expected = np.minimum(np.maximum(np.arange(48000) - 23999, 0) * 8, 1023)
+    expected >>= 0 if number == 1 else shift
+    np.testing.assert_array_equal(attenuation, expected)
+    carrier = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000)
+    actual = carrier * 2 ** (-np.array(attenuation) / 64)
+    check_audio(
+        tmp_path / "tx81z-envelope.wav",
+        actual[:, None],
+        (carrier * 2 ** (-expected / 64))[:, None],
+    )
 
 
 @pytest.mark.parametrize("waveform", range(8))

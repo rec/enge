@@ -4,9 +4,80 @@ from math import exp, log2, pi, sin
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+from ufor import tx81z
 from ufor.dx7 import DX7Operator, DX7Voice
 
 from .synth import EngineError
+
+
+class TX81ZEnvelope(BaseModel):
+    """OPZ attenuation state advanced by the shared envelope counter.
+
+    Counter ticks are chip envelope cycles, not output audio frames. The host
+    owns this clock and supplies the same counter to every operator.
+    """
+
+    rates: list[int] = Field(min_length=4, max_length=4)
+    sustain: int = Field(ge=0, le=1023)
+    shift: int = Field(ge=0, le=3)
+    attenuation: int = Field(default=1023, ge=0, le=1023)
+    stage: int = Field(default=0, ge=0, le=3)
+
+    @classmethod
+    def start(
+        cls,
+        operator: tx81z.TX81ZOperator,
+        additional: tx81z.TX81ZAdditionalOperator,
+        key_code: int,
+    ) -> "TX81ZEnvelope":
+        if operator.number != additional.number:
+            raise EngineError("TX81Z envelope requires matching VCED/ACED operators")
+        if not 0 <= key_code <= 31:
+            raise EngineError("TX81Z key code must be from 0 through 31")
+        scaling = key_code >> (operator.rate_scaling ^ 3)
+        rates = [
+            min(63, r + scaling) if r else 0
+            for r in (
+                operator.attack_rate * 2,
+                operator.decay_1_rate * 2,
+                operator.decay_2_rate * 2,
+                operator.release_rate * 4 + 2,
+            )
+        ]
+        sustain = 15 - operator.decay_1_level
+        sustain |= (sustain + 1) & 16
+        return cls(
+            rates=rates,
+            sustain=sustain * 32,
+            shift=0 if operator.number == 1 else additional.eg_shift,
+            attenuation=0 if rates[0] >= 62 else 1023,
+        )
+
+    def release(self) -> None:
+        self.stage = 3
+
+    def clock(self, counter: int) -> int:
+        """Advance one shared envelope observation and return shifted attenuation."""
+        if counter < 0:
+            raise EngineError("TX81Z envelope counter must be nonnegative")
+        if self.stage == 0 and self.attenuation == 0:
+            self.stage = 1
+        if self.stage == 1 and self.attenuation >= self.sustain:
+            self.stage = 2
+        rate = self.rates[self.stage]
+        shift = rate >> 2
+        scaled = counter << shift
+        if scaled & 2047 == 0:
+            index = (scaled >> max(11, shift)) & 7
+            increment = (_TX_INCREMENTS[rate] >> (4 * index)) & 15
+            if self.stage == 0:
+                if rate < 62:
+                    self.attenuation += (~self.attenuation * increment) >> 4
+            else:
+                self.attenuation = min(1023, self.attenuation + increment)
+        return self.attenuation >> self.shift
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class DX7Envelope(BaseModel):
@@ -446,6 +517,27 @@ def _key_curve(group: int, depth: int, curve: int) -> int:
     return -scale if curve < 2 else scale
 
 
+# OPZ attenuation increments reported by ymfm, ymfm_fm.ipp.
+# Each hexadecimal nibble gives one step in the eight-counter sequence.
+_TX_INCREMENTS = (
+    [0, 0, 0x10101010, 0x10101010, 0x10101010, 0x10101010, 0x11101110, 0x11101110]
+    + [0x10101010, 0x10111010, 0x11101110, 0x11111110] * 10
+    + [
+        0x11111111,
+        0x21112111,
+        0x21212121,
+        0x22212221,
+        0x22222222,
+        0x42224222,
+        0x42424242,
+        0x44424442,
+        0x44444444,
+        0x84448444,
+        0x84848484,
+        0x88848884,
+    ]
+    + [0x88888888] * 4
+)
 # Measured DX7 rate/level data reported by MSFA, pitchenv.cc:
 # https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/pitchenv.cc
 _PITCH_RATES = [

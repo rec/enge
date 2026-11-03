@@ -93,6 +93,18 @@ hardware equivalence. One-second 48 kHz regressions distinguish all eight
 shapes at sixteen positions per cycle, including negative/unwrapped phases
 and the silent half-cycle boundaries. The complete TX81Z renderer remains work.
 
+`TX81ZEnvelope` now prepares matching VCED/ACED operator data into a separate
+OPZ attenuation state. Its `clock(counter)` consumes the host's shared envelope
+counter, not output-frame time. Rates include key scaling, attack/decay/sustain/
+release transitions, saturated attenuation and envelope shift (disabled for
+OP1). D1L is inverted into chip attenuation, so level 15 means no initial decay,
+as described by the Yamaha manual. Increment sequencing follows
+[ymfm's envelope clock](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp)
+and [OPZ rate preparation](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_opz.cpp).
+One-second WAV regressions cover full-level sustain, release and every shift,
+including JSON state continuation. Host clock conversion, lower-rate timing,
+output-level scaling and complete voice integration remain unqualified.
+
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
   and ACED waveform selections into the same Yamaha renderer family.
