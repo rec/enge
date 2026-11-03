@@ -59,6 +59,10 @@ filters; both amplitude orders are supported, without a tail after exhaustion.
 Native live registration still rejects controls, generators and control-driven
 filter parameters. The user approved extending that sampler with the existing
 native control/filter machinery on 2026-11-02, preserving bounded callback storage.
+The generated runtimes' existing control ramps, scoped contexts and voice
+bindings now live in a shared native `ControlBank`, including context retirement
+and snapshot state. Sampler admission and parameter evaluation still need to be
+connected to that component; this extraction does not expand sampler support.
 
 The completion audit also found authored playback fields that are not yet
 consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,

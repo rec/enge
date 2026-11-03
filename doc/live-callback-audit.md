@@ -15,6 +15,9 @@ routing, and snapshots in Rust. Their `process_actions_into` entry point writes
 to caller-owned output and performs no normal-path heap allocation inside the
 sample loop. The fixed-size action queue uses `rtrb`, publishes whole batches,
 and drains only the batch prefix visible when draining starts.
+Control ramps and instrument/part/trigger context storage are owned by the shared
+native `ControlBank`; its storage is prepared before processing and retained in
+generated-source snapshots.
 
 `LiveRuntime` now closes this boundary for generated and sampled sources. It owns
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal
@@ -50,7 +53,7 @@ plus effect actions, submits bounded batches, then invokes the single Rust owner
 This removes Python DSP, mixing, and effect-array construction from its callback
 body. Python still performs admission and submission synchronously before that
 call. The native sampler profile currently excludes dynamic controls, generators,
-and filters.
+and dynamically controlled filter parameters.
 
 Granulators allocate circular history and a fixed captured-grain pool during
 setup. Duration, density, lookback, playback ratio, jitter, wet/dry, bypass, and

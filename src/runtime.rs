@@ -16,7 +16,9 @@ use std::f64::consts::{PI, TAU};
 
 use patch_host::{PatchHost, clock_at};
 
+pub(crate) mod controls;
 mod patch_host;
+use controls::{ControlBank, ControlDefinition, ControlState, control_definitions};
 
 #[derive(Clone, PartialEq)]
 struct RouteMap {
@@ -45,25 +47,6 @@ impl RouteMap {
             amount + progress * (next_amount - amount)
         })
     }
-}
-
-#[derive(Clone, PartialEq)]
-struct ControlDefinition {
-    default: f64,
-    smoothing_numerator: u64,
-    smoothing_denominator: u64,
-    scope: usize,
-    parameter: usize,
-    operation: usize,
-    minimum: f64,
-    maximum: f64,
-}
-
-#[derive(Clone)]
-struct ControlState {
-    start: f64,
-    target: f64,
-    elapsed: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -321,6 +304,7 @@ pub struct SynthRuntimeSnapshot {
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntime {
+    controls: ControlBank,
     parameter_partials: Vec<f64>,
     patch_host: Option<PatchHost>,
     patch_states: Vec<Option<PatchState>>,
@@ -342,8 +326,6 @@ pub struct SynthRuntime {
     minimum_hold_frames: Time,
     routes: Array2<f64>,
     route_maps: Vec<Vec<RouteMap>>,
-    control_definitions: Vec<ControlDefinition>,
-    control_states: Vec<ControlState>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_owners: Vec<usize>,
     lfo_event_states: Vec<LfoPlayback>,
@@ -357,8 +339,6 @@ pub struct SynthRuntime {
     staged_owners: Vec<usize>,
     staged_connections: Vec<StagedConnection>,
     filter_definitions: Vec<FilterDefinition>,
-    context_kinds: Vec<usize>,
-    context_states: Vec<ControlState>,
     parameter_definitions: Vec<f64>,
     frequencies: Vec<f64>,
     phases: Vec<f64>,
@@ -380,8 +360,6 @@ pub struct SynthRuntime {
     frequency_remaining: Vec<usize>,
     gain_steps: Vec<f64>,
     gain_remaining: Vec<usize>,
-    voice_part_contexts: Vec<usize>,
-    voice_trigger_contexts: Vec<usize>,
     filter_states: Array2<f64>,
     voice_filter_states: Array3<f64>,
     frame: usize,
@@ -393,7 +371,7 @@ pub struct SynthRuntime {
 impl SynthRuntime {
     fn set_route_maps(&mut self, kind: usize, maps: Vec<(usize, Vec<(f64, f64)>)>) -> PyResult<()> {
         let count = match kind {
-            0 => self.control_definitions.len(),
+            0 => self.controls.control_definitions.len(),
             1 => self.lfo_definitions.len(),
             2 => self.named_envelopes.len(),
             3 => self.staged_envelfos.len(),
@@ -495,9 +473,6 @@ impl SynthRuntime {
             .iter()
             .map(|d| initial_lfo(d, Time::ZERO))
             .collect::<PyResult<Vec<_>>>()?;
-        let context_states = (0..context_capacity)
-            .flat_map(|_| control_states.clone())
-            .collect();
         let amplitude_states = (0..slots)
             .map(|_| Ok(vec![amplitude.start()?]))
             .collect::<PyResult<_>>()?;
@@ -525,8 +500,12 @@ impl SynthRuntime {
             routes: routes.as_array().to_owned(),
             route_maps: vec![vec![]; 5],
             parameter_partials: Vec::new(),
-            control_definitions,
-            control_states,
+            controls: ControlBank::new(
+                control_definitions,
+                control_states,
+                slots,
+                context_capacity,
+            ),
             lfo_definitions,
             lfo_owners: (0..lfo_count).collect(),
             lfo_event_states: lfo_states,
@@ -540,8 +519,6 @@ impl SynthRuntime {
             staged_owners: Vec::new(),
             staged_connections: Vec::new(),
             filter_definitions,
-            context_kinds: vec![0; context_capacity],
-            context_states,
             parameter_definitions: parameters,
             frequencies: vec![1.0; slots],
             phases: vec![0.0; slots],
@@ -563,8 +540,6 @@ impl SynthRuntime {
             frequency_remaining: vec![0; slots],
             gain_steps: vec![0.0; slots],
             gain_remaining: vec![0; slots],
-            voice_part_contexts: vec![usize::MAX; slots],
-            voice_trigger_contexts: vec![usize::MAX; slots],
             filter_states: Array2::zeros((channels, 2)),
             voice_filter_states: Array3::zeros((slots, filter_stages, 2)),
             frame: 0,
@@ -1553,7 +1528,11 @@ impl SynthRuntime {
     }
 
     pub(crate) fn active_contexts(&self) -> Vec<bool> {
-        self.context_kinds.iter().map(|kind| *kind != 0).collect()
+        self.controls
+            .context_kinds
+            .iter()
+            .map(|kind| *kind != 0)
+            .collect()
     }
 
     pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
@@ -1578,8 +1557,8 @@ impl SynthRuntime {
             minimum_hold_frames: self.minimum_hold_frames,
             routes: self.routes.clone(),
             route_maps: self.route_maps.clone(),
-            control_definitions: self.control_definitions.clone(),
-            control_states: self.control_states.clone(),
+            control_definitions: self.controls.control_definitions.clone(),
+            control_states: self.controls.control_states.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
             lfo_owners: self.lfo_owners.clone(),
             lfo_event_states: self.lfo_event_states.clone(),
@@ -1593,8 +1572,8 @@ impl SynthRuntime {
             staged_owners: self.staged_owners.clone(),
             staged_connections: self.staged_connections.clone(),
             filter_definitions: self.filter_definitions.clone(),
-            context_kinds: self.context_kinds.clone(),
-            context_states: self.context_states.clone(),
+            context_kinds: self.controls.context_kinds.clone(),
+            context_states: self.controls.context_states.clone(),
             parameter_definitions: self.parameter_definitions.clone(),
             frequencies: self.frequencies.clone(),
             phases: self.phases.clone(),
@@ -1616,8 +1595,8 @@ impl SynthRuntime {
             frequency_remaining: self.frequency_remaining.clone(),
             gain_steps: self.gain_steps.clone(),
             gain_remaining: self.gain_remaining.clone(),
-            voice_part_contexts: self.voice_part_contexts.clone(),
-            voice_trigger_contexts: self.voice_trigger_contexts.clone(),
+            voice_part_contexts: self.controls.voice_part_contexts.clone(),
+            voice_trigger_contexts: self.controls.voice_trigger_contexts.clone(),
             filter_states: self.filter_states.clone(),
             voice_filter_states: self.voice_filter_states.clone(),
             frame: self.frame,
@@ -1657,13 +1636,21 @@ impl SynthRuntime {
         self.voice_filter_states
             .clone_from(&snapshot.voice_filter_states);
         self.frame = snapshot.frame;
-        self.control_states.clone_from(&snapshot.control_states);
+        self.controls
+            .control_states
+            .clone_from(&snapshot.control_states);
         self.lfo_event_states.clone_from(&snapshot.lfo_event_states);
-        self.context_kinds.clone_from(&snapshot.context_kinds);
-        self.context_states.clone_from(&snapshot.context_states);
-        self.voice_part_contexts
+        self.controls
+            .context_kinds
+            .clone_from(&snapshot.context_kinds);
+        self.controls
+            .context_states
+            .clone_from(&snapshot.context_states);
+        self.controls
+            .voice_part_contexts
             .clone_from(&snapshot.voice_part_contexts);
-        self.voice_trigger_contexts
+        self.controls
+            .voice_trigger_contexts
             .clone_from(&snapshot.voice_trigger_contexts);
         Ok(())
     }
@@ -1685,7 +1672,7 @@ impl SynthRuntime {
             || self.minimum_hold_frames != snapshot.minimum_hold_frames
             || self.routes != snapshot.routes
             || self.route_maps != snapshot.route_maps
-            || self.control_definitions != snapshot.control_definitions
+            || self.controls.control_definitions != snapshot.control_definitions
             || self.lfo_definitions != snapshot.lfo_definitions
             || self.lfo_owners != snapshot.lfo_owners
             || self.named_envelopes != snapshot.named_envelopes
@@ -1700,7 +1687,7 @@ impl SynthRuntime {
             || self.staged_connections != snapshot.staged_connections
             || self.filter_definitions != snapshot.filter_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
-            || self.context_kinds.len() != snapshot.context_kinds.len()
+            || self.controls.context_kinds.len() != snapshot.context_kinds.len()
         {
             return Err(PyValueError::new_err(
                 "Snapshot belongs to a different synth runtime",
@@ -1997,24 +1984,7 @@ impl SynthRuntime {
                     &mut self.gain_remaining[voice],
                 );
             }
-            for (source, state) in self.control_states.iter_mut().enumerate() {
-                if self.control_definitions[source].scope == 0 {
-                    state.elapsed = state.elapsed.saturating_add(1);
-                }
-            }
-            for context in 0..self.context_kinds.len() {
-                let kind = self.context_kinds[context];
-                if kind == 0 {
-                    continue;
-                }
-                for source in 0..self.control_definitions.len() {
-                    if self.control_definitions[source].scope == kind {
-                        let state = &mut self.context_states
-                            [context * self.control_definitions.len() + source];
-                        state.elapsed = state.elapsed.saturating_add(1);
-                    }
-                }
-            }
+            self.controls.advance();
             for channel in 0..channels {
                 if filter {
                     let input = output[[frame, channel]];
@@ -2035,7 +2005,7 @@ impl SynthRuntime {
                 .checked_add(1)
                 .ok_or_else(|| PyValueError::new_err("Synth runtime frame overflow"))?;
         }
-        self.retire_trigger_contexts();
+        self.controls.retire_trigger_contexts(&self.active);
         Ok(())
     }
 
@@ -2138,8 +2108,8 @@ impl SynthRuntime {
                 }
                 self.ages[voice] = 0;
                 self.release_frames[voice] = None;
-                self.voice_part_contexts[voice] = usize::MAX;
-                self.voice_trigger_contexts[voice] = usize::MAX;
+                self.controls.voice_part_contexts[voice] = usize::MAX;
+                self.controls.voice_trigger_contexts[voice] = usize::MAX;
                 self.frequency_remaining[voice] = 0;
                 self.gain_remaining[voice] = 0;
                 for stage in 0..self.voice_filter_states.shape()[1] {
@@ -2201,65 +2171,7 @@ impl SynthRuntime {
                     self.gains[voice] = action[4];
                 }
             }
-            4 => {
-                let Some(definition) = self.control_definitions.get(voice).cloned() else {
-                    return Err(PyValueError::new_err("Invalid synth runtime control"));
-                };
-                if action[3] < definition.minimum || action[3] > definition.maximum {
-                    return Err(PyValueError::new_err("Invalid synth control value"));
-                }
-                let context = decode_context(action[4], self.context_kinds.len())?;
-                let state = self.control_state_mut(voice, context)?;
-                state.start = control_value(&definition, state);
-                state.target = action[3];
-                state.elapsed = 0;
-            }
-            5 => {
-                let part = decode_context(action[3], self.context_kinds.len())?;
-                let trigger = decode_context(action[4], self.context_kinds.len())?;
-                if part.is_some_and(|context| self.context_kinds[context] != 1)
-                    || trigger.is_some_and(|context| self.context_kinds[context] != 2)
-                {
-                    return Err(PyValueError::new_err("Invalid voice control contexts"));
-                }
-                self.voice_part_contexts[voice] = part.unwrap_or(usize::MAX);
-                self.voice_trigger_contexts[voice] = trigger.unwrap_or(usize::MAX);
-            }
-            6 => {
-                if voice >= self.context_kinds.len() || self.context_kinds[voice] != 0 {
-                    return Err(PyValueError::new_err("Invalid synth control context"));
-                }
-                let context_kind = action[3] as usize;
-                if action[3] != context_kind as f64 || !(1..=2).contains(&context_kind) {
-                    return Err(PyValueError::new_err("Invalid synth context kind"));
-                }
-                self.context_kinds[voice] = context_kind;
-                let sources = self.control_definitions.len();
-                for source in 0..sources {
-                    let default = self.control_definitions[source].default;
-                    self.context_states[voice * sources + source] = ControlState {
-                        start: default,
-                        target: default,
-                        elapsed: 0,
-                    };
-                }
-            }
-            7 => {
-                let source = action[3] as usize;
-                if voice >= self.context_kinds.len()
-                    || action[3] != source as f64
-                    || source >= self.control_definitions.len()
-                    || action[4] < self.control_definitions[source].minimum
-                    || action[4] > self.control_definitions[source].maximum
-                    || self.context_kinds[voice] != self.control_definitions[source].scope
-                {
-                    return Err(PyValueError::new_err("Invalid synth context value"));
-                }
-                let index = voice * self.control_definitions.len() + source;
-                self.context_states[index].start = action[4];
-                self.context_states[index].target = action[4];
-                self.context_states[index].elapsed = 0;
-            }
+            4..=7 => self.controls.apply(action)?,
             8 => {
                 let lfo = voice;
                 let action_kind = action[3] as usize;
@@ -2393,7 +2305,8 @@ impl SynthRuntime {
     fn lfo_signal(&self, voice: usize, source: usize) -> PyResult<(f64, f64)> {
         let definition = &self.lfo_definitions[source];
         if definition.scope == 1 {
-            self.context_kind(self.voice_part_contexts[voice], 1)?;
+            self.controls
+                .context_kind(self.controls.voice_part_contexts[voice], 1)?;
         }
         let value = if definition.scope == 3 {
             self.patch_value(voice, 0, source)?
@@ -2420,16 +2333,11 @@ impl SynthRuntime {
     fn parameter(&mut self, voice: usize, parameter: usize) -> PyResult<f64> {
         let mut partial_count = 0;
         let mut product = 1.0;
-        for (source, definition) in self.control_definitions.iter().enumerate() {
+        for (source, definition) in self.controls.control_definitions.iter().enumerate() {
             if definition.parameter != parameter {
                 continue;
             }
-            let state = match definition.scope {
-                0 => &self.control_states[source],
-                1 => self.context_state(self.voice_part_contexts[voice], source, 1)?,
-                _ => self.context_state(self.voice_trigger_contexts[voice], source, 2)?,
-            };
-            let amount = self.mapped(0, source, control_value(definition, state))?;
+            let amount = self.mapped(0, source, self.controls.value(voice, source)?)?;
             if definition.operation == 0 {
                 add_partial(&mut self.parameter_partials, &mut partial_count, amount);
             } else {
@@ -2561,67 +2469,6 @@ impl SynthRuntime {
         }
         Ok(sample)
     }
-
-    fn context_state(&self, context: usize, source: usize, kind: usize) -> PyResult<&ControlState> {
-        self.context_kind(context, kind)?;
-        Ok(&self.context_states[context * self.control_definitions.len() + source])
-    }
-
-    fn context_kind(&self, context: usize, kind: usize) -> PyResult<()> {
-        if context >= self.context_kinds.len() || self.context_kinds[context] != kind {
-            return Err(PyValueError::new_err(
-                "Voice is missing its control context",
-            ));
-        }
-        Ok(())
-    }
-
-    fn control_state_mut(
-        &mut self,
-        source: usize,
-        context: Option<usize>,
-    ) -> PyResult<&mut ControlState> {
-        let scope = self.control_definitions[source].scope;
-        if scope == 0 && context.is_none() {
-            return Ok(&mut self.control_states[source]);
-        }
-        let Some(context) = context else {
-            return Err(PyValueError::new_err(
-                "Control action is missing its context",
-            ));
-        };
-        if self.context_kinds[context] != scope {
-            return Err(PyValueError::new_err(
-                "Control action has the wrong context",
-            ));
-        }
-        Ok(&mut self.context_states[context * self.control_definitions.len() + source])
-    }
-
-    fn retire_trigger_contexts(&mut self) {
-        for context in 0..self.context_kinds.len() {
-            if self.context_kinds[context] == 2
-                && !self
-                    .active
-                    .iter()
-                    .enumerate()
-                    .any(|(voice, active)| *active && self.voice_trigger_contexts[voice] == context)
-            {
-                self.context_kinds[context] = 0;
-            }
-        }
-    }
-}
-
-fn decode_context(value: f64, capacity: usize) -> PyResult<Option<usize>> {
-    if value == -1.0 {
-        return Ok(None);
-    }
-    let context = value as usize;
-    if value != context as f64 || context >= capacity {
-        return Err(PyValueError::new_err("Invalid synth control context"));
-    }
-    Ok(Some(context))
 }
 
 fn add_partial(partials: &mut [f64], count: &mut usize, mut value: f64) {
@@ -2659,69 +2506,6 @@ fn sum_partials(partials: &[f64]) -> f64 {
         }
     }
     total
-}
-
-fn control_definitions(
-    values: PyReadonlyArray2<'_, f64>,
-    smoothing: &[(u64, u64)],
-) -> PyResult<(Vec<ControlDefinition>, Vec<ControlState>)> {
-    if values.shape()[1] != 6
-        || values.shape()[0] != smoothing.len()
-        || smoothing.iter().any(|(_, denominator)| *denominator == 0)
-        || values.as_array().iter().any(|v| !v.is_finite())
-    {
-        return Err(PyValueError::new_err("Invalid synth runtime controls"));
-    }
-    let mut definitions = Vec::with_capacity(values.shape()[0]);
-    let mut states = Vec::with_capacity(values.shape()[0]);
-    for (row, (smoothing_numerator, smoothing_denominator)) in
-        values.as_array().rows().into_iter().zip(smoothing)
-    {
-        let scope = row[1] as usize;
-        let parameter = row[2] as usize;
-        let operation = row[3] as usize;
-        if row[1] != scope as f64
-            || scope > 2
-            || row[2] != parameter as f64
-            || row[3] != operation as f64
-            || operation > 1
-            || row[4] > row[5]
-            || row[0] < row[4]
-            || row[0] > row[5]
-        {
-            return Err(PyValueError::new_err("Invalid synth runtime control"));
-        }
-        definitions.push(ControlDefinition {
-            default: row[0],
-            smoothing_numerator: *smoothing_numerator,
-            smoothing_denominator: *smoothing_denominator,
-            scope,
-            parameter,
-            operation,
-            minimum: row[4],
-            maximum: row[5],
-        });
-        states.push(ControlState {
-            start: row[0],
-            target: row[0],
-            elapsed: 0,
-        });
-    }
-    Ok((definitions, states))
-}
-
-fn control_value(definition: &ControlDefinition, state: &ControlState) -> f64 {
-    if state.elapsed as u128 * definition.smoothing_denominator as u128
-        >= definition.smoothing_numerator as u128
-    {
-        state.target
-    } else {
-        state.start
-            + (state.target - state.start)
-                * state.elapsed as f64
-                * definition.smoothing_denominator as f64
-                / definition.smoothing_numerator as f64
-    }
 }
 
 fn lfo_definitions(
