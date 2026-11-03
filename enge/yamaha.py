@@ -175,10 +175,15 @@ def _operator_order(voice: DX7Voice) -> list[int]:
 
 
 def _operator_frequency(operator: DX7Operator, note: int) -> float:
+    if operator.frequency_mode.value == "fixed":
+        # MSFA's fixed-mode logarithmic detune is key-independent and unipolar.
+        detune_octaves = 13457 * max(0, operator.detune - 7) / 2**24
+        return (
+            10 ** (((operator.coarse & 3) * 100 + operator.fine) / 100)
+            * 2**detune_octaves
+        )
     note_frequency = 440 * 2 ** ((note - 69) / 12)
     detune = 0.0209 * exp(-0.396 * log2(note_frequency)) * (operator.detune - 7) / 7
-    if operator.frequency_mode.value == "fixed":
-        return 10 ** ((operator.coarse * 100 + operator.fine) / 100) * (1 + detune)
     ratio = 0.5 if operator.coarse == 0 else operator.coarse
     return note_frequency * ratio * (1 + operator.fine / 100) * (1 + detune)
 

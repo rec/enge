@@ -15,6 +15,15 @@ errors before preparing DSP state. It also rejects envelope rates/levels above
 voices without changing their stored bytes. This does not yet qualify all
 global Yamaha parameters or dump-to-engine integration.
 
+Fixed-frequency operators now use the low two coarse bits and key-independent,
+positive-only logarithmic detune, following the frequency equations in
+[MSFA's DX7 note implementation](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/dx7note.cc).
+One-second 48 kHz regressions cover repeated decades, different played keys and
+negative/neutral/positive detune. The renderer still uses floating-point
+oscillators; these checks do not establish bit-exact hardware equivalence.
+Ratio-mode detune retains the existing approximation and still needs reference
+qualification.
+
 Implement a dedicated Yamaha renderer for the DX7 and TX81Z instead of
 projecting their patches into the general FM voice profile. The general graph
 remains useful for authored enge patches, but it cannot represent Yamaha's

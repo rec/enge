@@ -3,10 +3,43 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from test_synth import check_audio
 from ufor.dx7 import DX7Voice
 
 from enge.synth import EngineError
 from enge.yamaha import DX7Renderer
+
+
+@pytest.mark.parametrize("coarse", [4, 31])
+@pytest.mark.parametrize("detune", [0, 7, 14])
+def test_fixed_operators_repeat_decades_and_ignore_played_key(
+    tmp_path: Path, coarse: int, detune: int
+) -> None:
+    data = bytearray(voice().data)
+    for i in range(0, 126, 21):
+        data[i + 17] = 1
+        data[i + 18] = coarse
+        data[i + 19] = 37
+        data[i + 20] = detune
+    actual = DX7Renderer(DX7Voice(data=bytes(data)), note=57, velocity=100).render(
+        48000
+    )
+    for i in range(0, 126, 21):
+        data[i + 18] = coarse & 3
+    expected = DX7Renderer(DX7Voice(data=bytes(data)), note=81, velocity=100).render(
+        48000
+    )
+    check_audio(tmp_path / "fixed-frequency.wav", actual, expected)
+    if detune <= 7:
+        peak_hz = int(np.argmax(np.abs(np.fft.rfft(actual[:, 0]))))
+        assert abs(peak_hz - 10 ** ((coarse & 3) + 0.37)) < 1
+    if detune == 0:
+        for i in range(0, 126, 21):
+            data[i + 20] = 7
+        neutral = DX7Renderer(DX7Voice(data=bytes(data)), note=69, velocity=100).render(
+            48000
+        )
+        check_audio(tmp_path / "fixed-negative-detune.wav", actual, neutral)
 
 
 def voice() -> DX7Voice:
