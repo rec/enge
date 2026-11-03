@@ -105,6 +105,19 @@ One-second WAV regressions cover full-level sustain, release and every shift,
 including JSON state continuation. Host clock conversion, lower-rate timing,
 output-level scaling and complete voice integration remain unqualified.
 
+`tx81z_base_frequency` now prepares nominal frequency from matching VCED/ACED
+operators. Ratio mode orders the 64 multiplier/coarse-detune combinations and
+adds fine steps before coarse detune. Half-multiple entries reject unavailable
+fine values above seven. Fixed mode uses the VCED coarse index shifted by two,
+plus fine and the ACED range, reproducing the manual's 8–32,640 Hz span and its
+range-dependent steps. The equations are cross-checked against ymfm's OPZ
+register model and [DXconvert's `fix_4op`](https://github.com/richotero/dxconvert/blob/master/DXconvert/fourop.py);
+the [Yamaha manual](https://www.polynominal.com/site/studio/gear/sold/yamaha_tx81z/yamaha-tx81z-manual.pdf)
+and [TX81Z Programmer ratio displays](https://github.com/mgregory22/tx81z-programmer/blob/master/src/freqratios.c)
+corroborate the control mapping. Audio regressions cover ratio,
+fine, fixed-frequency boundaries and different played keys. Fine detune's chip
+phase offset, phase quantization and complete voice integration remain work.
+
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
   and ACED waveform selections into the same Yamaha renderer family.

@@ -13,8 +13,65 @@ from enge.yamaha import (
     DX7Renderer,
     DX7Snapshot,
     TX81ZEnvelope,
+    tx81z_base_frequency,
     tx81z_wave_samples,
 )
+
+
+@pytest.mark.parametrize(
+    "fixed,coarse,fine,frequency_range,note,hz",
+    [
+        (False, 4, 8, 0, 69, 660),
+        (False, 0, 7, 0, 69, 412.5),
+        (False, 1, 0, 0, 69, 220 * np.sqrt(2)),
+        (False, 13, 0, 0, 69, 1760),
+        (False, 43, 0, 0, 69, 4400 * np.sqrt(2)),
+        (False, 44, 0, 0, 69, 3960 * 2 ** (781 / 1200)),
+        (True, 0, 0, 0, 69, 8),
+        (True, 4, 0, 0, 57, 16),
+        (True, 63, 15, 7, 127, 32640),
+        (True, 32, 5, 3, 0, 1064),
+    ],
+)
+def test_tx81z_nominal_frequency_preserves_ratio_and_fixed_controls(
+    tmp_path: Path,
+    fixed: bool,
+    coarse: int,
+    fine: int,
+    frequency_range: int,
+    note: int,
+    hz: float,
+) -> None:
+    raw = bytearray(93)
+    raw[50] = coarse
+    extra = bytearray(23)
+    extra[15:18] = bytes([fixed, frequency_range, fine])
+    frequency = tx81z_base_frequency(
+        tx81z.TX81ZVoice(data=bytes(raw)).operator(1),
+        tx81z.TX81ZAdditional(data=bytes(extra)).operator(1),
+        note,
+    )
+    assert frequency == pytest.approx(hz, abs=1e-10)
+    phase = 2 * np.pi * np.arange(48000) / 48000
+    check_audio(
+        tmp_path / "tx81z-frequency.wav",
+        np.sin(phase * frequency)[:, None],
+        np.sin(phase * hz)[:, None],
+    )
+
+
+@pytest.mark.parametrize("coarse", [0, 1, 2, 3])
+def test_tx81z_rejects_unavailable_half_multiple_fine_values(coarse: int) -> None:
+    raw = bytearray(93)
+    raw[50] = coarse
+    extra = bytearray(23)
+    extra[17] = 8
+    with pytest.raises(EngineError, match="half-multiple"):
+        tx81z_base_frequency(
+            tx81z.TX81ZVoice(data=bytes(raw)).operator(1),
+            tx81z.TX81ZAdditional(data=bytes(extra)).operator(1),
+            69,
+        )
 
 
 @pytest.mark.parametrize("number,shift", [(1, 3), (2, 0), (2, 1), (2, 2), (2, 3)])

@@ -310,6 +310,25 @@ class DX7Renderer:
         return output
 
 
+def tx81z_base_frequency(
+    operator: tx81z.TX81ZOperator, additional: tx81z.TX81ZAdditionalOperator, note: int
+) -> float:
+    """Prepare nominal Hz before chip detune, LFO modulation and phase quantization."""
+    if operator.number != additional.number:
+        raise EngineError("TX81Z frequency requires matching VCED/ACED operators")
+    if not 0 <= note <= 127:
+        raise EngineError("TX81Z note must be from 0 through 127")
+    if additional.fixed_frequency:
+        return (
+            max(0.5, operator.coarse >> 2) * 16 + additional.fine
+        ) * 2**additional.fixed_frequency_range
+    _, multiple, cents = _TX_RATIO_COARSE[operator.coarse]
+    if multiple == 0.5 and additional.fine > 7:
+        raise EngineError("TX81Z half-multiple ratios require fine from 0 through 7")
+    ratio = (multiple + additional.fine / 16) * 2 ** (cents / 1200)
+    return 440 * 2 ** ((note - 69) / 12) * ratio
+
+
 def tx81z_wave_samples(waveform: int, phases: np.ndarray) -> np.ndarray:
     """Sample the provisional ymfm TX81Z shapes at phases measured in cycles.
 
@@ -517,6 +536,13 @@ def _key_curve(group: int, depth: int, curve: int) -> int:
     return -scale if curve < 2 else scale
 
 
+# VCED coarse indices follow the displayed ratios, including 14.10 before 14.13.
+# Nominal synthesis uses OPZ's cent offsets rather than the rounded display.
+_TX_RATIO_COARSE = sorted(
+    (m * r, m, d)
+    for m in [0.5, *range(1, 16)]
+    for d, r in ((0, 1), (600, 1.41), (781, 1.57), (950, 1.73))
+)
 # OPZ attenuation increments reported by ymfm, ymfm_fm.ipp.
 # Each hexadecimal nibble gives one step in the eight-counter sequence.
 _TX_INCREMENTS = (
