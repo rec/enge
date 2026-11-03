@@ -7,7 +7,57 @@ from test_synth import check_audio
 from ufor.dx7 import DX7Voice
 
 from enge.synth import EngineError
-from enge.yamaha import DX7Envelope, DX7Renderer, DX7Snapshot
+from enge.yamaha import DX7Envelope, DX7Renderer, DX7Snapshot, tx81z_wave_samples
+
+
+@pytest.mark.parametrize("waveform", range(8))
+def test_tx81z_waveforms_preserve_signed_and_gated_shapes(
+    tmp_path: Path, waveform: int
+) -> None:
+    root = np.sqrt(0.5)
+    low = (2 - np.sqrt(2)) / 4
+    high = (2 + np.sqrt(2)) / 4
+    a, b = np.sqrt(low), np.sqrt(high)
+    cycles = [
+        [0, a, root, b, 1, b, root, a, 0, -a, -root, -b, -1, -b, -root, -a],
+        [
+            0,
+            low,
+            0.5,
+            high,
+            1,
+            high,
+            0.5,
+            low,
+            0,
+            -low,
+            -0.5,
+            -high,
+            -1,
+            -high,
+            -0.5,
+            -low,
+        ],
+        [0, a, root, b, 1, b, root, a] + [0] * 8,
+        [0, low, 0.5, high, 1, high, 0.5, low] + [0] * 8,
+        [0, root, 1, root, 0, -root, -1, -root] + [0] * 8,
+        [0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5] + [0] * 8,
+        [0, root, 1, root, 0, root, 1, root] + [0] * 8,
+        [0, 0.5, 1, 0.5, 0, 0.5, 1, 0.5] + [0] * 8,
+    ]
+    phases = np.arange(48000) / 16 - 1500
+    phases.flags.writeable = False
+    actual = tx81z_wave_samples(waveform, phases)
+    expected = np.tile(cycles[waveform], 3000)
+    check_audio(
+        tmp_path / f"tx81z-wave-{waveform}.wav", actual[:, None], expected[:, None]
+    )
+
+
+@pytest.mark.parametrize("waveform", [-1, 8])
+def test_tx81z_rejects_unknown_waveforms(waveform: int) -> None:
+    with pytest.raises(EngineError, match="waveform"):
+        tx81z_wave_samples(waveform, np.zeros(48000))
 
 
 @pytest.mark.parametrize("feedback", [0, 1, 7])

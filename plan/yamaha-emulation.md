@@ -84,6 +84,15 @@ or feedback arithmetic.
 
 ## TX81Z / WT11
 
+The user approved ymfm's waveform model provisionally on 2026-11-03, including
+the inferred signed sine-squared shape. `tx81z_wave_samples` now realizes all
+eight continuous shapes using zero-based ACED waveform numbers. The model
+follows [ymfm's OPZ waveform construction](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_opz.cpp);
+it does not reproduce logarithmic table quantization or establish measured
+hardware equivalence. One-second 48 kHz regressions distinguish all eight
+shapes at sixteen positions per cycle, including negative/unwrapped phases
+and the silent half-cycle boundaries. The complete TX81Z renderer remains work.
+
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
   and ACED waveform selections into the same Yamaha renderer family.

@@ -239,6 +239,25 @@ class DX7Renderer:
         return output
 
 
+def tx81z_wave_samples(waveform: int, phases: np.ndarray) -> np.ndarray:
+    """Sample the provisional ymfm TX81Z shapes at phases measured in cycles.
+
+    ACED waveform numbers are zero-based. This realizes the continuous shapes,
+    not the chip's logarithmic lookup-table quantization or alias suppression.
+    """
+    if waveform not in range(8):
+        raise EngineError("TX81Z waveform must be from 0 through 7")
+    phase = np.remainder(phases, 1)
+    signal = np.sin(2 * pi * phase * (2 if waveform >= 4 else 1))
+    if waveform >= 6:
+        signal = np.abs(signal)
+    if waveform % 2:
+        signal *= np.abs(signal)
+    if waveform >= 2:
+        signal = np.where(phase < 0.5, signal, 0)
+    return signal
+
+
 def _operator_order(voice: DX7Voice) -> list[int]:
     pending = [0] * 6
     successors = [[] for _ in range(6)]
