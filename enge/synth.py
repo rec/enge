@@ -1874,9 +1874,12 @@ class PersistentSynth:
             self.staged_envelfo_sources,
             event_connections,
             route_maps,
+            event_sources,
         ) = _persistent_modulation(
             definition.sample_rate, definition.instrument.controls, template
         )
+        if event_sources:
+            raise EngineError("Persistent synth event bindings are not implemented")
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
         self.runtime = _native.SynthRuntime(
@@ -3122,14 +3125,16 @@ def _persistent_modulation(
     dict[str, list[int]],
     list[tuple[int, str, int, str, int, int, int, int, tuple[int, int]]],
     list[list[tuple[int, list[tuple[float, float]]]]],
+    dict[int, str],
 ]:
     bindings = {b.name: b for b in template.bindings}
     if any(
         not isinstance(b, ControlBinding)
         and not isinstance(b, processing.GeneratorBinding)
+        and not isinstance(b, processing.EventBinding)
         for b in bindings.values()
     ):
-        raise EngineError("Persistent synth supports control and envelfo bindings")
+        raise EngineError("Persistent runtime has an unsupported binding")
     sources = {s.name: s for s in template.modulation.sources}
     if bindings.keys() != sources.keys():
         raise EngineError("Persistent synth modulation sources require bindings")
@@ -3253,6 +3258,7 @@ def _persistent_modulation(
     control_sources: dict[str, list[int]] = {}
     control_scopes: list[str] = []
     source_controls: list[str] = []
+    event_bindings: dict[int, str] = {}
     lfo_rows: list[list[float]] = []
     lfo_rationals: list[tuple[int, int]] = []
     lfo_sources: dict[str, list[int]] = {}
@@ -3301,7 +3307,24 @@ def _persistent_modulation(
             ].index(route.interpolation),
             [(float(p.input), float(p.amount)) for p in route.points],
         )
-        if isinstance(binding, ControlBinding):
+        if isinstance(binding, processing.EventBinding):
+            index = len(rows)
+            rows.append(
+                [
+                    source.minimum,
+                    3,
+                    parameter,
+                    0 if operation == modulation.Operation.add else 1,
+                    source.minimum,
+                    source.maximum,
+                ]
+            )
+            smoothing.append((0, 1))
+            control_scopes.append("voice")
+            source_controls.append("")
+            route_maps[0].append(mapping)
+            event_bindings[index] = binding.kind
+        elif isinstance(binding, ControlBinding):
             assert declaration is not None
             control_minimum = -1 if declaration.polarity == "bipolar" else 0
             if source.minimum > control_minimum or source.maximum < 1:
@@ -3571,6 +3594,7 @@ def _persistent_modulation(
         staged_envelfo_sources,
         event_connections,
         route_maps,
+        event_bindings,
     )
 
 

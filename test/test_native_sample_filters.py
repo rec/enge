@@ -184,6 +184,23 @@ def test_native_sample_filters_preserve_channels_voice_reuse_and_snapshots(
                     ]
                 ],
             }
+            settings["bindings"].append({"name": "note-key", "kind": "key"})
+            settings["modulation"]["sources"].append(
+                {"name": "note-key", "scope": "voice", "minimum": 0, "maximum": 127}
+            )
+            settings["modulation"]["routes"].append(
+                {
+                    "name": "key-q",
+                    "source": "note-key",
+                    "target": {"name": f"filter-{name}", "parameter": "q"},
+                    "unit": "ratio",
+                    "operation": "multiply",
+                    "points": [
+                        {"input": 0, "amount": 0.5},
+                        {"input": 127, "amount": 2},
+                    ],
+                }
+            )
     document = instrument.SampleInstrumentScore.model_validate(raw)
     time = np.arange(30000) / 48000
     definition = sample_instrument.prepare(

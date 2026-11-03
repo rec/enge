@@ -72,6 +72,7 @@ class NativeSampleContext(Model, frozen=True):
 class NativeSampleControls(Model, frozen=True):
     names: list[str]
     scopes: list[str]
+    events: dict[int, str]
 
 
 class NativeSampleVoice(Model, frozen=True):
@@ -613,11 +614,14 @@ class PersistentSampler(OfflineSampler):
         all_settings = [common, *self.definition.settings.values()]
         if any(
             s.envelfos
-            or any(not isinstance(b, processing.ControlBinding) for b in s.bindings)
+            or any(
+                not isinstance(b, (processing.ControlBinding, processing.EventBinding))
+                for b in s.bindings
+            )
             for s in all_settings
         ):
             raise synth.EngineError(
-                "Native live sampler generators and event bindings are not implemented"
+                "Native live sampler generators are not implemented"
             )
         for slot in self.definition.document.body.slots:
             sample = self.definition.samples[slot.name]
@@ -690,6 +694,7 @@ class PersistentSampler(OfflineSampler):
             maps = []
             names = []
             scopes = []
+            events: dict[int, str] = {}
             for group, template in enumerate((common, settings)):
                 prepared = synth._persistent_modulation(
                     self.definition.sample_rate,
@@ -704,6 +709,7 @@ class PersistentSampler(OfflineSampler):
                     controls[:, 2] + filter_offset - 2,
                 )
                 rows.append(controls)
+                events.update({len(names) + i: k for i, k in prepared[-1].items()})
                 smoothing.extend(prepared[1])
                 parameters[group * 6 : group * 6 + 6] = prepared[2][:6]
                 parameters.extend(prepared[2][6:])
@@ -722,7 +728,7 @@ class PersistentSampler(OfflineSampler):
                 )
                 scopes.extend(prepared[4])
                 names.extend(prepared[5])
-                maps.extend(prepared[-1][0])
+                maps.extend(prepared[-2][0])
             source = self.native_sources[slot.name]
             fades = []
             for fade in slot.crossfades:
@@ -769,7 +775,7 @@ class PersistentSampler(OfflineSampler):
                 [f for g in reversed(filter_groups) for f in g],
             )
             self.native_controls[source] = NativeSampleControls(
-                names=names, scopes=scopes
+                names=names, scopes=scopes, events=events
             )
 
     def native_live_actions(
@@ -944,6 +950,13 @@ class PersistentSampler(OfflineSampler):
                     ]
                 )
                 scopes = self.native_controls[source].scopes
+                for index, kind in self.native_controls[source].events.items():
+                    value = action.key if kind == "key" else action.velocity
+                    if value is None:
+                        raise synth.EngineError(
+                            f"{kind.title()} binding requires resolved onset {kind}"
+                        )
+                    encoded[source].append([offset, 11, voice, index, value, 0])
                 part_context = -1
                 if "part" in scopes:
                     part_context = self._native_context(

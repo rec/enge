@@ -1738,7 +1738,7 @@ impl SampleRuntime {
 
     fn apply_action(&mut self, action: &[f64]) -> PyResult<()> {
         let kind = action[1] as usize;
-        if (7..=10).contains(&kind) {
+        if (7..=11).contains(&kind) {
             let mut control_action = [0.0; 6];
             control_action.copy_from_slice(action);
             control_action[1] -= 3.0;
@@ -1777,8 +1777,7 @@ impl SampleRuntime {
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;
-                self.controls.voice_part_contexts[voice] = usize::MAX;
-                self.controls.voice_trigger_contexts[voice] = usize::MAX;
+                self.controls.reset_voice(voice);
                 self.filters[voice].states.fill(0.0);
                 self.delays[voice] = 0;
                 self.amplitude_states[voice] = self.amplitude.start()?;

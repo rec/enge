@@ -58,7 +58,7 @@ Native live sample voices now reuse the block renderer's multichannel filter
 bank for fixed and control-routed filter chains. Each voice has preallocated
 integrator state, reset on slot reuse and retained in snapshots. Slot filters precede instrument
 filters; both amplitude orders are supported, without a tail after exhaustion.
-Native live registration still rejects generators and event bindings.
+Native live registration still rejects generators.
 The user approved extending that sampler with the existing
 native control/filter machinery on 2026-11-02, preserving bounded callback storage.
 The generated runtimes' existing control ramps, scoped contexts and voice
@@ -80,7 +80,12 @@ stage kernel. Common/slot filter domains remain independent, stage order is
 preserved, and authored cutoff clamp/error policy runs after route composition.
 Regressions cover all four responses, both amplitude orders, changing Q,
 independent voices, reuse, exhaustion, snapshots and cutoff-boundary rejection.
-Event bindings and generators remain work.
+Native sampler key/velocity event bindings now latch values in bounded per-voice
+storage. They use the shared mapping/composition path, remain independent of
+same-named controls, survive snapshots and reset on slot reuse. Coverage includes
+delayed starts and event/control composition on filter Q. Sampler generators
+remain work. Generated persistent renderers still reject event bindings;
+their Python onset-metadata admission remains a control/runtime parity gap.
 
 The completion audit also found authored playback fields that are not yet
 consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,

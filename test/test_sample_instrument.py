@@ -150,11 +150,17 @@ def test_sample_patch_signal_survives_partitioned_snapshot_restore(
 
 @pytest.mark.parametrize("location", ["instrument", "slot"])
 @pytest.mark.parametrize("kind", ["velocity", "key"])
+@pytest.mark.parametrize("delay", [0, 600])
 def test_event_bindings_keep_each_voice_value_through_controls_and_restore(
-    backend: Literal["numpy", "native"], tmp_path: Path, location: str, kind: str
+    backend: Literal["numpy", "native"],
+    tmp_path: Path,
+    location: str,
+    kind: str,
+    delay: int,
 ) -> None:
     scale = 127 if kind == "key" else 1
     raw = sample_score(frames=96000).model_dump(mode="json")
+    raw["body"]["slots"][0]["playback"]["start_delay_seconds"] = delay / 48000
     raw["body"]["settings"]["controls"] = {kind: {"default": 0.8}}
     settings = (
         raw["body"]["settings"] if location == "instrument" else raw["body"]["slots"][0]
@@ -239,11 +245,37 @@ def test_event_bindings_keep_each_voice_value_through_controls_and_restore(
         renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
         renderer.restore(snapshot)
     gain = np.zeros(96000)
-    gain[:18000] += (64 / 127) ** 2
-    gain[12000:30000] += 1
-    gain[24000:42000] += (1 / 127) ** 2
+    gain[delay:18000] += (64 / 127) ** 2
+    gain[12000 + delay : 30000] += 1
+    gain[24000 + delay : 42000] += (1 / 127) ** 2
     expected = gain[:, None] * [0.125, 0.09375]
     check_audio(tmp_path / f"voice-{kind}.wav", np.concatenate(chunks), expected)
+    source = sample_instrument.PersistentSampler(prepared, voices=2)
+    engine = live.NativeLiveEngine({"sample": source}, 96000)
+    actual = np.empty((96000, 2))
+    for start, end in pairwise([0, 18001, 25001, 30001, 96000]):
+        engine.advance_into(
+            {"sample": [a for a in actions if start <= a.tick < end]},
+            [],
+            start,
+            end,
+            actual[start:end],
+        )
+        if end == 25001:
+            saved = engine.snapshot()
+    check_audio(tmp_path / f"voice-{kind}-native-live.wav", actual, expected)
+    engine.restore(saved)
+    replay = np.empty((96000 - 25001, 2))
+    for start in range(25001, 96000, 997):
+        end = min(start + 997, 96000)
+        engine.advance_into(
+            {"sample": [a for a in actions if start <= a.tick < end]},
+            [],
+            start,
+            end,
+            replay[start - 25001 : end - 25001],
+        )
+    np.testing.assert_array_equal(replay, actual[25001:])
 
 
 @pytest.mark.parametrize("release_seconds", [Fraction(0), Fraction(1, 4)])

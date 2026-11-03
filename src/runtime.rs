@@ -272,6 +272,7 @@ pub struct SynthRuntimeSnapshot {
     route_maps: Vec<Vec<RouteMap>>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
+    voice_control_values: Vec<f64>,
     lfo_definitions: Vec<LfoDefinition>,
     lfo_owners: Vec<usize>,
     lfo_event_states: Vec<LfoPlayback>,
@@ -1561,6 +1562,7 @@ impl SynthRuntime {
             route_maps: self.route_maps.clone(),
             control_definitions: self.controls.control_definitions.clone(),
             control_states: self.controls.control_states.clone(),
+            voice_control_values: self.controls.voice_values.clone(),
             lfo_definitions: self.lfo_definitions.clone(),
             lfo_owners: self.lfo_owners.clone(),
             lfo_event_states: self.lfo_event_states.clone(),
@@ -1641,6 +1643,9 @@ impl SynthRuntime {
         self.controls
             .control_states
             .clone_from(&snapshot.control_states);
+        self.controls
+            .voice_values
+            .clone_from(&snapshot.voice_control_values);
         self.lfo_event_states.clone_from(&snapshot.lfo_event_states);
         self.controls
             .context_kinds
@@ -2110,8 +2115,7 @@ impl SynthRuntime {
                 }
                 self.ages[voice] = 0;
                 self.release_frames[voice] = None;
-                self.controls.voice_part_contexts[voice] = usize::MAX;
-                self.controls.voice_trigger_contexts[voice] = usize::MAX;
+                self.controls.reset_voice(voice);
                 self.frequency_remaining[voice] = 0;
                 self.gain_remaining[voice] = 0;
                 for stage in 0..self.voice_filter_states.shape()[1] {

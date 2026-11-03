@@ -57,7 +57,9 @@ validates and encodes oscillator, FM, noise, and supported sampler trace actions
 plus effect actions, submits bounded batches, then invokes the single Rust owner.
 This removes Python DSP, mixing, and effect-array construction from its callback
 body. Python still performs admission and submission synchronously before that
-call. The native sampler profile currently excludes event bindings and generators.
+call. Native sampler key/velocity event bindings use preallocated per-voice
+values, initialized during onset admission and retained in snapshots. The native
+sampler profile currently excludes generators.
 Control-routed sampler filters reuse the fixed bank's stage kernel and retain
 preallocated per-voice integrators; parameter evaluation does not allocate.
 

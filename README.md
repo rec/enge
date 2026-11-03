@@ -222,13 +222,13 @@ either clamp or reject out-of-range values. Filter state is independent per
 voice, resets on reuse, and survives snapshots. Native generator modulation
 remains unimplemented.
 
-Offline sample instruments accept voice-scoped key and velocity EventBindings in both
-NumPy and native rendering. Each voice retains its prepared start key (0–127)
+Sample instruments accept voice-scoped key and velocity EventBindings in offline
+NumPy/native and native live rendering. Each voice retains its prepared start key (0–127)
 or velocity (0–1) as
 an unsmoothed constant, including across snapshot/restore and later controller
 changes or notes. Existing modulation routes supply the velocity-response curve;
 there is no additional automatic velocity gain. Key bindings in other offline
-engines and event bindings in native live registration remain unsupported.
+engines and event bindings in generated persistent renderers remain unsupported.
 
 The NumPy and Rust graph FM engine in [fm.py](enge/fm.py) renders two through six
 named sine, square, or triangle operators. Acyclic current-sample edges modulate

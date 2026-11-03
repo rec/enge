@@ -594,9 +594,12 @@ class PersistentFM(synth.PersistentSynth):
             self.staged_envelfo_sources,
             event_connections,
             route_maps,
+            event_sources,
         ) = synth._persistent_modulation(
             shared.sample_rate, shared.instrument.controls, template, source_parameters
         )
+        if event_sources:
+            raise synth.EngineError("Persistent FM event bindings are not implemented")
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
         self.runtime = _native.SynthRuntime.fm_graph(

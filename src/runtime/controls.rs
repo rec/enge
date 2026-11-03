@@ -27,6 +27,7 @@ pub(crate) struct ControlState {
 pub(crate) struct ControlBank {
     pub(crate) control_definitions: Vec<ControlDefinition>,
     pub(crate) control_states: Vec<ControlState>,
+    pub(crate) voice_values: Vec<f64>,
     pub(crate) context_kinds: Vec<usize>,
     pub(crate) context_states: Vec<ControlState>,
     pub(crate) voice_part_contexts: Vec<usize>,
@@ -34,6 +35,14 @@ pub(crate) struct ControlBank {
 }
 
 impl ControlBank {
+    pub(crate) fn reset_voice(&mut self, voice: usize) {
+        self.voice_part_contexts[voice] = usize::MAX;
+        self.voice_trigger_contexts[voice] = usize::MAX;
+        for (source, definition) in self.control_definitions.iter().enumerate() {
+            self.voice_values[voice * self.control_definitions.len() + source] = definition.default;
+        }
+    }
+
     pub(crate) fn contributions(
         &self,
         voice: usize,
@@ -67,9 +76,13 @@ impl ControlBank {
         capacity: usize,
     ) -> Self {
         let context_states = (0..capacity).flat_map(|_| control_states.clone()).collect();
+        let voice_values = (0..voices)
+            .flat_map(|_| control_definitions.iter().map(|d| d.default))
+            .collect();
         Self {
             control_definitions,
             control_states,
+            voice_values,
             context_states,
             context_kinds: vec![0; capacity],
             voice_part_contexts: vec![usize::MAX; voices],
@@ -79,6 +92,9 @@ impl ControlBank {
 
     pub(crate) fn value(&self, voice: usize, source: usize) -> PyResult<f64> {
         let definition = &self.control_definitions[source];
+        if definition.scope == 3 {
+            return Ok(self.voice_values[voice * self.control_definitions.len() + source]);
+        }
         let state = match definition.scope {
             0 => &self.control_states[source],
             1 => self.context_state(self.voice_part_contexts[voice], source, 1)?,
@@ -114,11 +130,25 @@ impl ControlBank {
         if action.iter().any(|v| !v.is_finite())
             || action[1] != kind as f64
             || action[2] != voice as f64
-            || (kind == 5 && voice >= self.voice_part_contexts.len())
+            || ((kind == 5 || kind == 8) && voice >= self.voice_part_contexts.len())
         {
             return Err(PyValueError::new_err("Invalid native control action"));
         }
         match kind {
+            8 => {
+                let source = action[3] as usize;
+                let Some(definition) = self.control_definitions.get(source) else {
+                    return Err(PyValueError::new_err("Invalid voice event source"));
+                };
+                if action[3] != source as f64
+                    || definition.scope != 3
+                    || action[4] < definition.minimum
+                    || action[4] > definition.maximum
+                {
+                    return Err(PyValueError::new_err("Invalid voice event value"));
+                }
+                self.voice_values[voice * self.control_definitions.len() + source] = action[4];
+            }
             4 => {
                 let Some(definition) = self.control_definitions.get(voice).cloned() else {
                     return Err(PyValueError::new_err("Invalid synth runtime control"));
@@ -263,7 +293,7 @@ pub(crate) fn control_definitions(
         let parameter = row[2] as usize;
         let operation = row[3] as usize;
         if row[1] != scope as f64
-            || scope > 2
+            || scope > 3
             || row[2] != parameter as f64
             || row[3] != operation as f64
             || operation > 1
