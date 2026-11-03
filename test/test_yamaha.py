@@ -14,6 +14,8 @@ from enge.yamaha import (
     DX7Snapshot,
     TX81ZEnvelope,
     TX81ZEnvelopeBank,
+    TX81ZRenderer,
+    TX81ZSnapshot,
     TX81ZState,
     tx81z_base_frequency,
     tx81z_detune_step,
@@ -21,6 +23,100 @@ from enge.yamaha import (
     tx81z_output_gain,
     tx81z_wave_samples,
 )
+
+
+@pytest.mark.parametrize(
+    "source,index,value",
+    [
+        ("voice", 5, 1),
+        ("voice", 9, 1),
+        ("voice", 56, 1),
+        ("additional", 20, 1),
+        ("voice", 10, 100),
+        ("additional", 3, 8),
+    ],
+)
+def test_tx81z_renderer_rejects_unimplemented_or_invalid_parameters(
+    source: str, index: int, value: int
+) -> None:
+    raw = bytearray(93)
+    raw[62] = 24
+    extra = bytearray(23)
+    (raw if source == "voice" else extra)[index] = value
+    with pytest.raises(EngineError):
+        TX81ZRenderer(
+            tx81z.TX81ZVoice(data=bytes(raw)),
+            tx81z.TX81ZAdditional(data=bytes(extra)),
+            69,
+            100,
+        )
+
+
+@pytest.mark.parametrize("algorithm", range(1, 9))
+def test_tx81z_note_renderer_pairs_buffers_and_restores_release_tails(
+    tmp_path: Path, algorithm: int
+) -> None:
+    raw = bytearray(93)
+    extra = bytearray(23)
+    for i in range(1, 5):
+        start = (4 - i) * 13
+        raw[start] = 31
+        raw[start + 1] = 10
+        raw[start + 3] = 15
+        raw[start + 4] = 11
+        raw[start + 10] = 80 - i
+        raw[start + 11] = [4, 8, 10, 13][i - 1]
+        raw[start + 12] = i
+        extra[(4 - i) * 5 + 3] = [0, 2, 4, 7][i - 1]
+    raw[52], raw[53], raw[62] = algorithm - 1, 5, 24
+    extra[0], extra[1] = 1, 1
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    additional = tx81z.TX81ZAdditional(data=bytes(extra))
+    whole = TX81ZRenderer(voice, additional, 69, 100)
+    first = whole.render(24000)
+    held = TX81ZSnapshot.model_validate_json(whole.snapshot().model_dump_json())
+    whole.release()
+    saved = TX81ZSnapshot.model_validate_json(whole.snapshot().model_dump_json())
+    tail = whole.render(24000)
+    replay = TX81ZRenderer(voice, additional, 69, 100)
+    replay.restore(held)
+    replay.release()
+    restored = np.concatenate([replay.render(997), replay.render(23003)])
+    check_audio(
+        tmp_path / "tx81z-note.wav",
+        np.concatenate([first, restored]),
+        np.concatenate([first, tail]),
+    )
+    replay.restore(saved)
+    np.testing.assert_array_equal(replay.render(24000), tail)
+    assert replay.snapshot() == whole.snapshot()
+    assert np.max(np.abs(tail[-1000:])) < 0.001
+
+
+@pytest.mark.parametrize(
+    "difference", ["voice", "additional", "note", "velocity", "sample_rate"]
+)
+def test_tx81z_note_snapshot_rejects_different_definition(difference: str) -> None:
+    raw = bytearray(93)
+    raw[62] = 24
+    renderer = TX81ZRenderer(
+        tx81z.TX81ZVoice(data=bytes(raw)),
+        tx81z.TX81ZAdditional(data=bytes(23)),
+        69,
+        100,
+    )
+    saved = renderer.snapshot().model_dump()
+    if difference == "voice":
+        raw[53] = 1
+        saved["voice"] = tx81z.TX81ZVoice(data=bytes(raw))
+    elif difference == "additional":
+        extra = bytearray(23)
+        extra[3] = 1
+        saved["additional"] = tx81z.TX81ZAdditional(data=bytes(extra))
+    else:
+        saved[difference] += 1
+    with pytest.raises(EngineError, match="different note definition"):
+        renderer.restore(TX81ZSnapshot.model_validate(saved))
 
 
 @pytest.mark.parametrize(

@@ -84,6 +84,21 @@ or feedback arithmetic.
 
 ## TX81Z / WT11
 
+`TX81ZRenderer(voice, additional, note, velocity, sample_rate=48000)` now accepts
+explicit VCED/ACED objects and connects nominal frequency, chip detune, output
+level, the shared envelope clock, eight waveforms/algorithms and OP4 feedback.
+`render`, `release`, `snapshot` and `restore` provide offline note lifetime and
+owned JSON continuation. Snapshot identity includes both edit buffers, key,
+velocity and output rate. Tests cover all algorithms, mixed waveforms, fixed
+and ratio operators, detune, held/released snapshots and mismatched definitions.
+The initial supported pitch span after transpose is MIDI 13–108 (chip key codes
+0–31); out-of-span notes are rejected. Nonzero key-level/velocity scaling, LFO
+modulation and reverb are rejected until implemented. Velocity is accepted as
+note metadata but has no gain effect when KVS is zero. This is an incomplete
+profile, not completion of the full TX81Z/WT11 requirement. Controller integration,
+DAC/integer quantization, broader malformed-global checks and hardware/reference
+qualification remain work.
+
 `tx81z_detune_step` now maps the seven VCED detune settings (neutral 3) and a
 five-bit chip key code to the signed OPZ phase-step offset. It follows
 [ymfm's key-dependent detune table](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp)
@@ -114,7 +129,7 @@ mutating the caller's saved state. Routing/modulation scaling follows
 Analytic 48 kHz WAV regressions cover all graphs, asymmetric operators,
 feedback, waveform selection and partitioned continuation. This is raw carrier
 mixing, not the completed patch renderer: DAC saturation, detune integration,
-velocity/key scaling and the enclosing voice API remain work. Nominal VCED gain conversion
+velocity/key scaling and the full voice profile remain work. Nominal VCED gain conversion
 and the envelope clock are now connected in the component integration test.
 
 The user approved ymfm's waveform model provisionally on 2026-11-03, including

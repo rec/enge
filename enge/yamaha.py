@@ -127,6 +127,129 @@ class TX81ZEnvelopeBank(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class TX81ZSnapshot(BaseModel, frozen=True):
+    voice: tx81z.TX81ZVoice
+    additional: tx81z.TX81ZAdditional
+    note: int
+    velocity: int
+    sample_rate: int
+    envelopes: TX81ZEnvelopeBank
+    operators: TX81ZState
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class TX81ZRenderer:
+    """Offline provisional four-operator note renderer with explicit edit buffers.
+
+    LFO modulation, reverb and velocity/key-level scaling remain unsupported.
+    Frequencies and waveforms use the nominal floating-point OPZ model.
+    """
+
+    def __init__(
+        self,
+        voice: tx81z.TX81ZVoice,
+        additional: tx81z.TX81ZAdditional,
+        note: int,
+        velocity: int,
+        sample_rate: int = 48000,
+    ) -> None:
+        for diagnostic in (voice.parameter_diagnostic, additional.parameter_diagnostic):
+            if diagnostic is not None:
+                raise EngineError(diagnostic)
+        if not 0 <= note <= 127 or not 0 <= velocity <= 127 or sample_rate <= 0:
+            raise EngineError("Invalid TX81Z note, velocity or sample rate")
+        if voice.data[62] > 48:
+            raise EngineError("TX81Z transpose must be from 0 through 48")
+        if any(o.level_scaling or o.key_velocity_sensitivity for o in voice.operators):
+            raise EngineError(
+                "TX81Z key-level and velocity scaling are not implemented"
+            )
+        if voice.data[56] or voice.data[57] or additional.data[20]:
+            raise EngineError("TX81Z LFO modulation and reverb are not implemented")
+        sounding_note = note + voice.data[62] - 24
+        key_code = (sounding_note - 13) // 3
+        if not 0 <= key_code <= 31:
+            raise EngineError(
+                "TX81Z transposed note is outside the native chip key range"
+            )
+        self.voice = voice.model_copy(deep=True)
+        self.additional = additional.model_copy(deep=True)
+        self.note = note
+        self.velocity = velocity
+        self.sample_rate = sample_rate
+        self.envelopes = TX81ZEnvelopeBank(
+            envelopes=[
+                TX81ZEnvelope.start(voice.operator(i), additional.operator(i), key_code)
+                for i in range(1, 5)
+            ],
+            sample_rate=sample_rate,
+        )
+        frequencies = []
+        for number in range(1, 5):
+            operator = voice.operator(number)
+            extension = additional.operator(number)
+            frequency = tx81z_base_frequency(operator, extension, sounding_note)
+            if not extension.fixed_frequency:
+                multiple = _TX_RATIO_COARSE[operator.coarse][1] + extension.fine / 16
+                frequency += (
+                    tx81z_detune_step(operator.detune, key_code)
+                    * multiple
+                    * self.envelopes.clock_hz
+                    / (64 * 2**20)
+                )
+            frequencies.append(frequency)
+        self.frequencies = np.array(frequencies)
+        self.levels = np.array(
+            [
+                tx81z_output_gain(voice.operator(i).output_level, voice.algorithm, i)
+                for i in range(1, 5)
+            ]
+        )
+        self.waveforms = [additional.operator(i).waveform for i in range(1, 5)]
+        self.operators = TX81ZState()
+
+    def render(self, frames: int) -> np.ndarray:
+        attenuation = self.envelopes.attenuation_samples(frames)
+        gains = 2 ** (-attenuation / 64) * self.levels
+        output, self.operators = tx81z_operator_samples(
+            self.voice.algorithm,
+            self.waveforms,
+            self.operators,
+            np.broadcast_to(self.frequencies, (frames, 4)),
+            gains,
+            self.sample_rate,
+            self.voice.feedback,
+        )
+        return output
+
+    def release(self) -> None:
+        self.envelopes.release()
+
+    def snapshot(self) -> TX81ZSnapshot:
+        return TX81ZSnapshot(
+            voice=self.voice.model_copy(deep=True),
+            additional=self.additional.model_copy(deep=True),
+            note=self.note,
+            velocity=self.velocity,
+            sample_rate=self.sample_rate,
+            envelopes=self.envelopes.model_copy(deep=True),
+            operators=self.operators.model_copy(deep=True),
+        )
+
+    def restore(self, snapshot: TX81ZSnapshot) -> None:
+        if (
+            snapshot.voice.data != self.voice.data
+            or snapshot.additional.data != self.additional.data
+            or snapshot.note != self.note
+            or snapshot.velocity != self.velocity
+            or snapshot.sample_rate != self.sample_rate
+        ):
+            raise EngineError("TX81Z snapshot belongs to a different note definition")
+        self.envelopes = snapshot.envelopes.model_copy(deep=True)
+        self.operators = snapshot.operators.model_copy(deep=True)
+
+
 class DX7Envelope(BaseModel):
     """A DX7 operator envelope in the chip's logarithmic level units."""
 
