@@ -84,8 +84,13 @@ Native sampler key/velocity event bindings now latch values in bounded per-voice
 storage. They use the shared mapping/composition path, remain independent of
 same-named controls, survive snapshots and reset on slot reuse. Coverage includes
 delayed starts and event/control composition on filter Q. Sampler generators
-remain work. Generated persistent renderers still reject event bindings;
-their Python onset-metadata admission remains a control/runtime parity gap.
+remain work. Generated persistent synth, FM and noise renderers now admit
+velocity bindings using the same native voice latch. Python velocity metadata
+uses bounded trigger-context ownership, survives snapshots and is retired with
+the context. Reused trigger names retain independent release-tail values.
+Preset and repeated-trigger regressions cover offline/persistent/native-live
+parity and exact partitioned snapshot replay. Key bindings remain outside the
+generated engines' existing supported profile.
 
 The completion audit also found authored playback fields that are not yet
 consumed by the sampler: finite loop `repeat_count`, whole-sample `play_count`,

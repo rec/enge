@@ -235,6 +235,7 @@ class PersistentFMSnapshot(Model, frozen=True):
     voice_triggers: dict[str, synth.VoiceAddress]
     part_contexts: dict[str, int]
     trigger_contexts: dict[tuple[str, str], int]
+    trigger_velocities: dict[int, float | None]
     state: _native.SynthRuntimeSnapshot
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -594,12 +595,13 @@ class PersistentFM(synth.PersistentSynth):
             self.staged_envelfo_sources,
             event_connections,
             route_maps,
-            event_sources,
+            self.event_bindings,
         ) = synth._persistent_modulation(
             shared.sample_rate, shared.instrument.controls, template, source_parameters
         )
-        if event_sources:
-            raise synth.EngineError("Persistent FM event bindings are not implemented")
+        if "velocity" in self.event_bindings.values():
+            self.source_scopes.add("trigger")
+        self.trigger_velocities: dict[int, float | None] = {}
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
         self.runtime = _native.SynthRuntime.fm_graph(
@@ -700,6 +702,7 @@ class PersistentFM(synth.PersistentSynth):
             voice_triggers=self.voice_triggers.copy(),
             part_contexts=self.part_contexts.copy(),
             trigger_contexts=self.trigger_contexts.copy(),
+            trigger_velocities=self.trigger_velocities.copy(),
             state=self.runtime.snapshot(),
         )
 
@@ -718,6 +721,7 @@ class PersistentFM(synth.PersistentSynth):
         self.voice_triggers = snapshot.voice_triggers.copy()
         self.part_contexts = snapshot.part_contexts.copy()
         self.trigger_contexts = snapshot.trigger_contexts.copy()
+        self.trigger_velocities = snapshot.trigger_velocities.copy()
 
     def _start(
         self, action: VoiceStart, active: list[bool]

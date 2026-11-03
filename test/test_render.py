@@ -11,7 +11,7 @@ from ufor.events import PerformanceEvent, Release, Trigger
 from ufor.instrument_trace import TraceAction
 from ufor.samples import instrument, trace
 
-from enge import fm, noise, sample_instrument, synth
+from enge import fm, live, noise, sample_instrument, synth
 from enge.midi import MidiPerformance, read_midi
 from enge.performance import MidiConverter
 from enge.presets import Patch
@@ -207,12 +207,101 @@ def test_preset_velocity_scales_audio_and_survives_snapshot_restore(
             np.concatenate([first, repeated]),
             output,
         )
+        if isinstance(renderer, fm.OfflineFM):
+            source = fm.PersistentFM(renderer.definition)
+        elif isinstance(renderer, noise.OfflineNoise):
+            source = noise.PersistentNoise(renderer.definition)
+        elif isinstance(renderer, sample_instrument.OfflineSampler):
+            source = sample_instrument.PersistentSampler(renderer.definition)
+        else:
+            source = synth.PersistentSynth(renderer.definition)
+        native = live.NativeLiveEngine({"voice": source}, 60000)
+        actual = np.empty_like(output)
+        native.advance_into(
+            {"voice": [a for a in actions if a.tick < 24000]},
+            [],
+            0,
+            24000,
+            actual[:24000],
+        )
+        saved = native.snapshot()
+        native.advance_into({"voice": remaining}, [], 24000, 60000, actual[24000:])
+        check_audio(tmp_path / f"{engine}-{velocity}-native.wav", actual, output)
+        native.restore(saved)
+        replay = np.empty_like(second)
+        for start in range(24000, 60000, 997):
+            end = min(start + 997, 60000)
+            native.advance_into(
+                {"voice": [a for a in remaining if start <= a.tick < end]},
+                [],
+                start,
+                end,
+                replay[start - 24000 : end - 24000],
+            )
+        np.testing.assert_array_equal(replay, actual[24000:])
         return output
 
     loud = render(1.0)
     quiet = render(0.25)
     assert np.max(np.abs(loud)) > 0.01
     check_audio(tmp_path / f"{engine}-velocity.wav", quiet, loud * 0.25)
+
+
+@pytest.mark.parametrize("engine", ["fm", "synth", "noise"])
+def test_persistent_velocity_keeps_reused_trigger_tails_separate(
+    tmp_path: Path, engine: Literal["fm", "synth", "noise"]
+) -> None:
+    score, _ = Patch(engine=engine).prepare_score(48000)
+    assert not isinstance(score, instrument.SampleInstrumentScore)
+    if engine == "fm":
+        definition = fm.prepare(score)
+        reference = fm.OfflineFM(definition)
+        renderer = fm.PersistentFM(definition)
+    elif engine == "noise":
+        definition = noise.prepare(score)
+        reference = noise.OfflineNoise(definition)
+        renderer = noise.PersistentNoise(definition)
+    else:
+        definition = synth.prepare(score)
+        reference = synth.OfflineSynth(definition)
+        renderer = synth.PersistentSynth(definition)
+    events: list[PerformanceEvent] = [
+        Trigger(
+            tick=t,
+            ordinal=0,
+            part="main",
+            trigger_id="note",
+            key=69,
+            pitch_hz=440,
+            velocity=v,
+        )
+        for t, v in [(0, 0.25), (6001, 0.75), (24000, 0)]
+    ]
+    events.extend(
+        Release(tick=t, ordinal=0, part="main", trigger_id="note")
+        for t in (6000, 18000, 30000)
+    )
+    actions = list(synth_trace.prepare(score.body, events, seed=0).actions)
+    expected = reference.advance(actions, 0, 48000)
+    first = renderer.advance([a for a in actions if a.tick < 7001], 0, 7001)
+    saved = renderer.snapshot()
+    assert sorted(saved.trigger_velocities.values()) == [0.25, 0.75]
+    later = [a for a in actions if a.tick >= 7001]
+    tail = renderer.advance(later, 7001, 48000)
+    assert not renderer.snapshot().trigger_velocities
+    check_audio(
+        tmp_path / f"{engine}-velocity-tails.wav",
+        np.concatenate([first, tail]),
+        expected,
+    )
+    renderer.restore(saved)
+    pieces = []
+    for start in range(7001, 48000, 997):
+        end = min(start + 997, 48000)
+        pieces.append(
+            renderer.advance([a for a in later if start <= a.tick < end], start, end)
+        )
+    np.testing.assert_array_equal(np.concatenate(pieces), tail)
 
 
 def test_render_rejects_incompatible_prepared_rate_before_replacing_output(

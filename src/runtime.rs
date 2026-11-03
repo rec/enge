@@ -2027,10 +2027,16 @@ impl SynthRuntime {
         {
             return Err(PyValueError::new_err("Invalid synth runtime action"));
         }
-        if (kind <= 3 || kind == 5 || (9..=13).contains(&kind)) && voice >= self.frequencies.len() {
+        if (kind <= 3 || kind == 5 || (9..=14).contains(&kind)) && voice >= self.frequencies.len() {
             return Err(PyValueError::new_err("Invalid synth runtime voice"));
         }
         match kind {
+            14 => {
+                let mut event = [0.0; 6];
+                event.copy_from_slice(action);
+                event[1] = 8.0;
+                self.controls.apply(&event)?;
+            }
             13 => {
                 let source = action[3] as usize;
                 let command = action[4] as usize;

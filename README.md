@@ -227,8 +227,10 @@ NumPy/native and native live rendering. Each voice retains its prepared start ke
 or velocity (0–1) as
 an unsmoothed constant, including across snapshot/restore and later controller
 changes or notes. Existing modulation routes supply the velocity-response curve;
-there is no additional automatic velocity gain. Key bindings in other offline
-engines and event bindings in generated persistent renderers remain unsupported.
+there is no additional automatic velocity gain. Synth, FM and noise renderers
+also support velocity bindings in their persistent and native live paths,
+including reused trigger names with independent release tails. Key bindings in
+those generated engines remain outside their supported profile.
 
 The NumPy and Rust graph FM engine in [fm.py](enge/fm.py) renders two through six
 named sine, square, or triangle operators. Acyclic current-sample edges modulate

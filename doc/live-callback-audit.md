@@ -60,6 +60,9 @@ body. Python still performs admission and submission synchronously before that
 call. Native sampler key/velocity event bindings use preallocated per-voice
 values, initialized during onset admission and retained in snapshots. The native
 sampler profile currently excludes generators.
+Generated synth, FM and noise velocity bindings use the same native per-voice
+storage. Their Python onset metadata shares bounded trigger-context ownership
+and is included in source snapshots.
 Control-routed sampler filters reuse the fixed bank's stage kernel and retain
 preallocated per-voice integrators; parameter evaluation does not allocate.
 

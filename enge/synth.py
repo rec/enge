@@ -503,6 +503,7 @@ class PersistentSynthSnapshot(Model, frozen=True):
     voice_triggers: dict[str, VoiceAddress]
     part_contexts: dict[str, int]
     trigger_contexts: dict[tuple[str, str], int]
+    trigger_velocities: dict[int, float | None]
     state: _native.SynthRuntimeSnapshot
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -1874,12 +1875,13 @@ class PersistentSynth:
             self.staged_envelfo_sources,
             event_connections,
             route_maps,
-            event_sources,
+            self.event_bindings,
         ) = _persistent_modulation(
             definition.sample_rate, definition.instrument.controls, template
         )
-        if event_sources:
-            raise EngineError("Persistent synth event bindings are not implemented")
+        if "velocity" in self.event_bindings.values():
+            self.source_scopes.add("trigger")
+        self.trigger_velocities: dict[int, float | None] = {}
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
         self.runtime = _native.SynthRuntime(
@@ -2159,6 +2161,9 @@ class PersistentSynth:
         self.trigger_contexts = {
             n: s for n, s in self.trigger_contexts.items() if contexts[s]
         }
+        self.trigger_velocities = {
+            i: v for i, v in self.trigger_velocities.items() if contexts[i]
+        }
         count = 0
         for action in ordered:
             offset = action.tick - start
@@ -2172,6 +2177,8 @@ class PersistentSynth:
                 if "trigger" in self.source_scopes:
                     context, count = self._new_context(2, contexts, offset, count)
                     self.trigger_contexts[action.part, action.trigger_id] = context
+                    if "velocity" in self.event_bindings.values():
+                        self.trigger_velocities[context] = action.velocity
                     for source, scope in enumerate(self.control_scopes):
                         if scope == "trigger":
                             value = action.controls[self.source_controls[source]]
@@ -2354,6 +2361,18 @@ class PersistentSynth:
                     count += 1
                 self._encode_action(count, offset, 0, slot, frequency_hz, gain, phase)
                 count += 1
+                for source, kind in self.event_bindings.items():
+                    value = (
+                        action.key
+                        if kind == "key"
+                        else self.trigger_velocities.get(trigger_context)
+                    )
+                    if value is None:
+                        raise EngineError(
+                            f"{kind.title()} binding requires resolved onset {kind}"
+                        )
+                    self._encode_action(count, offset, 14, slot, source, value, 0)
+                    count += 1
                 if part_context >= 0 or trigger_context >= 0:
                     self._encode_action(
                         count,
@@ -2408,6 +2427,9 @@ class PersistentSynth:
         self.trigger_contexts = {
             n: s for n, s in self.trigger_contexts.items() if contexts[s]
         }
+        self.trigger_velocities = {
+            i: v for i, v in self.trigger_velocities.items() if contexts[i]
+        }
         self.frame = end
 
     def _share_envelfo_sources(self, lfos: int, envelopes: int, stages: int) -> None:
@@ -2435,6 +2457,7 @@ class PersistentSynth:
             voice_triggers=self.voice_triggers.copy(),
             part_contexts=self.part_contexts.copy(),
             trigger_contexts=self.trigger_contexts.copy(),
+            trigger_velocities=self.trigger_velocities.copy(),
             state=self.runtime.snapshot(),
         )
 
@@ -2451,6 +2474,7 @@ class PersistentSynth:
         self.voice_triggers = snapshot.voice_triggers.copy()
         self.part_contexts = snapshot.part_contexts.copy()
         self.trigger_contexts = snapshot.trigger_contexts.copy()
+        self.trigger_velocities = snapshot.trigger_velocities.copy()
 
     def _new_context(
         self, kind: int, active: list[bool], offset: int, count: int
