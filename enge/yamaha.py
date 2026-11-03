@@ -10,6 +10,19 @@ from ufor.dx7 import DX7Operator, DX7Voice
 from .synth import EngineError
 
 
+class TX81ZState(BaseModel, frozen=True):
+    """Numeric operator-bank continuation, separate from patch/envelope state."""
+
+    phases: list[float] = Field(
+        default_factory=lambda: [0.0] * 4, min_length=4, max_length=4
+    )
+    feedback: list[float] = Field(
+        default_factory=lambda: [0.0] * 2, min_length=2, max_length=2
+    )
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class TX81ZEnvelope(BaseModel):
     """OPZ attenuation state advanced by the shared envelope counter.
 
@@ -310,6 +323,57 @@ class DX7Renderer:
         return output
 
 
+def tx81z_operator_samples(
+    algorithm: int,
+    waveforms: list[int],
+    state: TX81ZState,
+    frequencies: np.ndarray,
+    gains: np.ndarray,
+    sample_rate: int = 48000,
+    feedback: int = 0,
+) -> tuple[np.ndarray, TX81ZState]:
+    """Render prepared OP1..OP4 Hz/gain rows and return raw carrier mix/state.
+
+    Gains scale normalized chip operator output. Routing uses four cycles per
+    full-scale modulation output; DAC saturation and patch-level scaling belong
+    to the enclosing voice. This is the provisional floating-point OPZ model.
+    """
+    if not 1 <= algorithm <= 8 or not 0 <= feedback <= 7:
+        raise EngineError("Invalid TX81Z algorithm or feedback")
+    if len(waveforms) != 4 or any(w not in range(8) for w in waveforms):
+        raise EngineError("TX81Z requires four waveform numbers from 0 through 7")
+    if (
+        sample_rate <= 0
+        or frequencies.ndim != 2
+        or frequencies.shape[1] != 4
+        or gains.shape != frequencies.shape
+        or not np.all(np.isfinite(frequencies))
+        or not np.all(np.isfinite(gains))
+        or np.any(frequencies <= 0)
+        or np.any(gains < 0)
+    ):
+        raise EngineError("TX81Z frequencies/gains require finite (frames, 4) rows")
+    edges, carriers = _TX_ALGORITHMS[algorithm - 1]
+    phases = np.array(state.phases)
+    history = state.feedback.copy()
+    output = np.empty((len(frequencies), 1))
+    for frame in range(len(frequencies)):
+        values = [0.0] * 4
+        for operator in (3, 2, 1, 0):
+            modulation = 4 * sum(values[s - 1] for s, d in edges if d - 1 == operator)
+            if operator == 3 and feedback:
+                modulation += sum(history) * 2 ** (feedback - 7)
+            values[operator] = gains[frame, operator] * float(
+                tx81z_wave_samples(
+                    waveforms[operator], np.asarray(phases[operator] + modulation)
+                )
+            )
+        output[frame, 0] = sum(values[c - 1] for c in carriers)
+        history = [history[1], values[3]]
+        phases = np.remainder(phases + frequencies[frame] / sample_rate, 1)
+    return output, TX81ZState(phases=phases.tolist(), feedback=history)
+
+
 def tx81z_base_frequency(
     operator: tx81z.TX81ZOperator, additional: tx81z.TX81ZAdditionalOperator, note: int
 ) -> float:
@@ -536,6 +600,17 @@ def _key_curve(group: int, depth: int, curve: int) -> int:
     return -scale if curve < 2 else scale
 
 
+# TX81Z visible operator numbers; OP4 is the feedback operator in every graph.
+_TX_ALGORITHMS = [
+    ([(4, 3), (3, 2), (2, 1)], [1]),
+    ([(4, 2), (3, 2), (2, 1)], [1]),
+    ([(3, 2), (4, 1), (2, 1)], [1]),
+    ([(4, 3), (3, 1), (2, 1)], [1]),
+    ([(4, 3), (2, 1)], [1, 3]),
+    ([(4, 3), (4, 2), (4, 1)], [1, 2, 3]),
+    ([(4, 3)], [1, 2, 3]),
+    ([], [1, 2, 3, 4]),
+]
 # VCED coarse indices follow the displayed ratios, including 14.10 before 14.13.
 # Nominal synthesis uses OPZ's cent offsets rather than the rounded display.
 _TX_RATIO_COARSE = sorted(

@@ -84,6 +84,17 @@ or feedback arithmetic.
 
 ## TX81Z / WT11
 
+The numeric `tx81z_operator_samples` kernel now renders all eight four-operator
+graphs in visible OP1–OP4 order, with OP4 two-sample feedback, independent
+waveform selections and caller-prepared per-frame frequency/gain rows. Its
+`TX81ZState` retains phases and feedback through JSON continuation without
+mutating the caller's saved state. Routing/modulation scaling follows
+[ymfm's four-operator output path](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp).
+Analytic 48 kHz WAV regressions cover all graphs, asymmetric operators,
+feedback, waveform selection and partitioned continuation. This is raw carrier
+mixing, not the completed patch renderer: VCED level conversion, DAC saturation,
+chip-clock integration, detune and the enclosing voice lifecycle remain work.
+
 The user approved ymfm's waveform model provisionally on 2026-11-03, including
 the inferred signed sine-squared shape. `tx81z_wave_samples` now realizes all
 eight continuous shapes using zero-based ACED waveform numbers. The model
