@@ -84,6 +84,16 @@ or feedback arithmetic.
 
 ## TX81Z / WT11
 
+`tx81z_detune_step` now maps the seven VCED detune settings (neutral 3) and a
+five-bit chip key code to the signed OPZ phase-step offset. It follows
+[ymfm's key-dependent detune table](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp)
+and the [OPZ ordering before the frequency multiplier](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_opz.cpp).
+Tests cover sign, neutral, low-key zero offsets and high-key limits, and render
+the resulting offset through the operator bank at 48 kHz. This primitive takes
+chip key codes explicitly; MIDI-to-chip key mapping, multiplier quantization
+and the complete patch-frequency preparation path still need integration.
+Fixed-frequency mode bypasses this detune path in the reference model.
+
 `tx81z_output_gain` now converts the VCED 0–99 output control through
 [DXconvert's total-level curve](https://github.com/richotero/dxconvert/blob/master/DXconvert/dxcommon.py)
 and its [reported TX81Z carrier-headroom measurements](https://github.com/richotero/dxconvert/blob/master/DXconvert/fb01.py).
@@ -103,8 +113,8 @@ mutating the caller's saved state. Routing/modulation scaling follows
 [ymfm's four-operator output path](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp).
 Analytic 48 kHz WAV regressions cover all graphs, asymmetric operators,
 feedback, waveform selection and partitioned continuation. This is raw carrier
-mixing, not the completed patch renderer: DAC saturation, detune, velocity/key
-scaling and the enclosing voice API remain work. Nominal VCED gain conversion
+mixing, not the completed patch renderer: DAC saturation, detune integration,
+velocity/key scaling and the enclosing voice API remain work. Nominal VCED gain conversion
 and the envelope clock are now connected in the component integration test.
 
 The user approved ymfm's waveform model provisionally on 2026-11-03, including
@@ -148,8 +158,8 @@ register model and [DXconvert's `fix_4op`](https://github.com/richotero/dxconver
 the [Yamaha manual](https://www.polynominal.com/site/studio/gear/sold/yamaha_tx81z/yamaha-tx81z-manual.pdf)
 and [TX81Z Programmer ratio displays](https://github.com/mgregory22/tx81z-programmer/blob/master/src/freqratios.c)
 corroborate the control mapping. Audio regressions cover ratio,
-fine, fixed-frequency boundaries and different played keys. Fine detune's chip
-phase offset, phase quantization and complete voice integration remain work.
+fine, fixed-frequency boundaries and different played keys. Applying the chip
+detune primitive, phase quantization and complete voice integration remain work.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,

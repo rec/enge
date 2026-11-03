@@ -357,6 +357,18 @@ class DX7Renderer:
         return output
 
 
+def tx81z_detune_step(detune: int, key_code: int) -> int:
+    """Return the signed OPZ phase-step offset before the operator multiplier.
+
+    VCED detune is 0..6 with neutral 3. Key code is the chip's five-bit code,
+    not a MIDI key. One unit is 1/2**20 cycle per native chip output interval.
+    """
+    if not 0 <= detune <= 6 or not 0 <= key_code <= 31:
+        raise EngineError("Invalid TX81Z detune or chip key code")
+    value = _TX_DETUNE_STEPS[key_code][abs(detune - 3)]
+    return -value if detune < 3 else value
+
+
 def tx81z_output_gain(level: int, algorithm: int, operator: int) -> float:
     """Convert VCED output level to normalized gain, including carrier headroom.
 
@@ -648,6 +660,37 @@ def _key_curve(group: int, depth: int, curve: int) -> int:
     return -scale if curve < 2 else scale
 
 
+# OPZ key-code/detune magnitudes reported by ymfm's detune_adjustment.
+_TX_DETUNE_STEPS = (
+    [(0, 0, 1, 2)] * 4
+    + [
+        (0, 1, 2, 2),
+        (0, 1, 2, 3),
+        (0, 1, 2, 3),
+        (0, 1, 2, 3),
+        (0, 1, 2, 4),
+        (0, 1, 3, 4),
+        (0, 1, 3, 4),
+        (0, 1, 3, 5),
+        (0, 2, 4, 5),
+        (0, 2, 4, 6),
+        (0, 2, 4, 6),
+        (0, 2, 5, 7),
+        (0, 2, 5, 8),
+        (0, 3, 6, 8),
+        (0, 3, 6, 9),
+        (0, 3, 7, 10),
+        (0, 4, 8, 11),
+        (0, 4, 8, 12),
+        (0, 4, 9, 13),
+        (0, 5, 10, 14),
+        (0, 5, 11, 16),
+        (0, 6, 12, 17),
+        (0, 6, 13, 19),
+        (0, 7, 14, 20),
+    ]
+    + [(0, 8, 16, 22)] * 4
+)
 # DXconvert's total-level curve and reported TX81Z carrier headroom measurements.
 _TX_CARRIER_ATTENUATION = [0, 0, 0, 0, 8, 13, 13, 16]
 _TX_OUTPUT_ATTENUATION = [

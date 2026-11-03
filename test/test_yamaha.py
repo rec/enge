@@ -16,10 +16,40 @@ from enge.yamaha import (
     TX81ZEnvelopeBank,
     TX81ZState,
     tx81z_base_frequency,
+    tx81z_detune_step,
     tx81z_operator_samples,
     tx81z_output_gain,
     tx81z_wave_samples,
 )
+
+
+@pytest.mark.parametrize(
+    "detune,key_code,expected",
+    [
+        (0, 0, -2),
+        (1, 0, -1),
+        (2, 0, 0),
+        (3, 31, 0),
+        (4, 31, 8),
+        (5, 31, 16),
+        (6, 31, 22),
+        (6, 18, 9),
+        (0, 18, -9),
+    ],
+)
+def test_tx81z_detune_preserves_sign_and_key_dependent_chip_steps(
+    tmp_path: Path, detune: int, key_code: int, expected: int
+) -> None:
+    step = tx81z_detune_step(detune, key_code)
+    assert step == expected
+    frequency = 440 + step * (3579545 / 64) / 2**20
+    frequencies = np.full((48000, 4), frequency)
+    gains = np.zeros((48000, 4))
+    gains[:, 0] = 0.05
+    actual, _ = tx81z_operator_samples(8, [0] * 4, TX81ZState(), frequencies, gains)
+    expected_hz = 440 + expected * (3579545 / 64) / 2**20
+    audio = 0.05 * np.sin(2 * np.pi * np.arange(48000) * expected_hz / 48000)
+    check_audio(tmp_path / "tx81z-detune.wav", actual, audio[:, None])
 
 
 @pytest.mark.parametrize(
