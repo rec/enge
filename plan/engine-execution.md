@@ -92,6 +92,13 @@ Preset and repeated-trigger regressions cover offline/persistent/native-live
 parity and exact partitioned snapshot replay. Key bindings remain outside the
 generated engines' existing supported profile.
 
+The generator reuse audit found that enge's Patch host and the pinned
+`envelfo-core::Patch::advance` allocate during processing. Finite voice/context
+capacity alone does not establish bounded callback storage for these generators.
+The [callback audit](../doc/live-callback-audit.md) records the exact paths.
+Extending the shared Rust scheduler with caller-owned processing storage needs
+a cross-project API decision before native sampler generators can use it.
+
 Finite loop `repeat_count` now counts additional traversals in both offline
 backends and the native live sampler, including mirrored and crossfaded loops.
 The remaining count survives snapshots, and exhaustion continues toward the

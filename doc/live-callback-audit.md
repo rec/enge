@@ -12,14 +12,37 @@ the completed live-effects implementation.
 
 The oscillator, FM, and noise runtimes retain voices, controls, LFOs, filters,
 routing, and snapshots in Rust. Their `process_actions_into` entry point writes
-to caller-owned output and performs no normal-path heap allocation inside the
-sample loop. The fixed-size action queue uses `rtrb`, publishes whole batches,
+to caller-owned output. This does not establish an allocation-free contract for
+every supported profile: Patch-backed generator processing allocates, as
+detailed below. The fixed-size action queue uses `rtrb`, publishes whole batches,
 and drains only the batch prefix visible when draining starts.
 Control ramps and instrument/part/trigger context storage are owned by the shared
 native `ControlBank`; its storage is prepared before processing and retained in
 generated-source snapshots.
 
-`LiveRuntime` now closes this boundary for generated and sampled sources. It owns
+### Patch scheduler allocation boundary
+
+Inspection on 2026-11-03 found normal-path allocations in the generator scheduler:
+
+- `SynthRuntime::render_into` calls `observe_patch` for each active voice and frame.
+  With a prepared Patch host, `src/runtime/patch_host.rs` builds an input vector,
+  clones input names and calls `Patch::advance`.
+- The pinned `envelfo-core` revision
+  `b719734d0e7becf3828ebad29199fd8e40eca54b` clones `PatchState` and builds a
+  `BTreeMap` of signals in `Patch::advance`. Its event scheduler also builds
+  vectors during processing. A prepared, finite voice pool does not remove
+  those allocations.
+- Consequently, the current Patch-backed generated-source profile is not
+  allocation-free. Native sampler generators remain rejected during setup;
+  routing them through this API would not satisfy the bounded callback contract.
+
+The required next step is a shared scheduler processing API with caller-owned,
+capacity-checked state and scratch, followed by reuse in enge. A decision on this
+cross-project API change is pending. Allocation qualification must cover onset,
+observation, addressed commands, scheduled child events and release, rather than
+only the outer source queue and output buffers.
+
+`LiveRuntime` owns processing for generated and sampled sources. It owns
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal
 cursors, one bounded action queue per source, and preallocated source/mix/output
 scratch. Its processing body releases the GIL, captures each queue's published
