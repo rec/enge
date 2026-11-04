@@ -450,10 +450,21 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
             foot={"range": 80, "pitch": True, "amplitude": True, "eg_bias": True},
         )
         targets.append(("bend", "yamaha", "pitch_bend", "ratio", 0, 1))
-        targets.extend(
-            (n, "yamaha", n, "ratio", 0, a)
-            for n, a in [("modulation_wheel", 1), ("breath", 0.5), ("foot", 0.75)]
-        )
+    else:
+        patch[75] = 50
+        if scope == "instrument":
+            patch[71:73] = bytes([99, 99])
+        elif scope == "part":
+            patch[73:75] = bytes([99, 99])
+        else:
+            extra = bytearray.fromhex(voice["additional"])
+            extra[21:23] = bytes([99, 99])
+            voice["additional"] = bytes(extra).hex()
+        voice["patch"] = bytes(patch).hex()
+    targets.extend(
+        (n, "yamaha", n, "ratio", 0, a)
+        for n, a in [("modulation_wheel", 1), ("breath", 0.5), ("foot", 0.75)]
+    )
     for name, target_name, parameter, unit, default, amount in targets:
         target = {"name": target_name, "parameter": parameter}
         parameters.append(
@@ -522,6 +533,15 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
         signal = (
             ramp[start:] if i == 0 or scope == "instrument" else np.zeros(48000 - start)
         )
+        clock = (
+            yamaha_lfo.DX7LFOContext(template.patch)
+            if isinstance(template, YamahaDX7Voice)
+            else yamaha_lfo.TX81ZLFOContext(template.patch)
+        )
+        clock.keydown()
+        first = clock.advance(1001)
+        clock.keydown()
+        modulation = np.concatenate([first, clock.advance(46999)])[start:]
         if isinstance(note, yamaha.DX7Renderer):
             wheel = np.floor(np.floor(127 * signal) * 0.99)
             breath = np.floor(np.floor(127 * signal * 0.5) * 0.6)
@@ -536,11 +556,6 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 )
                 / 128
             )
-            clock = yamaha_lfo.DX7LFOContext(template.patch)
-            clock.keydown()
-            first = clock.advance(1001)
-            clock.keydown()
-            modulation = np.concatenate([first, clock.advance(46999)])[start:]
             audio = note.render(
                 48000 - start,
                 tuning_cents=1200 * signal,
@@ -549,7 +564,13 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 controllers=controllers,
             )
         else:
-            audio = note.render(48000 - start, tuning_cents=1200 * signal)
+            depth = signal * 99 * {"instrument": 1, "part": 0.5, "trigger": 0.75}[scope]
+            audio = note.render(
+                48000 - start,
+                modulation,
+                tuning_cents=1200 * signal,
+                controller_depths=np.column_stack([depth, depth]),
+            )
         amplitude = 1 - 0.8 * signal
         values = np.column_stack([500 + 1500 * signal, 0.5 + signal])[:, None, :]
         if order == "after_amplitude":
@@ -902,3 +923,31 @@ def test_dx7_fixed_operators_ignore_pitch_envelope(tmp_path: Path) -> None:
     raw[130:134] = bytes([75] * 4)
     actual = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100).render(48000)
     check_audio(tmp_path / "fixed-pitch-envelope.wav", actual, expected)
+
+
+@pytest.mark.parametrize(
+    "controller,index,value", [("foot", 67, 1), ("breath", 75, 49), ("breath", 76, 1)]
+)
+def test_tx81z_controller_routes_reject_unimplemented_secondary_assignments(
+    controller: str, index: int, value: int
+) -> None:
+    raw = instrument("tx81z").model_dump(mode="json")
+    template = raw["body"]["voices"][0]
+    patch = bytearray.fromhex(template["patch"])
+    patch[75] = 50
+    patch[index] = value
+    template["patch"] = bytes(patch).hex()
+    template["modulation"] = {
+        "parameters": [
+            {
+                "target": {"name": "yamaha", "parameter": controller},
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0,
+            }
+        ]
+    }
+    with pytest.raises(EngineError, match="TX81Z .* not implemented"):
+        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))

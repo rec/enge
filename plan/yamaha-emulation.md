@@ -228,8 +228,11 @@ DAC/integer quantization and hardware/reference
 qualification remain work.
 
 The user approved a provisional OPZ LFO context on 2026-11-04.
-`TX81ZLFOContext` now prepares the measured VCED speed/PMD/AMD register mappings
-and emits signed PM and unsigned AM chip-unit rows. Sample-and-hold uses the
+`TX81ZLFOContext` prepares the measured VCED speed register mapping and emits
+four integer columns: raw signed PM, raw unsigned AM, delay-progress numerator
+and delay-progress denominator. Notes apply the measured PMD/AMD register maps
+and depths. This replaces the earlier two-column, depth-scaled row API; old
+rows are rejected. Sample-and-hold uses the
 measured alternate speed mapping. The single-mode model advances LFO1 plus the
 reset-configured secondary clock, retaining their shared noise history and latch
 table. Key-down sync resets the primary counter without rewinding noise or the
@@ -246,8 +249,9 @@ attenuation only to operators with AME enabled. Effective modulation requires
 explicit rows; malformed rows are rejected before voice state advances.
 
 The [pinned LFO comparison](../doc/yamaha-reference/README.md) has exact agreement
-for all 48,000 PM/AM rows of each of four waveforms. Its compressed reference
-rows are used by one-second WAV regressions alongside fractional-clock/noise
+for all 48,000 PM/AM rows of each of four waveforms after applying the reference
+depth of 127 to the raw rows. Its compressed reference rows are unchanged and
+used by one-second WAV regressions alongside fractional-clock/noise
 continuation, fixed-frequency bypass, detune, AME/AMS gating and two-note
 snapshot replay. This qualifies the component against that software model,
 not hardware or the complete TX81Z renderer. Delayed pitch modulation now uses
@@ -262,9 +266,11 @@ whereas AMD follows a curve that the report does not quantify. Delay 1 completes
 at 15/48 second and delay 99 at 1022/48 seconds. Implementing a linear AMD ramp
 would therefore invent behavior inconsistent with the stated observation.
 The user approved the provisional pitch-only implementation. It uses the measured
-completion table and floors the linear depth to integer register values at output
-frame time before OPZ ticks. Frames without a chip tick retain the previous chip
-output. Key-down restarts the delay even with sync off, while preserving the
+completion table. The clock latches exact rational delay progress at each OPZ
+observation; each note floors its delayed register depth before multiplying the
+raw waveform. Frames without a chip tick retain the previous observation.
+This preserves the earlier integer ramp without float rounding. Key-down
+restarts the delay even with sync off, while preserving the
 noise and secondary clocks. Snapshot identity includes authored delay; elapsed
 delay time survives partitioned JSON continuation. Rounding and update cadence
 are explicit model choices, not qualified firmware behavior. Regression WAVs
@@ -455,10 +461,10 @@ nonzero velocity sensitivity remains in force.
 The adapter admits transpose for both models and TX81Z delayed pitch modulation.
 Active delayed TX81Z amplitude modulation remains rejected.
 External envelopes and unsupported portable processing remain rejected.
-DX7 hardware controller assignments now use the scoped-control path described
-below. TX81Z hardware-specific assignment fields are range-validated and
-preserved but remain disconnected from controller events; they are not all
-rejected at admission. Released DX7
+DX7 hardware controller assignments and TX81Z wheel/breath/foot LFO assignments
+now use the scoped-control path described below. Other TX81Z hardware-specific
+fields remain stored but inactive; they are not all rejected at admission.
+Released DX7
 carriers with nonzero final
 envelope levels remain active until explicitly stopped or faded. This integration
 adds no native callback renderer and does not establish hardware equivalence.
@@ -495,7 +501,7 @@ assignments or portamento.
   `breath` and `foot` use 0..1. All have unit `ratio` and default zero, and
   retain the existing scoped bindings, mappings and smoothing. This is the
   input contract. All four DX7 targets now use the existing scoped-control path;
-  TX81Z hardware-controller targets remain rejected.
+  TX81Z wheel/breath/foot targets now drive LFO depths; pitch bend remains rejected.
 - The approved DX7 performance settings are available in uFor `e056201`,
   outside the lossless voice dump: a 0..12-semitone bend range (default two),
   and wheel/breath/foot ranges with independent pitch, amplitude and EG-bias
@@ -529,15 +535,22 @@ assignments or portamento.
   This remains a provisional model, not hardware qualification.
 - The [TX81Z owner's manual, page 22](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
   routes controller-driven modulation separately from delayed patch PMD/AMD.
-  The diagram does not specify the arithmetic combining those paths. Controller
-  depth conversion and combination, foot-volume attenuation, breath pitch bias
-  and fixed-operator bend behavior still need reference evidence or an explicitly
-  approved provisional model. Do not infer those rules from portable tuning.
+  The approved provisional model takes the strongest controller-position times
+  assignment amount for each destination, truncates to authored 0..99 depth,
+  then applies the measured register table. The stronger of this undelayed
+  contribution and the patch register depth wins. Patch PMD alone retains its
+  measured delay ramp; controller PMD/AMD bypass it. Depths are applied per note
+  to shared raw observations, so scoped controls do not advance extra clocks.
+  Regressions cover all waveforms, stronger patch depths, fractional controller
+  depths, controller modulation during patch delay, scoped smoothing, overlapping
+  notes and snapshot restoration. This is provisional, not firmware qualification.
+  Foot-volume attenuation, breath pitch/EG bias and fixed-operator bend behavior
+  remain unresolved. Foot routes reject nonzero FC Volume; breath routes reject
+  nonneutral pitch bias or nonzero EG bias, rather than ignoring those assignments.
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
-  foot-controller pitch/amplitude assignments. Current rendering does not execute
-  those patch-defined behaviors. Portable trigger/release/control preparation is
-  not evidence that this hardware assignment layer is implemented.
+  foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
+  is implemented as above; the other listed behaviors remain unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - DX7 integer oscillator/feedback replacement remains awaiting approval.

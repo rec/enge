@@ -153,7 +153,12 @@ class TX81ZSnapshot(BaseModel, frozen=True):
 class TX81ZRenderer:
     """Offline provisional four-operator note renderer with explicit edit buffers.
 
-    Zero-delay LFO modulation uses caller-owned OPZ rows. Intrinsic key scaling
+    LFO modulation uses caller-owned raw OPZ rows: signed PM, unsigned AM,
+    delay numerator and delay denominator. Integer delay scaling precedes PM
+    multiplication. Optional controller-depth rows contain authored PMD/AMD in
+    0..99, truncated before the measured register lookup and combined by maximum
+    with patch depths. Controller modulation bypasses patch delay.
+    Intrinsic key scaling
     uses the transposed key; snapshots retain the original trigger key.
     Frequencies and waveforms use the nominal floating-point OPZ model.
     Optional render tuning rows are cents relative to the admitted pitch, applied
@@ -185,6 +190,13 @@ class TX81ZRenderer:
         self.amplitude_modulation_enabled = np.array(
             [o.amplitude_modulation_enable for o in voice.operators]
         )
+        if (
+            voice.data[55]
+            and self.lfo_amplitude_depth
+            and self.amplitude_modulation_sensitivity
+            and np.any(self.amplitude_modulation_enabled)
+        ):
+            raise EngineError("TX81Z delayed amplitude modulation is not implemented")
         sounding_note = note + voice.data[62] - 24
         key_code = (sounding_note - 13) // 3
         if not 0 <= key_code <= 31:
@@ -251,35 +263,62 @@ class TX81ZRenderer:
         frames: int,
         modulation: np.ndarray | None = None,
         tuning_cents: np.ndarray | None = None,
+        controller_depths: np.ndarray | None = None,
     ) -> np.ndarray:
         tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
+        if controller_depths is not None and (
+            controller_depths.shape != (frames, 2)
+            or not np.all(np.isfinite(controller_depths))
+            or np.any((controller_depths < 0) | (controller_depths > 99))
+        ):
+            raise EngineError(
+                "TX81Z controller depths must have shape (frames, 2) in 0..99"
+            )
         if modulation is None:
             if (
-                self.lfo_pitch_depth
-                and self.pitch_modulation_sensitivity
-                and any(self.ratio_operators)
-            ) or (
-                self.lfo_amplitude_depth
-                and self.amplitude_modulation_sensitivity
-                and np.any(self.amplitude_modulation_enabled)
+                (
+                    self.lfo_pitch_depth
+                    and self.pitch_modulation_sensitivity
+                    and any(self.ratio_operators)
+                )
+                or (
+                    self.lfo_amplitude_depth
+                    and self.amplitude_modulation_sensitivity
+                    and np.any(self.amplitude_modulation_enabled)
+                )
+                or (controller_depths is not None and np.any(controller_depths))
             ):
                 raise EngineError("TX81Z modulation requires shared LFO rows")
         elif (
-            modulation.shape != (frames, 2)
+            modulation.shape != (frames, 4)
             or not np.all(np.isfinite(modulation))
             or np.any(modulation != np.floor(modulation))
             or np.any((modulation[:, 0] < -128) | (modulation[:, 0] > 127))
             or np.any((modulation[:, 1] < 0) | (modulation[:, 1] > 255))
+            or np.any((modulation[:, 3] < 1) | (modulation[:, 3] > 2**56))
+            or np.any((modulation[:, 2] < 0) | (modulation[:, 2] > modulation[:, 3]))
         ):
             raise EngineError("Invalid TX81Z shared LFO rows")
+        if modulation is not None:
+            raw = modulation.astype(np.int64)
+            pitch_depth = self.lfo_pitch_depth * raw[:, 2] // raw[:, 3]
+            amplitude_depth = np.full(frames, self.lfo_amplitude_depth)
+            if controller_depths is not None:
+                registers = np.asarray(_TX_LFO_REGISTERS)
+                indices = controller_depths.astype(np.int64)
+                pitch_depth = np.maximum(pitch_depth, registers[indices[:, 0], 1])
+                amplitude_depth = np.maximum(
+                    amplitude_depth, registers[indices[:, 1], 2]
+                )
+            pm = raw[:, 0] * pitch_depth >> 7
+            am = raw[:, 1] * amplitude_depth >> 7
         frequencies = np.broadcast_to(self.frequencies, (frames, 4))
         attenuation = self.envelopes.attenuation_samples(frames)
         if modulation is not None:
             sensitivity = self.pitch_modulation_sensitivity
             if sensitivity:
-                pm = modulation[:, 0].astype(np.int64)
                 delta = (
                     pm >> (6 - sensitivity)
                     if sensitivity < 6
@@ -293,9 +332,7 @@ class TX81ZRenderer:
                             self.frequencies[i] - self.detune_offsets[i]
                         ) * ratio + self.detune_offsets[i]
             if self.amplitude_modulation_sensitivity:
-                am = modulation[:, 1].astype(np.int64) << (
-                    self.amplitude_modulation_sensitivity - 1
-                )
+                am = am << (self.amplitude_modulation_sensitivity - 1)
                 attenuation += am[:, None] * self.amplitude_modulation_enabled
         if tuning is not None:
             frequencies = frequencies.copy()

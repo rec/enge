@@ -34,11 +34,16 @@ def test_tx81z_lfo_matches_pinned_ymfm_rows_and_restores_noise(
     restored = TX81ZLFOContext(voice)
     restored.restore(saved)
     actual = np.concatenate([first, restored.advance(30997)])
-    check_audio(tmp_path / "tx81z-ymfm-lfo.wav", actual.astype(float), expected)
+    scaled = (actual[:, :2] * 127) >> 7
+    check_audio(tmp_path / "tx81z-ymfm-lfo.wav", scaled.astype(float), expected)
     assert saved.model_dump_json() == saved_json
     context.advance(30997)
     assert context.snapshot() == restored.snapshot()
     assert context.snapshot().frame == 48000
+    raw = bytearray(voice.data)
+    raw[56:58] = bytes(2)
+    independent = TX81ZLFOContext(tx81z.TX81ZVoice(data=bytes(raw)))
+    np.testing.assert_array_equal(independent.advance(48000), actual)
 
 
 @pytest.mark.parametrize(
@@ -68,7 +73,7 @@ def test_tx81z_pitch_modulation_bypasses_fixed_operators(tmp_path: Path) -> None
     extra = bytearray(23)
     extra[0], extra[1] = 1, 2
     additional = tx81z.TX81ZAdditional(data=bytes(extra))
-    rows = np.tile([96, 0], (48000, 1))
+    rows = np.tile([97, 0, 1, 1], (48000, 1))
     actual = TX81ZRenderer(voice, additional, 69, 100).render(48000, rows)
     raw = bytearray(voice.data)
     raw[56], raw[57] = 0, 0
@@ -85,7 +90,7 @@ def test_tx81z_pitch_modulation_keeps_fine_detune_outside_the_ratio(
     for i in range(0, 52, 13):
         raw[i + 12] = 6
     voice = tx81z.TX81ZVoice(data=bytes(raw))
-    rows = np.tile([96, 0], (48000, 1))
+    rows = np.tile([97, 0, 1, 1], (48000, 1))
     actual = TX81ZRenderer(
         voice, tx81z.TX81ZAdditional(data=bytes(23)), 69, 100
     ).render(48000, rows)
@@ -105,7 +110,7 @@ def test_tx81z_amplitude_modulation_obeys_channel_sensitivity_and_operator_enabl
         raw[i + 8] = int(enabled)
     voice = tx81z.TX81ZVoice(data=bytes(raw))
     additional = tx81z.TX81ZAdditional(data=bytes(23))
-    rows = np.tile([0, 64], (48000, 1))
+    rows = np.tile([0, 65, 1, 1], (48000, 1))
     actual = TX81ZRenderer(voice, additional, 69, 100).render(48000, rows)
     raw[57] = 0
     baseline = TX81ZRenderer(
@@ -166,19 +171,22 @@ def test_tx81z_keydown_only_resets_synchronized_lfo_counter(sync: bool) -> None:
 
 
 @pytest.mark.parametrize("delay", [1, 99])
-def test_tx81z_shared_context_rejects_active_delayed_amplitude(delay: int) -> None:
+def test_tx81z_note_rejects_active_delayed_amplitude(delay: int) -> None:
     raw = bytearray(lfo_voice().data)
     raw[55] = delay
     with pytest.raises(EngineError, match="delayed amplitude modulation"):
-        TX81ZLFOContext(tx81z.TX81ZVoice(data=bytes(raw)))
+        TX81ZRenderer(
+            tx81z.TX81ZVoice(data=bytes(raw)),
+            tx81z.TX81ZAdditional(data=bytes(23)),
+            69,
+            100,
+        )
 
 
 @pytest.mark.parametrize(
     "field,value",
     [
         ("rate", 0),
-        ("pitch_depth", 0),
-        ("amplitude_depth", 0),
         ("sync", False),
         ("waveform", 1),
         ("sample_rate", 44100),
@@ -209,17 +217,33 @@ def test_tx81z_delay_accepts_inaudible_amplitude_modulation(gate: str) -> None:
             raw[i + 8] = 0
     context = TX81ZLFOContext(tx81z.TX81ZVoice(data=bytes(raw)))
     assert context.snapshot().delay == 1
+    TX81ZRenderer(
+        tx81z.TX81ZVoice(data=bytes(raw)),
+        tx81z.TX81ZAdditional(data=bytes(23)),
+        69,
+        100,
+    )
 
 
 @pytest.mark.parametrize(
-    "invalid", ["missing", "shape", "fraction", "pitch", "amplitude", "nan"]
+    "invalid",
+    [
+        "missing",
+        "shape",
+        "fraction",
+        "pitch",
+        "amplitude",
+        "nan",
+        "progress",
+        "denominator",
+    ],
 )
 def test_tx81z_rejects_invalid_shared_rows_before_advancing(invalid: str) -> None:
     renderer = TX81ZRenderer(
         lfo_voice(), tx81z.TX81ZAdditional(data=bytes(23)), 69, 100
     )
     saved = renderer.snapshot()
-    rows = np.zeros((2, 2))
+    rows = np.tile([0.0, 0, 1, 1], (2, 1))
     if invalid == "shape":
         rows = np.zeros((2, 3))
     elif invalid == "fraction":
@@ -230,6 +254,10 @@ def test_tx81z_rejects_invalid_shared_rows_before_advancing(invalid: str) -> Non
         rows[0, 1] = -1
     elif invalid == "nan":
         rows[0, 0] = np.nan
+    elif invalid == "progress":
+        rows[0, 2] = 2
+    elif invalid == "denominator":
+        rows[0, 3] = 0
     with pytest.raises(EngineError, match="shared LFO rows"):
         renderer.render(2, None if invalid == "missing" else rows)
     assert renderer.snapshot() == saved
@@ -259,9 +287,59 @@ def test_tx81z_delayed_pitch_uses_measured_half_wait_and_linear_register_ramp(
     restored = TX81ZLFOContext(voice, clock_hz=clock_hz)
     restored.restore(saved)
     actual = np.concatenate([first, restored.advance(frames - len(first))])
-    check_audio(tmp_path / "delayed-pitch.wav", actual.astype(float), expected)
+    scaled = np.column_stack(
+        [actual[:, 0] * (127 * actual[:, 2] // actual[:, 3]) >> 7, np.zeros(frames)]
+    )
+    check_audio(tmp_path / "delayed-pitch.wav", scaled, expected)
     restored.keydown()
     assert restored.snapshot().delay_elapsed == 0
     assert restored.snapshot().counter != 0
-    np.testing.assert_array_equal(restored.advance(1), [[0, 0]])
+    assert restored.advance(1)[0, 2] == 0
     assert saved.delay_elapsed == len(first)
+
+
+@pytest.mark.parametrize("patch_depth", [0, 99])
+@pytest.mark.parametrize("waveform", range(4))
+def test_tx81z_controller_depths_match_strongest_static_patch(
+    tmp_path: Path, patch_depth: int, waveform: int
+) -> None:
+    raw = bytearray(lfo_voice(waveform).data)
+    raw[56:58] = bytes([patch_depth] * 2)
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    extra = tx81z.TX81ZAdditional(data=bytes(23))
+    rows = TX81ZLFOContext(voice).advance(48000)
+    controls = np.tile([50.75, 80.25], (48000, 1))
+    note = TX81ZRenderer(voice, extra, 69, 100)
+    first = note.render(12345, rows[:12345], controller_depths=controls[:12345])
+    saved = TX81ZSnapshot.model_validate_json(note.snapshot().model_dump_json())
+    note.restore(saved)
+    actual = np.concatenate(
+        [first, note.render(35655, rows[12345:], controller_depths=controls[12345:])]
+    )
+    raw[56], raw[57] = max(patch_depth, 50), max(patch_depth, 80)
+    expected = TX81ZRenderer(tx81z.TX81ZVoice(data=bytes(raw)), extra, 69, 100).render(
+        48000, rows
+    )
+    check_audio(tmp_path / "tx81z-controller-depths.wav", actual, expected)
+    for invalid in (np.full((1, 2), np.nan), np.full((1, 2), 100), np.zeros((1, 3))):
+        before = note.snapshot()
+        with pytest.raises(EngineError, match="controller depths"):
+            note.render(1, rows[:1], controller_depths=invalid)
+        assert note.snapshot() == before
+
+
+def test_tx81z_controller_modulation_bypasses_patch_delay(tmp_path: Path) -> None:
+    raw = bytearray(lfo_voice().data)
+    extra = tx81z.TX81ZAdditional(data=bytes(23))
+    reference = tx81z.TX81ZVoice(data=bytes(raw))
+    expected = TX81ZRenderer(reference, extra, 69, 100).render(
+        48000, TX81ZLFOContext(reference).advance(48000)
+    )
+    raw[55:58] = bytes([99, 0, 0])
+    delayed = tx81z.TX81ZVoice(data=bytes(raw))
+    actual = TX81ZRenderer(delayed, extra, 69, 100).render(
+        48000,
+        TX81ZLFOContext(delayed).advance(48000),
+        controller_depths=np.full((48000, 2), 99.0),
+    )
+    check_audio(tmp_path / "tx81z-controller-delay.wav", actual, expected)

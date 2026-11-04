@@ -172,6 +172,10 @@ The [compressed oracle](../../test/data/tx81z-lfo.npz) retains the reference as
 four portable NumPy arrays named `wave0` through `wave3`, each containing signed
 16-bit pairs without loss of register values. Tests compare complete rows,
 write paired one-second 48 kHz WAVs and check partitioned JSON continuation.
+The shared context now returns raw PM/AM plus rational delay progress. The
+comparison applies the oracle's PMD/AMD register value of 127 to the first two
+columns before comparing these unchanged fixtures. Per-note depth application
+allows simultaneous voices to consume one clock with independent controllers.
 The initial chip noise state, shared latch table and secondary counter matter
 for sample-and-hold; reproducing only a free-running random value is insufficient.
 

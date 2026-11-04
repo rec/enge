@@ -296,6 +296,10 @@ class OfflineYamaha:
                     template.performance.foot,
                 )
             )
+            if isinstance(template, YamahaTX81ZVoice):
+                assignments = any(
+                    template.patch.data[71:75] + template.additional.data[21:23]
+                )
             for i in range(frames):
                 at = start + i
                 if (
@@ -328,15 +332,21 @@ class OfflineYamaha:
                             * template.performance.pitch_bend_range
                             * 100
                         )
-                    if assignments and isinstance(template, YamahaDX7Voice):
-                        controllers = _dx7_controller_row(template.performance, values)
+                    if assignments:
+                        controllers = (
+                            _dx7_controller_row(template.performance, values)
+                            if isinstance(template, YamahaDX7Voice)
+                            else _tx81z_controller_row(template, values)
+                        )
                 modulation = rows[voice.template][i : i + 1]
                 if isinstance(voice.renderer, yamaha.DX7Renderer):
                     audio[i] = voice.renderer.render(
                         1, modulation, tuning, bend, controllers
                     )[0]
                 else:
-                    audio[i] = voice.renderer.render(1, modulation, tuning)[0]
+                    audio[i] = voice.renderer.render(
+                        1, modulation, tuning, controllers
+                    )[0]
                 count += 1
             gain = 10 ** (template.processing.volume_db / 20)
             if template.processing.invert_polarity:
@@ -424,7 +434,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
                 for p in ("pitch_bend", "modulation_wheel", "breath", "foot")
             )
             if isinstance(voice, YamahaDX7Voice)
-            else (),
+            else tuple(("yamaha", p) for p in ("modulation_wheel", "breath", "foot")),
         )
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
@@ -437,6 +447,19 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         if isinstance(voice, YamahaDX7Voice):
             yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
         else:
+            targets = {
+                p.target.parameter
+                for p in voice.modulation.parameters
+                if p.target.name == "yamaha"
+            }
+            if "foot" in targets and voice.patch.data[67]:
+                raise synth.EngineError("TX81Z foot volume is not implemented")
+            if "breath" in targets and (
+                voice.patch.data[75] != 50 or voice.patch.data[76]
+            ):
+                raise synth.EngineError(
+                    "TX81Z breath pitch and EG bias are not implemented"
+                )
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)
         _note(voice, 69, 127, timebase.rate.numerator, None)
         filters.parameters(voice.processing.filters, timebase.rate.numerator, 1)
@@ -467,6 +490,23 @@ def _dx7_controller_row(
         eg_assigned |= assignment.eg_bias
     row[0, :2] /= 128
     row[0, 2] = (127 - row[0, 2]) / 128 if eg_assigned else 0
+    return row
+
+
+def _tx81z_controller_row(
+    template: YamahaTX81ZVoice, values: dict[tuple[str, str], np.ndarray]
+) -> np.ndarray:
+    """Combine authored controller depths before measured register conversion."""
+    row = np.zeros((1, 2))
+    data, extra = template.patch.data, template.additional.data
+    for name, pitch, amplitude in (
+        ("modulation_wheel", data[71], data[72]),
+        ("breath", data[73], data[74]),
+        ("foot", extra[21], extra[22]),
+    ):
+        if (position := values.get(("yamaha", name))) is not None:
+            row[0, 0] = max(row[0, 0], position[0] * pitch)
+            row[0, 1] = max(row[0, 1], position[0] * amplitude)
     return row
 
 

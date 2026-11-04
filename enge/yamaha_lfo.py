@@ -166,8 +166,6 @@ class DX7LFOContext:
 
 class TX81ZLFOSnapshot(BaseModel, frozen=True):
     rate: int = Field(ge=0, le=255)
-    pitch_depth: int = Field(ge=0, le=127)
-    amplitude_depth: int = Field(ge=0, le=127)
     sync: bool
     waveform: int = Field(ge=0, le=3)
     sample_rate: int = Field(gt=0)
@@ -182,8 +180,9 @@ class TX81ZLFOSnapshot(BaseModel, frozen=True):
     noise_table: list[Annotated[int, Field(ge=0, le=255)]] = Field(
         default_factory=lambda: [0] * 256, min_length=256, max_length=256
     )
-    pitch: int = Field(default=0, ge=-128, le=127)
-    amplitude: int = Field(default=0, ge=0, le=255)
+    wave_pitch: int = Field(default=0, ge=-128, le=127)
+    wave_amplitude: int = Field(default=0, ge=0, le=255)
+    delay_progress: int = Field(default=0, ge=0)
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -191,31 +190,24 @@ class TX81ZLFOSnapshot(BaseModel, frozen=True):
 class TX81ZLFOContext:
     """Single-mode OPZ LFO1, with the secondary LFO left at reset settings.
 
-    Rows contain depth-scaled signed PM and unsigned AM chip units. The clock
-    and noise model follow ymfm provisionally. Delayed PMD uses measured timing;
-    active delayed AMD remains unsupported because its curve is unspecified.
+    Integer rows contain raw signed PM, raw unsigned AM, and the numerator and
+    denominator of patch-delay progress. Progress is latched with the waveform
+    at chip observations. Notes apply their own depths to these shared rows.
+    The clock and noise model follow ymfm provisionally.
     """
 
     def __init__(
         self, voice: tx81z.TX81ZVoice, sample_rate: int = 48000, clock_hz: int = 3579545
     ) -> None:
-        rate, pitch, amplitude = tx81z_lfo_registers(voice)
-        if (
-            voice.data[55]
-            and amplitude
-            and voice.data[61]
-            and any(o.amplitude_modulation_enable for o in voice.operators)
-        ):
-            raise EngineError("TX81Z delayed amplitude modulation is not implemented")
+        rate, _, _ = tx81z_lfo_registers(voice)
         self.state = TX81ZLFOSnapshot(
             rate=rate,
-            pitch_depth=pitch,
-            amplitude_depth=amplitude,
             sync=bool(voice.data[58]),
             waveform=voice.data[59],
             sample_rate=sample_rate,
             clock_hz=clock_hz,
             delay=voice.data[55],
+            delay_progress=0 if voice.data[55] else 1,
         )
 
     def snapshot(self) -> TX81ZLFOSnapshot:
@@ -224,8 +216,6 @@ class TX81ZLFOContext:
     def restore(self, snapshot: TX81ZLFOSnapshot) -> None:
         if (
             snapshot.rate != self.state.rate
-            or snapshot.pitch_depth != self.state.pitch_depth
-            or snapshot.amplitude_depth != self.state.amplitude_depth
             or snapshot.sync != self.state.sync
             or snapshot.waveform != self.state.waveform
             or snapshot.sample_rate != self.state.sample_rate
@@ -240,7 +230,7 @@ class TX81ZLFOContext:
     def keydown(self) -> None:
         updates = {"delay_elapsed": 0}
         if self.state.delay:
-            updates["pitch"] = 0
+            updates["delay_progress"] = 0
         if self.state.sync:
             updates["counter"] = 0
         self.state = self.state.model_copy(update=updates)
@@ -252,17 +242,12 @@ class TX81ZLFOContext:
         counter, secondary = state.counter, state.secondary_counter
         remainder, noise = state.clock_remainder, state.noise_lfsr
         table = state.noise_table.copy()
-        pitch, amplitude = state.pitch, state.amplitude
+        pitch, amplitude = state.wave_pitch, state.wave_amplitude
+        progress = state.delay_progress
         increment = (16 | (state.rate & 15)) << (state.rate >> 4)
-        output = np.empty((frames, 2), dtype=np.int64)
+        output = np.empty((frames, 4), dtype=np.int64)
         duration = _TX_DELAY_TICKS[state.delay] * state.sample_rate
         for frame in range(frames):
-            depth = state.pitch_depth
-            if duration:
-                progress = min(
-                    duration, max(0, 96 * (state.delay_elapsed + frame) - duration)
-                )
-                depth = depth * progress // duration
             ticks, remainder = divmod(
                 remainder + state.clock_hz, 64 * state.sample_rate
             )
@@ -289,10 +274,14 @@ class TX81ZLFOContext:
                         pm = am if index & 64 else (am ^ 255)
                     case _:
                         am = pm = table[index]
-                signed_pm = pm if pm < 128 else pm - 256
-                pitch = (signed_pm * depth) >> 7
-                amplitude = 0 if duration else (am * state.amplitude_depth) >> 7
-            output[frame] = pitch, amplitude
+                pitch = pm if pm < 128 else pm - 256
+                amplitude = am
+                progress = (
+                    min(duration, max(0, 96 * (state.delay_elapsed + frame) - duration))
+                    if duration
+                    else 1
+                )
+            output[frame] = pitch, amplitude, progress, max(1, duration)
         self.state = state.model_copy(
             update={
                 "frame": state.frame + frames,
@@ -302,8 +291,9 @@ class TX81ZLFOContext:
                 "clock_remainder": remainder,
                 "noise_lfsr": noise,
                 "noise_table": table,
-                "pitch": pitch,
-                "amplitude": amplitude,
+                "wave_pitch": pitch,
+                "wave_amplitude": amplitude,
+                "delay_progress": progress,
             }
         )
         return output
