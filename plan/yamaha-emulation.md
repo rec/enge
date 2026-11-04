@@ -227,6 +227,11 @@ profile, not completion of the full TX81Z/WT11 requirement. Controller integrati
 DAC/integer quantization and hardware/reference
 qualification remain work.
 
+Renderer admission checks the raw per-operator VCED amplitude-modulation-enable
+and ACED fixed-frequency flags before using their decoded booleans. Values above
+one are rejected rather than silently treated as true. Regressions cover all
+four operator positions in both buffers and preserve the original dump bytes.
+
 The user approved a provisional OPZ LFO context on 2026-11-04.
 `TX81ZLFOContext` prepares the measured VCED speed register mapping and emits
 four integer columns: raw signed PM, raw unsigned AM, delay-progress numerator

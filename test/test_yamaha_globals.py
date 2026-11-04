@@ -1,8 +1,29 @@
 import pytest
+from ufor import tx81z
 from ufor.dx7 import DX7Voice
 
 from enge.synth import EngineError
-from enge.yamaha import DX7Renderer
+from enge.yamaha import DX7Renderer, TX81ZRenderer
+
+
+@pytest.mark.parametrize("operator", range(4))
+@pytest.mark.parametrize("source", ["voice", "additional"])
+def test_tx81z_rejects_nonboolean_operator_flags_without_changing_dumps(
+    operator: int, source: str
+) -> None:
+    raw = bytearray(93)
+    raw[62] = 24
+    extra = bytearray(23)
+    if source == "voice":
+        raw[operator * 13 + 8] = 2
+    else:
+        extra[operator * 5] = 2
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    additional = tx81z.TX81ZAdditional(data=bytes(extra))
+    with pytest.raises(EngineError, match="TX81Z .* must be 0 or 1"):
+        TX81ZRenderer(voice, additional, 69, 100)
+    assert voice.data == bytes(raw)
+    assert additional.data == bytes(extra)
 
 
 @pytest.mark.parametrize(

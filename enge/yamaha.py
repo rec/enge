@@ -180,6 +180,15 @@ class TX81ZRenderer:
         for diagnostic in (voice.parameter_diagnostic, additional.parameter_diagnostic):
             if diagnostic is not None:
                 raise EngineError(diagnostic)
+        for i in range(4):
+            if voice.data[i * 13 + 8] > 1:
+                raise EngineError(
+                    f"TX81Z operator {4 - i} amplitude modulation enable must be 0 or 1"
+                )
+            if additional.data[i * 5] > 1:
+                raise EngineError(
+                    f"TX81Z operator {4 - i} fixed frequency flag must be 0 or 1"
+                )
         if not 0 <= note <= 127 or not 0 <= velocity <= 127 or sample_rate <= 0:
             raise EngineError("Invalid TX81Z note, velocity or sample rate")
         _, self.lfo_pitch_depth, self.lfo_amplitude_depth = tx81z_lfo_registers(voice)
