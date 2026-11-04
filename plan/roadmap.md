@@ -46,7 +46,7 @@ ambiguous musical behavior require a decision before implementation.
 The user confirmed on 2026-11-03 that the completion goal covers the concrete
 roadmap and Yamaha requirements, while optional catalogues remain deferred.
 
-- Finish native sampler generator support under the unresolved shared-storage
+- Finish native sampler generator support using the approved shared-storage
   contract in [engine-execution.md](engine-execution.md). Sampler end fades now
   have offline/native live coverage under the approved final-exhaustion rule.
 - Complete and qualify [Yamaha emulation](yamaha-emulation.md); dedicated

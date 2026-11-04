@@ -63,6 +63,14 @@ commands, activation fades and transport-position signals use shared exact
 playback state, and marker routing follows that state across commands and
 restoration.
 
+The native Patch host retains prepared transaction storage for every voice slot.
+Observation, commands, settling and voice reset use the shared bounded API;
+retirement keeps the slot storage for reuse. Live-source construction prepares
+these buffers before rendering, and snapshot restoration rebuilds them outside
+rendering. This removes Patch-host temporary input/release lists and allocating
+graph calls. Native sampler generator integration and full callback allocation
+qualification remain unfinished.
+
 Python graph playback now uses the standalone `envelfo.patch` scheduler too.
 enge prepares bindings, supplies host-owned signals, samples event-free spans
 and retains voice-release policy; it no longer maintains separate Patch queues,

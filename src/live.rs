@@ -200,8 +200,12 @@ impl LiveRuntime {
         }
         let runtimes = runtimes
             .iter()
-            .map(|v| v.borrow(py).clone())
-            .collect::<Vec<_>>();
+            .map(|v| {
+                let mut runtime = v.borrow(py).clone();
+                runtime.prepare_patch()?;
+                Ok(runtime)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         let channels = runtimes[0].channels();
         let rate = runtimes[0].rate();
         let frame = runtimes[0].frame();

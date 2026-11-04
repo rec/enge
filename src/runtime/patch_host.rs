@@ -313,9 +313,39 @@ impl PatchHost {
 }
 
 impl SynthRuntime {
-    pub(super) fn prepare_patch(&mut self) -> PyResult<()> {
+    pub(crate) fn prepare_patch(&mut self) -> PyResult<()> {
         if self.patch_host.is_none() {
             self.patch_host = PatchHost::prepare(self)?;
+        }
+        if let Some(host) = &self.patch_host {
+            let clock = Clocks {
+                points: &self.beat_points,
+                kinds: &host.clocks,
+            };
+            for voice in 0..self.patch_states.len() {
+                if self.patch_states[voice].is_none() {
+                    self.patch_states[voice] = Some(
+                        host.body
+                            .initial(
+                                frame_position(self.frame)?,
+                                "native",
+                                self.envelfo_keys[voice],
+                                Some(&host.keys),
+                                &clock,
+                            )
+                            .map_err(core_error)?,
+                    );
+                }
+                if self.patch_storage[voice].is_none() {
+                    // Patch outputs are internal signal values; no named output
+                    // events leave this host. Connection work remains capped.
+                    self.patch_storage[voice] = Some(
+                        host.body
+                            .prepare_storage(self.patch_states[voice].as_mut().unwrap(), 4096, 0)
+                            .map_err(core_error)?,
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -329,25 +359,31 @@ impl SynthRuntime {
             kinds: &host.clocks,
         };
         let at = frame_position(self.frame)?;
-        let mut state = host
-            .body
-            .initial(
+        let state = self.patch_states[voice]
+            .as_mut()
+            .expect("prepared Patch state");
+        let storage = self.patch_storage[voice]
+            .as_mut()
+            .expect("prepared Patch storage");
+        host.body
+            .reset_into(
+                state,
                 at,
-                "native",
                 self.envelfo_keys[voice],
                 Some(&host.keys),
                 &clock,
+                storage,
             )
             .map_err(core_error)?;
         for child in &host.body.children {
             if matches!(child.node, Node::Envelope(_) | Node::Stages(_)) {
                 let ordinal = host
                     .body
-                    .next_ordinal(&state, &child.name)
+                    .next_ordinal(state, &child.name)
                     .map_err(core_error)?;
                 host.body
-                    .command(
-                        &mut state,
+                    .command_into(
+                        state,
                         &child.name,
                         &ChildEvent {
                             at,
@@ -356,11 +392,11 @@ impl SynthRuntime {
                         },
                         &clock,
                         false,
+                        storage,
                     )
                     .map_err(core_error)?;
             }
         }
-        self.patch_states[voice] = Some(state);
         self.pending_releases[voice].fill(None);
         Ok(())
     }
@@ -371,7 +407,7 @@ impl SynthRuntime {
         kind: u8,
         source: usize,
         at: Time,
-        command: ChildCommand,
+        command: ChildCommand<&str>,
     ) -> PyResult<()> {
         let Some(host) = &self.patch_host else {
             return Ok(());
@@ -386,7 +422,7 @@ impl SynthRuntime {
             .expect("active voice owns its Patch state");
         let ordinal = host.body.next_ordinal(state, name).map_err(core_error)?;
         host.body
-            .command(
+            .command_into(
                 state,
                 name,
                 &ChildEvent {
@@ -399,6 +435,9 @@ impl SynthRuntime {
                     kinds: &host.clocks,
                 },
                 false,
+                self.patch_storage[voice]
+                    .as_mut()
+                    .expect("prepared Patch storage"),
             )
             .map_err(core_error)?;
         Ok(())
@@ -410,16 +449,15 @@ impl SynthRuntime {
             if !self.active[voice] {
                 continue;
             }
-            let mut due: Vec<_> = self.pending_releases[voice]
+            while let Some((t, source)) = self.pending_releases[voice]
                 .iter()
                 .enumerate()
                 .filter_map(|(i, t)| {
                     t.filter(|t| if inclusive { *t <= at } else { *t < at })
                         .map(|t| (t, i))
                 })
-                .collect();
-            due.sort();
-            for (t, source) in due {
+                .min()
+            {
                 self.patch_command(
                     voice,
                     1,
@@ -435,7 +473,7 @@ impl SynthRuntime {
             }
             if let (Some(host), Some(state)) = (&self.patch_host, &mut self.patch_states[voice]) {
                 host.body
-                    .settle(
+                    .settle_into(
                         state,
                         at,
                         inclusive,
@@ -443,6 +481,9 @@ impl SynthRuntime {
                             points: &self.beat_points,
                             kinds: &host.clocks,
                         },
+                        self.patch_storage[voice]
+                            .as_mut()
+                            .expect("prepared Patch storage"),
                     )
                     .map_err(core_error)?;
             }
@@ -455,25 +496,29 @@ impl SynthRuntime {
             return Ok(());
         };
         let at = frame_position(self.frame)?;
-        let mut inputs = vec![];
         for (i, definition) in self.lfo_definitions.iter().enumerate() {
             if definition.scope != 3 && self.lfo_owners[i] == i {
                 let (value, weight) = self.lfo_signal(voice, i)?;
                 let (center, depth) = host.shapes[i];
-                inputs.push((host.lfos[i].clone(), (center + depth * value) * weight));
+                host.body
+                    .set_input(
+                        self.patch_states[voice]
+                            .as_mut()
+                            .expect("prepared Patch state"),
+                        &host.lfos[i],
+                        (center + depth * value) * weight,
+                    )
+                    .map_err(core_error)?;
             }
         }
         let state = self.patch_states[voice]
             .as_mut()
             .expect("active voice owns its Patch state");
-        for (name, value) in inputs {
-            host.body
-                .set_input(state, &name, value)
-                .map_err(core_error)?;
-        }
-        let values = host
-            .body
-            .advance(
+        let storage = self.patch_storage[voice]
+            .as_mut()
+            .expect("prepared Patch storage");
+        host.body
+            .advance_into(
                 state,
                 at,
                 at.checked_add(Time::ONE).map_err(core_error)?,
@@ -481,12 +526,12 @@ impl SynthRuntime {
                     points: &self.beat_points,
                     kinds: &host.clocks,
                 },
+                storage,
             )
-            .map_err(core_error)?
-            .values;
+            .map_err(core_error)?;
         let base = voice * self.envelfo_transforms.len();
-        for (i, name) in host.transforms.iter().enumerate() {
-            self.envelfo_transform_values[base + i] = values[name];
+        for (i, value) in storage.values().take(host.transforms.len()).enumerate() {
+            self.envelfo_transform_values[base + i] = value;
         }
         Ok(())
     }

@@ -13,7 +13,7 @@ the completed live-effects implementation.
 The oscillator, FM, and noise runtimes retain voices, controls, LFOs, filters,
 routing, and snapshots in Rust. Their `process_actions_into` entry point writes
 to caller-owned output. This does not establish an allocation-free contract for
-every supported profile: Patch-backed generator processing allocates, as
+every supported profile; the Patch migration and remaining qualification are
 detailed below. The fixed-size action queue uses `rtrb`, publishes whole batches,
 and drains only the batch prefix visible when draining starts.
 Control ramps and instrument/part/trigger context storage are owned by the shared
@@ -22,25 +22,22 @@ generated-source snapshots.
 
 ### Patch scheduler allocation boundary
 
-Inspection on 2026-11-03 found normal-path allocations in the generator scheduler:
+The 2026-11-03 audit found temporary input/release vectors, copied names and
+allocating shared Patch calls. The approved migration now pins `envelfo-core`
+revision `2f2ffb0a5fe45f37b7a67d602e7b7eafa908e259` and uses its prepared
+transaction storage for observation, commands, settling and voice reset.
+Live-source construction prepares all slots before processing. Retirement retains
+their state and capacity; snapshot restoration rebuilds processing storage outside
+rendering. Input updates and ordered release scans no longer allocate lists.
+Each slot permits 4096 pending connections; no named event outputs leave this
+host, so its external event buffer has zero capacity.
 
-- `SynthRuntime::render_into` calls `observe_patch` for each active voice and frame.
-  With a prepared Patch host, `src/runtime/patch_host.rs` builds an input vector,
-  clones input names and calls `Patch::advance`.
-- The pinned `envelfo-core` revision
-  `b719734d0e7becf3828ebad29199fd8e40eca54b` clones `PatchState` and builds a
-  `BTreeMap` of signals in `Patch::advance`. Its event scheduler also builds
-  vectors during processing. A prepared, finite voice pool does not remove
-  those allocations.
-- Consequently, the current Patch-backed generated-source profile is not
-  allocation-free. Native sampler generators remain rejected during setup;
-  routing them through this API would not satisfy the bounded callback contract.
-
-The required next step is a shared scheduler processing API with caller-owned,
-capacity-checked state and scratch, followed by reuse in enge. A decision on this
-cross-project API change is pending. Allocation qualification must cover onset,
-observation, addressed commands, scheduled child events and release, rather than
-only the outer source queue and output buffers.
+Shared-core allocation tests cover reset, observation, cues, delayed events,
+capacity rollback, cloning and snapshot continuation. Enge's full native callback
+still needs allocation qualification across onset, observation, addressed commands,
+scheduled child events and release. Native sampler generators remain rejected
+until their integration is implemented; these shared-core results alone do not
+qualify that profile or establish hardware deadlines.
 
 `LiveRuntime` owns processing for generated and sampled sources. It owns
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal

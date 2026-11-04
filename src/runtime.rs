@@ -5,7 +5,7 @@ use envelfo_core::envelope::{
     Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
 };
 use envelfo_core::lfo::Command;
-use envelfo_core::patch::{ChildCommand, PatchState};
+use envelfo_core::patch::{ChildCommand, PatchState, PatchStorage};
 use envelfo_core::time::Time;
 use envelfo_core::{lfo, stages};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
@@ -325,6 +325,7 @@ pub struct SynthRuntime {
     parameter_partials: Vec<f64>,
     patch_host: Option<PatchHost>,
     patch_states: Vec<Option<PatchState>>,
+    patch_storage: Vec<Option<PatchStorage>>,
     pending_releases: Vec<Vec<Option<Time>>>,
     envelfo_transforms: Vec<EnvelfoTransformInput>,
     envelfo_transform_routes: Vec<EnvelfoTransformRoute>,
@@ -482,6 +483,7 @@ impl SynthRuntime {
         Ok(Self {
             patch_host: None,
             patch_states: vec![None; slots],
+            patch_storage: vec![None; slots],
             pending_releases: vec![vec![]; slots],
             envelfo_transforms: Vec::new(),
             envelfo_transform_routes: Vec::new(),
@@ -1659,7 +1661,8 @@ impl SynthRuntime {
         self.controls
             .voice_trigger_contexts
             .clone_from(&snapshot.voice_trigger_contexts);
-        Ok(())
+        self.patch_storage.fill(None);
+        self.prepare_patch()
     }
 }
 
@@ -1821,7 +1824,6 @@ impl SynthRuntime {
                 let observed = definition.value(state, self.ages[voice])?;
                 if definition.complete(state, &observed) {
                     self.active[voice] = false;
-                    self.patch_states[voice] = None;
                     self.pending_releases[voice].fill(None);
                     continue;
                 }
@@ -2165,7 +2167,6 @@ impl SynthRuntime {
             }
             2 => {
                 self.active[voice] = false;
-                self.patch_states[voice] = None;
                 self.pending_releases[voice].fill(None);
             }
             3 => {
