@@ -85,6 +85,20 @@ Note and idle-slot snapshots store integers consistently, and idle slots advance
 using the retained quantized increments. The old floating core is removed.
 A complete reference patch comparison and hardware qualification remain work.
 
+[Controlled dynamic comparisons](../doc/yamaha-reference/dexed-mki-core.md#isolating-reference-envelope-behavior)
+now isolate two reference behaviors before any further runtime redesign.
+Dexed's inner operators in the special algorithm-4/6 feedback kernels jump to
+new block attenuation rather than using the ordinary interpolation rule.
+Changing only that behavior alters reference audio by 10.00–56.99% relative RMS
+in the tested profiles but does not resolve enge's mismatch. Separately,
+correcting only the reference's inverse hold-duration scaling reduces the
+unmodulated hold-profile difference from 43.08% to 5.77%. All nine negative
+controls across the two experiments remain bit-identical. Preserve enge's
+approved stable-duration holds; remaining attack/release trajectories, block
+interpolation and silence admission require isolation before treating the
+full-note comparisons as passed. The retained patches are experiments, not
+production changes or verified hardware corrections.
+
 A subsequent [dynamic-envelope comparison](../doc/yamaha-reference/dexed-mki-core.md#dynamic-envelope-comparison)
 combines upstream Dexed envelopes with the Mk I core. It confirms that
 constant-gain agreement does not close attack/release or equal-level timing.

@@ -5,6 +5,10 @@ approved integer replacement and its current regression oracle are described
 at the end of this report; do not treat the old mismatch figures as results for
 the current implementation.
 
+The latest [controlled dynamic comparisons](#isolating-reference-envelope-behavior)
+separate two reference behaviors from enge's intended per-frame model. Neither
+experiment closes whole-note or hardware qualification.
+
 Measured on 2026-11-04 against Dexed revision
 [`fea2f0f0f2c397799f59b27eb11c038cd34b22c5`](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/engine/EngineMkI.cpp).
 The enge renderer includes the approved explicit feedback endpoints and
@@ -300,3 +304,84 @@ Listen to the unmodulated carrier cases:
 - Fast: [Mk I](DYN-32-0-mki.wav), [enge](DYN-32-0-enge-holds.wav).
 - Equal-level hold: [Mk I](DYN-32-1-mki.wav),
   [enge before holds](DYN-32-1-enge.wav), [enge with holds](DYN-32-1-enge-holds.wav).
+
+## Isolating reference envelope behavior
+
+These controls use enge `ce019b2` and the same pinned Dexed sources, patch bytes,
+exact frequency increment, 48 kHz rate, release frame and one-second duration
+as the dynamic comparison above. The upstream `EngineMkI.cpp` blob was checked
+against GitHub again: `75b0d33720ca10fcb875e443adf2724523187908`. The reference's
+`env.cc` differs from upstream only by omitting the unused application logger.
+Production enge code is unchanged by these experiments.
+
+Apply each diagnostic patch to its own prepared reference copy with
+`git apply --unidiff-zero /absolute/path/to/the.patch` from that copy's root.
+The patches omit context lines to avoid importing upstream trailing whitespace;
+they target the exact pinned files, not arbitrary Dexed versions.
+
+### Inner feedback-operator ramps
+
+In `compute_fb2` and `compute_fb3`, the pinned reference overwrites each inner
+operator's `gain_out` before reading its previous value. For the nonzero target
+attenuations in these profiles, that operator consequently jumps to the new
+block attenuation and has zero interpolation increment. OP6 still interpolates.
+The ordinary `compute`/`compute_pure` kernels instead interpolate from the
+previous attenuation using `(new - old + 32) >> 6`.
+
+The retained [experimental patch](dexed-mki-feedback-ramp.patch) makes only
+those inner operators use the ordinary interpolation rule. It is a diagnostic
+control, not an adopted reference correction or hardware claim. Build the
+existing `render-dexed-mki-envelope.cc` harness once against the original core
+and once against an isolated copy with this patch applied. All envelopes,
+tables, phase arithmetic and feedback strengths stay unchanged.
+
+The [complete results](dexed-mki-feedback-ramp.csv) include algorithms 4 and 6
+with feedback off and at seven, plus algorithm 32 with feedback off, each with
+both dynamic profiles. All six feedback-off controls are exactly unchanged.
+
+| Algorithm | Profile | Changed reference samples | Reference-to-control RMS difference | enge vs pinned | enge vs ramp control |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 4 | Fast | 504 | 10.0001% | 91.2675% | 91.2358% |
+| 4 | Hold | 514 | 19.8750% | 101.4955% | 101.3775% |
+| 6 | Fast | 8,231 | 33.1432% | 42.7878% | 42.9870% |
+| 6 | Hold | 6,281 | 56.9853% | 72.0260% | 72.9480% |
+
+Every changed case first differs at frame zero. The reference change materially
+alters the waveform but does not resolve enge's mismatch. Listen to the algorithm-4 fast
+case: [pinned core](DYN-04-feedback-pinned.wav) and
+[ramp control](DYN-04-feedback-ramp.wav). Both WAVs divide Q24/2**24 samples by
+the same peak, `3.998046875`, before rounding to signed 32-bit PCM. No alignment
+or independently fitted gain is used.
+
+### Hold sample-rate scaling
+
+A separate [one-line reference patch](dexed-mki-hold-scaling.patch) changes only
+the hold conversion from multiplication by the inverse sample-rate ratio to
+division by that ratio, rounding upward. The reference retains its Q24 rate
+multiplier and 64-frame countdown granularity, so this is not an exact copy of
+enge's per-frame countdown. The original Mk I core, including the inner
+feedback behavior above, remains unchanged in this control. Apply this patch
+to a separate copy of `msfa/env.cc` and compile the same envelope harness.
+
+All three fast-profile controls remain exactly unchanged. The hold profiles
+each change 1,278 reference samples. The
+[complete results](dexed-mki-hold-scaling.csv) show:
+
+| Algorithm | Feedback | enge vs pinned hold profile | enge vs stable-duration control |
+| --- | ---: | ---: | ---: |
+| 4 | 7 | 101.4955% | 91.5254% |
+| 6 | 7 | 72.0260% | 57.1671% |
+| 32 | 0 | 43.0782% | 5.7693% |
+
+Thus the intentional stable-duration choice accounts for most of the
+unmodulated hold-profile discrepancy. It does not explain the remaining
+attack/release differences or high-feedback excitation histories. Reversing
+enge's approved timing to reduce error against the unmodified reference would
+violate the intended duration contract.
+
+Across both experiments, 16 one-second cases were compared, including nine
+unchanged negative controls. These results narrow the remaining qualification
+work to envelope trajectories, block attenuation interpolation and silence
+admission, followed by modulation integration. Neither modified reference is
+adopted as hardware truth, and neither comparison passes whole-note
+qualification. Do not replace the failing full-note fixtures with these controls.

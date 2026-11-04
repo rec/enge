@@ -1,0 +1,5 @@
+--- a/msfa/env.cc
++++ b/msfa/env.cc
+@@ -146 +146 @@
+-            staticcount_ = (int)(((int64_t)staticcount_ * (int64_t)sr_multiplier) >> 24);
++            staticcount_ = (int)ceil((double)staticcount_ * (1 << 24) / sr_multiplier);

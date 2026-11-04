@@ -1,0 +1,21 @@
+--- a/EngineMkI.cpp
++++ b/EngineMkI.cpp
+@@ -221 +220,0 @@
+-    parms[1].gain_out = (ENV_MAX-(parms[1].level_in >> (28-ENV_BITDEPTH)));
+@@ -224,0 +224 @@
++    parms[1].gain_out = (ENV_MAX-(parms[1].level_in >> (28-ENV_BITDEPTH)));
+@@ -227 +227 @@
+-    dgain[1] = (parms[1].gain_out - (parms[1].gain_out == 0 ? (ENV_MAX-1) : parms[1].gain_out));
++    dgain[1] = (parms[1].gain_out - gain[1] + (N >> 1)) >> LG_N;
+@@ -261,2 +260,0 @@
+-    parms[1].gain_out = (ENV_MAX-(parms[1].level_in >> (28-ENV_BITDEPTH)));
+-    parms[2].gain_out = (ENV_MAX-(parms[2].level_in >> (28-ENV_BITDEPTH)));
+@@ -265,0 +264 @@
++    parms[1].gain_out = (ENV_MAX-(parms[1].level_in >> (28-ENV_BITDEPTH)));
+@@ -266,0 +266 @@
++    parms[2].gain_out = (ENV_MAX-(parms[2].level_in >> (28-ENV_BITDEPTH)));
+@@ -269,2 +269,2 @@
+-    dgain[1] = (parms[1].gain_out - (parms[1].gain_out == 0 ? (ENV_MAX-1) : parms[1].gain_out));
+-    dgain[2] = (parms[2].gain_out - (parms[2].gain_out == 0 ? (ENV_MAX-1) : parms[2].gain_out));
++    dgain[1] = (parms[1].gain_out - gain[1] + (N >> 1)) >> LG_N;
++    dgain[2] = (parms[2].gain_out - gain[2] + (N >> 1)) >> LG_N;
