@@ -661,8 +661,13 @@ def test_tx81z_rejects_unknown_waveforms(waveform: int) -> None:
 
 @pytest.mark.parametrize("feedback", [0, 1, 7])
 @pytest.mark.parametrize("algorithm", [31, 32])
+@pytest.mark.parametrize("amplitude_modulation", [False, True])
 def test_dx7_feedback_uses_two_delayed_cycle_samples(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feedback: int, algorithm: int
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feedback: int,
+    algorithm: int,
+    amplitude_modulation: bool,
 ) -> None:
     def gain(self: DX7Envelope) -> float:
         return 0.01
@@ -671,20 +676,23 @@ def test_dx7_feedback_uses_two_delayed_cycle_samples(
     data = bytearray(voice().data)
     data[135] = feedback
     data[134] = algorithm - 1
+    data[14], data[140] = 3, 99 if amplitude_modulation else 0
     renderer = DX7Renderer(DX7Voice(data=bytes(data)), note=69, velocity=100)
     expected = np.empty((48000, 1))
     sine = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000) * 0.01
     previous = older = 0.0
+    rows = np.column_stack([np.linspace(0, 1, 48000), np.ones(48000)])
     for i in range(48000):
         offset = (older + previous) / 2 ** (9 - feedback) if feedback else 0.0
-        value = 0.01 * np.sin(2 * np.pi * (i * 440 / 48000 + offset))
+        attenuation = 2 ** (-52.75 * rows[i, 0] / 8) if amplitude_modulation else 1
+        value = 0.01 * attenuation * np.sin(2 * np.pi * (i * 440 / 48000 + offset))
         expected[i, 0] = (
             5 * sine[i] + value
             if algorithm == 32
             else 4 * sine[i] + 0.01 * np.sin(2 * np.pi * (i * 440 / 48000 + value))
         )
         older, previous = previous, value
-    actual = renderer.render(48000)
+    actual = renderer.render(48000, rows if amplitude_modulation else None)
     check_audio(tmp_path / "feedback.wav", actual, expected)
 
 

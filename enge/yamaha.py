@@ -436,7 +436,19 @@ class DX7Renderer:
         self.pitch_modulation_sensitivity = [0, 10, 20, 33, 55, 92, 153, 255][
             parameters[7]
         ]
-        self.amplitude_modulation_depth = parameters[4]
+        # Hexter's provisional AMD fit, in 1/8-octave reduction units.
+        depth = parameters[4]
+        self.amplitude_modulation_level = (
+            0.0
+            if depth == 0
+            else 52.75
+            if depth == 99
+            else round(exp(depth * 0.0428993 - 0.285189), 6)
+        )
+        self.amplitude_modulation_sensitivities = [
+            _DX7_AMPLITUDE_SENSITIVITIES[o.amplitude_modulation_sensitivity]
+            for o in voice.operators
+        ]
         self.envelopes = [
             DX7Envelope.start(operator, note, velocity, sample_rate)
             for operator in voice.operators
@@ -481,13 +493,12 @@ class DX7Renderer:
     def render(self, frames: int, modulation: np.ndarray | None = None) -> np.ndarray:
         if frames < 0:
             raise EngineError("DX7 frame count must be nonnegative")
-        if self.amplitude_modulation_depth and any(
-            o.amplitude_modulation_sensitivity for o in self.voice.operators
-        ):
-            raise EngineError("DX7 LFO amplitude modulation is not implemented")
         if modulation is None:
-            if self.pitch_modulation_depth and self.pitch_modulation_sensitivity:
-                raise EngineError("DX7 pitch modulation requires shared LFO rows")
+            if (self.pitch_modulation_depth and self.pitch_modulation_sensitivity) or (
+                self.amplitude_modulation_level
+                and any(self.amplitude_modulation_sensitivities)
+            ):
+                raise EngineError("DX7 modulation requires shared LFO rows")
         elif (
             modulation.shape != (frames, 2)
             or not np.all(np.isfinite(modulation))
@@ -500,8 +511,12 @@ class DX7Renderer:
         feedback_operator = topology.feedback - 1
         for frame in range(frames):
             pitch_ratio = self.pitch_envelope.sample()
+            amplitude_reduction = 0.0
             if modulation is not None:
                 value, delay = modulation[frame]
+                amplitude_reduction = (
+                    self.amplitude_modulation_level * value * delay / 8
+                )
                 pitch_ratio *= 2 ** (
                     self.pitch_modulation_depth
                     * self.pitch_modulation_sensitivity
@@ -521,6 +536,10 @@ class DX7Renderer:
                         9 - self.voice.feedback
                     )
                 gain = self.envelopes[operator].sample()
+                if amplitude_reduction and (
+                    sensitivity := self.amplitude_modulation_sensitivities[operator]
+                ):
+                    gain *= 2 ** (-amplitude_reduction * sensitivity)
                 values[operator] = gain * sin(
                     2 * pi * (self.phases[operator] + phase_modulation)
                 )
@@ -1452,3 +1471,6 @@ _DX7_GLOBAL_LIMITS = [
     7,  # Pitch modulation sensitivity
     48,  # Transpose
 ]
+
+# Hexter's provisional full-depth amplitude reduction ratios for AMS 0..3.
+_DX7_AMPLITUDE_SENSITIVITIES = [0.0, 0.238058, 0.460510, 1.0]

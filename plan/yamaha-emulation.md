@@ -91,14 +91,34 @@ target decision remains separate.
 
 DX7 notes now apply their own PMD/PMS calibration to shared LFO rows in octave
 units before phase advancement. Effective pitch modulation requires explicit
-rows; missing/invalid rows are rejected before note state advances. Effective
-amplitude modulation (nonzero AMD and operator sensitivity) is now diagnosed as
-unsupported on rendering instead of being silently ignored. Zero sensitivities
-leave their corresponding modulation depths inaudible.
-Amplitude modulation, TX81Z LFO integration and full engine ownership remain work.
+rows; missing/invalid rows are rejected before note state advances. Zero
+sensitivities leave their corresponding modulation depths inaudible.
+TX81Z LFO integration and full engine ownership remain work.
 One-second 48 kHz WAV regressions cover all waveform shapes, known random values,
 rate/delay calibration, sync, fractional continuation, pitch calibration and two
 simultaneous notes restoring their clock and note snapshots together.
+
+The user approved Hexter's amplitude calibration provisionally on 2026-11-04.
+DX7 notes now apply AMD and each operator's AMS before operator output enters
+carrier mixing, downstream modulation or delayed feedback. The shared waveform
+column has Hexter polarity: zero adds no attenuation and one applies the full
+reduction, gated by the shared delay column. Effective amplitude modulation also
+requires explicit shared rows.
+
+Calibration follows Hexter revision `1cf1bfea5962f7c9726e0cf809b762b3b2655225`:
+its [AMD fit](https://github.com/smbolton/hexter/blob/1cf1bfea5962f7c9726e0cf809b762b3b2655225/src/dx7_voice_tables.c)
+is `exp(AMD * 0.0428993 - 0.285189)`, rounded to six decimal places for AMD 1–98,
+with published endpoints 0 and 52.75 for AMD 0 and 99. Its
+[AMS reduction ratios](https://github.com/smbolton/hexter/blob/1cf1bfea5962f7c9726e0cf809b762b3b2655225/src/dx7_voice_render.c)
+are 0, 0.238058, 0.460510 and 1. These output-level reductions are adapted to
+enge's existing logarithmic gain with one step equal to 1/8 octave. This retains
+the existing envelope and oscillator model; it does not reproduce Hexter's own
+envelope/output lookup tables or controller-combination approximations.
+Hexter describes the measured fit as rough, so hardware qualification remains
+incomplete. The original pinned MSFA renderer omits amplitude modulation and
+cannot qualify this path. WAV regressions cover all four sensitivities, depth
+boundaries, zero depth/level/delay, modulator/carrier feedback ordering, mixed
+pitch/amplitude modulation and aggregate snapshot continuation.
 
 Fixed-frequency operators now use the low two coarse bits and key-independent,
 positive-only logarithmic detune, following the frequency equations in

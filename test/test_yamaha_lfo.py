@@ -105,7 +105,10 @@ def test_two_notes_share_one_clock_and_restore_an_aggregate_snapshot(
     tmp_path: Path,
 ) -> None:
     data = bytearray(voice().data)
-    data[137:144] = bytes([80, 17, 65, 0, 1, 5, 5])
+    data[137:144] = bytes([80, 17, 65, 70, 1, 5, 5])
+    for i in range(6):
+        data[i * 21 + 14] = i % 4
+        data[i * 21 + 7] = 0
     patch = DX7Voice(data=bytes(data))
     context = DX7LFOContext(patch)
     context.keydown()
@@ -168,15 +171,13 @@ def test_note_rejects_invalid_shared_rows_before_advancing(invalid: str) -> None
     assert renderer.snapshot() == before
 
 
-def test_note_reports_unimplemented_amplitude_modulation_before_advancing() -> None:
+def test_amplitude_modulation_requires_shared_rows_before_advancing() -> None:
     data = bytearray(voice().data)
     data[14], data[140] = 1, 1
     renderer = DX7Renderer(DX7Voice(data=bytes(data)), 69, 100)
     before = renderer.snapshot()
-    with pytest.raises(
-        EngineError, match="LFO amplitude modulation is not implemented"
-    ):
-        renderer.render(1, np.array([[0.5, 1]]))
+    with pytest.raises(EngineError, match="shared LFO rows"):
+        renderer.render(1)
     assert renderer.snapshot() == before
 
 
@@ -186,3 +187,36 @@ def test_modulation_depths_have_no_effect_with_zero_sensitivity(tmp_path: Path) 
     actual = DX7Renderer(DX7Voice(data=bytes(data)), 69, 100).render(48000)
     expected = DX7Renderer(voice(), 69, 100).render(48000)
     check_audio(tmp_path / "dx7-zero-sensitivity.wav", actual, expected)
+
+
+@pytest.mark.parametrize(
+    "depth,level", [(0, 0), (1, 0.784829), (50, 6.422298), (98, 50.347169), (99, 52.75)]
+)
+@pytest.mark.parametrize(
+    "sensitivity,ratio", [(0, 0), (1, 0.238058), (2, 0.460510), (3, 1)]
+)
+def test_operator_amplitude_follows_the_provisional_hexter_calibration(
+    tmp_path: Path, depth: int, level: float, sensitivity: int, ratio: float
+) -> None:
+    data = bytearray(voice().data)
+    data[140] = depth
+    for i in range(0, 126, 21):
+        data[i + 14] = sensitivity
+    rows = np.ones((48000, 2))
+    actual = DX7Renderer(DX7Voice(data=bytes(data)), 69, 100).render(48000, rows)
+    expected = DX7Renderer(voice(), 69, 100).render(48000) * 2 ** (-level * ratio / 8)
+    check_audio(tmp_path / "dx7-amplitude-calibration.wav", actual, expected)
+
+
+@pytest.mark.parametrize("value,delay", [(0, 1), (1, 0)])
+def test_zero_lfo_level_or_delay_preserves_operator_gain(
+    tmp_path: Path, value: float, delay: float
+) -> None:
+    data = bytearray(voice().data)
+    data[140] = 99
+    for i in range(0, 126, 21):
+        data[i + 14] = 3
+    rows = np.tile([value, delay], (48000, 1))
+    actual = DX7Renderer(DX7Voice(data=bytes(data)), 69, 100).render(48000, rows)
+    expected = DX7Renderer(voice(), 69, 100).render(48000)
+    check_audio(tmp_path / "dx7-amplitude-zero.wav", actual, expected)
