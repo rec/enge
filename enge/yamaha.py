@@ -9,6 +9,7 @@ from ufor import tx81z
 from ufor.dx7 import DX7Operator, DX7Voice
 
 from .synth import EngineError
+from .yamaha_portamento import TX81ZPortamento
 
 
 class TX81ZState(BaseModel, frozen=True):
@@ -145,6 +146,8 @@ class TX81ZSnapshot(BaseModel, frozen=True):
     velocity: int
     sample_rate: int
     pitch_hz: float | None = None
+    start_pitch_hz: float | None = None
+    portamento: TX81ZPortamento | None = None
     envelopes: TX81ZEnvelopeBank
     operators: TX81ZState
 
@@ -176,6 +179,7 @@ class TX81ZRenderer:
         velocity: int,
         sample_rate: int = 48000,
         pitch_hz: float | None = None,
+        start_pitch_hz: float | None = None,
     ) -> None:
         for diagnostic in (voice.parameter_diagnostic, additional.parameter_diagnostic):
             if diagnostic is not None:
@@ -216,6 +220,21 @@ class TX81ZRenderer:
         if pitch_hz is not None and (not isfinite(pitch_hz) or pitch_hz <= 0):
             raise EngineError("Yamaha pitch_hz must be finite and positive")
         self.pitch_hz = pitch_hz
+        if start_pitch_hz is not None and (
+            not isfinite(start_pitch_hz) or start_pitch_hz <= 0
+        ):
+            raise EngineError("TX81Z start_pitch_hz must be finite and positive")
+        self.start_pitch_hz = start_pitch_hz
+        self.portamento = (
+            TX81ZPortamento.start(
+                voice.data[66],
+                sample_rate,
+                start_pitch_hz,
+                pitch_hz if pitch_hz is not None else 440 * 2 ** ((note - 69) / 12),
+            )
+            if start_pitch_hz is not None and voice.data[66]
+            else None
+        )
         self.envelopes = TX81ZEnvelopeBank(
             envelopes=[
                 TX81ZEnvelope.start(
@@ -335,6 +354,9 @@ class TX81ZRenderer:
                 )
             pm = raw[:, 0] * pitch_depth >> 7
             am = raw[:, 1] * amplitude_depth >> 7
+        if self.portamento is not None:
+            glide = self.portamento.ratios(frames)
+            tuning = glide if tuning is None else tuning * glide
         frequencies = np.broadcast_to(self.frequencies, (frames, 4))
         attenuation = self.envelopes.attenuation_samples(frames)
         if modulation is not None:
@@ -418,6 +440,10 @@ class TX81ZRenderer:
             velocity=self.velocity,
             sample_rate=self.sample_rate,
             pitch_hz=self.pitch_hz,
+            start_pitch_hz=self.start_pitch_hz,
+            portamento=self.portamento.model_copy(deep=True)
+            if self.portamento is not None
+            else None,
             envelopes=self.envelopes.model_copy(deep=True),
             operators=self.operators.model_copy(deep=True),
         )
@@ -430,10 +456,16 @@ class TX81ZRenderer:
             or snapshot.velocity != self.velocity
             or snapshot.sample_rate != self.sample_rate
             or snapshot.pitch_hz != self.pitch_hz
+            or snapshot.start_pitch_hz != self.start_pitch_hz
         ):
             raise EngineError("TX81Z snapshot belongs to a different note definition")
         self.envelopes = snapshot.envelopes.model_copy(deep=True)
         self.operators = snapshot.operators.model_copy(deep=True)
+        self.portamento = (
+            snapshot.portamento.model_copy(deep=True)
+            if snapshot.portamento is not None
+            else None
+        )
 
 
 class DX7Envelope(BaseModel):

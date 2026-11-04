@@ -319,6 +319,33 @@ two patch depths, large rational denominators, controller override, shared noise
 and note snapshots during the ramp, release, partitioned continuation and
 offline admission. Exact delayed AMD firmware behavior remains unqualified.
 
+Polyphonic full-time portamento now uses the
+[published register-step model](https://nornand.hatenablog.com/entry/2020/12/14/185801).
+`enge/yamaha_portamento.py` retains the signed quarter-step distance, asymmetric
+descending correction and 100-entry time coefficient table. The implementation
+uses exactly 96 updates per second, with the first update one tick after onset;
+the source reports approximately that cadence. Fractional sample-clock carry
+keeps partitioned renders and non-48-kHz rates consistent. Time zero bypasses
+glide. An explicit `start_pitch_hz` gives standalone notes a source pitch.
+Ratio operators receive glide before additive detune; fixed operators remain
+fixed. Dynamic tuning multiplies the same ratio. Start and target microtuning
+remain exact, while intermediate pitch steps use the firmware model's grid
+relative to the target. Envelopes and key scaling use the target key throughout.
+
+The offline adapter keeps the most recently started pitch separately for each
+template and part. A new note inherits that voice's current glide pitch if it
+is still active, or the pitch retained at its retirement. A part's first note
+starts at its own pitch. Retiring an older overlapping note does not overwrite
+the latest history. This is the recommended provisional polyphonic ownership
+policy; it does not claim hardware voice-slot allocation equivalence. Snapshots
+retain per-note glide state and the instrument's pitch history. One-second WAV
+regressions cover measured ascending/descending traces, slow settings, target
+clamping, fixed-frequency bypass, detune, dynamic tuning, interrupted glides,
+part isolation, retirement history and snapshot replay. Mono mode is now
+rejected explicitly by the adapter until its held-key and legato lifecycle is
+implemented. Fingered portamento and MIDI portamento-switch control remain work;
+the implemented full-time path uses the manual's initial enabled state.
+
 VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
 documented parameter ranges before note preparation. Unused payload bytes and
 voice-name bytes remain losslessly owned by the imported edit buffers. Boundary
@@ -636,8 +663,9 @@ assignments or portamento.
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
-  and breath EG bias, foot volume and ratio-only pitch bend are implemented as
-  above; the other listed behaviors remain unfinished.
+  and breath EG bias, foot volume, ratio-only pitch bend and polyphonic full-time
+  portamento are implemented as above. Mono/fingered behavior, the portamento
+  switch and the other listed behaviors remain unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - The approved DX7 integer oscillator/feedback replacement is implemented.

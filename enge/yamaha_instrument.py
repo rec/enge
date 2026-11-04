@@ -23,6 +23,7 @@ class PreparedYamaha(BaseModel, frozen=True):
 class VoiceState(BaseModel):
     voice_id: str
     template: str
+    part: str
     start: int
     oscillator_slot: int | None = None
     sources: dict[str, int] = Field(default_factory=dict)
@@ -52,12 +53,18 @@ class OscillatorSlot(BaseModel):
     idle_since: int | None = None
 
 
+class PitchHistory(BaseModel):
+    voice_id: str
+    pitch_hz: float
+
+
 class YamahaSnapshot(BaseModel, frozen=True):
     definition: PreparedYamaha
     frame: int
     voices: list[VoiceSnapshot]
     clocks: dict[str, yamaha_lfo.DX7LFOSnapshot | yamaha_lfo.TX81ZLFOSnapshot]
     oscillator_slots: dict[str, list[OscillatorSlot]]
+    pitch_history: dict[str, dict[str, PitchHistory]]
     contexts: list[synth.ControlContext]
 
 
@@ -94,6 +101,11 @@ class OfflineYamaha:
             if isinstance(v, YamahaDX7Voice)
             and not yamaha.dx7_global_parameters(v.patch)[0]
         }
+        self.pitch_history: dict[str, dict[str, PitchHistory]] = {
+            n: {}
+            for n, v in self.templates.items()
+            if isinstance(v, YamahaTX81ZVoice) and v.patch.data[66]
+        }
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -120,6 +132,7 @@ class OfflineYamaha:
             ],
             clocks={n: c.snapshot() for n, c in self.clocks.items()},
             oscillator_slots=self.oscillator_slots,
+            pitch_history=self.pitch_history,
             contexts=self.controls.contexts,
         ).model_copy(deep=True)
 
@@ -128,6 +141,7 @@ class OfflineYamaha:
             snapshot.definition != self.definition
             or snapshot.clocks.keys() != self.clocks.keys()
             or snapshot.oscillator_slots.keys() != self.oscillator_slots.keys()
+            or snapshot.pitch_history.keys() != self.pitch_history.keys()
         ):
             raise synth.EngineError("Snapshot belongs to a different Yamaha instrument")
         snapshot = snapshot.model_copy(deep=True)
@@ -139,6 +153,9 @@ class OfflineYamaha:
                 saved.note.velocity,
                 self.definition.sample_rate,
                 saved.note.pitch_hz,
+                start_pitch=saved.note.start_pitch_hz
+                if isinstance(saved.note, yamaha.TX81ZSnapshot)
+                else None,
             )
             if isinstance(renderer, yamaha.DX7Renderer) and isinstance(
                 saved.note, yamaha.DX7Snapshot
@@ -173,6 +190,7 @@ class OfflineYamaha:
         self.voices = voices
         self.clocks = clocks
         self.oscillator_slots = snapshot.oscillator_slots
+        self.pitch_history = snapshot.pitch_history
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.frame = snapshot.frame
@@ -250,8 +268,22 @@ class OfflineYamaha:
                 ]
             else:
                 slot_index = len(slots)
+        start_pitch = None
+        if template.name in self.pitch_history:
+            if previous := self.pitch_history[template.name].get(action.part):
+                start_pitch = previous.pitch_hz
+                if active := self.voices.get(previous.voice_id):
+                    assert isinstance(active.renderer, yamaha.TX81ZRenderer)
+                    if active.renderer.portamento is not None:
+                        start_pitch = active.renderer.portamento.current_hz
         renderer = _note(
-            template, action.key, velocity, self.definition.sample_rate, pitch, phases
+            template,
+            action.key,
+            velocity,
+            self.definition.sample_rate,
+            pitch,
+            phases,
+            start_pitch,
         )
         if slot_index is not None:
             assert isinstance(renderer, yamaha.DX7Renderer)
@@ -265,9 +297,14 @@ class OfflineYamaha:
             else:
                 slots[slot_index] = slot
         self.clocks[template.name].keydown()
+        if template.name in self.pitch_history:
+            self.pitch_history[template.name][action.part] = PitchHistory(
+                voice_id=action.voice_id, pitch_hz=pitch
+            )
         self.voices[action.voice_id] = Voice(
             voice_id=action.voice_id,
             template=template.name,
+            part=action.part,
             start=action.tick,
             oscillator_slot=slot_index,
             sources=self.controls.sources(template, action, action.velocity),
@@ -399,6 +436,12 @@ class OfflineYamaha:
         return output
 
     def _retire(self, voice: Voice, frame: int) -> None:
+        if voice.template in self.pitch_history:
+            previous = self.pitch_history[voice.template].get(voice.part)
+            if previous is not None and previous.voice_id == voice.voice_id:
+                assert isinstance(voice.renderer, yamaha.TX81ZRenderer)
+                if voice.renderer.portamento is not None:
+                    previous.pitch_hz = voice.renderer.portamento.current_hz
         if voice.oscillator_slot is not None:
             assert isinstance(voice.renderer, yamaha.DX7Renderer)
             self.oscillator_slots[voice.template][voice.oscillator_slot] = (
@@ -455,6 +498,8 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         if isinstance(voice, YamahaDX7Voice):
             yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
         else:
+            if voice.patch.data[63]:
+                raise synth.EngineError("TX81Z mono mode is not implemented")
             targets = {
                 p.target.parameter
                 for p in voice.modulation.parameters
@@ -519,11 +564,12 @@ def _note(
     rate: int,
     pitch: float | None,
     phases: list[float] | None = None,
+    start_pitch: float | None = None,
 ) -> yamaha.DX7Renderer | yamaha.TX81ZRenderer:
     if isinstance(template, YamahaDX7Voice):
         return yamaha.DX7Renderer(template.patch, key, velocity, rate, pitch, phases)
     return yamaha.TX81ZRenderer(
-        template.patch, template.additional, key, velocity, rate, pitch
+        template.patch, template.additional, key, velocity, rate, pitch, start_pitch
     )
 
 
