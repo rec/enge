@@ -343,8 +343,22 @@ regressions cover measured ascending/descending traces, slow settings, target
 clamping, fixed-frequency bypass, detune, dynamic tuning, interrupted glides,
 part isolation, retirement history and snapshot replay. Mono mode is now
 rejected explicitly by the adapter until its held-key and legato lifecycle is
-implemented. Fingered portamento and MIDI portamento-switch control remain work;
-the implemented full-time path uses the manual's initial enabled state.
+implemented. Fingered portamento remains work.
+
+The TX81Z-specific `yamaha.portamento` target now controls full-time glide through
+the existing scoped-control path. Its normalized 0..1 domain defaults to 1,
+matching the manual's initial enabled state. Values below 0.5 switch glide off;
+values at or above 0.5 enable subsequent glides. The recommended provisional
+mid-glide rule snaps to the target on the first off frame and does not resume
+that ended glide when the switch returns on. The retained pitch history then
+contains the reached target. Direct note renderers accept equivalent
+`portamento_enabled` rows. Invalid rows are rejected before state changes.
+MIDI CC65 uses the existing controller binding and switches between values 63
+and 64; smoothing is applied before the threshold. One-second WAV regressions
+exercise actual converted CC65 messages, independent parts, threshold crossing,
+new notes after re-enabling, interrupted smoothing and snapshot replay. This
+does not qualify the hardware's exact mid-glide switch response. Fingered mode,
+when implemented, must ignore the full-time switch as specified by the manual.
 
 VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
 documented parameter ranges before note preparation. Unused payload bytes and
@@ -664,8 +678,8 @@ assignments or portamento.
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
   and breath EG bias, foot volume, ratio-only pitch bend and polyphonic full-time
-  portamento are implemented as above. Mono/fingered behavior, the portamento
-  switch and the other listed behaviors remain unfinished.
+  portamento with switch control are implemented as above. Mono/fingered
+  behavior and the other listed behaviors remain unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - The approved DX7 integer oscillator/feedback replacement is implemented.

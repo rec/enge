@@ -290,10 +290,17 @@ class TX81ZRenderer:
         controller_depths: np.ndarray | None = None,
         breath: np.ndarray | None = None,
         foot: np.ndarray | None = None,
+        portamento_enabled: np.ndarray | None = None,
     ) -> np.ndarray:
         tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
+        if portamento_enabled is not None and (
+            portamento_enabled.shape != (frames,)
+            or not np.all(np.isfinite(portamento_enabled))
+            or np.any((portamento_enabled < 0) | (portamento_enabled > 1))
+        ):
+            raise EngineError("TX81Z portamento rows must have shape (frames,) in 0..1")
         if breath is not None and (
             breath.shape != (frames,)
             or not np.all(np.isfinite(breath))
@@ -355,7 +362,18 @@ class TX81ZRenderer:
             pm = raw[:, 0] * pitch_depth >> 7
             am = raw[:, 1] * amplitude_depth >> 7
         if self.portamento is not None:
-            glide = self.portamento.ratios(frames)
+            if (
+                portamento_enabled is not None
+                and (disabled := np.flatnonzero(portamento_enabled < 0.5)).size
+            ):
+                at = int(disabled[0])
+                glide = np.ones(frames)
+                glide[:at] = self.portamento.ratios(at)
+                self.portamento.current_hz = self.portamento.target_hz
+                self.portamento.offset4 = 0 if self.portamento.ascending else -256
+                self.portamento.remainder = 0
+            else:
+                glide = self.portamento.ratios(frames)
             tuning = glide if tuning is None else tuning * glide
         frequencies = np.broadcast_to(self.frequencies, (frames, 4))
         attenuation = self.envelopes.attenuation_samples(frames)

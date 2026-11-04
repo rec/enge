@@ -327,6 +327,10 @@ class OfflineYamaha:
                 p.target.name == "yamaha" and p.target.parameter == "pitch_bend"
                 for p in template.modulation.parameters
             )
+            portamento_switch = any(
+                p.target.name == "yamaha" and p.target.parameter == "portamento"
+                for p in template.modulation.parameters
+            )
             assignments = isinstance(template, YamahaDX7Voice) and any(
                 a.pitch or a.amplitude or a.eg_bias
                 for a in (
@@ -360,8 +364,11 @@ class OfflineYamaha:
                 controllers = None
                 breath = None
                 foot = None
-                if dynamic_tuning or pitch_bend or assignments:
+                portamento_enabled = None
+                if dynamic_tuning or pitch_bend or assignments or portamento_switch:
                     values = self.controls.values(template, voice.sources, at, 1)
+                    if portamento_switch:
+                        portamento_enabled = values[("yamaha", "portamento")]
                     if dynamic_tuning:
                         tuning = (
                             values[("processing", "tuning_cents")]
@@ -392,7 +399,13 @@ class OfflineYamaha:
                     )[0]
                 else:
                     audio[i] = voice.renderer.render(
-                        1, modulation, tuning, controllers, breath, foot
+                        1,
+                        modulation,
+                        tuning,
+                        controllers,
+                        breath,
+                        foot,
+                        portamento_enabled,
                     )[0]
                 count += 1
             gain = 10 ** (template.processing.volume_db / 20)
@@ -484,7 +497,13 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             voice,
             tuple(
                 ("yamaha", p)
-                for p in ("pitch_bend", "modulation_wheel", "breath", "foot")
+                for p in (
+                    "pitch_bend",
+                    "modulation_wheel",
+                    "breath",
+                    "foot",
+                    "portamento",
+                )
             ),
         )
         if voice.processing != Processing(
