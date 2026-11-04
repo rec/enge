@@ -12,6 +12,58 @@ from enge.yamaha import TX81ZRenderer
 
 
 @pytest.mark.parametrize(
+    "key,transpose,wrapped",
+    [
+        (0, -24, 24),
+        (0, 0, 24),
+        (12, 0, 24),
+        (13, 0, 13),
+        (108, 0, 108),
+        (109, 0, 97),
+        (127, 24, 103),
+    ],
+)
+@pytest.mark.parametrize("tuning", [1.0, 1.01])
+def test_transposed_keys_wrap_by_octaves_before_intrinsic_scaling(
+    tmp_path: Path, key: int, transpose: int, wrapped: int, tuning: float
+) -> None:
+    raw = bytearray(93)
+    extra = bytearray(23)
+    for i in range(4):
+        start = i * 13
+        raw[start : start + 5] = bytes([20, 12, 4, 9, 7])
+        raw[start + 5 : start + 7] = bytes([50, 3])
+        raw[start + 10 : start + 13] = bytes([99, 4, 6])
+    extra[0], extra[1] = 1, 4
+    raw[52], raw[62] = 7, transpose + 24
+    patch = tx81z.TX81ZVoice(data=bytes(raw))
+    additional = tx81z.TX81ZAdditional(data=bytes(extra))
+    note = TX81ZRenderer(
+        patch, additional, key, 100, pitch_hz=440 * 2 ** ((key - 69) / 12) * tuning
+    )
+    raw[62] = 24
+    reference = TX81ZRenderer(
+        tx81z.TX81ZVoice(data=bytes(raw)),
+        additional,
+        wrapped,
+        100,
+        pitch_hz=440 * 2 ** ((wrapped - 69) / 12) * tuning,
+    )
+    first = note.render(1001)
+    saved = note.snapshot()
+    assert saved.note == key
+    tail = note.render(46999)
+    actual = np.concatenate([first, tail])
+    check_audio(tmp_path / "wrapped-key.wav", actual, reference.render(48000))
+    note.restore(saved)
+    check_audio(
+        tmp_path / "wrapped-key-replay.wav",
+        np.concatenate([first, note.render(46999)]),
+        actual,
+    )
+
+
+@pytest.mark.parametrize(
     "note,scaling,sensitivity,velocity,attenuation",
     [
         (69, 0, 1, 127, 6),

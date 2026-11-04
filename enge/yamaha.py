@@ -207,11 +207,11 @@ class TX81ZRenderer:
             [o.amplitude_modulation_enable for o in voice.operators]
         )
         sounding_note = note + voice.data[62] - 24
+        if sounding_note < 13:
+            sounding_note = 13 + (sounding_note - 13) % 12
+        elif sounding_note > 108:
+            sounding_note = 97 + (sounding_note - 97) % 12
         key_code = (sounding_note - 13) // 3
-        if not 0 <= key_code <= 31:
-            raise EngineError(
-                "TX81Z transposed note is outside the native chip key range"
-            )
         self.voice = voice.model_copy(deep=True)
         self.additional = additional.model_copy(deep=True)
         self.note = note

@@ -242,8 +242,19 @@ level, the shared envelope clock, eight waveforms/algorithms and OP4 feedback.
 owned JSON continuation. Snapshot identity includes both edit buffers, key,
 velocity and output rate. Tests cover all algorithms, mixed waveforms, fixed
 and ratio operators, detune, held/released snapshots and mismatched definitions.
-The initial supported pitch span after transpose is MIDI 13–108 (chip key codes
-0–31); out-of-span notes are rejected. Velocity scaling now applies the measured
+After transpose, keys below 13 or above 108 now wrap by octaves into MIDI
+13–108 (chip key codes 0–31), following the
+[published register analysis](https://nornand.hatenablog.com/entry/2021/07/30/183520).
+This replaces the initial out-of-span rejection. Pitch, chip detune, envelope
+rate scaling and level scaling use the wrapped key; snapshot identity and
+portable key bindings retain the original trigger key. Explicit pitch remains
+a ratio relative to the original key's equal-tempered frequency, applied to
+ratio operators only. Regression renders cover both boundaries, extreme
+transpose, microtuning, mixed fixed/ratio operators and snapshot continuation.
+Portamento across an octave-wrap boundary still needs separate qualification:
+the existing glide uses unwrapped trigger-pitch coordinates. This onset rule
+does not establish the firmware's continuous glide or bend behavior there.
+Velocity scaling now applies the measured
 KVS curves to positive note-on velocities. Key-level scaling now applies the
 measured three-key groups at the transposed key. Zero-delay LFO modulation uses explicit
 shared OPZ rows as described below. Velocity has no gain effect
