@@ -141,7 +141,10 @@ WAV pairs above predate this strength change. They remain historical evidence of
 the previous model; they do not quantify the current algorithm-32 renderer. A
 new complete Mk I patch comparison remains required. The subsequent
 [constant-gain core comparison](dexed-mki-core.md) isolates oscillator arithmetic
-and retains the large high-gain discrepancies in algorithms 4 and 6.
+and retains the large high-gain discrepancies in algorithms 4 and 6. Its subsequent
+[shared-kernel graph control](dexed-mki-core.md#integer-kernel-graph-isolation)
+matches all 24,576,000 integer samples across 512 cases. This supports the graph
+and feedback scheduling under fixed gains, not complete renderer equivalence.
 
 ## TX81Z single-mode LFO comparison
 

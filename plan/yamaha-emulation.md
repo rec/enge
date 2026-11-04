@@ -66,8 +66,13 @@ strength change. A [constant-gain Mk I comparison](../doc/yamaha-reference/dexed
 now fixes operator gain and exact phase increments. Unit-gain/feedback-7 relative
 RMS errors remain 78.34% for algorithm 4 and 41.02% for algorithm 6; a reference-only
 one-bit phase perturbation also demonstrates sensitivity. This does not prove
-that quantization explains all discrepancies. Integer arithmetic isolation and
-a complete reference patch comparison remain work.
+that quantization explains all discrepancies. A subsequent shared-integer-kernel
+control executes all 32 exported topologies with equal and asymmetric operator
+settings: all 24,576,000 samples across 512 cases match Mk I exactly. This isolates
+the graph/feedback scheduling under fixed gains; it does not independently
+qualify the kernel or dynamic envelope behavior. Replacing the floating core
+with the provisional integer model awaits approval. A complete reference patch
+comparison and hardware qualification remain work.
 
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above

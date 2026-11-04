@@ -110,3 +110,62 @@ used little-endian macOS. The harness was also checked with `-Wall -Wextra
 -Werror -Wno-unused-parameter -fsyntax-only`. Reference source licenses remain
 with Dexed; the repository contains the harness and generated measurements,
 not copied reference DSP source.
+
+## Integer-kernel graph isolation
+
+The [graph-isolation harness](compare-dexed-mki-graph.cc) executes the exported
+[uFor topology data](dx7-feedback-graphs.txt) using the pinned Mk I `mkiSin`
+function, then compares it with Mk I's own algorithm dispatcher and feedback
+kernels. It includes `EngineMkI.cpp` directly to reuse that exact integer kernel;
+there is no independently implemented sine or gain lookup in this control.
+The graph data comes from uFor revision `829ba12dbc926489101aa5376a10a5e0803c3914`.
+Each row contains algorithm number, feedback source/destination, carrier count
+and carrier numbers, followed by edge count and source/destination pairs.
+
+All 32 algorithms run at feedback 0, 1, 4 and 7 with four profiles:
+
+| Profile | Constant log levels | Q24 increments | Initial Q24 phases |
+| --- | --- | --- | --- |
+| 0 | all 9 | all 153791 | all zero |
+| 1 | all 12 | all 153791 | all zero |
+| 2 | all 14 | all 153791 | all zero |
+| 3 | OP1 through OP6: 9 through 14 | `153791 * operator_number` | `123456 * (operator_number - 1)` |
+
+The asymmetric profile separates operator order, gain and frequency. Every case
+renders 48,000 frames. Graph execution sums the exported modulation edges,
+reads the two preceding samples from the feedback source, shifts their sum into
+the feedback destination with the approved strength rule, and sums the exported
+carriers. All operators in these DX7 graphs have feed-forward edges toward lower
+operator numbers, so descending operator order is valid. Each case resets phases,
+operator gains and both feedback histories. No amplitude envelopes are advanced.
+
+**All 512 cases agree exactly: zero mismatches across 24,576,000 integer samples.**
+The [complete CSV](dexed-mki-graph.csv) records mismatch count, maximum absolute
+Q24 error and relative RMS error for each case. The retained unit-gain,
+feedback-7 graph WAVs are byte-identical to the corresponding Mk I WAVs above:
+[algorithm 4](MKI-ALG04-FB7-integer-graph.wav),
+[algorithm 6](MKI-ALG06-FB7-integer-graph.wav) and
+[algorithm 32](MKI-ALG32-FB7-integer-graph.wav).
+
+This establishes agreement of the exported graph, operator ordering, carrier
+sum and feedback scheduling with the pinned dispatcher under these fixed-gain
+conditions. It does not establish an independent implementation of the integer
+kernel, dynamic-gain behavior, the production floating renderer's equivalence,
+complete patch rendering or hardware accuracy. It supports replacing the
+floating core as the next model decision, rather than another topology change.
+
+Build with the same temporary reference source directory described above. Since
+the harness includes `EngineMkI.cpp`, do not also list that file as a separate
+translation unit:
+
+```sh
+c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" compare-dexed-mki-graph.cc \
+  "$DEXED_CORE/msfa/fm_core.cc" "$DEXED_CORE/msfa/fm_op_kernel.cc" \
+  "$DEXED_CORE/msfa/sin.cc" "$DEXED_CORE/msfa/exp2.cc" \
+  -o /tmp/compare-dexed-mki-graph
+/tmp/compare-dexed-mki-graph dx7-feedback-graphs.txt /tmp > /tmp/mki-graph.csv
+```
+
+The output directory must exist. The harness also writes `graph-4.i32`,
+`graph-6.i32` and `graph-32.i32` there; convert them to WAV using the matching
+`wav_divisor` values in `dexed-mki-core.csv`, as in the original comparison.
