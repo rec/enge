@@ -101,6 +101,14 @@ heap operations, including slot reset and cloned continuation. Native sampler
 generator integration and full host callback allocation qualification remain
 work; finite voice/context capacity alone does not establish that guarantee.
 The [callback audit](../doc/live-callback-audit.md) records the wider boundary.
+The native generator state and modulation evaluator have been extracted from
+`SynthRuntime` into `GeneratorBank`; generated sources use it with explicit frame
+and control-context inputs. Python preparation now configures the bank directly,
+including named envelopes, stages, ownership, clocks and Patch connections.
+Synth, FM and noise constructors take independent copies of that configured
+bank, with matching sample rate, voice capacity and parameter count. No oscillator
+runtime is needed to prepare generators. Sampler setup and action admission still
+need to connect to that shared bank; route mappings remain source-owned.
 
 Finite loop `repeat_count` now counts additional traversals in both offline
 backends and the native live sampler, including mirrored and crossfaded loops.

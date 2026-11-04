@@ -195,6 +195,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<live::LiveRuntime>()?;
     module.add_class::<live::LiveRuntimeSnapshot>()?;
     module.add_class::<queue::ActionQueue>()?;
+    module.add_class::<runtime::generators::GeneratorBank>()?;
     module.add_class::<runtime::SynthRuntime>()?;
     module.add_class::<runtime::SynthRuntimeSnapshot>()?;
     module.add_class::<sampler::SampleBuffer>()?;

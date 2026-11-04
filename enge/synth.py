@@ -1884,40 +1884,20 @@ class PersistentSynth:
         self.trigger_velocities: dict[int, float | None] = {}
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
-        self.runtime = _native.SynthRuntime(
-            rate,
-            [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                template.oscillator.waveform
-            ),
-            float(template.oscillator.duty_cycle),
-            np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            cast(float, template.envelope.initial),
-            _runtime_segments(template.envelope.segments, rate),
-            _runtime_segments(template.envelope.release, rate),
-            (
-                (hold := template.minimum_hold_seconds * rate).numerator,
-                hold.denominator,
-            ),
-            controls,
-            smoothing,
-            lfos,
-            lfo_rationals,
-            runtime_filters,
-            parameters,
-            context_capacity,
-            template.processing.filter_order == processing.FilterOrder.after_amplitude,
+        generators = _native.GeneratorBank(
+            rate, voices, len(parameters) // 3, lfos, lfo_rationals
         )
-        self.runtime.set_named_envelopes(
+        generators.set_named_envelopes(
             envelope_initials,
             envelope_attacks,
             envelope_releases,
             envelope_parameters,
         )
         _configure_sample_hold_envelfos(
-            self.runtime, template, self.named_envelfo_sources
+            generators, template, self.named_envelfo_sources
         )
         if tempo_map is not None:
-            self.runtime.set_beat_clock(
+            generators.set_beat_clock(
                 [
                     cast(
                         tuple[
@@ -1939,7 +1919,7 @@ class PersistentSynth:
                     for p in tempo_map.points
                 ]
             )
-            self.runtime.set_beat_named_envelopes(
+            generators.set_beat_named_envelopes(
                 [
                     i
                     for name, indices in self.named_envelfo_sources.items()
@@ -1947,11 +1927,9 @@ class PersistentSynth:
                     for i in indices
                 ]
             )
-        self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
-        for kind, mappings in enumerate(route_maps):
-            self.runtime.set_route_maps(kind, mappings)
+        generators.set_staged_envelfos(staged_envelfos, event_connections)
         self._share_envelfo_sources(
-            len(lfos), len(envelope_initials), len(staged_envelfos)
+            generators, len(lfos), len(envelope_initials), len(staged_envelfos)
         )
         patch_events: list[
             tuple[
@@ -1968,8 +1946,8 @@ class PersistentSynth:
                 bool,
             ]
         ] = []
-        self.transform_nodes = _configure_patch_transforms(
-            self.runtime,
+        self.transform_nodes, transform_maps = _configure_patch_transforms(
+            generators,
             template,
             self.lfo_sources | self.voice_lfo_sources,
             self.named_envelfo_sources,
@@ -2084,9 +2062,9 @@ class PersistentSynth:
                     False,
                 )
             )
-        self.runtime.set_patch_events(patch_events)
-        self.runtime.set_patch_stage_starts(patch_stage_starts)
-        self.runtime.set_threshold_events(
+        generators.set_patch_events(patch_events)
+        generators.set_patch_stage_starts(patch_stage_starts)
+        generators.set_threshold_events(
             _threshold_runtime_connections(
                 template,
                 self.named_envelfo_sources,
@@ -2095,6 +2073,31 @@ class PersistentSynth:
                 self.definition.sample_rate,
             )
         )
+        self.runtime = _native.SynthRuntime(
+            rate,
+            [Waveform.sine, Waveform.square, Waveform.triangle].index(
+                template.oscillator.waveform
+            ),
+            float(template.oscillator.duty_cycle),
+            np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
+            cast(float, template.envelope.initial),
+            _runtime_segments(template.envelope.segments, rate),
+            _runtime_segments(template.envelope.release, rate),
+            (
+                (hold := template.minimum_hold_seconds * rate).numerator,
+                hold.denominator,
+            ),
+            controls,
+            smoothing,
+            generators,
+            runtime_filters,
+            parameters,
+            context_capacity,
+            template.processing.filter_order == processing.FilterOrder.after_amplitude,
+        )
+        for kind, mappings in enumerate(route_maps):
+            self.runtime.set_route_maps(kind, mappings)
+        self.runtime.set_route_maps(4, transform_maps)
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -2432,8 +2435,10 @@ class PersistentSynth:
         }
         self.frame = end
 
-    def _share_envelfo_sources(self, lfos: int, envelopes: int, stages: int) -> None:
-        self.runtime.set_envelfo_state_owners(
+    def _share_envelfo_sources(
+        self, generators: _native.GeneratorBank, lfos: int, envelopes: int, stages: int
+    ) -> None:
+        generators.set_envelfo_state_owners(
             _envelfo_state_owners(lfos, self.lfo_sources, self.voice_lfo_sources),
             _envelfo_state_owners(envelopes, self.named_envelfo_sources),
             _envelfo_state_owners(stages, self.staged_envelfo_sources),
@@ -2861,7 +2866,7 @@ def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> tuple[int, int]
 
 
 def _configure_sample_hold_envelfos(
-    runtime: _native.SynthRuntime,
+    runtime: _native.GeneratorBank,
     settings: SoundSettings,
     sources: dict[str, list[int]],
 ) -> None:
@@ -2880,13 +2885,13 @@ def _configure_sample_hold_envelfos(
 
 
 def _configure_patch_transforms(
-    runtime: _native.SynthRuntime,
+    runtime: _native.GeneratorBank,
     template: SoundSettings,
     lfos: dict[str, list[int]],
     envelopes: dict[str, list[int]],
     stages: dict[str, list[int]],
     rate: int,
-) -> dict[tuple[str, str], int]:
+) -> tuple[dict[tuple[str, str], int], list[tuple[int, list[tuple[float, float]]]]]:
     nodes: list[
         tuple[int, list[tuple[int, int, float, float]], float, float, float | None]
     ] = []
@@ -3000,8 +3005,7 @@ def _configure_patch_transforms(
             )
         )
     runtime.set_envelfo_transforms(nodes, routes)
-    runtime.set_route_maps(4, mappings)
-    return detectors
+    return detectors, mappings
 
 
 def _threshold_runtime_connections(

@@ -22,6 +22,46 @@ from enge import _native, filters, fm, noise
 from enge.synth import EngineError, OfflineSynth, PersistentSynth, prepare
 
 
+def test_native_generator_configuration_is_owned_by_each_runtime(
+    tmp_path: Path,
+) -> None:
+    generators = _native.GeneratorBank(48000, 1, 2, np.empty((0, 7)), [])
+    runtimes: list[_native.SynthRuntime] = []
+    for gain in (0.25, 0.5):
+        generators.set_named_envelopes(
+            [gain],
+            [[((0, 1), gain, 0.0)]],
+            [[]],
+            [(0, 1, False, 0, (0, 1), (1, 1), None, False, (True, 0, False))],
+        )
+        runtimes.append(
+            _native.SynthRuntime(
+                48000,
+                0,
+                0.5,
+                np.ones((1, 1)),
+                1,
+                [((0, 1), 1.0, 0.0)],
+                [],
+                (0, 1),
+                np.empty((0, 6)),
+                [],
+                generators,
+                np.empty((0, 7)),
+                [1, 0, 1e300, 0, -120000, 120000],
+                1,
+            )
+        )
+        runtimes[-1].set_route_maps(2, [(0, [(0.0, 0.0), (1.0, 1.0)])])
+    generators.set_named_envelopes([], [], [], [])
+    starts = np.array([[0, 0, 0, 220, 1, 0]], dtype=np.float64)
+    actual = np.concatenate(
+        [r.process_actions(48000, 0, 1, 0, starts) for r in runtimes], axis=1
+    )
+    expected = np.sin(2 * np.pi * np.arange(48000) * 220 / 48000)[:, None]
+    check_audio(tmp_path / "owned-generator-bank.wav", actual, expected * [0.25, 0.5])
+
+
 def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> None:
     frequencies = [110.0, 165.0, 220.0]
     gains = [0.2, 0.15, 0.1]
@@ -37,8 +77,7 @@ def test_persistent_runtime_matches_oscillators_and_filter(tmp_path: Path) -> No
         (0, 1),
         np.empty((0, 6), dtype=np.float64),
         [],
-        np.empty((0, 7), dtype=np.float64),
-        [],
+        _native.GeneratorBank(48000, 3, 2, np.empty((0, 7)), []),
         np.empty((0, 7), dtype=np.float64),
         [1, -1e300, 1e300, 0, -120000, 120000],
         1,
@@ -89,8 +128,7 @@ def test_persistent_runtime_applies_voice_actions_at_exact_frames() -> None:
         (0, 1),
         np.empty((0, 6), dtype=np.float64),
         [],
-        np.empty((0, 7), dtype=np.float64),
-        [],
+        _native.GeneratorBank(48000, 2, 2, np.empty((0, 7)), []),
         np.empty((0, 7), dtype=np.float64),
         [1, -1e300, 1e300, 0, -120000, 120000],
         1,

@@ -71,6 +71,12 @@ rendering. This removes Patch-host temporary input/release lists and allocating
 graph calls. Native sampler generator integration and full callback allocation
 qualification remain unfinished.
 
+Generator definitions, clocks, prepared slots and modulation evaluation now live
+in the shared native `GeneratorBank`, independently of oscillator/FM/noise state.
+Generated sources use that bank; sampler registration is the remaining consumer
+integration. Existing native snapshot fields and route evaluation order are
+preserved.
+
 Python graph playback now uses the standalone `envelfo.patch` scheduler too.
 enge prepares bindings, supplies host-owned signals, samples event-free spans
 and retains voice-release policy; it no longer maintains separate Patch queues,

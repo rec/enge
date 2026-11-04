@@ -111,116 +111,14 @@ class LiveRuntime:
     def restore(self, snapshot: LiveRuntimeSnapshot) -> None: ...
     def failed(self) -> bool: ...
 
-class SynthRuntime:
-    def set_route_maps(
-        self, kind: int, maps: list[tuple[int, list[tuple[float, float]]]]
-    ) -> None: ...
+class GeneratorBank:
     def __init__(
         self,
         rate: float,
-        waveform: int,
-        duty: float,
-        routes: np.ndarray,
-        initial: float,
-        attack: list[tuple[tuple[int, int] | None, float, float]],
-        release: list[tuple[tuple[int, int] | None, float, float]],
-        minimum_hold_frames: tuple[int, int],
-        controls: np.ndarray,
-        control_smoothing: list[tuple[int, int]],
+        slots: int,
+        parameter_count: int,
         lfos: np.ndarray,
         lfo_rationals: list[tuple[int, int]],
-        filters: np.ndarray,
-        parameters: list[float],
-        context_capacity: int,
-        filter_after_amplitude: bool = False,
-    ) -> None: ...
-    @staticmethod
-    def fm(
-        rate: float,
-        routes: np.ndarray,
-        carrier_initial: float,
-        carrier_attack: list[tuple[tuple[int, int] | None, float, float]],
-        carrier_release: list[tuple[tuple[int, int] | None, float, float]],
-        mod_initial: float,
-        mod_attack: list[tuple[tuple[int, int] | None, float, float]],
-        mod_release: list[tuple[tuple[int, int] | None, float, float]],
-        phase_offsets: list[float],
-        minimum_hold_frames: tuple[int, int],
-        controls: np.ndarray,
-        control_smoothing: list[tuple[int, int]],
-        lfos: np.ndarray,
-        lfo_rationals: list[tuple[int, int]],
-        filters: np.ndarray,
-        parameters: list[float],
-        context_capacity: int,
-        filter_after_amplitude: bool = False,
-    ) -> SynthRuntime: ...
-    @staticmethod
-    def fm_graph(
-        rate: float,
-        routes: np.ndarray,
-        carrier_initial: float,
-        carrier_attack: list[tuple[tuple[int, int] | None, float, float]],
-        carrier_release: list[tuple[tuple[int, int] | None, float, float]],
-        waveforms: list[int],
-        initials: list[float],
-        attacks: list[list[tuple[tuple[int, int] | None, float, float]]],
-        releases: list[list[tuple[tuple[int, int] | None, float, float]]],
-        phase_offsets: list[float],
-        parameters: list[tuple[int, int]],
-        edges: list[tuple[int, int, bool, int]],
-        order: list[int],
-        carrier: int,
-        carrier_parameter: int,
-        minimum_hold_frames: tuple[int, int],
-        controls: np.ndarray,
-        control_smoothing: list[tuple[int, int]],
-        lfos: np.ndarray,
-        lfo_rationals: list[tuple[int, int]],
-        filters: np.ndarray,
-        parameter_definitions: list[float],
-        context_capacity: int,
-        filter_after_amplitude: bool = False,
-    ) -> SynthRuntime: ...
-    @staticmethod
-    def noise(
-        rate: float,
-        routes: np.ndarray,
-        initial: float,
-        attack: list[tuple[tuple[int, int] | None, float, float]],
-        release: list[tuple[tuple[int, int] | None, float, float]],
-        minimum_hold_frames: tuple[int, int],
-        controls: np.ndarray,
-        control_smoothing: list[tuple[int, int]],
-        lfos: np.ndarray,
-        lfo_rationals: list[tuple[int, int]],
-        filters: np.ndarray,
-        parameters: list[float],
-        context_capacity: int,
-        filter_after_amplitude: bool = False,
-    ) -> SynthRuntime: ...
-    def process(
-        self, frames: int, cutoff_hz: float, q: float, gain_db: float
-    ) -> np.ndarray: ...
-    def process_actions(
-        self,
-        frames: int,
-        cutoff_hz: float,
-        q: float,
-        gain_db: float,
-        actions: np.ndarray,
-    ) -> np.ndarray: ...
-    def process_into(
-        self, output: np.ndarray, cutoff_hz: float, q: float, gain_db: float
-    ) -> None: ...
-    def process_actions_into(
-        self,
-        output: np.ndarray,
-        cutoff_hz: float,
-        q: float,
-        gain_db: float,
-        actions: np.ndarray,
-        action_count: int,
     ) -> None: ...
     def set_named_envelopes(
         self,
@@ -331,6 +229,114 @@ class SynthRuntime:
                 bool,
             ]
         ],
+    ) -> None: ...
+
+class SynthRuntime:
+    def set_route_maps(
+        self, kind: int, maps: list[tuple[int, list[tuple[float, float]]]]
+    ) -> None: ...
+    def __init__(
+        self,
+        rate: float,
+        waveform: int,
+        duty: float,
+        routes: np.ndarray,
+        initial: float,
+        attack: list[tuple[tuple[int, int] | None, float, float]],
+        release: list[tuple[tuple[int, int] | None, float, float]],
+        minimum_hold_frames: tuple[int, int],
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        generators: GeneratorBank,
+        filters: np.ndarray,
+        parameters: list[float],
+        context_capacity: int,
+        filter_after_amplitude: bool = False,
+    ) -> None: ...
+    @staticmethod
+    def fm(
+        rate: float,
+        routes: np.ndarray,
+        carrier_initial: float,
+        carrier_attack: list[tuple[tuple[int, int] | None, float, float]],
+        carrier_release: list[tuple[tuple[int, int] | None, float, float]],
+        mod_initial: float,
+        mod_attack: list[tuple[tuple[int, int] | None, float, float]],
+        mod_release: list[tuple[tuple[int, int] | None, float, float]],
+        phase_offsets: list[float],
+        minimum_hold_frames: tuple[int, int],
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        generators: GeneratorBank,
+        filters: np.ndarray,
+        parameters: list[float],
+        context_capacity: int,
+        filter_after_amplitude: bool = False,
+    ) -> SynthRuntime: ...
+    @staticmethod
+    def fm_graph(
+        rate: float,
+        routes: np.ndarray,
+        carrier_initial: float,
+        carrier_attack: list[tuple[tuple[int, int] | None, float, float]],
+        carrier_release: list[tuple[tuple[int, int] | None, float, float]],
+        waveforms: list[int],
+        initials: list[float],
+        attacks: list[list[tuple[tuple[int, int] | None, float, float]]],
+        releases: list[list[tuple[tuple[int, int] | None, float, float]]],
+        phase_offsets: list[float],
+        parameters: list[tuple[int, int]],
+        edges: list[tuple[int, int, bool, int]],
+        order: list[int],
+        carrier: int,
+        carrier_parameter: int,
+        minimum_hold_frames: tuple[int, int],
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        generators: GeneratorBank,
+        filters: np.ndarray,
+        parameter_definitions: list[float],
+        context_capacity: int,
+        filter_after_amplitude: bool = False,
+    ) -> SynthRuntime: ...
+    @staticmethod
+    def noise(
+        rate: float,
+        routes: np.ndarray,
+        initial: float,
+        attack: list[tuple[tuple[int, int] | None, float, float]],
+        release: list[tuple[tuple[int, int] | None, float, float]],
+        minimum_hold_frames: tuple[int, int],
+        controls: np.ndarray,
+        control_smoothing: list[tuple[int, int]],
+        generators: GeneratorBank,
+        filters: np.ndarray,
+        parameters: list[float],
+        context_capacity: int,
+        filter_after_amplitude: bool = False,
+    ) -> SynthRuntime: ...
+    def process(
+        self, frames: int, cutoff_hz: float, q: float, gain_db: float
+    ) -> np.ndarray: ...
+    def process_actions(
+        self,
+        frames: int,
+        cutoff_hz: float,
+        q: float,
+        gain_db: float,
+        actions: np.ndarray,
+    ) -> np.ndarray: ...
+    def process_into(
+        self, output: np.ndarray, cutoff_hz: float, q: float, gain_db: float
+    ) -> None: ...
+    def process_actions_into(
+        self,
+        output: np.ndarray,
+        cutoff_hz: float,
+        q: float,
+        gain_db: float,
+        actions: np.ndarray,
+        action_count: int,
     ) -> None: ...
     def active_slots(self) -> list[bool]: ...
     def active_contexts(self) -> list[bool]: ...

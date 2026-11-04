@@ -1,6 +1,8 @@
 //! Audio-host preparation, clocks and voice lifetime around the shared scheduler.
 
-use super::{BeatPoint, SynthRuntime, core_error};
+use super::controls::ControlBank;
+use super::generators::GeneratorBank;
+use super::{BeatPoint, core_error};
 use crate::amplitude::frame_position;
 use envelfo_core::envelope::Marker;
 use envelfo_core::lfo;
@@ -61,7 +63,7 @@ impl envelfo_core::patch::ClockMapping for Clocks<'_> {
 }
 
 impl PatchHost {
-    pub(super) fn prepare(runtime: &SynthRuntime) -> PyResult<Option<Self>> {
+    pub(super) fn prepare(runtime: &GeneratorBank) -> PyResult<Option<Self>> {
         let lfos: Vec<String> = runtime
             .lfo_owners
             .iter()
@@ -312,8 +314,8 @@ impl PatchHost {
     }
 }
 
-impl SynthRuntime {
-    pub(crate) fn prepare_patch(&mut self) -> PyResult<()> {
+impl GeneratorBank {
+    pub(crate) fn prepare_patch(&mut self, frame: usize) -> PyResult<()> {
         if self.patch_host.is_none() {
             self.patch_host = PatchHost::prepare(self)?;
         }
@@ -327,7 +329,7 @@ impl SynthRuntime {
                     self.patch_states[voice] = Some(
                         host.body
                             .initial(
-                                frame_position(self.frame)?,
+                                frame_position(frame)?,
                                 "native",
                                 self.envelfo_keys[voice],
                                 Some(&host.keys),
@@ -350,7 +352,7 @@ impl SynthRuntime {
         Ok(())
     }
 
-    pub(super) fn start_patch(&mut self, voice: usize) -> PyResult<()> {
+    pub(super) fn start_patch(&mut self, voice: usize, frame: usize) -> PyResult<()> {
         let Some(host) = &self.patch_host else {
             return Ok(());
         };
@@ -358,7 +360,7 @@ impl SynthRuntime {
             points: &self.beat_points,
             kinds: &host.clocks,
         };
-        let at = frame_position(self.frame)?;
+        let at = frame_position(frame)?;
         let state = self.patch_states[voice]
             .as_mut()
             .expect("prepared Patch state");
@@ -443,10 +445,15 @@ impl SynthRuntime {
         Ok(())
     }
 
-    pub(super) fn settle_patches(&mut self, inclusive: bool) -> PyResult<()> {
-        let at = frame_position(self.frame)?;
-        for voice in 0..self.frequencies.len() {
-            if !self.active[voice] {
+    pub(super) fn settle_patches(
+        &mut self,
+        active: &[bool],
+        frame: usize,
+        inclusive: bool,
+    ) -> PyResult<()> {
+        let at = frame_position(frame)?;
+        for (voice, &running) in active.iter().enumerate() {
+            if !running {
                 continue;
             }
             while let Some((t, source)) = self.pending_releases[voice]
@@ -491,14 +498,19 @@ impl SynthRuntime {
         Ok(())
     }
 
-    pub(super) fn observe_patch(&mut self, voice: usize) -> PyResult<()> {
+    pub(super) fn observe_patch(
+        &mut self,
+        voice: usize,
+        frame: usize,
+        controls: &ControlBank,
+    ) -> PyResult<()> {
         let Some(host) = &self.patch_host else {
             return Ok(());
         };
-        let at = frame_position(self.frame)?;
+        let at = frame_position(frame)?;
         for (i, definition) in self.lfo_definitions.iter().enumerate() {
             if definition.scope != 3 && self.lfo_owners[i] == i {
-                let (value, weight) = self.lfo_signal(voice, i)?;
+                let (value, weight) = self.lfo_signal(voice, i, frame, controls)?;
                 let (center, depth) = host.shapes[i];
                 host.body
                     .set_input(
@@ -541,6 +553,7 @@ impl SynthRuntime {
         voice: usize,
         kind: u8,
         source: usize,
+        frame: usize,
     ) -> PyResult<lfo::Value> {
         let host = self
             .patch_host
@@ -559,7 +572,7 @@ impl SynthRuntime {
             .child_value(
                 state,
                 name,
-                frame_position(self.frame)?,
+                frame_position(frame)?,
                 &Clocks {
                     points: &self.beat_points,
                     kinds: &host.clocks,
@@ -604,7 +617,7 @@ pub(super) fn clock_at(
 }
 
 fn destination(
-    runtime: &SynthRuntime,
+    runtime: &GeneratorBank,
     named: &[String],
     staged: &[String],
     transforms: &[String],

@@ -604,6 +604,22 @@ class PersistentFM(synth.PersistentSynth):
         self.trigger_velocities: dict[int, float | None] = {}
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
+        generators = _native.GeneratorBank(
+            rate, voices, len(parameters) // 3, lfos, lfo_rationals
+        )
+        generators.set_named_envelopes(
+            envelope_initials,
+            envelope_attacks,
+            envelope_releases,
+            envelope_parameters,
+        )
+        synth._configure_sample_hold_envelfos(
+            generators, template, self.named_envelfo_sources
+        )
+        generators.set_staged_envelfos(staged_envelfos, event_connections)
+        self._share_envelfo_sources(
+            generators, len(lfos), len(envelope_initials), len(staged_envelfos)
+        )
         self.runtime = _native.SynthRuntime.fm_graph(
             rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
@@ -669,28 +685,14 @@ class PersistentFM(synth.PersistentSynth):
             ),
             controls,
             smoothing,
-            lfos,
-            lfo_rationals,
+            generators,
             runtime_filters,
             parameters,
             context_capacity,
             template.processing.filter_order == FilterOrder.after_amplitude,
         )
-        self.runtime.set_named_envelopes(
-            envelope_initials,
-            envelope_attacks,
-            envelope_releases,
-            envelope_parameters,
-        )
-        synth._configure_sample_hold_envelfos(
-            self.runtime, template, self.named_envelfo_sources
-        )
-        self.runtime.set_staged_envelfos(staged_envelfos, event_connections)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
-        self._share_envelfo_sources(
-            len(lfos), len(envelope_initials), len(staged_envelfos)
-        )
 
     def snapshot(self) -> PersistentFMSnapshot:  # ty: ignore[invalid-method-override]
         return PersistentFMSnapshot(

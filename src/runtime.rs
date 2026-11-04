@@ -1,11 +1,9 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
-use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_position, frame_time};
-use envelfo_core::envelope::{
-    Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
-};
+use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
+use envelfo_core::envelope::Envelope;
 use envelfo_core::lfo::Command;
-use envelfo_core::patch::{ChildCommand, PatchState, PatchStorage};
+use envelfo_core::patch::PatchState;
 use envelfo_core::time::Time;
 use envelfo_core::{lfo, stages};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
@@ -14,9 +12,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::{PI, TAU};
 
-use patch_host::{PatchHost, clock_at};
+use generators::GeneratorBank;
+use patch_host::PatchHost;
 
 pub(crate) mod controls;
+pub(crate) mod generators;
 mod patch_host;
 use controls::{ControlBank, ControlDefinition, ControlState, control_definitions};
 
@@ -321,15 +321,9 @@ pub struct SynthRuntimeSnapshot {
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntime {
+    pub(crate) generators: GeneratorBank,
     controls: ControlBank,
     parameter_partials: Vec<f64>,
-    patch_host: Option<PatchHost>,
-    patch_states: Vec<Option<PatchState>>,
-    patch_storage: Vec<Option<PatchStorage>>,
-    pending_releases: Vec<Vec<Option<Time>>>,
-    envelfo_transforms: Vec<EnvelfoTransformInput>,
-    envelfo_transform_routes: Vec<EnvelfoTransformRoute>,
-    envelfo_transform_values: Vec<f64>,
     rate: f64,
     filter_after_amplitude: bool,
     waveform: u8,
@@ -344,18 +338,6 @@ pub struct SynthRuntime {
     minimum_hold_frames: Time,
     routes: Array2<f64>,
     route_maps: Vec<Vec<RouteMap>>,
-    lfo_definitions: Vec<LfoDefinition>,
-    lfo_owners: Vec<usize>,
-    lfo_event_states: Vec<LfoPlayback>,
-    named_envelopes: Vec<NamedEnvelopeDefinition>,
-    named_owners: Vec<usize>,
-    patch_events: Vec<PatchEventConnection>,
-    patch_stage_starts: Vec<PatchStageStartConnection>,
-    envelfo_keys: Vec<u64>,
-    beat_points: Vec<BeatPoint>,
-    staged_envelfos: Vec<StagedEnvelfoDefinition>,
-    staged_owners: Vec<usize>,
-    staged_connections: Vec<StagedConnection>,
     filter_definitions: Vec<FilterDefinition>,
     parameter_definitions: Vec<f64>,
     frequencies: Vec<f64>,
@@ -390,10 +372,10 @@ impl SynthRuntime {
     fn set_route_maps(&mut self, kind: usize, maps: Vec<(usize, Vec<(f64, f64)>)>) -> PyResult<()> {
         let count = match kind {
             0 => self.controls.control_definitions.len(),
-            1 => self.lfo_definitions.len(),
-            2 => self.named_envelopes.len(),
-            3 => self.staged_envelfos.len(),
-            4 => self.envelfo_transform_routes.len(),
+            1 => self.generators.lfo_definitions.len(),
+            2 => self.generators.named_envelopes.len(),
+            3 => self.generators.staged_envelfos.len(),
+            4 => self.generators.envelfo_transform_routes.len(),
             _ => return Err(PyValueError::new_err("Invalid modulation mapping kind")),
         };
         if self.frame != 0 || self.active.iter().any(|v| *v) || maps.len() != count {
@@ -413,7 +395,7 @@ impl SynthRuntime {
 
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, waveform, duty, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameters, context_capacity, filter_after_amplitude=false))]
+    #[pyo3(signature = (rate, waveform, duty, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false))]
     fn new(
         rate: f64,
         waveform: u8,
@@ -425,8 +407,7 @@ impl SynthRuntime {
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
-        lfos: PyReadonlyArray2<'_, f64>,
-        lfo_rationals: Vec<(u64, u64)>,
+        generators: &GeneratorBank,
         filters: PyReadonlyArray2<'_, f64>,
         parameters: Vec<f64>,
         context_capacity: usize,
@@ -436,7 +417,6 @@ impl SynthRuntime {
         let amplitude = Amplitude::new(initial, attack, release)?;
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
-        let lfo_definitions = lfo_definitions(lfos, &lfo_rationals, rate)?;
         let filter_definitions = filter_definitions(filters)?;
         if !rate.is_finite()
             || rate <= 0.0
@@ -461,33 +441,21 @@ impl SynthRuntime {
             || control_definitions
                 .iter()
                 .any(|definition| definition.parameter >= parameters.len() / 3)
-            || lfo_definitions
-                .iter()
-                .any(|definition| definition.parameter >= parameters.len() / 3)
+            || generators.parameter_count != parameters.len() / 3
+            || generators.patch_states.len() != routes.shape()[0]
+            || generators.rate != rate
             || context_capacity == 0
-            || (!lfo_definitions.is_empty() && rate != rate as u64 as f64)
         {
             return Err(PyValueError::new_err("Invalid synth runtime definition"));
         }
         let slots = routes.shape()[0];
         let channels = routes.shape()[1];
         let filter_stages = filter_definitions.iter().map(|v| v.stages).sum();
-        let lfo_count = lfo_definitions.len();
-        let lfo_states = lfo_definitions
-            .iter()
-            .map(|d| initial_lfo(d, Time::ZERO))
-            .collect::<PyResult<Vec<_>>>()?;
         let amplitude_states = (0..slots)
             .map(|_| Ok(vec![amplitude.start()?]))
             .collect::<PyResult<_>>()?;
         Ok(Self {
-            patch_host: None,
-            patch_states: vec![None; slots],
-            patch_storage: vec![None; slots],
-            pending_releases: vec![vec![]; slots],
-            envelfo_transforms: Vec::new(),
-            envelfo_transform_routes: Vec::new(),
-            envelfo_transform_values: Vec::new(),
+            generators: generators.clone(),
             rate,
             waveform,
             source_kind: 0,
@@ -511,18 +479,6 @@ impl SynthRuntime {
                 slots,
                 context_capacity,
             ),
-            lfo_definitions,
-            lfo_owners: (0..lfo_count).collect(),
-            lfo_event_states: lfo_states,
-            named_envelopes: Vec::new(),
-            named_owners: Vec::new(),
-            patch_events: Vec::new(),
-            patch_stage_starts: Vec::new(),
-            envelfo_keys: vec![0; slots],
-            beat_points: Vec::new(),
-            staged_envelfos: Vec::new(),
-            staged_owners: Vec::new(),
-            staged_connections: Vec::new(),
             filter_definitions,
             parameter_definitions: parameters,
             frequencies: vec![1.0; slots],
@@ -553,7 +509,7 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, mod_initial, mod_attack, mod_release, phase_offsets, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameters, context_capacity, filter_after_amplitude=false))]
+    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, mod_initial, mod_attack, mod_release, phase_offsets, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false))]
     fn fm(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
@@ -567,8 +523,7 @@ impl SynthRuntime {
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
-        lfos: PyReadonlyArray2<'_, f64>,
-        lfo_rationals: Vec<(u64, u64)>,
+        generators: &GeneratorBank,
         filters: PyReadonlyArray2<'_, f64>,
         parameters: Vec<f64>,
         context_capacity: usize,
@@ -592,8 +547,7 @@ impl SynthRuntime {
             minimum_hold_frames,
             controls,
             control_smoothing,
-            lfos,
-            lfo_rationals,
+            generators,
             filters,
             parameters,
             context_capacity,
@@ -616,7 +570,7 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, waveforms, initials, attacks, releases, phase_offsets, parameters, edges, order, carrier, carrier_parameter, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameter_definitions, context_capacity, filter_after_amplitude=false))]
+    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, waveforms, initials, attacks, releases, phase_offsets, parameters, edges, order, carrier, carrier_parameter, minimum_hold_frames, controls, control_smoothing, generators, filters, parameter_definitions, context_capacity, filter_after_amplitude=false))]
     fn fm_graph(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
@@ -636,8 +590,7 @@ impl SynthRuntime {
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
-        lfos: PyReadonlyArray2<'_, f64>,
-        lfo_rationals: Vec<(u64, u64)>,
+        generators: &GeneratorBank,
         filters: PyReadonlyArray2<'_, f64>,
         parameter_definitions: Vec<f64>,
         context_capacity: usize,
@@ -725,8 +678,7 @@ impl SynthRuntime {
             minimum_hold_frames,
             controls,
             control_smoothing,
-            lfos,
-            lfo_rationals,
+            generators,
             filters,
             parameter_definitions,
             context_capacity,
@@ -756,677 +708,9 @@ impl SynthRuntime {
         Ok(runtime)
     }
 
-    fn set_named_envelopes(
-        &mut self,
-        initials: Vec<f64>,
-        attacks: Vec<AmplitudeSegments>,
-        releases: Vec<AmplitudeSegments>,
-        parameters: Vec<NamedEnvelopeInput>,
-    ) -> PyResult<()> {
-        let count = initials.len();
-        if attacks.len() != count || releases.len() != count || parameters.len() != count {
-            return Err(PyValueError::new_err("Invalid named envelope definitions"));
-        }
-        let definitions = initials
-            .into_iter()
-            .zip(attacks)
-            .zip(releases)
-            .zip(parameters)
-            .map(
-                |(
-                    ((initial, attack), release),
-                    (
-                        parameter,
-                        operation,
-                        release_with_voice,
-                        playback,
-                        loop_start,
-                        loop_end,
-                        repeat_count,
-                        event_started,
-                        (hold, retrigger, bipolar),
-                    ),
-                )| {
-                    if parameter >= self.parameter_definitions.len() / 3 || operation > 1 {
-                        return Err(PyValueError::new_err("Invalid named envelope definition"));
-                    }
-                    let convert = |parts: AmplitudeSegments| -> PyResult<Vec<CoreSegment>> {
-                        parts
-                            .into_iter()
-                            .map(|(duration, to, curve)| {
-                                Ok(CoreSegment {
-                                    duration: duration
-                                        .map(|(n, d)| Time::new(n, d))
-                                        .transpose()
-                                        .map_err(core_error)?,
-                                    to,
-                                    curve,
-                                })
-                            })
-                            .collect()
-                    };
-                    let start = Time::new(loop_start.0, loop_start.1).map_err(core_error)?;
-                    let end = Time::new(loop_end.0, loop_end.1).map_err(core_error)?;
-                    let bounds = if start == Time::ZERO && end == Time::ONE {
-                        None
-                    } else {
-                        Some((start, end))
-                    };
-                    let mut segments = convert(attack)?;
-                    // SampleHold shares the host route slots but does not execute this body.
-                    if segments.is_empty() {
-                        segments.push(CoreSegment {
-                            duration: Some(Time::ZERO),
-                            to: initial,
-                            curve: 0.0,
-                        });
-                    }
-                    let body = Envelope {
-                        initial: Initial::Value(initial),
-                        segments,
-                        release: convert(release)?,
-                        bipolar,
-                        hold,
-                        retrigger: match retrigger {
-                            0 => Retrigger::Current,
-                            1 => Retrigger::Initial,
-                            2 => Retrigger::Ignore,
-                            _ => {
-                                return Err(PyValueError::new_err(
-                                    "Invalid named envelope retrigger",
-                                ));
-                            }
-                        },
-                        start: if event_started {
-                            Start::Event
-                        } else {
-                            Start::Activation
-                        },
-                        playback: match playback {
-                            0 => Playback::Once,
-                            1 => Playback::Loop,
-                            2 => Playback::PingPong,
-                            _ => {
-                                return Err(PyValueError::new_err(
-                                    "Invalid named envelope playback",
-                                ));
-                            }
-                        },
-                        markers: bounds
-                            .map(|(start, end)| {
-                                vec![
-                                    Marker {
-                                        name: "loop_start".into(),
-                                        position: start,
-                                    },
-                                    Marker {
-                                        name: "loop_end".into(),
-                                        position: end,
-                                    },
-                                ]
-                            })
-                            .unwrap_or_default(),
-                        loop_bounds: bounds,
-                        repeat_count,
-                    };
-                    body.validate().map_err(core_error)?;
-                    Ok(NamedEnvelopeDefinition {
-                        sample_hold: None,
-                        body,
-                        parameter,
-                        operation,
-                        release_with_voice,
-                        beat_clock: false,
-                        event_started,
-                    })
-                },
-            )
-            .collect::<PyResult<Vec<_>>>()?;
-        self.named_envelopes = definitions;
-        self.named_owners = (0..count).collect();
-        self.pending_releases = vec![vec![None; count]; self.frequencies.len()];
-        Ok(())
-    }
-
-    fn set_beat_clock(&mut self, points: Vec<BeatClockInput>) -> PyResult<()> {
-        let points = points
-            .into_iter()
-            .map(|(frame, beat, song, rate)| {
-                let clock_frame = Time::new(frame.0, frame.1).map_err(core_error)?;
-                let clock_beat = Time::new(beat.0, beat.1).map_err(core_error)?;
-                let clock_rate = Time::new(rate.0, rate.1).map_err(core_error)?;
-                let song_beat = Time::new(song.0, song.1).map_err(core_error)?;
-                Ok(BeatPoint {
-                    song_beat,
-                    clock_frame,
-                    clock_beat,
-                    clock_rate,
-                })
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        if self.frame != 0
-            || points.is_empty()
-            || points[0].clock_frame != Time::ZERO
-            || points
-                .iter()
-                .any(|p| p.clock_beat < Time::ZERO || p.clock_rate < Time::ZERO)
-            || points
-                .windows(2)
-                .any(|p| p[1].clock_frame <= p[0].clock_frame)
-        {
-            return Err(PyValueError::new_err("Invalid native beat clock"));
-        }
-        self.beat_points = points;
-        Ok(())
-    }
-
-    fn set_beat_named_envelopes(&mut self, indices: Vec<usize>) -> PyResult<()> {
-        if self.frame != 0
-            || self.beat_points.is_empty()
-            || indices
-                .iter()
-                .any(|index| *index >= self.named_envelopes.len())
-        {
-            return Err(PyValueError::new_err("Invalid beat-clock named Envelfo"));
-        }
-        for index in indices {
-            self.named_envelopes[index].beat_clock = true;
-        }
-        Ok(())
-    }
-
-    fn set_staged_envelfos(
-        &mut self,
-        inputs: Vec<StagedEnvelfoInput>,
-        connections: Vec<StageConnectionInput>,
-    ) -> PyResult<()> {
-        let mut definitions = Vec::with_capacity(inputs.len());
-        for (inputs, transitions, initial_stage, parameter, operation, beat_clock) in inputs {
-            if inputs.is_empty()
-                || initial_stage >= inputs.len()
-                || (beat_clock && self.beat_points.is_empty())
-                || parameter.is_some_and(|p| p >= self.parameter_definitions.len() / 3)
-                || operation > 1
-                || transitions
-                    .iter()
-                    .any(|(source, _, target)| *source >= inputs.len() || *target > inputs.len())
-            {
-                return Err(PyValueError::new_err("Invalid staged Envelfo definition"));
-            }
-            let mut bodies = Vec::with_capacity(inputs.len());
-            for (
-                index,
-                (kind, initial, current, parts, lfo, markers, playback, start, end, repeats),
-            ) in inputs.into_iter().enumerate()
-            {
-                let markers = markers
-                    .into_iter()
-                    .map(|(position, name)| {
-                        Ok(Marker {
-                            name,
-                            position: ratio_time(position)?,
-                        })
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                let body = match kind {
-                    1 => {
-                        if lfo.is_some() {
-                            return Err(PyValueError::new_err("Invalid staged Envelope"));
-                        }
-                        let start = ratio_time(start)?;
-                        let end = ratio_time(end)?;
-                        stages::Body::Envelope(Envelope {
-                            initial: if current {
-                                Initial::Current
-                            } else {
-                                Initial::Value(initial)
-                            },
-                            segments: parts
-                                .into_iter()
-                                .map(|(duration, to, curve)| {
-                                    Ok(CoreSegment {
-                                        duration: duration.map(ratio_time).transpose()?,
-                                        to,
-                                        curve,
-                                    })
-                                })
-                                .collect::<PyResult<_>>()?,
-                            release: vec![],
-                            bipolar: true,
-                            hold: true,
-                            retrigger: Retrigger::Current,
-                            start: Start::Activation,
-                            playback: match playback {
-                                0 => Playback::Once,
-                                1 => Playback::Loop,
-                                2 => Playback::PingPong,
-                                _ => {
-                                    return Err(PyValueError::new_err(
-                                        "Invalid staged Envelope playback",
-                                    ));
-                                }
-                            },
-                            loop_bounds: if start == Time::ZERO && end == Time::ONE {
-                                None
-                            } else {
-                                Some((start, end))
-                            },
-                            repeat_count: repeats,
-                            markers: markers.clone(),
-                        })
-                    }
-                    2 => {
-                        if current || !parts.is_empty() || playback != 0 || repeats.is_some() {
-                            return Err(PyValueError::new_err("Invalid staged LFO"));
-                        }
-                        let Some((shape, times, center, depth)) = lfo else {
-                            return Err(PyValueError::new_err("Invalid staged LFO"));
-                        };
-                        let times = times
-                            .into_iter()
-                            .map(ratio_time)
-                            .collect::<PyResult<Vec<_>>>()?;
-                        if times.len() != 5 {
-                            return Err(PyValueError::new_err("Invalid staged LFO timing"));
-                        }
-                        let mut body = lfo::LFO::new(times[0]).map_err(core_error)?;
-                        body.shape = match shape {
-                            0 => lfo::Shape::Sine,
-                            1 => lfo::Shape::Square,
-                            2 => lfo::Shape::Triangle,
-                            _ => return Err(PyValueError::new_err("Invalid staged LFO shape")),
-                        };
-                        body.phase = times[1];
-                        body.duty = times[2];
-                        body.delay = times[3];
-                        body.fade = times[4];
-                        body.center = center;
-                        body.depth = depth;
-                        stages::Body::LFO(body)
-                    }
-                    _ => return Err(PyValueError::new_err("Invalid staged Envelfo stage")),
-                };
-                bodies.push(stages::Stage {
-                    name: index.to_string(),
-                    markers: if kind == 2 { markers } else { vec![] },
-                    body,
-                });
-            }
-            let count = bodies.len();
-            let body = stages::Stages {
-                initial_stage: initial_stage.to_string(),
-                stages: bodies,
-                transitions: transitions
-                    .into_iter()
-                    .map(|(source, event, target)| stages::Transition {
-                        from: vec![source.to_string()],
-                        event,
-                        action: if target == count {
-                            stages::Action::Finish
-                        } else {
-                            stages::Action::Enter(target.to_string())
-                        },
-                    })
-                    .collect(),
-            };
-            body.validate().map_err(core_error)?;
-            definitions.push(StagedEnvelfoDefinition {
-                body,
-                parameter,
-                operation,
-                beat_clock,
-            });
-        }
-        let connections = connections
-            .into_iter()
-            .map(
-                |(source, port, destination, cue, every, offset, probability, key, delay)| {
-                    let delay = ratio_time(delay)?;
-                    if source >= definitions.len()
-                        || destination >= definitions.len()
-                        || port.is_empty()
-                        || cue.is_empty()
-                        || every == 0
-                        || probability > (1 << 53)
-                        || delay < Time::ZERO
-                    {
-                        return Err(PyValueError::new_err("Invalid staged Envelfo connection"));
-                    }
-                    Ok(StagedConnection {
-                        source,
-                        port,
-                        destination,
-                        cue,
-                        every,
-                        offset,
-                        probability,
-                        key,
-                        delay,
-                    })
-                },
-            )
-            .collect::<PyResult<_>>()?;
-        self.staged_envelfos = definitions;
-        self.staged_owners = (0..self.staged_envelfos.len()).collect();
-        self.staged_connections = connections;
-        Ok(())
-    }
-
-    fn set_sample_hold_envelfos(
-        &mut self,
-        definitions: Vec<(usize, u64, f64, f64)>,
-    ) -> PyResult<()> {
-        if self.frame != 0
-            || definitions.iter().any(|(source, _, minimum, maximum)| {
-                *source >= self.named_envelopes.len()
-                    || !minimum.is_finite()
-                    || !maximum.is_finite()
-                    || !(-1.0..=1.0).contains(minimum)
-                    || !(-1.0..=1.0).contains(maximum)
-                    || minimum > maximum
-            })
-        {
-            return Err(PyValueError::new_err("Invalid sample-and-hold definition"));
-        }
-        for (source, key, minimum, maximum) in definitions {
-            self.named_envelopes[source].sample_hold = Some((key, minimum, maximum));
-        }
-        Ok(())
-    }
-
-    fn set_envelfo_state_owners(
-        &mut self,
-        lfos: Vec<usize>,
-        envelopes: Vec<usize>,
-        stages: Vec<usize>,
-    ) -> PyResult<()> {
-        if self.frame != 0
-            || lfos.len() != self.lfo_definitions.len()
-            || envelopes.len() != self.named_envelopes.len()
-            || stages.len() != self.staged_envelfos.len()
-            || !valid_envelfo_owners(&lfos)
-            || !valid_envelfo_owners(&envelopes)
-            || !valid_envelfo_owners(&stages)
-        {
-            return Err(PyValueError::new_err("Invalid shared Envelfo state owners"));
-        }
-        self.lfo_owners = lfos;
-        self.named_owners = envelopes;
-        self.staged_owners = stages;
-        Ok(())
-    }
-
-    fn set_envelfo_transforms(
-        &mut self,
-        nodes: Vec<EnvelfoTransformInput>,
-        routes: Vec<EnvelfoTransformRoute>,
-    ) -> PyResult<()> {
-        if self.frame != 0
-            || nodes
-                .iter()
-                .enumerate()
-                .any(|(node, (kind, inputs, scale, offset, initial))| {
-                    *kind > 6
-                        || !scale.is_finite()
-                        || !offset.is_finite()
-                        || inputs.len() < if *kind >= 2 { 1 } else { 2 }
-                        || (*kind >= 2 && inputs.len() != 1)
-                        || (*kind == 3 && scale >= offset)
-                        || (*kind == 4 && (*scale < 0.0 || *offset < 0.0))
-                        || (*kind == 5 && *scale <= 0.0)
-                        || initial.is_some_and(|value| *kind != 4 || !value.is_finite())
-                        || inputs.iter().any(|(kind, index, offset, scale)| {
-                            !offset.is_finite()
-                                || !scale.is_finite()
-                                || match kind {
-                                    0 => *index >= self.lfo_definitions.len(),
-                                    1 => *index >= self.named_envelopes.len(),
-                                    2 => *index >= self.staged_envelfos.len(),
-                                    3 => *index >= node,
-                                    _ => true,
-                                }
-                        })
-                })
-            || routes.iter().any(|(node, parameter, operation)| {
-                *node >= nodes.len()
-                    || *parameter >= self.parameter_definitions.len() / 3
-                    || *operation > 1
-            })
-        {
-            return Err(PyValueError::new_err("Invalid Envelfo transform graph"));
-        }
-        self.envelfo_transform_values = vec![0.0; self.frequencies.len() * nodes.len()];
-        self.envelfo_transforms = nodes;
-        self.envelfo_transform_routes = routes;
-        Ok(())
-    }
-
-    fn set_patch_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
-        if self.frame != 0
-            || connections.iter().any(
-                |(
-                    source,
-                    marker,
-                    destination,
-                    cue,
-                    _,
-                    every,
-                    _,
-                    probability,
-                    _,
-                    delay,
-                    capture,
-                )| {
-                    *every == 0
-                        || *probability > (1 << 53)
-                        || ratio_time(*delay).is_err()
-                        || ratio_time(*delay).is_ok_and(|d| d < Time::ZERO)
-                        || *source >= self.lfo_definitions.len()
-                        || self.lfo_definitions[*source].scope != 3
-                        || self.lfo_definitions[*source].body.rate == Time::ZERO
-                        || self.lfo_definitions[*source].body.clock == lfo::Clock::Beats
-                        || self.lfo_definitions[*source].body.driver == lfo::Driver::Transport
-                        || ratio_time(*marker).is_err()
-                        || ratio_time(*marker).is_ok_and(|m| m < Time::ZERO || m >= Time::ONE)
-                        || if *capture {
-                            cue.is_some()
-                                || *destination >= self.envelfo_transforms.len()
-                                || self.envelfo_transforms[*destination].0 != 6
-                        } else if cue.is_some() {
-                            *destination >= self.staged_envelfos.len()
-                        } else {
-                            *destination >= self.named_envelopes.len()
-                                || !self.named_envelopes[*destination].event_started
-                        }
-                },
-            )
-        {
-            return Err(PyValueError::new_err("Invalid Patch event connections"));
-        }
-        self.patch_events = connections
-            .into_iter()
-            .map(
-                |(
-                    source,
-                    marker,
-                    destination,
-                    cue,
-                    _order,
-                    every,
-                    offset,
-                    probability,
-                    key,
-                    delay,
-                    capture,
-                )| {
-                    Ok(PatchEventConnection {
-                        threshold: false,
-                        capture,
-                        source: self.lfo_owners[source],
-                        marker: ratio_time(marker)?,
-                        destination: if capture {
-                            destination
-                        } else if cue.is_some() {
-                            self.staged_owners[destination]
-                        } else {
-                            self.named_owners[destination]
-                        },
-                        cue,
-                        every,
-                        offset,
-                        probability,
-                        key,
-                        delay: ratio_time(delay)?,
-                    })
-                },
-            )
-            .collect::<PyResult<_>>()?;
-        Ok(())
-    }
-
-    fn set_patch_stage_starts(&mut self, connections: Vec<StageStartInput>) -> PyResult<()> {
-        if self.frame != 0
-            || connections.iter().any(
-                |(source, port, destination, _, every, _, probability, _, delay, capture)| {
-                    *source >= self.staged_envelfos.len()
-                        || *every == 0
-                        || *probability > (1 << 53)
-                        || ratio_time(*delay).is_err()
-                        || ratio_time(*delay).is_ok_and(|d| d < Time::ZERO)
-                        || port.is_empty()
-                        || if *capture {
-                            *destination >= self.envelfo_transforms.len()
-                                || self.envelfo_transforms[*destination].0 != 6
-                        } else {
-                            *destination >= self.named_envelopes.len()
-                                || !self.named_envelopes[*destination].event_started
-                        }
-                },
-            )
-        {
-            return Err(PyValueError::new_err(
-                "Invalid Patch stage start connections",
-            ));
-        }
-        self.patch_stage_starts = connections
-            .into_iter()
-            .map(
-                |(
-                    source,
-                    port,
-                    destination,
-                    _order,
-                    every,
-                    offset,
-                    probability,
-                    key,
-                    delay,
-                    capture,
-                )| {
-                    Ok(PatchStageStartConnection {
-                        capture,
-                        source: self.staged_owners[source],
-                        port,
-                        destination: if capture {
-                            destination
-                        } else {
-                            self.named_owners[destination]
-                        },
-                        every,
-                        offset,
-                        probability,
-                        key,
-                        delay: ratio_time(delay)?,
-                    })
-                },
-            )
-            .collect::<PyResult<_>>()?;
-        Ok(())
-    }
-
-    fn set_threshold_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
-        if self.frame != 0
-            || connections.iter().any(
-                |(
-                    source,
-                    marker,
-                    destination,
-                    cue,
-                    _,
-                    every,
-                    _,
-                    probability,
-                    _,
-                    delay,
-                    capture,
-                )| {
-                    *source >= self.envelfo_transforms.len()
-                        || self.envelfo_transforms[*source].0 != 3
-                        || (*marker != (0, 1) && *marker != (1, 1))
-                        || *every == 0
-                        || *probability > (1 << 53)
-                        || ratio_time(*delay).is_err()
-                        || ratio_time(*delay).is_ok_and(|d| d < Time::ONE)
-                        || if *capture {
-                            cue.is_some()
-                                || *destination >= self.envelfo_transforms.len()
-                                || self.envelfo_transforms[*destination].0 != 6
-                        } else if cue.is_some() {
-                            *destination >= self.staged_envelfos.len()
-                        } else {
-                            *destination >= self.named_envelopes.len()
-                                || !self.named_envelopes[*destination].event_started
-                        }
-                },
-            )
-        {
-            return Err(PyValueError::new_err("Invalid threshold event connections"));
-        }
-        let definitions = connections
-            .into_iter()
-            .map(
-                |(
-                    source,
-                    marker,
-                    destination,
-                    cue,
-                    _order,
-                    every,
-                    offset,
-                    probability,
-                    key,
-                    delay,
-                    capture,
-                )| {
-                    Ok(PatchEventConnection {
-                        threshold: true,
-                        capture,
-                        source,
-                        marker: ratio_time(marker)?,
-                        destination: if capture {
-                            destination
-                        } else if cue.is_some() {
-                            self.staged_owners[destination]
-                        } else {
-                            self.named_owners[destination]
-                        },
-                        cue,
-                        every,
-                        offset,
-                        probability,
-                        key,
-                        delay: ratio_time(delay)?,
-                    })
-                },
-            )
-            .collect::<PyResult<Vec<_>>>()?;
-        self.patch_events.extend(definitions);
-        Ok(())
-    }
-
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, lfos, lfo_rationals, filters, parameters, context_capacity, filter_after_amplitude=false))]
+    #[pyo3(signature = (rate, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false))]
     fn noise(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
@@ -1436,8 +720,7 @@ impl SynthRuntime {
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
-        lfos: PyReadonlyArray2<'_, f64>,
-        lfo_rationals: Vec<(u64, u64)>,
+        generators: &GeneratorBank,
         filters: PyReadonlyArray2<'_, f64>,
         parameters: Vec<f64>,
         context_capacity: usize,
@@ -1454,8 +737,7 @@ impl SynthRuntime {
             minimum_hold_frames,
             controls,
             control_smoothing,
-            lfos,
-            lfo_rationals,
+            generators,
             filters,
             parameters,
             context_capacity,
@@ -1542,13 +824,13 @@ impl SynthRuntime {
 
     pub(crate) fn snapshot(&self) -> SynthRuntimeSnapshot {
         SynthRuntimeSnapshot {
-            patch_host: self.patch_host.clone(),
-            patch_states: self.patch_states.clone(),
-            pending_releases: self.pending_releases.clone(),
+            patch_host: self.generators.patch_host.clone(),
+            patch_states: self.generators.patch_states.clone(),
+            pending_releases: self.generators.pending_releases.clone(),
             amplitude_definitions: self.amplitude_definitions.clone(),
             amplitude_states: self.amplitude_states.clone(),
-            envelfo_transforms: self.envelfo_transforms.clone(),
-            envelfo_transform_routes: self.envelfo_transform_routes.clone(),
+            envelfo_transforms: self.generators.envelfo_transforms.clone(),
+            envelfo_transform_routes: self.generators.envelfo_transform_routes.clone(),
             rate: self.rate,
             waveform: self.waveform,
             source_kind: self.source_kind,
@@ -1565,18 +847,18 @@ impl SynthRuntime {
             control_definitions: self.controls.control_definitions.clone(),
             control_states: self.controls.control_states.clone(),
             voice_control_values: self.controls.voice_values.clone(),
-            lfo_definitions: self.lfo_definitions.clone(),
-            lfo_owners: self.lfo_owners.clone(),
-            lfo_event_states: self.lfo_event_states.clone(),
-            named_envelopes: self.named_envelopes.clone(),
-            named_owners: self.named_owners.clone(),
-            patch_events: self.patch_events.clone(),
-            patch_stage_starts: self.patch_stage_starts.clone(),
-            envelfo_keys: self.envelfo_keys.clone(),
-            beat_points: self.beat_points.clone(),
-            staged_envelfos: self.staged_envelfos.clone(),
-            staged_owners: self.staged_owners.clone(),
-            staged_connections: self.staged_connections.clone(),
+            lfo_definitions: self.generators.lfo_definitions.clone(),
+            lfo_owners: self.generators.lfo_owners.clone(),
+            lfo_event_states: self.generators.lfo_event_states.clone(),
+            named_envelopes: self.generators.named_envelopes.clone(),
+            named_owners: self.generators.named_owners.clone(),
+            patch_events: self.generators.patch_events.clone(),
+            patch_stage_starts: self.generators.patch_stage_starts.clone(),
+            envelfo_keys: self.generators.envelfo_keys.clone(),
+            beat_points: self.generators.beat_points.clone(),
+            staged_envelfos: self.generators.staged_envelfos.clone(),
+            staged_owners: self.generators.staged_owners.clone(),
+            staged_connections: self.generators.staged_connections.clone(),
             filter_definitions: self.filter_definitions.clone(),
             context_kinds: self.controls.context_kinds.clone(),
             context_states: self.controls.context_states.clone(),
@@ -1611,9 +893,13 @@ impl SynthRuntime {
 
     pub(crate) fn restore(&mut self, snapshot: &SynthRuntimeSnapshot) -> PyResult<()> {
         self.validate_snapshot(snapshot)?;
-        self.patch_host.clone_from(&snapshot.patch_host);
-        self.patch_states.clone_from(&snapshot.patch_states);
-        self.pending_releases.clone_from(&snapshot.pending_releases);
+        self.generators.patch_host.clone_from(&snapshot.patch_host);
+        self.generators
+            .patch_states
+            .clone_from(&snapshot.patch_states);
+        self.generators
+            .pending_releases
+            .clone_from(&snapshot.pending_releases);
         self.amplitude_states.clone_from(&snapshot.amplitude_states);
         self.frequencies.clone_from(&snapshot.frequencies);
         self.phases.clone_from(&snapshot.phases);
@@ -1622,7 +908,9 @@ impl SynthRuntime {
         self.mod_errors.clone_from(&snapshot.mod_errors);
         self.previous_modulators
             .clone_from(&snapshot.previous_modulators);
-        self.envelfo_keys.clone_from(&snapshot.envelfo_keys);
+        self.generators
+            .envelfo_keys
+            .clone_from(&snapshot.envelfo_keys);
         self.graph_phases.clone_from(&snapshot.graph_phases);
         self.graph_errors.clone_from(&snapshot.graph_errors);
         self.graph_outputs.clone_from(&snapshot.graph_outputs);
@@ -1648,7 +936,9 @@ impl SynthRuntime {
         self.controls
             .voice_values
             .clone_from(&snapshot.voice_control_values);
-        self.lfo_event_states.clone_from(&snapshot.lfo_event_states);
+        self.generators
+            .lfo_event_states
+            .clone_from(&snapshot.lfo_event_states);
         self.controls
             .context_kinds
             .clone_from(&snapshot.context_kinds);
@@ -1661,8 +951,8 @@ impl SynthRuntime {
         self.controls
             .voice_trigger_contexts
             .clone_from(&snapshot.voice_trigger_contexts);
-        self.patch_storage.fill(None);
-        self.prepare_patch()
+        self.generators.patch_storage.fill(None);
+        self.generators.prepare_patch(self.frame)
     }
 }
 
@@ -1683,18 +973,18 @@ impl SynthRuntime {
             || self.routes != snapshot.routes
             || self.route_maps != snapshot.route_maps
             || self.controls.control_definitions != snapshot.control_definitions
-            || self.lfo_definitions != snapshot.lfo_definitions
-            || self.lfo_owners != snapshot.lfo_owners
-            || self.named_envelopes != snapshot.named_envelopes
-            || self.named_owners != snapshot.named_owners
-            || self.envelfo_transforms != snapshot.envelfo_transforms
-            || self.envelfo_transform_routes != snapshot.envelfo_transform_routes
-            || self.patch_events != snapshot.patch_events
-            || self.patch_stage_starts != snapshot.patch_stage_starts
-            || self.beat_points != snapshot.beat_points
-            || self.staged_envelfos != snapshot.staged_envelfos
-            || self.staged_owners != snapshot.staged_owners
-            || self.staged_connections != snapshot.staged_connections
+            || self.generators.lfo_definitions != snapshot.lfo_definitions
+            || self.generators.lfo_owners != snapshot.lfo_owners
+            || self.generators.named_envelopes != snapshot.named_envelopes
+            || self.generators.named_owners != snapshot.named_owners
+            || self.generators.envelfo_transforms != snapshot.envelfo_transforms
+            || self.generators.envelfo_transform_routes != snapshot.envelfo_transform_routes
+            || self.generators.patch_events != snapshot.patch_events
+            || self.generators.patch_stage_starts != snapshot.patch_stage_starts
+            || self.generators.beat_points != snapshot.beat_points
+            || self.generators.staged_envelfos != snapshot.staged_envelfos
+            || self.generators.staged_owners != snapshot.staged_owners
+            || self.generators.staged_connections != snapshot.staged_connections
             || self.filter_definitions != snapshot.filter_definitions
             || self.parameter_definitions != snapshot.parameter_definitions
             || self.controls.context_kinds.len() != snapshot.context_kinds.len()
@@ -1704,16 +994,6 @@ impl SynthRuntime {
             ));
         }
         Ok(())
-    }
-
-    fn lfo_time(&self, definition: &LfoDefinition, frame: Time) -> PyResult<Time> {
-        if definition.body.driver == lfo::Driver::Transport {
-            clock_at(&self.beat_points, 2, frame).map_err(core_error)
-        } else if definition.body.clock == lfo::Clock::Beats {
-            clock_at(&self.beat_points, 1, frame).map_err(core_error)
-        } else {
-            Ok(frame)
-        }
     }
 
     pub(crate) fn channels(&self) -> usize {
@@ -1750,12 +1030,13 @@ impl SynthRuntime {
         gain_db: f64,
         actions: &[f64],
     ) -> PyResult<()> {
-        self.prepare_patch()?;
+        self.generators.prepare_patch(self.frame)?;
         let frames = output.nrows();
         if frames == 0
             || output.ncols() != self.routes.ncols()
-            || (self.beat_points.is_empty()
+            || (self.generators.beat_points.is_empty()
                 && self
+                    .generators
                     .lfo_definitions
                     .iter()
                     .any(|definition| definition.body.clock == lfo::Clock::Beats))
@@ -1792,18 +1073,21 @@ impl SynthRuntime {
         let mut action = 0;
         for frame in 0..frames {
             if action < actions.len() && actions[action] as usize == frame {
-                self.settle_patches(false)?;
+                self.generators
+                    .settle_patches(&self.active, self.frame, false)?;
             }
             while action < actions.len() && actions[action] as usize == frame {
                 self.apply_action(&actions[action..action + 6], frames)?;
                 action += 6;
             }
-            self.settle_patches(true)?;
+            self.generators
+                .settle_patches(&self.active, self.frame, true)?;
             for voice in 0..self.frequencies.len() {
                 if !self.active[voice] {
                     continue;
                 }
-                self.observe_patch(voice)?;
+                self.generators
+                    .observe_patch(voice, self.frame, &self.controls)?;
                 let amplitude = self.parameter(voice, 0)?
                     * if self.source_kind == 3 {
                         self.parameter(voice, self.graph_carrier_parameter)?
@@ -1824,7 +1108,7 @@ impl SynthRuntime {
                 let observed = definition.value(state, self.ages[voice])?;
                 if definition.complete(state, &observed) {
                     self.active[voice] = false;
-                    self.pending_releases[voice].fill(None);
+                    self.generators.pending_releases[voice].fill(None);
                     continue;
                 }
                 let level = observed.value;
@@ -2060,15 +1344,6 @@ impl SynthRuntime {
                 definition.settle(state, self.release_frames[voice], self.ages[voice])?;
                 definition.command(state, self.ages[voice], command, action[5])?;
             }
-            12 => {
-                if action[3] != action[3] as u32 as f64
-                    || action[4] != action[4] as u32 as f64
-                    || action[5] != 0.0
-                {
-                    return Err(PyValueError::new_err("Invalid Envelfo stream key"));
-                }
-                self.envelfo_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
-            }
             0 => {
                 if self.source_kind != 2 && (action[3] <= 0.0 || action[4] < 0.0)
                     || self.source_kind == 2
@@ -2080,7 +1355,7 @@ impl SynthRuntime {
                     return Err(PyValueError::new_err("Invalid voice start"));
                 }
                 self.active[voice] = true;
-                self.start_patch(voice)?;
+                self.generators.start_patch(voice, self.frame)?;
                 self.phases[voice] = action[5].rem_euclid(self.rate);
                 self.errors[voice] = 0.0;
                 self.mod_phases[voice] =
@@ -2133,41 +1408,18 @@ impl SynthRuntime {
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
-                    for source in 0..self.staged_envelfos.len() {
-                        if self.staged_owners[source] == source {
-                            self.patch_command(
-                                voice,
-                                2,
-                                source,
-                                frame_position(self.frame)?,
-                                ChildCommand::Playback(Command::NoteOff),
-                            )?;
-                        }
-                    }
-                    let age = frame_position(self.ages[voice])?;
-                    let frame = frame_position(self.frame)?;
-                    let release_frame = age.max(self.minimum_hold_frames);
-                    for (index, definition) in self.named_envelopes.iter().enumerate() {
-                        if definition.body.release.is_empty() {
-                            continue;
-                        }
-                        let named_release_at = if definition.release_with_voice {
-                            frame
-                                .checked_add(release_frame.checked_sub(age).map_err(core_error)?)
-                                .map_err(core_error)?
-                        } else {
-                            frame
-                        };
-                        if self.named_owners[index] == index {
-                            self.pending_releases[voice][index] = Some(named_release_at);
-                        }
-                    }
+                    let release_frame = self.generators.release_voice(
+                        voice,
+                        self.frame,
+                        self.ages[voice],
+                        self.minimum_hold_frames,
+                    )?;
                     self.release_frames[voice] = Some(release_frame);
                 }
             }
             2 => {
                 self.active[voice] = false;
-                self.pending_releases[voice].fill(None);
+                self.generators.pending_releases[voice].fill(None);
             }
             3 => {
                 let duration = action[5] as usize;
@@ -2185,162 +1437,12 @@ impl SynthRuntime {
                 }
             }
             4..=7 => self.controls.apply(action)?,
-            8 => {
-                let lfo = voice;
-                let action_kind = action[3] as usize;
-                if lfo >= self.lfo_definitions.len()
-                    || action[3] != action_kind as f64
-                    || action_kind > 6
-                    || !action[4].is_finite()
-                    || (action_kind != 1
-                        && action_kind != 5
-                        && action_kind != 6
-                        && action[4] != 0.0)
-                    || (action_kind == 1 && action[4] < 0.0)
-                    || (action_kind == 5 && !(0.0..=1.0).contains(&action[4]))
-                {
-                    return Err(PyValueError::new_err("Invalid synth LFO action"));
-                }
-                let definition = &self.lfo_definitions[lfo];
-                if definition.scope != 0 || definition.body.driver == lfo::Driver::Transport {
-                    return Err(PyValueError::new_err("Invalid synth LFO scope"));
-                }
-                let at = self.lfo_time(definition, frame_position(self.frame)?)?;
-                let command = match action_kind {
-                    0 => Command::Reset,
-                    1 => Command::Rate(if definition.body.clock == lfo::Clock::Beats {
-                        control_time(action[4])?
-                    } else {
-                        control_time(action[4])?
-                            .checked_div(frame_time(self.rate)?)
-                            .map_err(core_error)?
-                    }),
-                    2 => Command::Pause,
-                    3 => Command::Resume,
-                    4 => Command::Reverse,
-                    5 => Command::Seek(control_time(action[4])?),
-                    6 => Command::Shift(control_time(action[4])?),
-                    _ => unreachable!(),
-                };
-                lfo_command(definition, &mut self.lfo_event_states[lfo], at, command)?;
-            }
-            9 => {
-                let source = action[3] as usize;
-                let command = action[4] as usize;
-                if !self.active[voice]
-                    || action[3] != source as f64
-                    || source >= self.named_envelopes.len()
-                    || action[4] != command as f64
-                    || command > 5
-                    || (command == 3 && !(0.0..=1.0).contains(&action[5]))
-                    || (command == 4 && !action[5].is_finite())
-                    || (command != 3 && command != 4 && action[5] != 0.0)
-                {
-                    return Err(PyValueError::new_err("Invalid named Envelfo action"));
-                }
-                if self.named_envelopes[source].sample_hold.is_some() {
-                    return Ok(());
-                }
-                let command = match command {
-                    0 => ChildCommand::Playback(Command::Pause),
-                    1 => ChildCommand::Playback(Command::Resume),
-                    2 => ChildCommand::Playback(Command::Reverse),
-                    3 => ChildCommand::Playback(Command::Seek(frame_time(action[5])?)),
-                    4 => ChildCommand::Playback(Command::Shift(frame_time(action[5])?)),
-                    5 => ChildCommand::Advance,
-                    _ => unreachable!(),
-                };
-                self.patch_command(voice, 1, source, frame_position(self.frame)?, command)?;
-            }
-
-            10 => {
-                let source = action[3] as usize;
-                let command = action[4] as usize;
-                if !self.active[voice]
-                    || action[3] != source as f64
-                    || source >= self.staged_envelfos.len()
-                    || action[4] != command as f64
-                    || command > 5
-                    || (command == 3 && !(0.0..=1.0).contains(&action[5]))
-                    || (command == 4 && !action[5].is_finite())
-                    || (command != 3 && command != 4 && action[5] != 0.0)
-                {
-                    return Err(PyValueError::new_err("Invalid staged Envelfo action"));
-                }
-                let command = match command {
-                    0 => ChildCommand::Playback(Command::Pause),
-                    1 => ChildCommand::Playback(Command::Resume),
-                    2 => ChildCommand::Playback(Command::Reverse),
-                    3 => ChildCommand::Playback(Command::Seek(frame_time(action[5])?)),
-                    4 => ChildCommand::Playback(Command::Shift(frame_time(action[5])?)),
-                    5 => ChildCommand::Advance,
-                    _ => unreachable!(),
-                };
-                self.patch_command(voice, 2, source, frame_position(self.frame)?, command)?;
-            }
-            11 => {
-                let source = action[3] as usize;
-                let command = action[4] as usize;
-                if !self.active[voice]
-                    || action[3] != source as f64
-                    || source >= self.lfo_definitions.len()
-                    || self.lfo_definitions[source].scope != 3
-                    || self.lfo_definitions[source].body.driver == lfo::Driver::Transport
-                    || action[4] != command as f64
-                    || command > 4
-                    || (command == 3 && !(0.0..=1.0).contains(&action[5]))
-                    || (command == 4 && !action[5].is_finite())
-                    || (command != 3 && command != 4 && action[5] != 0.0)
-                {
-                    return Err(PyValueError::new_err("Invalid voice LFO action"));
-                }
-                let command = match command {
-                    0 => Command::Pause,
-                    1 => Command::Resume,
-                    2 => Command::Reverse,
-                    3 => Command::Seek(control_time(action[5])?),
-                    4 => Command::Shift(control_time(action[5])?),
-                    _ => unreachable!(),
-                };
-                self.patch_command(
-                    voice,
-                    0,
-                    source,
-                    frame_position(self.frame)?,
-                    ChildCommand::Playback(command),
-                )?;
-            }
+            8..=12 => self
+                .generators
+                .apply_action(action, &self.active, self.frame, self.rate)?,
             _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
         }
         Ok(())
-    }
-
-    fn lfo_signal(&self, voice: usize, source: usize) -> PyResult<(f64, f64)> {
-        let definition = &self.lfo_definitions[source];
-        if definition.scope == 1 {
-            self.controls
-                .context_kind(self.controls.voice_part_contexts[voice], 1)?;
-        }
-        let value = if definition.scope == 3 {
-            self.patch_value(voice, 0, source)?
-        } else {
-            let state = &self.lfo_event_states[self.lfo_owners[source]];
-            definition
-                .body
-                .value(
-                    &state.core,
-                    self.lfo_time(definition, frame_position(self.frame)?)?,
-                )
-                .map_err(core_error)?
-        };
-        Ok((value.value, value.weight))
-    }
-
-    fn mapped(&self, kind: usize, source: usize, value: f64) -> PyResult<f64> {
-        self.route_maps[kind]
-            .get(source)
-            .ok_or_else(|| PyValueError::new_err("Unprepared modulation mapping"))?
-            .value(value)
     }
 
     fn parameter(&mut self, voice: usize, parameter: usize) -> PyResult<f64> {
@@ -2352,62 +1454,16 @@ impl SynthRuntime {
             &mut self.parameter_partials,
             &mut partial_count,
         )?;
-        for (source, definition) in self.lfo_definitions.iter().enumerate() {
-            if definition.parameter != parameter {
-                continue;
-            }
-            let (value, weight) = self.lfo_signal(voice, source)?;
-            let amount = self.mapped(1, source, definition.intercept + definition.slope * value)?;
-            if definition.operation == 0 {
-                add_partial(
-                    &mut self.parameter_partials,
-                    &mut partial_count,
-                    weight * amount,
-                );
-            } else {
-                product *= 1.0 + weight * (amount - 1.0);
-            }
-        }
-        for (source, definition) in self.named_envelopes.iter().enumerate() {
-            if definition.parameter != parameter {
-                continue;
-            }
-            let value = self.patch_value(voice, 1, source)?.value;
-            let amount = self.mapped(2, source, value)?;
-            if definition.operation == 0 {
-                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
-            } else {
-                product *= amount;
-            }
-        }
-        for (source, definition) in self.staged_envelfos.iter().enumerate() {
-            if definition.parameter != Some(parameter) {
-                continue;
-            }
-            let value = self.patch_value(voice, 2, source)?.value;
-            let amount = self.mapped(3, source, value)?;
-            if definition.operation == 0 {
-                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
-            } else {
-                product *= amount;
-            }
-        }
-        for (index, (source, target, operation)) in self.envelfo_transform_routes.iter().enumerate()
-        {
-            if *target != parameter {
-                continue;
-            }
-            let amount = self.mapped(
-                4,
-                index,
-                self.envelfo_transform_values[voice * self.envelfo_transforms.len() + source],
-            )?;
-            if *operation == 0 {
-                add_partial(&mut self.parameter_partials, &mut partial_count, amount);
-            } else {
-                product *= amount;
-            }
-        }
+        product = self.generators.contributions(
+            voice,
+            parameter,
+            product,
+            self.frame,
+            &self.controls,
+            &self.route_maps,
+            &mut self.parameter_partials,
+            &mut partial_count,
+        )?;
         let definition = &self.parameter_definitions[parameter * 3..parameter * 3 + 3];
         let addition = sum_partials(&self.parameter_partials[..partial_count]);
         let value = (definition[0] + addition) * product;

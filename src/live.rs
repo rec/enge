@@ -202,7 +202,7 @@ impl LiveRuntime {
             .iter()
             .map(|v| {
                 let mut runtime = v.borrow(py).clone();
-                runtime.prepare_patch()?;
+                runtime.generators.prepare_patch(runtime.frame())?;
                 Ok(runtime)
             })
             .collect::<PyResult<Vec<_>>>()?;
