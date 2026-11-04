@@ -88,8 +88,11 @@ velocity bindings using the same native voice latch. Python velocity metadata
 uses bounded trigger-context ownership, survives snapshots and is retired with
 the context. Reused trigger names retain independent release-tail values.
 Preset and repeated-trigger regressions cover offline/persistent/native-live
-parity and exact partitioned snapshot replay. Key bindings remain outside the
-generated engines' existing supported profile.
+parity and exact partitioned snapshot replay. Synth, FM and noise now also admit
+onset-key bindings through the existing shared event latch and native encoder.
+Key values retain MIDI-key units independently of explicit trigger pitch and
+velocity. Reused-trigger regressions cover overlapping release tails, a zero
+key, offline/native persistent parity and partitioned snapshot replay.
 
 The approved shared-storage change now provides bounded Patch advancement,
 commands, settling and reset with transactional rollback. The native Patch host
@@ -97,7 +100,7 @@ uses this storage for each voice slot, retains it on retirement, and prepares it
 when constructing live sources or restoring snapshots. Input updates and pending
 release scans no longer allocate temporary lists. Shared-core tests count zero
 heap operations, including slot reset and cloned continuation. The opt-in host
-audit now measures zero Rust heap operations across 7,273 successful callbacks
+audit now measures zero Rust heap operations across 7,276 successful callbacks
 and seven failed callbacks in the regression suite. The approved fixed-size native
 error migration is complete: Python exceptions and dynamic messages are created
 after callback return. The audit enforces zero heap operations for both outcomes,

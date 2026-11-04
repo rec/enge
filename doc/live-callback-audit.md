@@ -53,8 +53,8 @@ three counters detect heap operations. Successful and failed callback totals are
 kept separately; the pytest check requires zero heap operations for both outcomes
 and records both rows in JUnit properties.
 
-On 2026-11-04 the full instrumented suite passed 1,996 tests, with 21 skipped.
-384 tests exercised the callback: 7,273 successful calls and seven failed calls
+On 2026-11-04 the full instrumented suite passed 2,054 tests, with 21 skipped.
+387 tests exercised the callback: 7,276 successful calls and seven failed calls
 performed zero Rust allocations, reallocations or frees. Callback errors now
 carry only static messages, scalar payloads or the fixed-size shared-core error.
 Python exception construction and dynamic message formatting occur after native
@@ -67,6 +67,9 @@ The audit exposed allocating decimal formatting in LFO numeric commands. The
 conversion now uses a stack buffer and checked integer arithmetic, preserving
 the existing rational result. Regressions include fractional rates, seeks and
 negative shifts, plus sampler threshold events, stage cues and latch captures.
+The latest run also exercises onset-key bindings for generated synth, FM and
+noise sources through `NativeLiveEngine`, including reused trigger names with
+overlapping release tails. These use the existing per-voice event storage.
 
 Reproduce the measurement with the locked environment already installed:
 
@@ -125,8 +128,8 @@ values, initialized during onset admission and retained in snapshots. The native
 sampler adapter also prepares shared generator banks, remaps common/slot routes,
 and admits instrument LFO and addressed voice-generator commands. Random keys
 come from prepared voice starts; delayed starts initialize generators when audible.
-Generated synth, FM and noise velocity bindings use the same native per-voice
-storage. Their Python onset metadata shares bounded trigger-context ownership
+Generated synth, FM and noise key and velocity bindings use the same native
+per-voice storage. Their Python velocity metadata shares bounded trigger-context ownership
 and is included in source snapshots.
 Control-routed sampler filters reuse the fixed bank's stage kernel and retain
 preallocated per-voice integrators; parameter evaluation does not allocate.

@@ -766,7 +766,9 @@ def prepare(score: SynthInstrumentScore) -> PreparedFM:
     for voice in score.body.voices:
         if not isinstance(voice, FMVoice):
             raise synth.EngineError("FM engine requires FM voice templates")
-        synth.validate_generators(voice, allow_velocity_bindings=True)
+        synth.validate_generators(
+            voice, allow_velocity_bindings=True, allow_key_bindings=True
+        )
         for operator in voice.fm.operators:
             synth.validate_envelope(operator.envelope)
         if voice.processing != Processing(

@@ -527,7 +527,9 @@ def prepare(score: SynthInstrumentScore) -> PreparedNoise:
     for voice in score.body.voices:
         if not isinstance(voice, NoiseVoice):
             raise synth.EngineError("Noise engine requires noise voice templates")
-        synth.validate_generators(voice, allow_velocity_bindings=True)
+        synth.validate_generators(
+            voice, allow_velocity_bindings=True, allow_key_bindings=True
+        )
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
             filters=voice.processing.filters,

@@ -2583,7 +2583,12 @@ def _validate_voice(voice: SynthVoice) -> None:
         filter_order=voice.processing.filter_order,
     ):
         raise EngineError("Only tuning and filter processing are implemented")
-    validate_generators(voice, allow_beat_envelfos=True, allow_velocity_bindings=True)
+    validate_generators(
+        voice,
+        allow_beat_envelfos=True,
+        allow_velocity_bindings=True,
+        allow_key_bindings=True,
+    )
     if any(c.mode == "fade" for c in voice.chokes):
         raise EngineError("Fade retirement is not implemented")
     validate_modulation(voice)

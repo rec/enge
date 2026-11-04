@@ -248,11 +248,24 @@ def test_preset_velocity_scales_audio_and_survives_snapshot_restore(
 
 
 @pytest.mark.parametrize("engine", ["fm", "synth", "noise"])
-def test_persistent_velocity_keeps_reused_trigger_tails_separate(
-    tmp_path: Path, engine: Literal["fm", "synth", "noise"]
+@pytest.mark.parametrize("binding", ["velocity", "key"])
+def test_persistent_event_bindings_keep_reused_trigger_tails_separate(
+    tmp_path: Path, engine: Literal["fm", "synth", "noise"], binding: str
 ) -> None:
     score, _ = Patch(engine=engine).prepare_score(48000)
     assert not isinstance(score, instrument.SampleInstrumentScore)
+    if binding == "key":
+        raw = score.model_dump(mode="json")
+        voice = raw["body"]["voices"][0]
+        voice["bindings"][0]["kind"] = "key"
+        next(s for s in voice["modulation"]["sources"] if s["name"] == "velocity")[
+            "maximum"
+        ] = 127
+        route = next(
+            r for r in voice["modulation"]["routes"] if r["name"] == "velocity"
+        )
+        route["points"][-1]["input"] = 127
+        score = type(score).model_validate(raw)
     if engine == "fm":
         definition = fm.prepare(score)
         reference = fm.OfflineFM(definition)
@@ -271,7 +284,7 @@ def test_persistent_velocity_keeps_reused_trigger_tails_separate(
             ordinal=0,
             part="main",
             trigger_id="note",
-            key=69,
+            key=int(v * 128) if binding == "key" else 69,
             pitch_hz=440,
             velocity=v,
         )
@@ -285,7 +298,8 @@ def test_persistent_velocity_keeps_reused_trigger_tails_separate(
     expected = reference.advance(actions, 0, 48000)
     first = renderer.advance([a for a in actions if a.tick < 7001], 0, 7001)
     saved = renderer.snapshot()
-    assert sorted(saved.trigger_velocities.values()) == [0.25, 0.75]
+    if binding == "velocity":
+        assert sorted(saved.trigger_velocities.values()) == [0.25, 0.75]
     later = [a for a in actions if a.tick >= 7001]
     tail = renderer.advance(later, 7001, 48000)
     assert not renderer.snapshot().trigger_velocities
@@ -302,6 +316,11 @@ def test_persistent_velocity_keeps_reused_trigger_tails_separate(
             renderer.advance([a for a in later if start <= a.tick < end], start, end)
         )
     np.testing.assert_array_equal(np.concatenate(pieces), tail)
+    if binding == "key":
+        native = live.NativeLiveEngine({"voice": type(renderer)(definition)}, 48000)
+        actual = np.empty_like(expected)
+        native.advance_into({"voice": actions}, [], 0, 48000, actual)
+        check_audio(tmp_path / f"{engine}-key-callback.wav", actual, expected)
 
 
 def test_render_rejects_incompatible_prepared_rate_before_replacing_output(
