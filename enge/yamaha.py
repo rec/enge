@@ -433,6 +433,7 @@ class DX7Envelope(BaseModel):
     increment: int = 0
     rising: bool = False
     held: bool = True
+    hold_frames: int = Field(default=0, ge=0)
 
     @classmethod
     def start(
@@ -464,7 +465,11 @@ class DX7Envelope(BaseModel):
     def sample(self) -> float:
         """Advance one sample and return linear operator gain."""
         if self.stage < 3 or (self.stage < 4 and not self.held):
-            if self.rising:
+            if self.hold_frames:
+                self.hold_frames -= 1
+                if not self.hold_frames:
+                    self._advance(self.stage + 1)
+            elif self.rising:
                 if self.level < 1716 << 16:
                     self.level = 1716 << 16
                 self.level += (((17 << 24) - self.level) >> 24) * self.increment
@@ -480,12 +485,19 @@ class DX7Envelope(BaseModel):
 
     def _advance(self, stage: int) -> None:
         self.stage = stage
+        self.hold_frames = 0
         if stage == 4:
             return
         target_level = (_scale_output_level(self.levels[stage]) >> 1) * 64
         target_level += self.output_level - 4256
         self.target = max(16, target_level) << 16
         self.rising = self.target > self.level
+        if self.target == self.level or (stage == 0 and self.levels[0] == 0):
+            rate = min(99, self.rates[stage] + self.rate_scaling)
+            duration = _DX7_HOLD_SAMPLES[rate] if rate < 77 else 20 * (99 - rate)
+            if rate < 77 and stage == 0 and self.levels[0] == 0:
+                duration //= 20
+            self.hold_frames = (duration * self.sample_rate + 44099) // 44100
         qrate = min(63, (self.rates[stage] * 41 >> 6) + self.rate_scaling)
         self.increment = round(
             ((4 + (qrate & 3)) << (8 + (qrate >> 2))) * 44100 / self.sample_rate
@@ -1876,4 +1888,86 @@ _DX7_LOG_SINE = [
 ]
 _DX7_EXP = [
     int(float(np.float32((2 ** (i / 1024) - 1) * 4096)) + 0.5) for i in range(1024)
+]
+
+# Provisional equal-level durations measured in 44.1 kHz samples in Dexed's
+# env.cc. Interpret these as durations, independent of the output sample rate.
+_DX7_HOLD_SAMPLES = [
+    1764000,
+    1764000,
+    1411200,
+    1411200,
+    1190700,
+    1014300,
+    992250,
+    882000,
+    705600,
+    705600,
+    584325,
+    507150,
+    502740,
+    441000,
+    418950,
+    352800,
+    308700,
+    286650,
+    253575,
+    220500,
+    220500,
+    176400,
+    145530,
+    145530,
+    125685,
+    110250,
+    110250,
+    88200,
+    88200,
+    74970,
+    61740,
+    61740,
+    55125,
+    48510,
+    44100,
+    37485,
+    31311,
+    30870,
+    27562,
+    27562,
+    22050,
+    18522,
+    17640,
+    15435,
+    14112,
+    13230,
+    11025,
+    9261,
+    9261,
+    7717,
+    6615,
+    6615,
+    5512,
+    5512,
+    4410,
+    3969,
+    3969,
+    3439,
+    2866,
+    2690,
+    2249,
+    1984,
+    1896,
+    1808,
+    1411,
+    1367,
+    1234,
+    1146,
+    926,
+    837,
+    837,
+    705,
+    573,
+    573,
+    529,
+    441,
+    441,
 ]

@@ -85,6 +85,18 @@ Note and idle-slot snapshots store integers consistently, and idle slots advance
 using the retained quantized increments. The old floating core is removed.
 A complete reference patch comparison and hardware qualification remain work.
 
+A subsequent [dynamic-envelope comparison](../doc/yamaha-reference/dexed-mki-core.md#dynamic-envelope-comparison)
+combines upstream Dexed envelopes with the Mk I core. It confirms that
+constant-gain agreement does not close attack/release or equal-level timing.
+The approved provisional equal-level holds are now implemented using the
+measured 44.1 kHz counts as durations, preserving seconds across sample rates
+instead of inheriting Dexed's inverse rate conversion. Remaining frame counts
+survive snapshots and release interrupts a hold. Zero-level attacks use the
+reference's faster hold rule. Focused regressions cover table/high-rate
+boundaries, prepared rate scaling, multiple sample rates and JSON continuation.
+Full-note reference errors remain explicit in the report; hardware timing and
+the remaining envelope/block-model differences are not qualified.
+
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above
 99, which raw voice inspection preserves. Tests exercise packed and unpacked

@@ -209,3 +209,58 @@ the implementation does not reproduce Dexed's 64-frame gain interpolation or its
 block-wise silence admission. Dynamic controller regressions therefore check
 the approved per-frame model, not complete Dexed patch equivalence. Integer-core
 agreement does not qualify the DAC, native callbacks or physical hardware.
+
+## Dynamic envelope comparison
+
+The [envelope harness](render-dexed-mki-envelope.cc) combines the same pinned
+Mk I core with upstream `Env` from `source/msfa/env.cc` and `.h`. It preserves
+the reference's 64-frame envelope updates, gain interpolation and silence
+admission. Only the unused application logger include is omitted from the
+temporary `env.cc`; no DSP code is changed. Add `msfa/env.cc` to the earlier
+core harness compile command and use this harness as its translation unit.
+Arguments are algorithm, feedback, profile (0 or 1), and output filename.
+
+All six operators use ratio 1, neutral detune, output level 99, no key/velocity
+scaling and exact Q24 increment 153791. The harness initializes each envelope
+with output level 4064 and rate scaling zero. Profile 0 uses rates 99/99/99/99
+and levels 99/99/99/0. Profile 1 changes rate 2 to 50 and level 3 to 50, requiring
+a timed equal-level hold before the decay. Both release at frame 24,000 and
+produce 48,000 samples at 48 kHz. Enge receives the matching constructed VCED
+files `DYN-aa-p.vced` and explicit pitch `153791 * 48000 / 2**24`.
+
+The [initial results](dexed-mki-envelope.csv) use enge `707513d`.
+The [hold results](dexed-mki-envelope-holds.csv) add the approved provisional
+equal-level timing. Relative RMS compares unscaled Q24/2**24 samples without
+alignment or gain fitting; the held window is frames 12,000–23,999. Each retained
+WAV pair uses the CSV's common peak divisor and signed 32-bit PCM.
+
+| Algorithm | Feedback | Profile | Initial whole-file error | With holds |
+| --- | ---: | --- | ---: | ---: |
+| 4 | 7 | Fast | 91.1231% | 91.1231% |
+| 4 | 7 | Equal-level hold | 99.2407% | 100.1092% |
+| 6 | 7 | Fast | 43.2738% | 43.2738% |
+| 6 | 7 | Equal-level hold | 99.3228% | 72.0716% |
+| 32 | 0 | Fast | 5.1516% | 5.1516% |
+| 32 | 0 | Equal-level hold | 98.3994% | 42.6478% |
+
+These remain failing full-note qualification results. With feedback disabled,
+the held window matches exactly, but onset/release differs. High-feedback loops
+also retain waveform differences after differing attacks; constant-gain equality
+does not imply equality after a different excitation history. The hold model
+fixes missing behavior, not complete agreement with this reference.
+
+The user approved interpreting Dexed's measured hold table as 44.1 kHz durations
+and preserving seconds across output rates. Enge rounds up to the next frame,
+uses the provisional additive rate-scaling rule, and retains the reference's
+high-rate approximation and faster zero-level attack rule. Thus rate 50 holds
+for 150 ms at both 44.1 and 48 kHz. Dexed's current inverse sample-rate multiplier
+instead shortens its 48 kHz hold, so exact agreement is not the adopted contract.
+Hold countdowns survive snapshots; release interrupts a pending hold. Sustain
+does not consume a release-stage hold until key-up. Measurements remain
+provisional and do not establish hardware envelope timing.
+
+Listen to the unmodulated carrier cases:
+
+- Fast: [Mk I](DYN-32-0-mki.wav), [enge](DYN-32-0-enge-holds.wav).
+- Equal-level hold: [Mk I](DYN-32-1-mki.wav),
+  [enge before holds](DYN-32-1-enge.wav), [enge with holds](DYN-32-1-enge-holds.wav).
