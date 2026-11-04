@@ -674,6 +674,18 @@ assignments or portamento.
   bend model leaves fixed operators unchanged; firmware qualification remains
   open. Breath routes reject
   nonneutral pitch bias rather than ignoring that assignment.
+  The manual's compatibility section (printed page 48) explicitly describes
+  the TX81Z bias curve as exponential, unlike the DX27/100 curve. Direction and
+  a neutral setting alone therefore do not justify a linear cents model.
+  The VCED wire table (printed page 72) specifies 0..99 with center 50, although
+  the user-interface description spans -50..+50. The
+  [published firmware memory map](https://nornand.hatenablog.com/entry/2023/06/26/115707)
+  reports an internal maximum of 100 and an unidentified 51-entry table at
+  `$A485`. These are useful leads, not proof of wire-format conversion or pitch
+  arithmetic. Keep the documented 0..99 wire validation until that conversion
+  is established. Remaining evidence must identify assignment-to-depth mapping,
+  depth times CC2 arithmetic, pitch units and fixed-operator behavior. Do not
+  treat the unidentified table as a qualified breath-bias curve.
 - The [measured breath EG-bias table](https://nornand.hatenablog.com/entry/2020/11/24/224423)
   is complete: 100 bias settings × 8 operator sensitivities × 128 CC2 values.
   The 102,400 values are all in 0..127; attenuation decreases monotonically with
@@ -708,8 +720,13 @@ assignments or portamento.
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
   and breath EG bias, foot volume, ratio-only pitch bend and polyphonic full-time
   portamento with switch control are implemented as above. Mono legato and
-  fingered portamento are implemented provisionally as above. The other listed
-  behaviors and hardware qualification remain unfinished.
+  fingered portamento are implemented provisionally as above. Breath pitch bias
+  and hardware qualification remain unfinished. Chorus is a compatibility-data
+  field, not an unfinished TX81Z effect: the owner's manual explicitly says
+  this instrument has neither chorus nor a pitch envelope (printed page 48).
+  Preserve the imported bytes, but do not add a chorus renderer to emulate a
+  feature absent from this hardware. This corrects the earlier backlog wording
+  and does not select the separate optional effects catalogue.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - The approved DX7 integer oscillator/feedback replacement is implemented.
