@@ -573,6 +573,9 @@ class PersistentFM(synth.PersistentSynth):
         self.action_capacity = action_capacity
         self.context_capacity = context_capacity
         self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
+        prepared = synth._persistent_modulation(
+            shared.sample_rate, shared.instrument.controls, template, source_parameters
+        )
         (
             controls,
             smoothing,
@@ -596,9 +599,7 @@ class PersistentFM(synth.PersistentSynth):
             event_connections,
             route_maps,
             self.event_bindings,
-        ) = synth._persistent_modulation(
-            shared.sample_rate, shared.instrument.controls, template, source_parameters
-        )
+        ) = prepared
         if "velocity" in self.event_bindings.values():
             self.source_scopes.add("trigger")
         self.trigger_velocities: dict[int, float | None] = {}
@@ -617,9 +618,7 @@ class PersistentFM(synth.PersistentSynth):
             generators, template, self.named_envelfo_sources
         )
         generators.set_staged_envelfos(staged_envelfos, event_connections)
-        self._share_envelfo_sources(
-            generators, len(lfos), len(envelope_initials), len(staged_envelfos)
-        )
+        synth._configure_generator_owners(generators, prepared)
         self.runtime = _native.SynthRuntime.fm_graph(
             rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),

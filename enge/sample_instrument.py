@@ -10,6 +10,7 @@ from envelfo import patch
 from pydantic import Field
 from ufor import instrument_trace
 from ufor.base import Model
+from ufor.envelfo import Patch
 from ufor.samples import crossfade, enums, instrument, playback, processing, trace
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
@@ -73,6 +74,15 @@ class NativeSampleControls(Model, frozen=True):
     names: list[str]
     scopes: list[str]
     events: dict[int, str]
+
+
+class NativeSampleGenerators(Model, frozen=True):
+    lfos: dict[str, list[int]]
+    voice_lfos: dict[str, list[int]]
+    envelopes: dict[str, list[int]]
+    stages: dict[str, list[int]]
+    scopes: list[str]
+    patch_targets: list[str]
 
 
 class NativeSampleVoice(Model, frozen=True):
@@ -556,6 +566,7 @@ class PersistentSampler(OfflineSampler):
         self.native_sources: dict[str, int] = {}
         self.native_voices: dict[str, NativeSampleVoice] = {}
         self.native_controls: dict[int, NativeSampleControls] = {}
+        self.native_generators: dict[int, NativeSampleGenerators] = {}
         self.native_contexts: list[NativeSampleContext] = []
 
     def advance(
@@ -613,18 +624,6 @@ class PersistentSampler(OfflineSampler):
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         common = self.definition.document.body.settings
-        all_settings = [common, *self.definition.settings.values()]
-        if any(
-            s.envelfos
-            or any(
-                not isinstance(b, (processing.ControlBinding, processing.EventBinding))
-                for b in s.bindings
-            )
-            for s in all_settings
-        ):
-            raise synth.EngineError(
-                "Native live sampler generators are not implemented"
-            )
         for slot in self.definition.document.body.slots:
             sample = self.definition.samples[slot.name]
             settings = self.definition.settings[slot.name]
@@ -701,6 +700,9 @@ class PersistentSampler(OfflineSampler):
             names = []
             scopes = []
             events: dict[int, str] = {}
+            generator_groups: list[
+                tuple[processing.SoundSettings, synth.PersistentModulation, list[int]]
+            ] = []
             for group, template in enumerate((common, settings)):
                 prepared = synth._persistent_modulation(
                     self.definition.sample_rate,
@@ -709,6 +711,21 @@ class PersistentSampler(OfflineSampler):
                 )
                 controls = prepared[0]
                 filter_offset = len(parameters) // 3
+                if template.envelfos:
+                    generator_groups.append(
+                        (
+                            template,
+                            prepared,
+                            [
+                                2 * group,
+                                2 * group + 1,
+                                *range(
+                                    filter_offset,
+                                    filter_offset + len(prepared[2]) // 3 - 2,
+                                ),
+                            ],
+                        )
+                    )
                 controls[:, 2] = np.where(
                     controls[:, 2] < 2,
                     controls[:, 2] + 2 * group,
@@ -783,6 +800,67 @@ class PersistentSampler(OfflineSampler):
             self.native_controls[source] = NativeSampleControls(
                 names=names, scopes=scopes, events=events
             )
+            if generator_groups:
+                bank = _native.GeneratorBank(
+                    self.definition.sample_rate,
+                    self.voice_capacity,
+                    len(parameters) // 3,
+                    np.empty((0, 7)),
+                    [],
+                )
+                generator_maps: list[list[tuple[int, list[tuple[float, float]]]]] = [
+                    [],
+                    [],
+                    [],
+                    [],
+                ]
+                metadata = NativeSampleGenerators(
+                    lfos={},
+                    voice_lfos={},
+                    envelopes={},
+                    stages={},
+                    scopes=[],
+                    patch_targets=[],
+                )
+                for template, prepared, parameter_map in generator_groups:
+                    generators, _, transforms = synth._prepare_native_generators(
+                        self.definition.sample_rate,
+                        self.voice_capacity,
+                        template,
+                        prepared,
+                    )
+                    lfo, envelope, stage, _ = bank.append(generators, parameter_map)
+                    for target, sources, base in (
+                        (
+                            metadata.lfos,
+                            {
+                                n: v
+                                for n, v in prepared[8].items()
+                                if template.envelfos[n].scope == "instrument"
+                            },
+                            lfo,
+                        ),
+                        (metadata.voice_lfos, prepared[9], lfo),
+                        (metadata.envelopes, prepared[14], envelope),
+                        (metadata.stages, prepared[18], stage),
+                    ):
+                        for name, indices in sources.items():
+                            target.setdefault(name, []).extend(
+                                base + i for i in indices
+                            )
+                    metadata.scopes.extend(sorted(prepared[15]))
+                    metadata.patch_targets.extend(
+                        sorted(synth._patch_child_names(template))
+                    )
+                    metadata.patch_targets.extend(
+                        n for n, v in template.envelfos.items() if isinstance(v, Patch)
+                    )
+                    for target, mappings in zip(
+                        generator_maps, [*prepared[20][1:], transforms], strict=True
+                    ):
+                        target.extend(mappings)
+                runtime.set_sample_generators(source, bank, generator_maps)
+                self.native_generators[source] = metadata
 
     def native_live_actions(
         self,
@@ -896,6 +974,87 @@ class PersistentSampler(OfflineSampler):
                             [offset, 7, index, action.value, context, 0]
                         )
                 continue
+            if isinstance(action, instrument_trace.LFOObservation):
+                found = False
+                for source, generators in self.native_generators.items():
+                    for index in generators.lfos.get(action.name, []):
+                        found = True
+                        encoded[source].append(
+                            [
+                                offset,
+                                12,
+                                index,
+                                (
+                                    "reset",
+                                    "rate",
+                                    "pause",
+                                    "resume",
+                                    "reverse",
+                                    "seek",
+                                    "shift",
+                                ).index(action.action),
+                                action.rate
+                                if action.rate is not None
+                                else action.position
+                                if action.position is not None
+                                else action.offset
+                                if action.offset is not None
+                                else 0,
+                                0,
+                            ]
+                        )
+                if not found:
+                    raise synth.EngineError(f"Unknown instrument LFO: {action.name}")
+                continue
+            if (
+                isinstance(action, instrument_trace.EnvelfoObservation)
+                and action.target == "envelfo"
+            ):
+                assert action.name is not None
+                if any(
+                    action.name in g.patch_targets
+                    for g in self.native_generators.values()
+                ):
+                    raise synth.EngineError(
+                        "Patch-level Envelfo commands are not implemented"
+                    )
+                command = (
+                    "pause",
+                    "resume",
+                    "reverse",
+                    "seek",
+                    "shift",
+                    "advance",
+                ).index(action.action)
+                for voice in self.native_voices.values():
+                    if voice.started_frame > action.tick or (
+                        voice.part,
+                        voice.trigger_id,
+                    ) != (action.part, action.trigger_id):
+                        continue
+                    if (generators := self.native_generators.get(voice.source)) is None:
+                        continue
+                    for kind, sources in (
+                        (13, generators.envelopes),
+                        (14, generators.stages),
+                        (15, generators.voice_lfos),
+                    ):
+                        for index in sources.get(action.name, []):
+                            encoded[voice.source].append(
+                                [
+                                    offset,
+                                    kind,
+                                    voice.slot,
+                                    index,
+                                    command,
+                                    action.position
+                                    if action.position is not None
+                                    else action.offset
+                                    if action.offset is not None
+                                    else 0,
+                                ]
+                            )
+                continue
             if isinstance(action, instrument_trace.TriggerRelease):
                 for name, voice in list(self.native_voices.items()):
                     if (
@@ -945,6 +1104,17 @@ class PersistentSampler(OfflineSampler):
                     raise synth.EngineError(
                         "Native sample offset is not exactly representable"
                     )
+                if source in self.native_generators:
+                    encoded[source].append(
+                        [
+                            offset,
+                            16,
+                            voice,
+                            action.envelfo_key & 0xFFFF_FFFF,
+                            action.envelfo_key >> 32,
+                            0,
+                        ]
+                    )
                 encoded[source].append(
                     [
                         offset,
@@ -955,7 +1125,9 @@ class PersistentSampler(OfflineSampler):
                         position_offset,
                     ]
                 )
-                scopes = self.native_controls[source].scopes
+                scopes = set(self.native_controls[source].scopes)
+                if source in self.native_generators:
+                    scopes.update(self.native_generators[source].scopes)
                 for index, kind in self.native_controls[source].events.items():
                     value = action.key if kind == "key" else action.velocity
                     if value is None:

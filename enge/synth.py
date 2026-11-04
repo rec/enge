@@ -1828,9 +1828,6 @@ class PersistentSynth:
         if len(templates) != 1 or not isinstance(templates[0], SynthVoice):
             raise EngineError("Persistent synth requires one oscillator voice template")
         template = templates[0]
-        if any(m.clock == "beats" for m in template.envelfos.values()):
-            if tempo_map is None:
-                raise EngineError("Beat-clock Envelfo requires a host tempo map")
         if template.processing != Processing(
             tuning_cents=template.processing.tuning_cents,
             filters=template.processing.filters,
@@ -1853,6 +1850,9 @@ class PersistentSynth:
         self.action_capacity = action_capacity
         self.context_capacity = context_capacity
         self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
+        prepared = _persistent_modulation(
+            definition.sample_rate, definition.instrument.controls, template
+        )
         (
             controls,
             smoothing,
@@ -1876,202 +1876,14 @@ class PersistentSynth:
             event_connections,
             route_maps,
             self.event_bindings,
-        ) = _persistent_modulation(
-            definition.sample_rate, definition.instrument.controls, template
-        )
+        ) = prepared
         if "velocity" in self.event_bindings.values():
             self.source_scopes.add("trigger")
         self.trigger_velocities: dict[int, float | None] = {}
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
-        generators = _native.GeneratorBank(
-            rate, voices, len(parameters) // 3, lfos, lfo_rationals
-        )
-        generators.set_named_envelopes(
-            envelope_initials,
-            envelope_attacks,
-            envelope_releases,
-            envelope_parameters,
-        )
-        _configure_sample_hold_envelfos(
-            generators, template, self.named_envelfo_sources
-        )
-        if tempo_map is not None:
-            generators.set_beat_clock(
-                [
-                    cast(
-                        tuple[
-                            tuple[int, int],
-                            tuple[int, int],
-                            tuple[int, int],
-                            tuple[int, int],
-                        ],
-                        tuple(
-                            (v.numerator, v.denominator)
-                            for v in (
-                                p.at_seconds * rate,
-                                tempo_map.elapsed_beats(Fraction(0), p.at_seconds),
-                                p.beat,
-                                p.bpm / (60 * rate) if p.running else Fraction(0),
-                            )
-                        ),
-                    )
-                    for p in tempo_map.points
-                ]
-            )
-            generators.set_beat_named_envelopes(
-                [
-                    i
-                    for name, indices in self.named_envelfo_sources.items()
-                    if template.envelfos[name].clock == "beats"
-                    for i in indices
-                ]
-            )
-        generators.set_staged_envelfos(staged_envelfos, event_connections)
-        self._share_envelfo_sources(
-            generators, len(lfos), len(envelope_initials), len(staged_envelfos)
-        )
-        patch_events: list[
-            tuple[
-                int,
-                tuple[int, int],
-                int,
-                str | None,
-                int,
-                int,
-                int,
-                int,
-                int,
-                tuple[int, int],
-                bool,
-            ]
-        ] = []
-        self.transform_nodes, transform_maps = _configure_patch_transforms(
-            generators,
-            template,
-            self.lfo_sources | self.voice_lfo_sources,
-            self.named_envelfo_sources,
-            self.staged_envelfo_sources,
-            self.definition.sample_rate,
-        )
-        patch_stage_starts: list[
-            tuple[int, str, int, int, int, int, int, int, tuple[int, int], bool]
-        ] = []
-        for parent_name, parent in template.envelfos.items():
-            if not isinstance(parent, Patch):
-                continue
-            if (
-                parent.events
-                and f"patch-{parent_name}-{parent.events[0].target}"
-                not in template.envelfos
-                and not any(
-                    isinstance(b, processing.GeneratorBinding)
-                    and b.reference == parent_name
-                    for b in template.bindings
-                )
-            ):
-                continue
-            for order, connection in enumerate(parent.events):
-                if connection.action not in ("start", "sample", "capture"):
-                    continue
-                child_name, _, port = connection.source.partition(".")
-                child = parent.envelfos[child_name]
-                if isinstance(child, Threshold):
-                    continue
-                capture = connection.action == "capture"
-                destination = (
-                    self.transform_nodes[parent_name, connection.target]
-                    if capture
-                    else self.named_envelfo_sources[
-                        f"patch-{parent_name}-{connection.target}"
-                    ][0]
-                )
-                key = envelfo_random.stream_key(
-                    0,
-                    f"{parent_name}:capture-{connection.target}-{order}"
-                    if capture
-                    else f"patch-{parent_name}-{connection.target}:start-{order}",
-                )
-                if isinstance(child, LFO):
-                    marker = next(m.position for m in child.markers if m.name == port)
-                    patch_events.append(
-                        (
-                            self.voice_lfo_sources[f"patch-{parent_name}-{child_name}"][
-                                0
-                            ],
-                            (marker.numerator, marker.denominator),
-                            destination,
-                            None,
-                            order,
-                            connection.every,
-                            connection.offset,
-                            int(connection.probability * 2**53),
-                            key,
-                            _runtime_event_delay(
-                                connection.delay, self.definition.sample_rate
-                            ),
-                            capture,
-                        )
-                    )
-                else:
-                    assert isinstance(child, Stages)
-                    patch_stage_starts.append(
-                        (
-                            self.staged_envelfo_sources[
-                                f"patch-{parent_name}-{child_name}"
-                            ][0],
-                            port,
-                            destination,
-                            order,
-                            connection.every,
-                            connection.offset,
-                            int(connection.probability * 2**53),
-                            key,
-                            _runtime_event_delay(
-                                connection.delay, self.definition.sample_rate
-                            ),
-                            capture,
-                        )
-                    )
-        bindings = {binding.name: binding for binding in template.bindings}
-        for order, connection in enumerate(template.event_connections):
-            source_binding = bindings[connection.source]
-            assert isinstance(source_binding, processing.GeneratorBinding)
-            source_envelfo = template.envelfos[source_binding.reference]
-            if not isinstance(source_envelfo, LFO):
-                continue
-            marker = next(
-                m.position for m in source_envelfo.markers if m.name == connection.port
-            )
-            target_binding = bindings[connection.destination]
-            assert isinstance(target_binding, processing.GeneratorBinding)
-            patch_events.append(
-                (
-                    self.voice_lfo_sources[source_binding.reference][0],
-                    (marker.numerator, marker.denominator),
-                    self.staged_envelfo_sources[target_binding.reference][0],
-                    connection.cue,
-                    len(patch_events),
-                    connection.every,
-                    connection.offset,
-                    int(connection.probability * 2**53),
-                    envelfo_random.stream_key(
-                        0, f"{target_binding.reference}:cue-{order}"
-                    ),
-                    _runtime_event_delay(connection.delay, self.definition.sample_rate),
-                    False,
-                )
-            )
-        generators.set_patch_events(patch_events)
-        generators.set_patch_stage_starts(patch_stage_starts)
-        generators.set_threshold_events(
-            _threshold_runtime_connections(
-                template,
-                self.named_envelfo_sources,
-                self.staged_envelfo_sources,
-                self.transform_nodes,
-                self.definition.sample_rate,
-            )
+        generators, self.transform_nodes, transform_maps = _prepare_native_generators(
+            rate, voices, template, prepared, tempo_map
         )
         self.runtime = _native.SynthRuntime(
             rate,
@@ -2434,23 +2246,6 @@ class PersistentSynth:
             i: v for i, v in self.trigger_velocities.items() if contexts[i]
         }
         self.frame = end
-
-    def _share_envelfo_sources(
-        self, generators: _native.GeneratorBank, lfos: int, envelopes: int, stages: int
-    ) -> None:
-        generators.set_envelfo_state_owners(
-            _envelfo_state_owners(lfos, self.lfo_sources, self.voice_lfo_sources),
-            _envelfo_state_owners(envelopes, self.named_envelfo_sources),
-            _envelfo_state_owners(stages, self.staged_envelfo_sources),
-        )
-        for source_map in (
-            self.lfo_sources,
-            self.voice_lfo_sources,
-            self.named_envelfo_sources,
-            self.staged_envelfo_sources,
-        ):
-            for name, indices in source_map.items():
-                source_map[name] = indices[:1]
 
     def snapshot(self) -> PersistentSynthSnapshot:
         return PersistentSynthSnapshot(
@@ -3111,15 +2906,7 @@ def _threshold_runtime_connections(
     return result
 
 
-def _persistent_modulation(
-    sample_rate: int,
-    declarations: dict[str, controls.ControlDeclaration],
-    template: SoundSettings,
-    source_parameters: list[
-        tuple[tuple[str, str], int, modulation.Operation, float, float, float]
-    ]
-    | None = None,
-) -> tuple[
+PersistentModulation = tuple[
     np.ndarray,
     list[tuple[int, int]],
     list[float],
@@ -3154,7 +2941,233 @@ def _persistent_modulation(
     list[tuple[int, str, int, str, int, int, int, int, tuple[int, int]]],
     list[list[tuple[int, list[tuple[float, float]]]]],
     dict[int, str],
+]
+
+
+def _configure_generator_owners(
+    generators: _native.GeneratorBank, prepared: PersistentModulation
+) -> None:
+    generators.set_envelfo_state_owners(
+        _envelfo_state_owners(len(prepared[6]), prepared[8], prepared[9]),
+        _envelfo_state_owners(len(prepared[10]), prepared[14]),
+        _envelfo_state_owners(len(prepared[17]), prepared[18]),
+    )
+    for sources in (prepared[8], prepared[9], prepared[14], prepared[18]):
+        for name, indices in sources.items():
+            sources[name] = indices[:1]
+
+
+def _prepare_native_generators(
+    rate: int,
+    voices: int,
+    template: SoundSettings,
+    prepared: PersistentModulation,
+    tempo_map: TempoMap | None = None,
+) -> tuple[
+    _native.GeneratorBank,
+    dict[tuple[str, str], int],
+    list[tuple[int, list[tuple[float, float]]]],
 ]:
+    if tempo_map is None and any(
+        m.clock == "beats" for m in template.envelfos.values()
+    ):
+        raise EngineError("Beat-clock Envelfo requires a host tempo map")
+    lfos, lfo_rationals, lfo_sources, voice_lfo_sources = prepared[6:10]
+    (
+        envelope_initials,
+        envelope_attacks,
+        envelope_releases,
+        envelope_parameters,
+        named_envelfo_sources,
+    ) = prepared[10:15]
+    staged_envelfos, staged_envelfo_sources, event_connections = prepared[17:20]
+    generators = _native.GeneratorBank(
+        rate, voices, len(prepared[2]) // 3, lfos, lfo_rationals
+    )
+    generators.set_named_envelopes(
+        envelope_initials,
+        envelope_attacks,
+        envelope_releases,
+        envelope_parameters,
+    )
+    _configure_sample_hold_envelfos(generators, template, named_envelfo_sources)
+    if tempo_map is not None:
+        generators.set_beat_clock(
+            [
+                cast(
+                    tuple[
+                        tuple[int, int],
+                        tuple[int, int],
+                        tuple[int, int],
+                        tuple[int, int],
+                    ],
+                    tuple(
+                        (v.numerator, v.denominator)
+                        for v in (
+                            p.at_seconds * rate,
+                            tempo_map.elapsed_beats(Fraction(0), p.at_seconds),
+                            p.beat,
+                            p.bpm / (60 * rate) if p.running else Fraction(0),
+                        )
+                    ),
+                )
+                for p in tempo_map.points
+            ]
+        )
+        generators.set_beat_named_envelopes(
+            [
+                i
+                for name, indices in named_envelfo_sources.items()
+                if template.envelfos[name].clock == "beats"
+                for i in indices
+            ]
+        )
+    generators.set_staged_envelfos(staged_envelfos, event_connections)
+    _configure_generator_owners(generators, prepared)
+    patch_events: list[
+        tuple[
+            int,
+            tuple[int, int],
+            int,
+            str | None,
+            int,
+            int,
+            int,
+            int,
+            int,
+            tuple[int, int],
+            bool,
+        ]
+    ] = []
+    transform_nodes, transform_maps = _configure_patch_transforms(
+        generators,
+        template,
+        lfo_sources | voice_lfo_sources,
+        named_envelfo_sources,
+        staged_envelfo_sources,
+        rate,
+    )
+    patch_stage_starts: list[
+        tuple[int, str, int, int, int, int, int, int, tuple[int, int], bool]
+    ] = []
+    for parent_name, parent in template.envelfos.items():
+        if not isinstance(parent, Patch):
+            continue
+        if (
+            parent.events
+            and f"patch-{parent_name}-{parent.events[0].target}"
+            not in template.envelfos
+            and not any(
+                isinstance(b, processing.GeneratorBinding)
+                and b.reference == parent_name
+                for b in template.bindings
+            )
+        ):
+            continue
+        for order, connection in enumerate(parent.events):
+            if connection.action not in ("start", "sample", "capture"):
+                continue
+            child_name, _, port = connection.source.partition(".")
+            child = parent.envelfos[child_name]
+            if isinstance(child, Threshold):
+                continue
+            capture = connection.action == "capture"
+            destination = (
+                transform_nodes[parent_name, connection.target]
+                if capture
+                else named_envelfo_sources[f"patch-{parent_name}-{connection.target}"][
+                    0
+                ]
+            )
+            key = envelfo_random.stream_key(
+                0,
+                f"{parent_name}:capture-{connection.target}-{order}"
+                if capture
+                else f"patch-{parent_name}-{connection.target}:start-{order}",
+            )
+            if isinstance(child, LFO):
+                marker = next(m.position for m in child.markers if m.name == port)
+                patch_events.append(
+                    (
+                        voice_lfo_sources[f"patch-{parent_name}-{child_name}"][0],
+                        (marker.numerator, marker.denominator),
+                        destination,
+                        None,
+                        order,
+                        connection.every,
+                        connection.offset,
+                        int(connection.probability * 2**53),
+                        key,
+                        _runtime_event_delay(connection.delay, rate),
+                        capture,
+                    )
+                )
+            else:
+                assert isinstance(child, Stages)
+                patch_stage_starts.append(
+                    (
+                        staged_envelfo_sources[f"patch-{parent_name}-{child_name}"][0],
+                        port,
+                        destination,
+                        order,
+                        connection.every,
+                        connection.offset,
+                        int(connection.probability * 2**53),
+                        key,
+                        _runtime_event_delay(connection.delay, rate),
+                        capture,
+                    )
+                )
+    bindings = {binding.name: binding for binding in template.bindings}
+    for order, connection in enumerate(template.event_connections):
+        source_binding = bindings[connection.source]
+        assert isinstance(source_binding, processing.GeneratorBinding)
+        source_envelfo = template.envelfos[source_binding.reference]
+        if not isinstance(source_envelfo, LFO):
+            continue
+        marker = next(
+            m.position for m in source_envelfo.markers if m.name == connection.port
+        )
+        target_binding = bindings[connection.destination]
+        assert isinstance(target_binding, processing.GeneratorBinding)
+        patch_events.append(
+            (
+                voice_lfo_sources[source_binding.reference][0],
+                (marker.numerator, marker.denominator),
+                staged_envelfo_sources[target_binding.reference][0],
+                connection.cue,
+                len(patch_events),
+                connection.every,
+                connection.offset,
+                int(connection.probability * 2**53),
+                envelfo_random.stream_key(0, f"{target_binding.reference}:cue-{order}"),
+                _runtime_event_delay(connection.delay, rate),
+                False,
+            )
+        )
+    generators.set_patch_events(patch_events)
+    generators.set_patch_stage_starts(patch_stage_starts)
+    generators.set_threshold_events(
+        _threshold_runtime_connections(
+            template,
+            named_envelfo_sources,
+            staged_envelfo_sources,
+            transform_nodes,
+            rate,
+        )
+    )
+    return generators, transform_nodes, transform_maps
+
+
+def _persistent_modulation(
+    sample_rate: int,
+    declarations: dict[str, controls.ControlDeclaration],
+    template: SoundSettings,
+    source_parameters: list[
+        tuple[tuple[str, str], int, modulation.Operation, float, float, float]
+    ]
+    | None = None,
+) -> PersistentModulation:
     bindings = {b.name: b for b in template.bindings}
     if any(
         not isinstance(b, ControlBinding)

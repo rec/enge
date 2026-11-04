@@ -118,6 +118,9 @@ class LiveRuntime:
     def failed(self) -> bool: ...
 
 class GeneratorBank:
+    def append(
+        self, other: GeneratorBank, parameters: list[int]
+    ) -> tuple[int, int, int, int]: ...
     def __init__(
         self,
         rate: float,

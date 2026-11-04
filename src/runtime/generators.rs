@@ -405,6 +405,97 @@ fn mapped(maps: &[Vec<RouteMap>], kind: usize, source: usize, value: f64) -> PyR
 
 #[pymethods]
 impl GeneratorBank {
+    fn append(
+        &mut self,
+        other: &Self,
+        parameters: Vec<usize>,
+    ) -> PyResult<(usize, usize, usize, usize)> {
+        if self.rate != other.rate
+            || self.patch_states.len() != other.patch_states.len()
+            || parameters.len() != other.parameter_count
+            || parameters.iter().any(|p| *p >= self.parameter_count)
+            || (!self.beat_points.is_empty()
+                && !other.beat_points.is_empty()
+                && self.beat_points != other.beat_points)
+        {
+            return Err(PyValueError::new_err("Incompatible generator bank layout"));
+        }
+        let offsets = [
+            self.lfo_definitions.len(),
+            self.named_envelopes.len(),
+            self.staged_envelfos.len(),
+            self.envelfo_transforms.len(),
+        ];
+        let mut other = other.clone();
+        for definition in &mut other.lfo_definitions {
+            definition.parameter = parameters[definition.parameter];
+        }
+        for owner in &mut other.lfo_owners {
+            *owner += offsets[0];
+        }
+        for definition in &mut other.named_envelopes {
+            definition.parameter = parameters[definition.parameter];
+        }
+        for owner in &mut other.named_owners {
+            *owner += offsets[1];
+        }
+        for definition in &mut other.staged_envelfos {
+            definition.parameter = definition.parameter.map(|p| parameters[p]);
+        }
+        for owner in &mut other.staged_owners {
+            *owner += offsets[2];
+        }
+        for connection in &mut other.staged_connections {
+            connection.source += offsets[2];
+            connection.destination += offsets[2];
+        }
+        for (_, inputs, _, _, _) in &mut other.envelfo_transforms {
+            for (kind, source, _, _) in inputs {
+                *source += offsets[*kind as usize];
+            }
+        }
+        for (node, parameter, _) in &mut other.envelfo_transform_routes {
+            *node += offsets[3];
+            *parameter = parameters[*parameter];
+        }
+        for connection in &mut other.patch_events {
+            connection.source += offsets[if connection.threshold { 3 } else { 0 }];
+            connection.destination += offsets[if connection.capture {
+                3
+            } else if connection.cue.is_some() {
+                2
+            } else {
+                1
+            }];
+        }
+        for connection in &mut other.patch_stage_starts {
+            connection.source += offsets[2];
+            connection.destination += offsets[if connection.capture { 3 } else { 1 }];
+        }
+        self.lfo_definitions.extend(other.lfo_definitions);
+        self.lfo_owners.extend(other.lfo_owners);
+        self.lfo_event_states.extend(other.lfo_event_states);
+        self.named_envelopes.extend(other.named_envelopes);
+        self.named_owners.extend(other.named_owners);
+        self.staged_envelfos.extend(other.staged_envelfos);
+        self.staged_owners.extend(other.staged_owners);
+        self.staged_connections.extend(other.staged_connections);
+        self.envelfo_transforms.extend(other.envelfo_transforms);
+        self.envelfo_transform_routes
+            .extend(other.envelfo_transform_routes);
+        self.patch_events.extend(other.patch_events);
+        self.patch_stage_starts.extend(other.patch_stage_starts);
+        if self.beat_points.is_empty() {
+            self.beat_points = other.beat_points;
+        }
+        for releases in &mut self.pending_releases {
+            releases.resize(self.named_envelopes.len(), None);
+        }
+        self.envelfo_transform_values
+            .resize(self.patch_states.len() * self.envelfo_transforms.len(), 0.0);
+        Ok((offsets[0], offsets[1], offsets[2], offsets[3]))
+    }
+
     #[new]
     fn new(
         rate: f64,

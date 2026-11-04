@@ -58,7 +58,6 @@ Native live sample voices now reuse the block renderer's multichannel filter
 bank for fixed and control-routed filter chains. Each voice has preallocated
 integrator state, reset on slot reuse and retained in snapshots. Slot filters precede instrument
 filters; both amplitude orders are supported, without a tail after exhaustion.
-Native live registration still rejects generators.
 The user approved extending that sampler with the existing
 native control/filter machinery on 2026-11-02, preserving bounded callback storage.
 The generated runtimes' existing control ramps, scoped contexts and voice
@@ -83,8 +82,8 @@ independent voices, reuse, exhaustion, snapshots and cutoff-boundary rejection.
 Native sampler key/velocity event bindings now latch values in bounded per-voice
 storage. They use the shared mapping/composition path, remain independent of
 same-named controls, survive snapshots and reset on slot reuse. Coverage includes
-delayed starts and event/control composition on filter Q. Sampler generators
-remain work. Generated persistent synth, FM and noise renderers now admit
+delayed starts and event/control composition on filter Q. Generated persistent
+synth, FM and noise renderers now admit
 velocity bindings using the same native voice latch. Python velocity metadata
 uses bounded trigger-context ownership, survives snapshots and is retired with
 the context. Reused trigger names retain independent release-tail values.
@@ -97,9 +96,9 @@ commands, settling and reset with transactional rollback. The native Patch host
 uses this storage for each voice slot, retains it on retirement, and prepares it
 when constructing live sources or restoring snapshots. Input updates and pending
 release scans no longer allocate temporary lists. Shared-core tests count zero
-heap operations, including slot reset and cloned continuation. Native sampler
-generator integration and full host callback allocation qualification remain
-work; finite voice/context capacity alone does not establish that guarantee.
+heap operations, including slot reset and cloned continuation. Full host callback
+allocation qualification remains work; finite voice/context capacity alone does
+not establish that guarantee.
 The [callback audit](../doc/live-callback-audit.md) records the wider boundary.
 The native generator state and modulation evaluator have been extracted from
 `SynthRuntime` into `GeneratorBank`; generated sources use it with explicit frame
@@ -114,8 +113,15 @@ frame. Release, retirement, slot reuse and snapshots preserve shared execution
 semantics. A native audio regression compares LFO, envelope and sample-and-hold
 composition with the generated-source reference, including commands, delayed
 starts, seeded slot reuse and partitioned snapshot replay. The Python sampler
-adapter still rejects generators until its common/slot setup and action admission
-are connected; full callback allocation qualification also remains outstanding.
+adapter now shares the synth's generator preparation and combines common/slot
+banks with explicit parameter and source-index remapping. Same-named definitions
+remain distinct. It admits instrument LFO and addressed voice-generator commands,
+passes each prepared voice's random key, and provides part contexts for part LFOs.
+Offline/native-live comparisons cover these scopes, envelopes, stages, filter
+modulation and Patch sample-and-hold events driven by LFOs or stages, with delayed
+starts, slot reuse and exact snapshot replay. Existing shared-profile restrictions
+remain explicit, including Patch-level commands and sampler beat clocks without
+a host tempo map. Full callback allocation qualification remains outstanding.
 
 Finite loop `repeat_count` now counts additional traversals in both offline
 backends and the native live sampler, including mirrored and crossfaded loops.

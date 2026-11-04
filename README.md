@@ -68,13 +68,13 @@ Observation, commands, settling and voice reset use the shared bounded API;
 retirement keeps the slot storage for reuse. Live-source construction prepares
 these buffers before rendering, and snapshot restoration rebuilds them outside
 rendering. This removes Patch-host temporary input/release lists and allocating
-graph calls. Native sampler generator integration and full callback allocation
-qualification remain unfinished.
+graph calls. Full callback allocation qualification remains unfinished.
 
 Generator definitions, clocks, prepared slots and modulation evaluation now live
 in the shared native `GeneratorBank`, independently of oscillator/FM/noise state.
-Generated sources use that bank; sampler registration is the remaining consumer
-integration. Existing native snapshot fields and route evaluation order are
+Generated sources and the native sampler adapter use that bank. Common and slot
+sampler generators retain separate routes and command targets, including when
+their names match. Existing native snapshot fields and route evaluation order are
 preserved.
 
 Python graph playback now uses the standalone `envelfo.patch` scheduler too.

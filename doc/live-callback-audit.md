@@ -38,8 +38,8 @@ still needs allocation qualification across onset, observation, addressed comman
 scheduled child events and release. Low-level native sample sources now attach
 the same prepared bank and execute its lifecycle and commands. Their delayed
 voices reset generators at the first audible frame, and snapshots retain the
-prepared storage. The Python sampler adapter still rejects generator definitions
-until setup and action admission are connected. Shared-core results alone do not
+prepared storage. The Python sampler adapter now prepares common/slot banks and
+admits shared generator actions before native processing. Shared-core results alone do not
 qualify the complete sample-source path or establish hardware deadlines.
 
 `LiveRuntime` owns processing for generated and sampled sources. It owns
@@ -82,8 +82,9 @@ This removes Python DSP, mixing, and effect-array construction from its callback
 body. Python still performs admission and submission synchronously before that
 call. Native sampler key/velocity event bindings use preallocated per-voice
 values, initialized during onset admission and retained in snapshots. The native
-sampler adapter currently excludes generators, although the low-level native
-sample-source API now supports the shared generator bank.
+sampler adapter also prepares shared generator banks, remaps common/slot routes,
+and admits instrument LFO and addressed voice-generator commands. Random keys
+come from prepared voice starts; delayed starts initialize generators when audible.
 Generated synth, FM and noise velocity bindings use the same native per-voice
 storage. Their Python onset metadata shares bounded trigger-context ownership
 and is included in source snapshots.
