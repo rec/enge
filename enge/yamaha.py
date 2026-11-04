@@ -456,7 +456,12 @@ class DX7Snapshot(BaseModel, frozen=True):
 
 
 class DX7Renderer:
-    """Render one DX7 note with native algorithms and Yamaha envelope timing."""
+    """Render one DX7 note with native algorithms and Yamaha envelope timing.
+
+    Initial phases are cycles in operator order OP1 through OP6. Sync-on resets
+    them; sync-off copies the supplied phases, or starts at zero when omitted.
+    The caller owns idle oscillator evolution and subsequent note allocation.
+    """
 
     def __init__(
         self,
@@ -465,6 +470,7 @@ class DX7Renderer:
         velocity: int,
         sample_rate: int = 48000,
         pitch_hz: float | None = None,
+        initial_phases: list[float] | None = None,
     ) -> None:
         if (diagnostic := voice.parameter_diagnostic) is not None:
             raise EngineError(diagnostic)
@@ -524,7 +530,16 @@ class DX7Renderer:
             for i, operator in enumerate(voice.operators):
                 if operator.frequency_mode.value == "ratio":
                     self.frequencies[i] *= pitch_hz / (440 * 2 ** ((note - 69) / 12))
-        self.phases = np.zeros(6)
+        if initial_phases is not None and (
+            len(initial_phases) != 6
+            or any(not isfinite(p) or not 0 <= p < 1 for p in initial_phases)
+        ):
+            raise EngineError("DX7 initial phases must be six finite values in [0, 1)")
+        self.phases = (
+            np.array(initial_phases, dtype=float, copy=True)
+            if initial_phases is not None and not parameters[0]
+            else np.zeros(6)
+        )
         self.feedback = [0.0, 0.0]
         self.order = _operator_order(voice)
 

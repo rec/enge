@@ -970,3 +970,41 @@ def test_dx7_renderer_releases_all_operators() -> None:
     released = renderer.render(48000)
 
     assert np.max(np.abs(released[-1000:])) < 5e-4
+
+
+@pytest.mark.parametrize("synchronize", [False, True])
+def test_dx7_initial_phases_obey_sync_and_remain_owned(
+    tmp_path: Path, synchronize: bool
+) -> None:
+    raw = bytearray(voice().data)
+    raw[136] = int(synchronize)
+    patch = DX7Voice(data=bytes(raw))
+    phases = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75]
+    renderer = DX7Renderer(patch, 69, 100, initial_phases=phases)
+    reference = DX7Renderer(patch, 69, 100)
+    if not synchronize:
+        reference.restore(
+            reference.snapshot().model_copy(update={"phases": phases.copy()})
+        )
+    phases[:] = [0.0] * 6
+    head = renderer.render(12001)
+    saved = DX7Snapshot.model_validate_json(renderer.snapshot().model_dump_json())
+    renderer.restore(saved)
+    actual = np.concatenate([head, renderer.render(35999)])
+    check_audio(tmp_path / "initial-phases.wav", actual, reference.render(48000))
+
+
+@pytest.mark.parametrize(
+    "phases",
+    [
+        [0.0] * 5,
+        [0.0] * 7,
+        [float("nan")] * 6,
+        [float("inf")] * 6,
+        [-0.1] * 6,
+        [1.0] * 6,
+    ],
+)
+def test_dx7_rejects_invalid_initial_phases(phases: list[float]) -> None:
+    with pytest.raises(EngineError, match="initial phases"):
+        DX7Renderer(voice(), 69, 100, initial_phases=phases)

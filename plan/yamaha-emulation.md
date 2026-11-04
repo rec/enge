@@ -70,7 +70,8 @@ LFO sync/waveform, pitch sensitivity and transpose ranges in both packed and
 unpacked inputs. Unpacked oscillator mode must also be 0 or 1. Rejected voices
 remain losslessly inspectable. Boundary tests include waveform 5 (sample and
 hold), which is implemented in the pinned MSFA reference. Validation does not
-implement the missing transpose or oscillator-sync behavior.
+implement transpose. The note-level phase ownership added below implements
+oscillator-sync reset, while offline polyphonic sync-off allocation remains work.
 
 The user approved a caller-owned shared Yamaha clock/LFO context on 2026-11-04.
 `DX7LFOContext` now emits normalized waveform/delay rows once per render interval;
@@ -349,6 +350,19 @@ This does not qualify hardware or complete the full-renderer requirement.
   state, snapshots, and regressions. Neither is an alias for the other.
 - Add a small set of public imported-patch fixtures only when their licensing
   permits redistribution. Tests may construct parameter bytes directly.
+
+## DX7 oscillator phase ownership
+
+The user approved explicit caller-owned phase initialization on 2026-11-04.
+`DX7Renderer` now accepts six `initial_phases` in cycles, ordered OP1 through
+OP6. Sync-on resets them to zero; sync-off copies the supplied phases. Omitting
+phases starts a standalone note at zero. Invalid lengths, nonfinite values and
+values outside `[0, 1)` are rejected. Caller mutation cannot affect a live note.
+Existing JSON note snapshots preserve running phases across continuation.
+One-second WAV regressions cover both sync states, input ownership and restored
+continuation. Offline instrument sync-off remains rejected until its reusable
+oscillator-slot policy is resolved and implemented; idle phase evolution is not
+yet owned by the adapter. This is not hardware phase qualification.
 
 ## Offline instrument integration
 
