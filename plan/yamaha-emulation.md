@@ -296,6 +296,16 @@ ymfm's register-slot exclusion conflicts with the manual's OP1 restriction
 under the channel mapping. Enge retains its manual-based OP1 rule; complete
 shift mapping, controller-modulated patches and hardware remain unqualified.
 
+The [DAC audit](../doc/yamaha-reference/opz-dac.md) verifies the pinned helper
+over all 65,536 signed 16-bit inputs and records its positive-overflow difference
+from explicit encode/decode. The chip renderer uses the optimized helper after
+summing hardware channels. Per-note conversion or conversion after the current
+portable per-voice processing would be a different signal path. Implementing
+this provisional DAC model therefore needs explicit shared chip/output-group
+ownership and post-sum processing, not an isolated converter inside each note.
+That contract and integration remain work; source arithmetic qualification
+does not establish physical DAC behavior.
+
 Renderer admission checks the raw per-operator VCED amplitude-modulation-enable
 and ACED fixed-frequency flags before using their decoded booleans. Values above
 one are rejected rather than silently treated as true. Regressions cover all
