@@ -345,6 +345,14 @@ part isolation, retirement history and snapshot replay. Mono mode is now
 rejected explicitly by the adapter until its held-key and legato lifecycle is
 implemented. Fingered portamento remains work.
 
+The synth, FM, noise and Yamaha renderers now accept physical `trigger_release`
+observations without retiring sustained audio. Persistent native admission
+discards these observations before encoding DSP actions. This prepares consumers
+for shared synth traces to expose physical key release independently of logical
+retirement under sustain. One-second WAV regressions cover every supported
+backend, partitioned rendering and snapshot replay. Mono held-key ownership and
+legato interpretation of these observations remain to be implemented.
+
 The TX81Z-specific `yamaha.portamento` target now controls full-time glide through
 the existing scoped-control path. Its normalized 0..1 domain defaults to 1,
 matching the manual's initial enabled state. Values below 0.5 switch glide off;

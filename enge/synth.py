@@ -856,6 +856,8 @@ class ControlRenderer:
     def apply(
         self, action: instrument_trace.TraceAction, active_voice_ids: Collection[str]
     ) -> bool:
+        if isinstance(action, instrument_trace.TriggerRelease):
+            return True
         if (
             isinstance(action, instrument_trace.EnvelfoObservation)
             and action.target == "envelope"
@@ -1981,6 +1983,8 @@ class PersistentSynth:
         }
         count = 0
         for action in ordered:
+            if isinstance(action, instrument_trace.TriggerRelease):
+                continue
             offset = action.tick - start
             if isinstance(action, instrument_trace.TriggerContext):
                 if action.controls.keys() != self.instrument.controls.keys():
