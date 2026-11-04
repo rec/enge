@@ -113,6 +113,7 @@ def test_tx81z_breath_uses_measured_attenuation_before_saturation(
         raw[i], raw[i + 3], raw[i + 4] = 31, 15, 15
         raw[i + 7], raw[i + 11], raw[i + 12] = sensitivity, 4, 3
     raw[49], raw[52], raw[62], raw[76] = output, 7, 24, 99
+    raw[75] = 50  # Isolate EG bias with neutral pitch bias.
     raw[67] = 99 if foot else 0
     voice = tx81z.TX81ZVoice(data=bytes(raw))
     additional = tx81z.TX81ZAdditional(data=bytes(23))
@@ -202,6 +203,42 @@ def test_tx81z_invalid_controller_does_not_advance_note(
         else:
             note.render(1, foot=values)
     assert note.snapshot() == before
+
+
+@pytest.mark.parametrize("bias", [0, 49, 51, 99])
+def test_active_breath_pitch_bias_rejects_before_advancing_note(bias: int) -> None:
+    raw = bytearray(93)
+    raw[62], raw[66], raw[75] = 24, 50, bias
+    note = TX81ZRenderer(
+        tx81z.TX81ZVoice(data=bytes(raw)),
+        tx81z.TX81ZAdditional(data=bytes(23)),
+        69,
+        127,
+        start_pitch_hz=220,
+    )
+    before = note.snapshot()
+    with pytest.raises(EngineError, match="breath pitch bias is not implemented"):
+        note.render(2, breath=np.array([0.0, 1.0]))
+    assert note.snapshot() == before
+
+
+@pytest.mark.parametrize("bias", [0, 99])
+def test_zero_breath_leaves_unsupported_pitch_bias_inactive(
+    tmp_path: Path, bias: int
+) -> None:
+    raw = bytearray(93)
+    for i in range(0, 52, 13):
+        raw[i], raw[i + 3], raw[i + 4] = 31, 15, 15
+        raw[i + 10], raw[i + 11], raw[i + 12] = 99, 4, 3
+    raw[52], raw[62], raw[75] = 7, 24, bias
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    additional = tx81z.TX81ZAdditional(data=bytes(23))
+    actual = TX81ZRenderer(voice, additional, 69, 127).render(
+        48000, breath=np.zeros(48000)
+    )
+    expected = TX81ZRenderer(voice, additional, 69, 127).render(48000)
+    assert np.any(expected)
+    check_audio(tmp_path / "inactive-pitch-bias.wav", actual, expected)
 
 
 def test_tx81z_breath_asset_preserves_complete_measured_table() -> None:

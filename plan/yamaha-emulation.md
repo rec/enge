@@ -374,6 +374,16 @@ authored-depth ramp described below.
 Multitimbral LFO routing, software
 LFOs and full engine integration also remain work.
 
+The [owner's manual, printed page 40](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
+defines the performance-mode ownership boundary: the first two instruments
+whose Max Notes allocation is nonzero supply the shared LFO choices. This is
+allocation order, not the order of currently sounding notes. `vib` uses the
+instrument's own voice settings for pitch modulation only; `off` disables both
+pitch and amplitude modulation. The next integration therefore needs explicit
+performance allocations and selectors. Existing DAC output groups do not
+provide that information and must not silently infer LFO ownership from their
+template list or current polyphony.
+
 The [delay measurements](https://nornand.hatenablog.com/entry/2020/11/30/185005)
 specify completion times in units of 1/48 second, with observed variation of one
 unit. Both depths remain zero until half that time; PMD then rises linearly,
@@ -782,6 +792,11 @@ assignments or portamento.
   bend model leaves fixed operators unchanged; firmware qualification remains
   open. Breath routes reject
   nonneutral pitch bias rather than ignoring that assignment.
+  Direct `TX81ZRenderer.render` also rejects positive breath rows when VCED 75
+  is nonneutral, before advancing oscillators, envelopes or portamento. Omitted
+  or all-zero breath rows remain valid because the pitch assignment is inactive;
+  neutral pitch bias still permits the measured EG-bias path. This closes a
+  direct-API admission gap, not the missing pitch-bias renderer.
   The manual's compatibility section (printed page 48) explicitly describes
   the TX81Z bias curve as exponential, unlike the DX27/100 curve. Direction and
   a neutral setting alone therefore do not justify a linear cents model.
@@ -794,6 +809,13 @@ assignments or portamento.
   is established. Remaining evidence must identify assignment-to-depth mapping,
   depth times CC2 arithmetic, pitch units and fixed-operator behavior. Do not
   treat the unidentified table as a qualified breath-bias curve.
+  A further source check of
+  [Deicsonze's render source at `b50ba70`](https://github.com/ngeiswei/deicsonze/blob/b50ba700e069ed64d80c7efb40e0f645e5172f80/src/deicsonze/deicsonze.cpp)
+  found `bcPitchBias` assignments for import and controller edits, but no
+  consumption of that field in its rendering code. That source does not supply
+  the missing conversion formula. The owner's manual and published memory map
+  still do not establish assignment scaling, CC2 arithmetic or fixed-operator
+  behavior, so the explicit unsupported boundary remains necessary.
 - The [measured breath EG-bias table](https://nornand.hatenablog.com/entry/2020/11/24/224423)
   is complete: 100 bias settings × 8 operator sensitivities × 128 CC2 values.
   The 102,400 values are all in 0..127; attenuation decreases monotonically with

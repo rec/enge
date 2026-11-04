@@ -313,6 +313,8 @@ class TX81ZRenderer:
             or np.any((breath < 0) | (breath > 1))
         ):
             raise EngineError("TX81Z breath rows must have shape (frames,) in 0..1")
+        if breath is not None and self.voice.data[75] != 50 and np.any(breath):
+            raise EngineError("TX81Z breath pitch bias is not implemented")
         if foot is not None and (
             foot.shape != (frames,)
             or not np.all(np.isfinite(foot))
