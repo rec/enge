@@ -60,7 +60,7 @@ Velocity populates `Trigger.velocity`; no named `velocity` control is invented.
 
 CC values follow the binding's declared linear ranges. Optional pitch bend uses
 the explicit minimum/center/maximum mapping in
-[uFor's contract](../../ufor/doc/performance-binding.md), reaching the endpoints
+[uFor's contract](https://github.com/rec/ufor/blob/main/doc/performance-binding.md), reaching the endpoints
 exactly. It emits a named part control and does not modify trigger pitch itself.
 Unselected channels, unmapped CCs and unconfigured bend have no effect. Program
 changes, pressure, timing messages and SysEx have no conversion in this source

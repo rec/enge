@@ -1,7 +1,7 @@
 # enveLFO extraction contract and closeout evidence
 
 Updated 2026-10-15 after the final extraction audit. The original inventory and
-implementation history are retained in [the plan](../plan/envelfo.md).
+implementation history are retained in [the plan](https://github.com/rec/enge/blob/main/plan/envelfo.md).
 The standalone capability matrix, distribution checks and explicit exclusions
 are maintained in [enveLFO's audit](https://github.com/rec/envelfo/blob/main/doc/extraction-audit.md).
 
