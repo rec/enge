@@ -5,7 +5,7 @@ from math import ceil, floor
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
-from ufor import instrument_trace, synth_trace
+from ufor import instrument_trace, synth_trace, tx81z
 from ufor.dx7 import DX7Performance
 from ufor.samples.processing import FilterOrder, Processing
 from ufor.streams import AudioType
@@ -79,7 +79,7 @@ class YamahaSnapshot(BaseModel, frozen=True):
 
 
 class OfflineYamaha:
-    """One shared hardware-model LFO clock per authored voice template.
+    """Shared Yamaha clocks with explicit TX81Z performance ownership.
 
     Python offline execution only. Internal operator envelopes precede the
     external processing chain; filter_order controls placement of outer gain.
@@ -93,12 +93,38 @@ class OfflineYamaha:
             for v in self.definition.score.body.voices
             if isinstance(v, (YamahaDX7Voice, YamahaTX81ZVoice))
         }
+        self.authored_templates = self.templates.copy()
+        self.lfo_groups = {
+            n: g for g in self.definition.score.body.tx81z_lfos for n in g.routes
+        }
         self.clocks = {
             n: yamaha_lfo.DX7LFOContext(v.patch, definition.sample_rate)
             if isinstance(v, YamahaDX7Voice)
             else yamaha_lfo.TX81ZLFOContext(v.patch, definition.sample_rate)
             for n, v in self.templates.items()
+            if n not in self.lfo_groups
         }
+        for group in self.definition.score.body.tx81z_lfos:
+            first = self.templates[group.first]
+            second = self.templates[group.second] if group.second else None
+            assert isinstance(first, YamahaTX81ZVoice)
+            assert second is None or isinstance(second, YamahaTX81ZVoice)
+            self.clocks[group.first] = yamaha_lfo.TX81ZLFOContext(
+                first.patch,
+                definition.sample_rate,
+                secondary=second.patch if second else None,
+            )
+            for name, selector in group.routes.items():
+                if selector not in ("first", "second"):
+                    continue
+                owner = first if selector == "first" else second
+                template = self.templates[name]
+                assert owner is not None and isinstance(template, YamahaTX81ZVoice)
+                patch = bytearray(template.patch.data)
+                patch[56:58] = owner.patch.data[56:58]
+                self.templates[name] = template.model_copy(
+                    update={"patch": tx81z.TX81ZVoice(data=bytes(patch))}
+                )
         self.voices: dict[str, Voice] = {}
         self.output_groups = {
             v: o.name
@@ -275,7 +301,7 @@ class OfflineYamaha:
         template = self.templates.get(action.template)
         if (
             template is None
-            or action.settings != template
+            or action.settings != self.authored_templates[action.template]
             or action.channels != template.channels
             or action.key is None
             or action.velocity is None
@@ -379,7 +405,8 @@ class OfflineYamaha:
                 slots.append(slot)
             else:
                 slots[slot_index] = slot
-        self.clocks[template.name].keydown()
+        group = self.lfo_groups.get(template.name)
+        self.clocks[group.first if group else template.name].keydown()
         if template.name in self.pitch_history:
             assert isinstance(renderer, yamaha.TX81ZRenderer)
             self.pitch_history[template.name][action.part] = PitchHistory(
@@ -434,6 +461,16 @@ class OfflineYamaha:
         output = np.zeros((frames, len(self.definition.channels)))
         groups = {n: np.zeros((frames, 1)) for n in self.output_filters}
         rows = {n: c.advance(frames) for n, c in self.clocks.items()}
+        for group in self.definition.score.body.tx81z_lfos:
+            shared = rows[group.first]
+            for name, selector in group.routes.items():
+                if selector == "off":
+                    rows[name] = np.zeros((frames, 4), dtype=np.int64)
+                    rows[name][:, 3] = 1
+                else:
+                    rows[name] = (
+                        shared[:, int(selector == "second")] if group.second else shared
+                    )
         for voice in list(self.voices.values()):
             template = self.templates[voice.template]
             audio = np.zeros((frames, 1))
@@ -622,6 +659,8 @@ class OfflineYamaha:
 
 def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
     score = SynthInstrumentScore.model_validate(score.model_dump())
+    if any("vibrato" in g.routes.values() for g in score.body.tx81z_lfos):
+        raise synth.EngineError("TX81Z performance software vibrato is not implemented")
     output = score.outputs[0].stream
     if not isinstance(output, AudioType):
         raise synth.EngineError("Yamaha output must be sampled audio")

@@ -371,16 +371,15 @@ snapshot replay. This qualifies the component against that software model,
 not hardware or the complete TX81Z renderer. Delayed pitch modulation now uses
 the provisional measured timing below; delayed AMD now uses the provisional
 authored-depth ramp described below.
-Multitimbral LFO routing, software
-LFOs and full engine integration also remain work.
+Software LFOs and the remaining full performance integration still need work.
 
 The [owner's manual, printed page 40](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
 defines the performance-mode ownership boundary: the first two instruments
 whose Max Notes allocation is nonzero supply the shared LFO choices. This is
 allocation order, not the order of currently sounding notes. `vib` uses the
 instrument's own voice settings for pitch modulation only; `off` disables both
-pitch and amplitude modulation. The next integration therefore needs explicit
-performance allocations and selectors. Existing DAC output groups do not
+pitch and amplitude modulation. Integration uses explicit LFO owners and
+selectors derived from those allocations. Existing DAC output groups do not
 provide that information and must not silently infer LFO ownership from their
 template list or current polyphony.
 
@@ -388,9 +387,9 @@ The format prerequisite is implemented in uFor `85bce42`: lossless PCED bulk
 inspection retains all 110 parameter bytes and decodes the eight instrument
 allocations, including maximum notes and LFO selectors. Invalid parameters
 remain inspectable with diagnostics, and performance messages are distinguished
-from ACED operator data. All 1,378 uFor tests pass. This revision is not yet
-pinned by enge. Explicit library-template binding, two shared LFO ownership,
-software vibrato and performance rendering remain the next implementation work;
+from ACED operator data. The decoder is included in enge's uFor pin `a32cfe3`,
+which also adds explicit `TX81ZLFOGroup` owner-to-template bindings.
+Software vibrato and remaining performance settings still need work;
 the decoder alone does not qualify or execute those behaviors.
 
 The existing `TX81ZLFOContext` now accepts a second voice definition and clocks
@@ -402,8 +401,21 @@ the pinned ymfm model; restarting both performance delay ramps is provisional
 until firmware or hardware evidence establishes that behavior. All 16 waveform
 pairings match the pinned reference over one second at 48 kHz, including the
 shared sample-and-hold table. This implements the shared hardware-clock
-primitive, not allocation routing, software vibrato or complete performance
+primitive, not software vibrato or complete performance
 rendering. See the [paired comparison](../doc/yamaha-reference/README.md#tx81z-paired-hardware-lfo-comparison).
+
+`OfflineYamaha` now consumes the explicit `tx81z_lfos` owner/selector groups.
+One group clocks its first and optional second owners once per render interval,
+even when neither owner has sounding notes. Recipients inherit selected owner
+base PMD/AMD while retaining their own sensitivity, AM-enable bits and scoped
+controller assignments. Keeping scoped assignments independent is a host
+extension, not qualified firmware controller ownership. Prepared actions remain
+validated against the original authored templates; derived render patches and
+group clocks restore through the existing JSON snapshots. Off routes suppress
+both PM and AM. Software vibrato routes are explicitly rejected at preparation.
+One-second WAV regressions cover one/two owners, silent owners, overlapping
+notes, independent owner rates/delays/sync, off routes and JSON continuation.
+This does not impose a hardware voice allocator or implement other PCED fields.
 
 Firmware-derived depth integration:
 [ax81z Math.md at 5848832](https://github.com/iflyhigh/ax81z/blob/5848832989c7864092a277e9428d44f817c6173f/Math.md)
