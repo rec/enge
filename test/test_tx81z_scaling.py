@@ -4,11 +4,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from test_tx81z_integer import opz_carrier
 from ufor import tx81z
 
 from enge import yamaha
 from enge.synth import EngineError
-from enge.yamaha import TX81ZRenderer
+from enge.yamaha import TX81ZRenderer, TX81ZState, tx81z_operator_samples
 
 
 @pytest.mark.parametrize(
@@ -96,8 +97,8 @@ def test_tx81z_note_applies_key_and_velocity_attenuation_before_saturation(
     actual = TX81ZRenderer(voice, additional, note - transpose, velocity).render(48000)
     frequency = 440 * 2 ** ((note - 69) / 12)
     # Algorithm 8 adds 16 TL to each carrier. The other three operators have OUT 0.
-    gain = 2 ** (-min(127, 16 + attenuation) / 8) + 3 * 2 ** (-127 / 8)
-    expected = gain * np.sin(2 * np.pi * frequency * np.arange(48000) / 48000)
+    expected = opz_carrier(frequency, 2 ** (-min(127, 16 + attenuation) / 8))
+    expected += 3 * opz_carrier(frequency, 2 ** (-127 / 8))
     check_audio(tmp_path / "tx81z-note-scaling.wav", actual, expected[:, None])
     assert voice.data == bytes(raw)
 
@@ -123,8 +124,7 @@ def test_tx81z_breath_uses_measured_attenuation_before_saturation(
     gain = 2 ** (
         -np.minimum(127, (16 if output else 127) + bias + (15 if foot else 0)) / 8
     )
-    gain += 3 * 2 ** (-127 / 8)
-    expected = gain * np.sin(2 * np.pi * 440 * np.arange(48000) / 48000)
+    expected = opz_carrier(440, gain) + 3 * opz_carrier(440, 2 ** (-127 / 8))
     note = TX81ZRenderer(voice, additional, 69, 127)
     actual = note.render(
         48000, breath=(cc + 0.25 * (cc < 127)) / 127, foot=np.full(48000, 64 / 127)
@@ -151,15 +151,18 @@ def test_tx81z_foot_range_attenuates_only_carriers(
         raw[i + 10], raw[i + 11], raw[i + 12] = 99, 4, 3
     raw[52], raw[62] = algorithm - 1, 24
     additional = tx81z.TX81ZAdditional(data=bytes(23))
-    baseline = TX81ZRenderer(
-        tx81z.TX81ZVoice(data=bytes(raw)), additional, 69, 127
-    ).render(48000)
     raw[67] = amount
     voice = tx81z.TX81ZVoice(data=bytes(raw))
     foot = np.repeat([0, 1.25 / 127, 2.25 / 127, 64.25 / 127, 1], 9600)
     base_tl = 16 if algorithm == 8 else 0
     change = np.minimum(127, base_tl + np.repeat(attenuation, 9600)) - base_tl
-    expected = baseline * 2 ** (-change[:, None] / 8)
+    gains = np.ones((48000, 4))
+    carriers = [0] if algorithm == 1 else range(4)
+    for i in carriers:
+        gains[:, i] = 2 ** (-(base_tl + change) / 8)
+    expected, _ = tx81z_operator_samples(
+        algorithm, [0] * 4, TX81ZState(), np.full((48000, 4), 440.0), gains
+    )
     note = TX81ZRenderer(voice, additional, 69, 127)
     before = note.render(17003, foot=foot[:17003])
     saved = note.snapshot()

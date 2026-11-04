@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from test_tx81z_integer import opz_carrier, reference_tables
 from ufor import tx81z
 from ufor.dx7 import DX7Voice
 
@@ -256,7 +257,7 @@ def test_tx81z_detune_preserves_sign_and_key_dependent_chip_steps(
     gains[:, 0] = 0.05
     actual, _ = tx81z_operator_samples(8, [0] * 4, TX81ZState(), frequencies, gains)
     expected_hz = 440 + expected * (3579545 / 64) / 2**20
-    audio = 0.05 * np.sin(2 * np.pi * np.arange(48000) * expected_hz / 48000)
+    audio = opz_carrier(expected_hz, 0.05)
     check_audio(tmp_path / "tx81z-detune.wav", actual, audio[:, None])
 
 
@@ -400,9 +401,7 @@ def test_tx81z_prepared_patch_components_render_and_release(tmp_path: Path) -> N
     )
     ticks = np.arange(48000, dtype=np.int64) * bank.clock_hz // (192 * 48000)
     attenuation = np.minimum(np.maximum(ticks - ticks[24000], 0) * 8, 1023)
-    expected = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000) * 2 ** (
-        -attenuation / 64
-    )
+    expected = 4 * opz_carrier(440, 0.25 * 2 ** (-attenuation / 64))
     check_audio(
         tmp_path / "tx81z-paired-components.wav",
         np.concatenate([first, tail]),
@@ -449,14 +448,20 @@ def test_tx81z_operator_bank_retains_two_feedback_samples(
     frequencies = np.full((48000, 4), 440.0)
     gains = np.zeros((48000, 4))
     gains[:, 3] = 0.05
-    state = TX81ZState(feedback=[0.02, -0.01])
+    state = TX81ZState(feedback=[164, -82])
     expected = np.empty((48000, 1))
     older, newer = state.feedback
+    waves, power = reference_tables()
     for i in range(48000):
-        value = 0.05 * np.sin(
-            2 * np.pi * (i * 440 / 48000 + (older + newer) * 2 ** (feedback - 7))
+        phase = (i * round(440 * 2**20 / 48000) >> 10) + (
+            (older + newer) >> (10 - feedback)
         )
-        expected[i, 0] = value
+        entry = int(waves[0, phase & 1023])
+        level = (entry & 32767) + 4 * round(-64 * np.log2(0.05))
+        value = int(power[level & 255]) >> (level >> 8)
+        if entry & 32768:
+            value = -value
+        expected[i, 0] = value / 8192
         older, newer = newer, value
     actual, final = tx81z_operator_samples(
         8, [0] * 4, state, frequencies, gains, feedback=feedback
@@ -471,62 +476,22 @@ def test_tx81z_operator_bank_retains_two_feedback_samples(
     )
     np.testing.assert_array_equal(np.concatenate([first, tail]), actual)
     assert resumed == final
-    assert state.feedback == [0.02, -0.01]
+    assert state.feedback == [164, -82]
 
 
 def test_tx81z_bank_uses_each_operators_selected_waveform(tmp_path: Path) -> None:
     waveforms = [0, 2, 4, 7]
-    state = TX81ZState(phases=[0.1, 0.2, 0.3, 0.4])
+    state = TX81ZState(phases=[104858, 209715, 314573, 419430])
     frequencies = np.tile([220, 330, 550, 770], (48000, 1)).astype(float)
     gains = np.tile([0.1, 0.2, 0.3, 0.4], (48000, 1))
-    phases = np.arange(48000)[:, None] * frequencies / 48000 + state.phases
     expected = sum(
-        gains[:, i] * tx81z_wave_samples(waveforms[i], phases[:, i]) for i in range(4)
+        opz_carrier(
+            frequencies[:, i], gains[:, i], waveform=waveforms[i], phase=state.phases[i]
+        )
+        for i in range(4)
     )
     actual, _ = tx81z_operator_samples(8, waveforms, state, frequencies, gains)
     check_audio(tmp_path / "tx81z-bank-waves.wav", actual, expected[:, None])
-
-
-@pytest.mark.parametrize("algorithm", range(1, 9))
-def test_tx81z_operator_bank_realizes_all_eight_topologies(
-    tmp_path: Path, algorithm: int
-) -> None:
-    frequencies = np.tile([220, 330, 550, 770], (48000, 1)).astype(float)
-    gains = np.tile([0.02, 0.03, 0.04, 0.05], (48000, 1))
-    phases = 2 * np.pi * np.arange(48000)[:, None] * frequencies / 48000
-    a, b, c, d = phases.T
-    x = 0.02 * np.sin(a)
-    y = 0.03 * np.sin(b)
-    z = 0.04 * np.sin(c)
-    w = 0.05 * np.sin(d)
-    m = 8 * np.pi
-    candidates = [
-        0.02 * np.sin(a + m * 0.03 * np.sin(b + m * 0.04 * np.sin(c + m * w))),
-        0.02 * np.sin(a + m * 0.03 * np.sin(b + m * (z + w))),
-        0.02 * np.sin(a + m * (w + 0.03 * np.sin(b + m * z))),
-        0.02 * np.sin(a + m * (y + 0.04 * np.sin(c + m * w))),
-        0.02 * np.sin(a + m * y) + 0.04 * np.sin(c + m * w),
-        0.02 * np.sin(a + m * w) + 0.03 * np.sin(b + m * w) + 0.04 * np.sin(c + m * w),
-        x + y + 0.04 * np.sin(c + m * w),
-        x + y + z + w,
-    ]
-    initial = TX81ZState()
-    actual, final = tx81z_operator_samples(
-        algorithm, [0] * 4, initial, frequencies, gains
-    )
-    check_audio(
-        tmp_path / "tx81z-topology.wav", actual, candidates[algorithm - 1][:, None]
-    )
-    first, saved = tx81z_operator_samples(
-        algorithm, [0] * 4, initial, frequencies[:12345], gains[:12345]
-    )
-    saved = TX81ZState.model_validate_json(saved.model_dump_json())
-    tail, resumed = tx81z_operator_samples(
-        algorithm, [0] * 4, saved, frequencies[12345:], gains[12345:]
-    )
-    np.testing.assert_array_equal(np.concatenate([first, tail]), actual)
-    assert resumed == final
-    assert initial.phases == [0] * 4
 
 
 @pytest.mark.parametrize(
@@ -616,50 +581,6 @@ def test_tx81z_envelope_holds_maximum_and_releases_with_shift(
         tmp_path / "tx81z-envelope.wav",
         actual[:, None],
         (carrier * 2 ** (-expected / 64))[:, None],
-    )
-
-
-@pytest.mark.parametrize("waveform", range(8))
-def test_tx81z_waveforms_preserve_signed_and_gated_shapes(
-    tmp_path: Path, waveform: int
-) -> None:
-    root = np.sqrt(0.5)
-    low = (2 - np.sqrt(2)) / 4
-    high = (2 + np.sqrt(2)) / 4
-    a, b = np.sqrt(low), np.sqrt(high)
-    cycles = [
-        [0, a, root, b, 1, b, root, a, 0, -a, -root, -b, -1, -b, -root, -a],
-        [
-            0,
-            low,
-            0.5,
-            high,
-            1,
-            high,
-            0.5,
-            low,
-            0,
-            -low,
-            -0.5,
-            -high,
-            -1,
-            -high,
-            -0.5,
-            -low,
-        ],
-        [0, a, root, b, 1, b, root, a] + [0] * 8,
-        [0, low, 0.5, high, 1, high, 0.5, low] + [0] * 8,
-        [0, root, 1, root, 0, -root, -1, -root] + [0] * 8,
-        [0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5] + [0] * 8,
-        [0, root, 1, root, 0, root, 1, root] + [0] * 8,
-        [0, 0.5, 1, 0.5, 0, 0.5, 1, 0.5] + [0] * 8,
-    ]
-    phases = np.arange(48000) / 16 - 1500
-    phases.flags.writeable = False
-    actual = tx81z_wave_samples(waveform, phases)
-    expected = np.tile(cycles[waveform], 3000)
-    check_audio(
-        tmp_path / f"tx81z-wave-{waveform}.wav", actual[:, None], expected[:, None]
     )
 
 

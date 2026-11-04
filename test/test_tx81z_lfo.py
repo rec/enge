@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from test_tx81z_integer import opz_carrier
 from ufor import tx81z
 
 from enge.synth import EngineError
@@ -95,7 +96,7 @@ def test_tx81z_pitch_modulation_keeps_fine_detune_outside_the_ratio(
         voice, tx81z.TX81ZAdditional(data=bytes(23)), 69, 100
     ).render(48000, rows)
     frequency = 440 * 2**0.5 + 9 * 3579545 / (64 * 2**20)
-    expected = np.sin(2 * np.pi * frequency * np.arange(48000) / 48000)[:, None]
+    expected = (4 * opz_carrier(frequency))[:, None]
     check_audio(tmp_path / "tx81z-lfo-detune.wav", actual, expected)
 
 
@@ -112,13 +113,11 @@ def test_tx81z_amplitude_modulation_obeys_channel_sensitivity_and_operator_enabl
     additional = tx81z.TX81ZAdditional(data=bytes(23))
     rows = np.tile([0, 65, 1, 1], (48000, 1))
     actual = TX81ZRenderer(voice, additional, 69, 100).render(48000, rows)
-    raw[57] = 0
-    baseline = TX81ZRenderer(
-        tx81z.TX81ZVoice(data=bytes(raw)), additional, 69, 100
-    ).render(48000)
     attenuation = 64 << (sensitivity - 1) if sensitivity and enabled else 0
     check_audio(
-        tmp_path / "tx81z-lfo-ame.wav", actual, baseline * 2 ** (-attenuation / 64)
+        tmp_path / "tx81z-lfo-ame.wav",
+        actual,
+        (4 * opz_carrier(440, 0.25 * 2 ** (-attenuation / 64)))[:, None],
     )
 
 
@@ -200,9 +199,7 @@ def test_tx81z_delayed_amplitude_uses_curved_depth_and_undelayed_controllers(
     # Measured AMD register values for authored depths 0/12/25/37/50 or 0/24/49/74/99.
     depths = np.maximum(np.repeat(registers, 9600), 16 if controller else 0)
     attenuation = (255 * depths >> 7) << 2
-    expected = np.sin(2 * np.pi * 440 * np.arange(48000) / 48000) * 2 ** (
-        -attenuation / 64
-    )
+    expected = 4 * opz_carrier(440, 0.25 * 2 ** (-attenuation / 64))
     check_audio(tmp_path / "delayed-amplitude.wav", actual, expected[:, None])
 
 

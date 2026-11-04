@@ -1,10 +1,11 @@
-from math import ceil, fsum
+from math import ceil
 from pathlib import Path
 
 import numpy as np
 import pytest
 from meedee import messages
 from test_synth import check_audio
+from test_tx81z_integer import opz_carrier
 from test_tx81z_lfo import lfo_voice
 from test_yamaha_instrument import instrument
 from ufor import performance_binding, synth_trace, tx81z
@@ -42,19 +43,7 @@ def test_legato_glide_starts_at_previous_sounding_pitch_across_wrap(
     frequencies = np.concatenate(
         [np.full(1001, start_hz), target_hz * glide.ratios(46999)]
     )
-    # Glide frequency is constant between firmware ticks. Sum completed runs
-    # accurately instead of accumulating 48000 rounded additions in the oracle.
-    boundaries = np.concatenate(
-        [[0], np.flatnonzero(np.diff(frequencies)) + 1, [48000]]
-    )
-    phases = np.empty(48000)
-    completed = []
-    for start, end in zip(boundaries[:-1], boundaries[1:], strict=True):
-        phases[start:end] = (
-            fsum(completed) + frequencies[start] * np.arange(end - start)
-        ) / 48000
-        completed.append(frequencies[start] * (end - start))
-    expected = np.sin(2 * np.pi * phases)[:, None]
+    expected = (4 * opz_carrier(frequencies))[:, None]
     saved = note.snapshot()
     actual = np.concatenate([head, note.render(46999)])
     check_audio(tmp_path / "legato-wrap.wav", actual, expected)
@@ -199,9 +188,7 @@ def test_note_portamento_preserves_fixed_operators_detune_and_snapshot(
     fixed_frequency = yamaha.tx81z_base_frequency(
         voice.operator(4), additional.operator(4), 69
     )
-    phase = np.concatenate([[0], np.cumsum(ratio_frequency[:-1])]) / 48000
-    expected = 0.75 * np.sin(2 * np.pi * phase)
-    expected += 0.25 * np.sin(2 * np.pi * fixed_frequency * np.arange(48000) / 48000)
+    expected = 3 * opz_carrier(ratio_frequency) + opz_carrier(fixed_frequency)
     check_audio(
         tmp_path / "portamento-tuning.wav",
         np.concatenate([first, tail]),

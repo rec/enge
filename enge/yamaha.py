@@ -13,13 +13,13 @@ from .yamaha_portamento import TX81ZPortamento
 
 
 class TX81ZState(BaseModel, frozen=True):
-    """Numeric operator-bank continuation, separate from patch/envelope state."""
+    """OPZ Q20 phases and signed 14-bit feedback continuation."""
 
-    phases: list[float] = Field(
-        default_factory=lambda: [0.0] * 4, min_length=4, max_length=4
+    phases: list[int] = Field(
+        default_factory=lambda: [0] * 4, min_length=4, max_length=4
     )
-    feedback: list[float] = Field(
-        default_factory=lambda: [0.0] * 2, min_length=2, max_length=2
+    feedback: list[int] = Field(
+        default_factory=lambda: [0] * 2, min_length=2, max_length=2
     )
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -164,7 +164,7 @@ class TX81ZRenderer:
     with patch depths. Controller modulation bypasses patch delay.
     Intrinsic key scaling
     uses the transposed key; snapshots retain the original trigger key.
-    Frequencies and waveforms use the nominal floating-point OPZ model.
+    Nominal frequencies feed the integer Q20 phase and logarithmic OPZ core.
     Optional render tuning rows are cents relative to the admitted pitch, applied
     to ratio operators before their additive chip-detune offsets.
     Breath rows are normalized positions, truncated to CC2 before measured
@@ -1007,11 +1007,11 @@ def tx81z_operator_samples(
     sample_rate: int = 48000,
     feedback: int = 0,
 ) -> tuple[np.ndarray, TX81ZState]:
-    """Render prepared OP1..OP4 Hz/gain rows and return raw carrier mix/state.
+    """Render OP1..OP4 Hz/gain rows with the provisional integer OPZ core.
 
-    Gains scale normalized chip operator output. Routing uses four cycles per
-    full-scale modulation output; DAC saturation and patch-level scaling belong
-    to the enclosing voice. This is the provisional floating-point OPZ model.
+    Phase increments round to Q20 cycles and gains to 1/64-octave attenuation.
+    Modulation uses integer phase indices and two signed feedback samples.
+    Output is the raw carrier sum divided by 8192, before DAC saturation.
     """
     if not 1 <= algorithm <= 8 or not 0 <= feedback <= 7:
         raise EngineError("Invalid TX81Z algorithm or feedback")
@@ -1026,27 +1026,40 @@ def tx81z_operator_samples(
         or not np.all(np.isfinite(gains))
         or np.any(frequencies <= 0)
         or np.any(gains < 0)
+        or np.any(gains > 1)
     ):
-        raise EngineError("TX81Z frequencies/gains require finite (frames, 4) rows")
+        raise EngineError("TX81Z requires positive frequencies and gains in 0..1")
     edges, carriers = _TX_ALGORITHMS[algorithm - 1]
-    phases = np.array(state.phases)
+    phases = state.phases.copy()
+    steps = np.rint(np.remainder(frequencies / sample_rate, 1) * 2**20).astype(np.int64)
+    attenuation = np.rint(-64 * np.log2(np.maximum(gains, 2.0**-64))).astype(np.int64)
     history = state.feedback.copy()
     output = np.empty((len(frequencies), 1))
     for frame in range(len(frequencies)):
-        values = [0.0] * 4
+        values = [0] * 4
         for operator in (3, 2, 1, 0):
-            modulation = 4 * sum(values[s - 1] for s, d in edges if d - 1 == operator)
+            modulation = sum(values[s - 1] for s, d in edges if d - 1 == operator) >> 1
             if operator == 3 and feedback:
-                modulation += sum(history) * 2 ** (feedback - 7)
-            values[operator] = gains[frame, operator] * float(
-                tx81z_wave_samples(
-                    waveforms[operator], np.asarray(phases[operator] + modulation)
-                )
+                modulation += sum(history) >> (10 - feedback)
+            values[operator] = tx81z_operator_output(
+                waveforms[operator],
+                (phases[operator] >> 10) + modulation,
+                int(attenuation[frame, operator]),
             )
-        output[frame, 0] = sum(values[c - 1] for c in carriers)
+        output[frame, 0] = sum(values[c - 1] for c in carriers) / 8192
         history = [history[1], values[3]]
-        phases = np.remainder(phases + frequencies[frame] / sample_rate, 1)
-    return output, TX81ZState(phases=phases.tolist(), feedback=history)
+        phases = [
+            (p + int(s)) % 2**20 for p, s in zip(phases, steps[frame], strict=True)
+        ]
+    return output, TX81ZState(phases=phases, feedback=history)
+
+
+def tx81z_operator_output(waveform: int, phase: int, attenuation: int) -> int:
+    """Evaluate an OPZ waveform at a 10-bit phase with 1/64-octave attenuation."""
+    entry = _TX_WAVEFORMS[waveform][phase & 1023]
+    level = (entry & 32767) + 4 * attenuation
+    value = _TX_POWER[level & 255] >> (level >> 8)
+    return -value if entry & 32768 else value
 
 
 def tx81z_base_frequency(
@@ -1069,22 +1082,14 @@ def tx81z_base_frequency(
 
 
 def tx81z_wave_samples(waveform: int, phases: np.ndarray) -> np.ndarray:
-    """Sample the provisional ymfm TX81Z shapes at phases measured in cycles.
-
-    ACED waveform numbers are zero-based. This realizes the continuous shapes,
-    not the chip's logarithmic lookup-table quantization or alias suppression.
-    """
+    """Sample the quantized OPZ waveform at cycle phases, without attenuation."""
     if waveform not in range(8):
         raise EngineError("TX81Z waveform must be from 0 through 7")
-    phase = np.remainder(phases, 1)
-    signal = np.sin(2 * pi * phase * (2 if waveform >= 4 else 1))
-    if waveform >= 6:
-        signal = np.abs(signal)
-    if waveform % 2:
-        signal *= np.abs(signal)
-    if waveform >= 2:
-        signal = np.where(phase < 0.5, signal, 0)
-    return signal
+    indices = np.floor(np.remainder(phases, 1) * 1024).astype(np.int64)
+    table = np.array(
+        [tx81z_operator_output(waveform, i, 0) / 8192 for i in range(1024)]
+    )
+    return table[indices]
 
 
 def _operator_order(voice: DX7Voice) -> list[int]:
@@ -2211,3 +2216,24 @@ _DX7_HOLD_SAMPLES = [
     441,
     441,
 ]
+
+# Independent mathematical reconstruction of the OPZ logarithmic tables.
+# The quarter-sine is sampled at cell midpoints; power mantissas include the
+# implicit leading bit and the reference's two-bit output shift.
+_TX_QUARTER_SINE = [round(-256 * log2(sin((i + 0.5) * pi / 512))) for i in range(256)]
+_TX_SINE = [
+    _TX_QUARTER_SINE[(i ^ (255 if i & 256 else 0)) & 255] | ((i & 512) << 6)
+    for i in range(1024)
+]
+_TX_SQUARED = [min(2 * (i & 32767), _TX_SINE[0]) | (i & 32768) for i in _TX_SINE]
+_TX_WAVEFORMS = [
+    _TX_SINE,
+    _TX_SQUARED,
+    [_TX_SINE[i] if i < 512 else _TX_SINE[0] for i in range(1024)],
+    [_TX_SQUARED[i] if i < 512 else _TX_SINE[0] for i in range(1024)],
+    [_TX_SINE[2 * i] if i < 512 else _TX_SINE[0] for i in range(1024)],
+    [_TX_SQUARED[2 * i] if i < 512 else _TX_SINE[0] for i in range(1024)],
+    [_TX_SINE[(2 * i) & 511] if i < 512 else _TX_SINE[0] for i in range(1024)],
+    [_TX_SQUARED[(2 * i) & 511] if i < 512 else _TX_SINE[0] for i in range(1024)],
+]
+_TX_POWER = [round(1024 * 2 ** ((255 - i) / 256)) * 4 for i in range(256)]

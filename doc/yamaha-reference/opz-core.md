@@ -1,6 +1,8 @@
 # TX81Z fixed-gain OPZ core comparison
 
-This is a failing qualification result, not a passing audio regression. Enge
+The initial comparison below is a failing qualification result. The subsequent
+production integer replacement passes the fixed-gain cases, as described at
+the end. Initially, enge
 `566a63f` is compared with ymfm revision
 `81aec25ccbb98f4873a255f7551ac4dadac59b4a` using the
 [standalone harness](render-ymfm-core.cc). All five source files used by the
@@ -114,6 +116,42 @@ This supports the exported topology, carrier selection and two-sample feedback
 scheduling under fixed gains and shared integer kernels. It does not establish
 equivalence of the production floating kernel, dynamic gain processing, native
 clock conversion or DAC output. The large floating-core differences above
-remain unresolved production behavior. The next implementation step is to
-replace the continuous operator arithmetic with the provisional integer OPZ
-model, retaining these graphs and qualifying the resulting production core.
+motivated the production replacement described next.
+
+## Production integer replacement
+
+The production `tx81z_operator_samples` now uses integer Q20 phase state,
+nearest-integer Q20 frequency increments, 10-bit waveform indices, 1/64-octave
+gain attenuation and signed integer feedback. Incoming modulation sums shift
+right by one before waveform lookup; feedback uses the same two-sample shift
+as the control above. The raw carrier sum is divided by 8192. No DAC clipping
+or native-clock resampling is introduced.
+
+Gains must lie in 0..1 and round to the nearest 1/64-octave attenuation;
+zero produces silence. Derived patch gains already use the chip's attenuation
+units. Standalone arbitrary gains are now quantized instead of multiplying
+continuous waveform values. Frequency increments round to the Q20 grid at the
+requested output sample rate. This output-frame model is not a claim of native
+chip frequency generation. Snapshots retain integer phases and feedback; the
+former floating continuation representation is replaced without migration.
+
+Independent mathematical reconstruction matches the pinned logarithmic sine
+and power tables. The [table export harness](render-ymfm-tables.cc) writes 8192
+unsigned 16-bit waveform entries (eight consecutive 1024-entry tables), followed
+by 256 unsigned 16-bit unshifted power values. Build it with the same source and
+flags as the core harness. Its output and all 128 captured core outputs are
+retained in `test/data/tx81z-opz-core.npz`, SHA-256
+`0217c8aa8bee97929897a6d9d3c054c6a4c0fa15fe9156fe90e041dca318dd8e`.
+The archive's `parameters` rows are algorithm/feedback/profile; `case0` through
+`case127` contain signed reference output. `waveforms` and `power` hold the
+independent table captures.
+
+All **6,144,000 production samples now match exactly**. Each case also passes
+partitioned execution and JSON snapshot replay. The eight waveform regressions
+cover every table cell. Existing dynamic-control and lifecycle regressions now
+use captured integer-table carrier oracles where they previously assumed ideal
+sines or multiplication after waveform quantization.
+
+This closes the fixed-gain software-core comparison, not complete dynamic patch,
+controller, native-clock, DAC, WT11 or hardware qualification. The earlier CSVs
+and listening files remain historical measurements of the removed floating core.

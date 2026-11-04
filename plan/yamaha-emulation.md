@@ -280,9 +280,10 @@ complete metrics and paired WAVs. A subsequent shared-integer-kernel control
 executes the exported enge graphs with upstream operator kernels and independent
 feedback history. All 6,144,000 samples match exactly; a deliberately removed
 edge produces 46,406 mismatches. This supports graph and feedback scheduling
-for the tested fixed-gain profiles. It does not qualify the production floating
-kernel. The next implementation step is the provisional integer OPZ core,
-followed by production comparison and dynamic-patch qualification.
+for the tested fixed-gain profiles. The production core now uses the provisional
+integer OPZ model and matches all 128 captured reference cases exactly,
+including partitioned JSON continuation. This closes that fixed-gain comparison,
+not dynamic-patch, native-clock or hardware qualification.
 
 Renderer admission checks the raw per-operator VCED amplitude-modulation-enable
 and ACED fixed-frequency flags before using their decoded booleans. Values above
@@ -447,8 +448,9 @@ and the [OPZ ordering before the frequency multiplier](https://github.com/aarons
 Tests cover sign, neutral, low-key zero offsets and high-key limits, and render
 the resulting offset through the operator bank at 48 kHz. This primitive takes
 chip key codes explicitly; the note renderer now supplies MIDI-to-chip key
-mapping and applies detune before ratio multiplication. Multiplier/phase
-quantization and hardware qualification remain work.
+mapping and applies detune before ratio multiplication. Native chip frequency
+generation and hardware qualification remain work; phase increments now round
+to the integer core's Q20 grid.
 Fixed-frequency mode bypasses this detune path in the reference model.
 
 `tx81z_output_gain` now converts the VCED 0–99 output control through
@@ -456,8 +458,9 @@ Fixed-frequency mode bypasses this detune path in the reference model.
 and its [reported TX81Z carrier-headroom measurements](https://github.com/richotero/dxconvert/blob/master/DXconvert/fb01.py).
 Carrier offsets are 8, 13 and 16 TL steps for two-, three- and four-carrier
 algorithms; modulators retain the unadjusted level curve. Saturation is at TL
-127. This nominal floating gain does not include integer DAC/sine quantization
-or envelope attenuation. Regressions cover curve boundaries
+127. This preparer's nominal gain excludes envelope attenuation; the operator
+core subsequently quantizes combined attenuation and waveform output. Integer
+DAC processing remains unfinished. Regressions cover curve boundaries
 and headroom, plus a one-second paired VCED/ACED integration through nominal
 frequency, shared envelope clock, gain conversion, operator mixing and release.
 These are model-level checks, not new hardware measurements.
@@ -493,10 +496,11 @@ onsets, mono legato, analytic output and JSON continuation.
 The numeric `tx81z_operator_samples` kernel now renders all eight four-operator
 graphs in visible OP1–OP4 order, with OP4 two-sample feedback, independent
 waveform selections and caller-prepared per-frame frequency/gain rows. Its
-`TX81ZState` retains phases and feedback through JSON continuation without
+`TX81ZState` retains Q20 integer phases and signed integer feedback through
+JSON continuation without
 mutating the caller's saved state. Routing/modulation scaling follows
 [ymfm's four-operator output path](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_fm.ipp).
-Analytic 48 kHz WAV regressions cover all graphs, asymmetric operators,
+Pinned integer-core 48 kHz WAV regressions cover all graphs, asymmetric operators,
 feedback, waveform selection and partitioned continuation. This is raw carrier
 mixing. The note renderer now connects chip detune, nominal VCED gain conversion
 and the envelope clock, plus key/velocity scaling in the supported profile.
@@ -504,12 +508,13 @@ DAC saturation and the full voice profile remain work.
 
 The user approved ymfm's waveform model provisionally on 2026-11-03, including
 the inferred signed sine-squared shape. `tx81z_wave_samples` now realizes all
-eight continuous shapes using zero-based ACED waveform numbers. The model
+eight quantized logarithmic shapes using zero-based ACED waveform numbers. The model
 follows [ymfm's OPZ waveform construction](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_opz.cpp);
-it does not reproduce logarithmic table quantization or establish measured
-hardware equivalence. One-second 48 kHz regressions distinguish all eight
-shapes at sixteen positions per cycle, including negative/unwrapped phases
-and the silent half-cycle boundaries. The complete TX81Z renderer remains work.
+independent mathematical tables reproduce the pinned sine and power tables.
+This does not establish measured hardware equivalence. One-second 48 kHz
+regressions compare all 1024 cells of each waveform, including negative/unwrapped
+phases and the reference's nonzero half-cycle substitution. The complete TX81Z
+renderer remains work.
 
 `TX81ZEnvelope` now prepares matching VCED/ACED operator data into a separate
 OPZ attenuation state. Its `clock(counter)` consumes the host's shared envelope
@@ -557,8 +562,8 @@ the [Yamaha manual](https://www.polynominal.com/site/studio/gear/sold/yamaha_tx8
 and [TX81Z Programmer ratio displays](https://github.com/mgregory22/tx81z-programmer/blob/master/src/freqratios.c)
 corroborate the control mapping. Audio regressions cover ratio,
 fine, fixed-frequency boundaries and different played keys. The note renderer
-now applies the chip detune primitive. Phase quantization and full voice-profile
-qualification remain work.
+now applies the chip detune primitive. The operator core quantizes the resulting
+frequency to Q20 increments; full voice-profile qualification remains work.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
@@ -566,10 +571,11 @@ qualification remain work.
 - Preserve the TX81Z waveform definitions rather than mapping them to enge's
   generic sine, square, and triangle waveforms.
 
-A pinned waveform-table comparison now measures all eight continuous shapes
+A historical pinned waveform-table comparison measured all eight continuous shapes
 against ymfm at 440 Hz in paired one-second, 48 kHz WAVs. Relative RMS differences
 range from 0.338% to 0.803%; table quantization and nonzero zero-substitution remain
-explicit approximation differences. See the [comparison report](../doc/yamaha-reference/README.md#tx81z-waveform-table-comparison).
+explicit approximation differences in that former core. The integer replacement
+now matches the captured tables exactly. See the [comparison report](../doc/yamaha-reference/README.md#tx81z-waveform-table-comparison).
 This does not qualify hardware or complete the full-renderer requirement.
 
 ## Delivery boundaries

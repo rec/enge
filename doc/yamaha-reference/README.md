@@ -353,6 +353,10 @@ behavior, controller interaction, integer audio output or physical hardware.
 
 ## TX81Z waveform-table comparison
 
+The measurements in this section describe the former continuous-waveform core.
+The [production integer replacement](opz-core.md#production-integer-replacement)
+now matches all captured waveform cells and fixed-gain core cases exactly.
+
 `render-ymfm-waveforms.cc` reads all eight waveform tables through the public
 operator cache of the same pinned ymfm revision
 `81aec25ccbb98f4873a255f7551ac4dadac59b4a`. It converts logarithmic attenuation

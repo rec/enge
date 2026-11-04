@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from test_tx81z_integer import opz_carrier
 from test_tx81z_lfo import lfo_voice
 from test_yamaha_instrument import instrument
 from ufor import synth_trace, tx81z
@@ -45,11 +46,10 @@ def test_legato_retarget_keeps_envelope_progress_and_validates_before_mutating(
     assert changed.envelopes == saved.envelopes
     tail = note.render(46999)
     frequencies = np.concatenate([np.full(1001, 440), np.full(46999, 880)])
-    phase = np.concatenate([[0], np.cumsum(frequencies[:-1])]) / 48000
     check_audio(
         tmp_path / "legato-phase.wav",
         np.concatenate([first, tail]),
-        np.sin(2 * np.pi * phase)[:, None],
+        (4 * opz_carrier(frequencies))[:, None],
     )
     restored = yamaha.TX81ZRenderer(
         template.patch, template.additional, 81, 127, pitch_hz=880, start_pitch_hz=440
@@ -122,18 +122,17 @@ def test_explicit_zero_velocity_triggers_render_and_restore_with_velocity_sensit
         np.concatenate([first, engine.advance([], 17003, 48000)]),
     )
     # Algorithm 8 sums four identical sine carriers, each with TL 16 plus KVS.
-    gain = sum(2 ** (-(16 + a) / 8) for a in [22, 37, 52, 67])
+    gains = [2 ** (-(16 + a) / 8) for a in [22, 37, 52, 67]]
     if mono:
         frequencies = np.concatenate([np.full(12001, 440), np.full(35999, 880)])
-        phase = np.concatenate([[0], np.cumsum(frequencies[:-1])]) / 48000
-        expected = np.sin(2 * np.pi * phase)
+        expected = sum(opz_carrier(frequencies, g) for g in gains)
     else:
-        expected = np.sin(2 * np.pi * 440 * np.arange(48000) / 48000)
-        expected[12001:] += np.sin(2 * np.pi * 880 * np.arange(35999) / 48000)
+        expected = sum(opz_carrier(440, g) for g in gains)
+        expected[12001:] += sum(opz_carrier(880, g, frames=35999) for g in gains)
     check_audio(
         tmp_path / "zero-velocity.wav",
         np.concatenate([first, tail]),
-        expected[:, None] * gain * [[0.3, 0.15]],
+        expected[:, None] * [[0.3, 0.15]],
     )
 
 
@@ -259,7 +258,9 @@ def test_fingered_glides_only_between_held_keys_and_ignores_switch(
     assert (glide.current_hz < 880) is (fingered or bool(switch))
     tail = engine.advance([a for a in actions if a.tick >= 2002], 2002, 48000)
     # Sustain keeps the old voice sounding, but released keys are not legato.
-    np.testing.assert_array_equal(tail[4004 - 2002], [0, 0])
+    np.testing.assert_array_equal(
+        tail[4004 - 2002], 4 * opz_carrier(220, frames=1)[0] * np.array([0.3, 0.15])
+    )
     assert len(engine.voices) == 1
     current = next(iter(engine.voices.values())).renderer
     assert isinstance(current, yamaha.TX81ZRenderer)
