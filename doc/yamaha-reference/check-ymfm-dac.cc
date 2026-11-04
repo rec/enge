@@ -4,7 +4,17 @@
 
 // Exhaustively compare the public output helper with encode/decode, then
 // demonstrate overflow and summing order. This is not a hardware measurement.
-int main() {
+int main(int argc, char **argv) {
+    if (argc > 2) return 2;
+    if (argc == 2) {
+        FILE *file = std::fopen(argv[1], "wb");
+        if (!file) return 2;
+        for (int value = -32768; value <= 32767; ++value) {
+            int32_t decoded = ymfm::roundtrip_fp(value);
+            if (std::fwrite(&decoded, sizeof(decoded), 1, file) != 1) return 2;
+        }
+        if (std::fclose(file) != 0) return 2;
+    }
     unsigned mismatches = 0;
     for (int value = -32768; value <= 32767; ++value)
         mismatches += ymfm::roundtrip_fp(value) != ymfm::decode_fp(ymfm::encode_fp(value));

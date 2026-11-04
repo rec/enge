@@ -75,6 +75,7 @@ class YamahaSnapshot(BaseModel, frozen=True):
     pitch_history: dict[str, dict[str, PitchHistory]]
     mono_notes: list[MonoNote]
     contexts: list[synth.ControlContext]
+    output_filters: dict[str, list[filters.FilterState]]
 
 
 class OfflineYamaha:
@@ -99,6 +100,15 @@ class OfflineYamaha:
             for n, v in self.templates.items()
         }
         self.voices: dict[str, Voice] = {}
+        self.output_groups = {
+            v: o.name
+            for o in self.definition.score.body.tx81z_outputs
+            for v in o.voices
+        }
+        self.output_filters = {
+            o.name: filters.initial_states(o.processing.filters, 1)
+            for o in self.definition.score.body.tx81z_outputs
+        }
         self.mono_notes: list[MonoNote] = []
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
@@ -145,6 +155,7 @@ class OfflineYamaha:
             pitch_history=self.pitch_history,
             mono_notes=self.mono_notes,
             contexts=self.controls.contexts,
+            output_filters=self.output_filters,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: YamahaSnapshot) -> None:
@@ -153,6 +164,7 @@ class OfflineYamaha:
             or snapshot.clocks.keys() != self.clocks.keys()
             or snapshot.oscillator_slots.keys() != self.oscillator_slots.keys()
             or snapshot.pitch_history.keys() != self.pitch_history.keys()
+            or snapshot.output_filters.keys() != self.output_filters.keys()
         ):
             raise synth.EngineError("Snapshot belongs to a different Yamaha instrument")
         snapshot = snapshot.model_copy(deep=True)
@@ -203,6 +215,7 @@ class OfflineYamaha:
         self.oscillator_slots = snapshot.oscillator_slots
         self.pitch_history = snapshot.pitch_history
         self.mono_notes = snapshot.mono_notes
+        self.output_filters = snapshot.output_filters
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.frame = snapshot.frame
@@ -419,6 +432,7 @@ class OfflineYamaha:
 
     def _render(self, start: int, frames: int) -> np.ndarray:
         output = np.zeros((frames, len(self.definition.channels)))
+        groups = {n: np.zeros((frames, 1)) for n in self.output_filters}
         rows = {n: c.advance(frames) for n, c in self.clocks.items()}
         for voice in list(self.voices.values()):
             template = self.templates[voice.template]
@@ -548,9 +562,39 @@ class OfflineYamaha:
                     for c in self.definition.channels
                 ]
             ]
-            output += synth.route_samples(audio, routes)
+            if (group := self.output_groups.get(voice.template)) is not None:
+                groups[group] += audio
+            else:
+                output += synth.route_samples(audio, routes)
             if count < frames or _complete(voice):
                 self._retire(voice, start + count)
+        for group in self.definition.score.body.tx81z_outputs:
+            audio = yamaha.tx81z_dac(groups[group.name])
+            processing = group.processing
+            gain = 10 ** (processing.volume_db / 20)
+            if processing.invert_polarity:
+                gain = -gain
+            if processing.filter_order == FilterOrder.after_amplitude:
+                audio *= gain
+            if frames and processing.filters:
+                audio, self.output_filters[group.name] = filters.filter_samples(
+                    processing.filters,
+                    self.output_filters[group.name],
+                    audio,
+                    filters.parameters(
+                        processing.filters, self.definition.sample_rate, frames
+                    ),
+                    self.definition.sample_rate,
+                )
+            if processing.filter_order == FilterOrder.before_amplitude:
+                audio *= gain
+            routes = [
+                [
+                    sum(r.gain for r in group.channels if r.output == c)
+                    for c in self.definition.channels
+                ]
+            ]
+            output += synth.route_samples(audio, routes)
         return output
 
     def _retire(self, voice: Voice, frame: int) -> None:
@@ -635,6 +679,8 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)
         _note(voice, 69, 127, timebase.rate.numerator, None)
         filters.parameters(voice.processing.filters, timebase.rate.numerator, 1)
+    for group in score.body.tx81z_outputs:
+        filters.parameters(group.processing.filters, timebase.rate.numerator, 1)
     return PreparedYamaha(
         sample_rate=timebase.rate.numerator, channels=output.channels, score=score
     )

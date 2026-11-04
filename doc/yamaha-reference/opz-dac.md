@@ -67,16 +67,39 @@ Applying it to `OfflineYamaha`'s final output would also be wrong: that output
 already includes per-voice portable gain, filters, fades and routing, and may
 mix DX7 and TX81Z templates. Its output buses are not hardware chip channels.
 
-The existing note renderer should continue to return raw carrier sums. A shared
-chip-output stage needs explicit ownership of the voices belonging to a chip,
-then raw-channel summation, the provisional DAC conversion, chip-level portable
-processing and routing. Inferring chip membership from MIDI part, template name
-or an output channel would silently conflate distinct contracts. The shared
-chip/output-group contract and its adapter integration remain implementation
-work; this audit adds no unused runtime converter and does not mark DAC support
-complete.
+The note renderer continues to return raw carrier sums. uFor's
+`SynthInstrument.tx81z_outputs` now supplies explicit output ownership. Each
+group names its TX81Z templates; every active instance contributes to the same
+raw sum, including voices from different parts. Group members omit individual
+routes and host gain/filter settings. Their hardware controls and tuning remain
+per voice. Group gain, polarity, filters and routes apply after conversion.
+Ungrouped templates retain raw note output; they do not acquire an inferred DAC.
 
-Required follow-up qualification includes simultaneous-note summation,
-positive/negative clipping, post-DAC host gain ordering, distinct chip groups,
-partitioned rendering and snapshot replay. This audit does not establish
-native-clock sampling, analog output filtering or physical hardware equivalence.
+Enge's `OfflineYamaha` implements this boundary using `yamaha.tx81z_dac`.
+Raw note samples convert back to chip units by multiplying by 8192. The decoded
+DAC result divides by 32768 for signed 16-bit full scale. Host retirement fades
+scale individual raw contributions; the combined sum rounds to integer chip
+units with ties to even before conversion. Fades are a host lifecycle extension,
+not a claim about the hardware's envelopes. Group filters persist when no voices
+remain, and their state participates in JSON snapshot continuation.
+
+The check executable optionally accepts a binary output path and captures all
+65,536 decoded signed-16-bit inputs as native-endian `int32_t` values:
+
+```sh
+/tmp/check-ymfm-dac /tmp/opz-dac.i32
+```
+
+The little-endian capture is stored without value changes as the `decoded`
+array in `test/data/tx81z-opz-dac.npz`. Regression tests compare every code,
+overflow and half-unit fade rounding. One-second 48 kHz WAV regressions cover
+simultaneous-note summation across parts, both clipping signs, post-DAC gain and
+filters, separate output groups, fades, filter tails and partitioned JSON replay.
+
+The fixture SHA-256 is
+`a413756f2afd76c51300252b87226b1c97ade9b87f45423fa898661885cedce2`.
+
+This qualifies the explicit output boundary against a provisional software
+model. It does not establish native-clock sampling, analog output filtering,
+physical hardware equivalence, the physical eight-note allocator or shared
+multitimbral LFO behavior.

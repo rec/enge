@@ -267,8 +267,8 @@ shared OPZ rows as described below. Velocity has no gain effect
 when KVS is zero; explicit zero-velocity triggers use the provisional attenuation
 model described below when KVS is nonzero. This is an incomplete
 profile, not completion of the full TX81Z/WT11 requirement. Controller integration,
-DAC/integer quantization and hardware/reference
-qualification remain work.
+Whole-patch reference and hardware qualification remain work; the provisional
+integer core and explicit shared DAC path are covered below.
 
 A [fixed-gain OPZ core comparison](../doc/yamaha-reference/opz-core.md) now
 covers all eight algorithms and feedback levels with uniform and asymmetric
@@ -301,10 +301,15 @@ over all 65,536 signed 16-bit inputs and records its positive-overflow differenc
 from explicit encode/decode. The chip renderer uses the optimized helper after
 summing hardware channels. Per-note conversion or conversion after the current
 portable per-voice processing would be a different signal path. Implementing
-this provisional DAC model therefore needs explicit shared chip/output-group
-ownership and post-sum processing, not an isolated converter inside each note.
-That contract and integration remain work; source arithmetic qualification
-does not establish physical DAC behavior.
+this provisional DAC model requires explicit shared output-group ownership and
+post-sum processing, not an isolated converter inside each note. uFor now
+declares those groups, and `OfflineYamaha` sums their raw voices, converts once,
+then applies group gain, filters and routing. Group filter tails and JSON
+continuation survive voice retirement. Exhaustive DAC-code tests and 48 kHz WAV
+regressions cover overlapping voices, separate groups, clipping, host processing
+order and fades. Raw ungrouped note output remains available. This closes the
+explicit provisional DAC boundary; native-clock and physical DAC behavior,
+eight-note chip allocation and multitimbral LFO integration remain unqualified.
 
 Renderer admission checks the raw per-operator VCED amplitude-modulation-enable
 and ACED fixed-frequency flags before using their decoded booleans. Values above
@@ -480,8 +485,8 @@ and its [reported TX81Z carrier-headroom measurements](https://github.com/richot
 Carrier offsets are 8, 13 and 16 TL steps for two-, three- and four-carrier
 algorithms; modulators retain the unadjusted level curve. Saturation is at TL
 127. This preparer's nominal gain excludes envelope attenuation; the operator
-core subsequently quantizes combined attenuation and waveform output. Integer
-DAC processing remains unfinished. Regressions cover curve boundaries
+core subsequently quantizes combined attenuation and waveform output. Explicit
+output groups now apply the provisional shared DAC model. Regressions cover curve boundaries
 and headroom, plus a one-second paired VCED/ACED integration through nominal
 frequency, shared envelope clock, gain conversion, operator mixing and release.
 These are model-level checks, not new hardware measurements.
@@ -525,7 +530,8 @@ Pinned integer-core 48 kHz WAV regressions cover all graphs, asymmetric operator
 feedback, waveform selection and partitioned continuation. This is raw carrier
 mixing. The note renderer now connects chip detune, nominal VCED gain conversion
 and the envelope clock, plus key/velocity scaling in the supported profile.
-DAC saturation and the full voice profile remain work.
+Explicit output groups apply DAC saturation after this raw mixing. The full
+voice profile and hardware qualification remain work.
 
 The user approved ymfm's waveform model provisionally on 2026-11-03, including
 the inferred signed sine-squared shape. `tx81z_wave_samples` now realizes all

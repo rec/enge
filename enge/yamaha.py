@@ -1002,6 +1002,23 @@ def tx81z_output_gain(
     return 2 ** (-min(127, attenuation) / 8)
 
 
+def tx81z_dac(samples: np.ndarray) -> np.ndarray:
+    """Convert summed raw OPZ voices to full scale using pinned ymfm arithmetic.
+
+    Raw notes use 8192 units per amplitude unit; the shared DAC output uses
+    signed 16-bit full scale. Host fades round to integer units, ties to even.
+    Positive overflow deliberately follows ymfm's roundtrip_fp helper.
+    """
+    if not np.all(np.isfinite(samples)):
+        raise ValueError("TX81Z DAC samples must be finite")
+    units = np.rint(np.clip(samples, -32769 / 8192, 4) * 8192).astype(np.int64)
+    magnitude = units ^ (units >> 63)
+    shift = np.maximum(0, np.frexp(magnitude)[1] - 9)
+    decoded = (units >> shift) << shift
+    decoded = np.where(units > 32767, 32767, np.maximum(decoded, -32768))
+    return decoded / 32768
+
+
 def tx81z_operator_samples(
     algorithm: int,
     waveforms: list[int],
