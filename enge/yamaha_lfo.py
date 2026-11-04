@@ -175,6 +175,14 @@ class TX81ZLFOSnapshot(BaseModel, frozen=True):
     frame: int = Field(default=0, ge=0)
     counter: int = Field(default=0, ge=0, lt=2**32)
     secondary_counter: int = Field(default=0, ge=0, lt=2**32)
+    secondary_rate: int | None = Field(default=None, ge=0, le=255)
+    secondary_waveform: int = Field(default=0, ge=0, le=3)
+    secondary_sync: bool = False
+    secondary_delay: int = Field(default=0, ge=0, le=99)
+    secondary_delay_elapsed: int = Field(default=0, ge=0)
+    secondary_wave_pitch: int = Field(default=0, ge=-128, le=127)
+    secondary_wave_amplitude: int = Field(default=0, ge=0, le=255)
+    secondary_delay_progress: int = Field(default=1, ge=0)
     clock_remainder: int = Field(default=0, ge=0)
     noise_lfsr: int = Field(default=1, ge=0, lt=2**32)
     noise_table: list[Annotated[int, Field(ge=0, le=255)]] = Field(
@@ -188,16 +196,23 @@ class TX81ZLFOSnapshot(BaseModel, frozen=True):
 
 
 class TX81ZLFOContext:
-    """Single-mode OPZ LFO1, with the secondary LFO left at reset settings.
+    """OPZ hardware LFOs sharing one chip clock and noise table.
 
     Integer rows contain raw signed PM, raw unsigned AM, and the numerator and
     denominator of patch-delay progress. Progress is latched with the waveform
     at chip observations. Notes apply their own depths to these shared rows.
     The clock and noise model follow ymfm provisionally.
+    With a secondary voice, advance returns (frames, 2, 4) rows in LFO order;
+    otherwise it returns (frames, 4), leaving LFO2 at reset settings.
     """
 
     def __init__(
-        self, voice: tx81z.TX81ZVoice, sample_rate: int = 48000, clock_hz: int = 3579545
+        self,
+        voice: tx81z.TX81ZVoice,
+        sample_rate: int = 48000,
+        clock_hz: int = 3579545,
+        *,
+        secondary: tx81z.TX81ZVoice | None = None,
     ) -> None:
         rate, _, _ = tx81z_lfo_registers(voice)
         self.state = TX81ZLFOSnapshot(
@@ -208,6 +223,11 @@ class TX81ZLFOContext:
             clock_hz=clock_hz,
             delay=voice.data[55],
             delay_progress=0 if voice.data[55] else 1,
+            secondary_rate=tx81z_lfo_registers(secondary)[0] if secondary else None,
+            secondary_waveform=secondary.data[59] if secondary else 0,
+            secondary_sync=bool(secondary.data[58]) if secondary else False,
+            secondary_delay=secondary.data[55] if secondary else 0,
+            secondary_delay_progress=0 if secondary and secondary.data[55] else 1,
         )
 
     def snapshot(self) -> TX81ZLFOSnapshot:
@@ -221,6 +241,10 @@ class TX81ZLFOContext:
             or snapshot.sample_rate != self.state.sample_rate
             or snapshot.clock_hz != self.state.clock_hz
             or snapshot.delay != self.state.delay
+            or snapshot.secondary_rate != self.state.secondary_rate
+            or snapshot.secondary_waveform != self.state.secondary_waveform
+            or snapshot.secondary_sync != self.state.secondary_sync
+            or snapshot.secondary_delay != self.state.secondary_delay
         ):
             raise EngineError(
                 "TX81Z LFO snapshot belongs to a different clock definition"
@@ -233,6 +257,12 @@ class TX81ZLFOContext:
             updates["delay_progress"] = 0
         if self.state.sync:
             updates["counter"] = 0
+        if self.state.secondary_rate is not None:
+            updates["secondary_delay_elapsed"] = 0
+            if self.state.secondary_delay:
+                updates["secondary_delay_progress"] = 0
+            if self.state.secondary_sync:
+                updates["secondary_counter"] = 0
         self.state = self.state.model_copy(update=updates)
 
     def advance(self, frames: int) -> np.ndarray:
@@ -242,11 +272,20 @@ class TX81ZLFOContext:
         counter, secondary = state.counter, state.secondary_counter
         remainder, noise = state.clock_remainder, state.noise_lfsr
         table = state.noise_table.copy()
-        pitch, amplitude = state.wave_pitch, state.wave_amplitude
-        progress = state.delay_progress
+        count = 1 if state.secondary_rate is None else 2
+        pitch = [state.wave_pitch, state.secondary_wave_pitch]
+        amplitude = [state.wave_amplitude, state.secondary_wave_amplitude]
+        progress = [state.delay_progress, state.secondary_delay_progress]
+        waveforms = [state.waveform, state.secondary_waveform]
+        elapsed = [state.delay_elapsed, state.secondary_delay_elapsed]
         increment = (16 | (state.rate & 15)) << (state.rate >> 4)
-        output = np.empty((frames, 4), dtype=np.int64)
-        duration = _TX_DELAY_TICKS[state.delay] * state.sample_rate
+        secondary_rate = state.secondary_rate or 0
+        secondary_increment = (16 | (secondary_rate & 15)) << (secondary_rate >> 4)
+        output = np.empty((frames, count, 4), dtype=np.int64)
+        durations = [
+            _TX_DELAY_TICKS[x] * state.sample_rate
+            for x in (state.delay, state.secondary_delay)
+        ]
         for frame in range(frames):
             ticks, remainder = divmod(
                 remainder + state.clock_hz, 64 * state.sample_rate
@@ -256,32 +295,41 @@ class TX81ZLFOContext:
                     noise = (noise << 1) & (2**32 - 1)
                     noise |= ((noise >> 17) ^ (noise >> 14) ^ 1) & 1
                 counter = (counter + increment) & (2**32 - 1)
-                secondary = (secondary + 16) & (2**32 - 1)
+                secondary = (secondary + secondary_increment) & (2**32 - 1)
                 index = (counter >> 22) & 255
                 noise_value = (noise >> 17) & 255
                 table[(index + 1) & 255] = noise_value
                 table[(((secondary >> 22) & 255) + 1) & 255] = noise_value
-                match state.waveform:
-                    case 0:
-                        am, pm = index ^ 255, index
-                    case 1:
-                        am = 0 if index & 128 else 255
-                        pm = am ^ 128
-                    case 2:
-                        am = (
-                            (index << 1) if index & 128 else ((index ^ 255) << 1)
-                        ) & 255
-                        pm = am if index & 64 else (am ^ 255)
-                    case _:
-                        am = pm = table[index]
-                pitch = pm if pm < 128 else pm - 256
-                amplitude = am
-                progress = (
-                    min(duration, max(0, 96 * (state.delay_elapsed + frame) - duration))
-                    if duration
-                    else 1
+                for lfo in range(count):
+                    index = ((secondary if lfo else counter) >> 22) & 255
+                    match waveforms[lfo]:
+                        case 0:
+                            am, pm = index ^ 255, index
+                        case 1:
+                            am = 0 if index & 128 else 255
+                            pm = am ^ 128
+                        case 2:
+                            am = (
+                                (index << 1) if index & 128 else ((index ^ 255) << 1)
+                            ) & 255
+                            pm = am if index & 64 else (am ^ 255)
+                        case _:
+                            am = pm = table[index]
+                    pitch[lfo] = pm if pm < 128 else pm - 256
+                    amplitude[lfo] = am
+                    duration = durations[lfo]
+                    progress[lfo] = (
+                        min(duration, max(0, 96 * (elapsed[lfo] + frame) - duration))
+                        if duration
+                        else 1
+                    )
+            for lfo in range(count):
+                output[frame, lfo] = (
+                    pitch[lfo],
+                    amplitude[lfo],
+                    progress[lfo],
+                    max(1, durations[lfo]),
                 )
-            output[frame] = pitch, amplitude, progress, max(1, duration)
         self.state = state.model_copy(
             update={
                 "frame": state.frame + frames,
@@ -291,12 +339,16 @@ class TX81ZLFOContext:
                 "clock_remainder": remainder,
                 "noise_lfsr": noise,
                 "noise_table": table,
-                "wave_pitch": pitch,
-                "wave_amplitude": amplitude,
-                "delay_progress": progress,
+                "wave_pitch": pitch[0],
+                "wave_amplitude": amplitude[0],
+                "delay_progress": progress[0],
+                "secondary_wave_pitch": pitch[1],
+                "secondary_wave_amplitude": amplitude[1],
+                "secondary_delay_progress": progress[1],
+                "secondary_delay_elapsed": elapsed[1] + frames if count == 2 else 0,
             }
         )
-        return output
+        return output[:, 0] if count == 1 else output
 
 
 # Measured completion times in 1/48 second, with reported uncertainty of one tick.

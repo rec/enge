@@ -146,6 +146,38 @@ and retains the large high-gain discrepancies in algorithms 4 and 6. Its subsequ
 matches all 24,576,000 integer samples across 512 cases. This supports the graph
 and feedback scheduling under fixed gains, not complete renderer equivalence.
 
+## TX81Z paired hardware LFO comparison
+
+The same pinned ymfm register harness now accepts two optional trailing
+arguments: the secondary rate and waveform. In that mode it sets secondary
+PMD/AMD to 127, selects primary-only AM on channel 0 and secondary-only AM on
+channel 1, and emits four native-endian signed 32-bit values per frame:
+primary PM, primary AM, secondary PM, secondary AM. Both clocks run inside
+one `opz_registers`, sharing its noise generator and sample-and-hold table.
+
+The [paired oracle](../../test/data/tx81z-dual-lfo.npz) contains arrays `wave00`
+through `wave33`, covering all 16 primary/secondary waveform pairings. Each is
+48,000 rows by four columns, captured directly from that harness. Primary
+authored speed 75 maps to rate 242 for periodic waves and 193 for noise;
+secondary speed 50 maps to 223 for periodic waves and 128 for noise. Primary
+PMD/AMD are also 127. For example, the two-noise capture arguments are
+`193 127 127 3 output.i32 128 3`. No phase reset is injected during capture.
+The source `ymfm_opz.cpp` Git blob is
+`949061baf4716b5d9932650685ebedcd2726e341` at the revision below.
+
+All 768,000 four-column rows match exactly after applying depth 127 to enge's
+raw waveform rows. Tests write paired one-second 48 kHz WAV files and resume
+both clocks from JSON at frame 17,003. Separate tests check unequal delay
+progress, selective phase reset from the two sync flags, preservation of noise
+state on keydown, and rejection of a mismatched secondary definition before
+restore. The compressed oracle's SHA-256 is
+`f9684e8a0a38ae8c282d65b8851a9affda81c1d760fbecaacb2d17af963c926d`.
+
+This qualifies paired clock arithmetic against ymfm. It does not qualify
+hardware, firmware delay-reset policy, multitimbral allocation/routing, software
+vibrato, or the full performance renderer. Restarting both configured delay
+ramps on keydown is a provisional extension of the existing single-clock rule.
+
 ## TX81Z single-mode LFO comparison
 
 The TX81Z shared LFO context is compared against ymfm revision

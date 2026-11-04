@@ -21,6 +21,65 @@ def lfo_voice(waveform: int = 0) -> tx81z.TX81ZVoice:
     return tx81z.TX81ZVoice(data=bytes(raw))
 
 
+@pytest.mark.parametrize("first", range(4))
+@pytest.mark.parametrize("second", range(4))
+def test_tx81z_dual_lfos_match_pinned_shared_noise_and_snapshot(
+    tmp_path: Path, first: int, second: int
+) -> None:
+    primary = lfo_voice(first)
+    raw = bytearray(lfo_voice(second).data)
+    raw[54] = 50
+    secondary = tx81z.TX81ZVoice(data=bytes(raw))
+    context = TX81ZLFOContext(primary, secondary=secondary)
+    rows = context.advance(17003)
+    saved = TX81ZLFOSnapshot.model_validate_json(context.snapshot().model_dump_json())
+    restored = TX81ZLFOContext(primary, secondary=secondary)
+    restored.restore(saved)
+    actual = np.concatenate([rows, restored.advance(30997)])
+    with np.load(Path(__file__).with_name("data") / "tx81z-dual-lfo.npz") as reference:
+        expected = reference[f"wave{first}{second}"]
+    scaled = ((actual[:, :, :2] * 127) >> 7).reshape(48000, 4)
+    check_audio(
+        tmp_path / "dual-lfos.wav", scaled.astype(float), expected.astype(float)
+    )
+    np.testing.assert_array_equal(actual[:, :, 2:], 1)
+    context.advance(30997)
+    assert context.snapshot() == restored.snapshot()
+
+
+@pytest.mark.parametrize("sync", [False, True])
+def test_tx81z_dual_lfos_reset_delays_and_only_synced_phases(sync: bool) -> None:
+    first = bytearray(lfo_voice().data)
+    first[55], first[58] = 1, int(sync)
+    second = bytearray(lfo_voice().data)
+    second[55], second[58] = 50, int(not sync)
+    context = TX81ZLFOContext(
+        tx81z.TX81ZVoice(data=bytes(first)),
+        secondary=tx81z.TX81ZVoice(data=bytes(second)),
+    )
+    rows = context.advance(20000)
+    assert rows[-1, 0, 2] == rows[-1, 0, 3]
+    assert rows[-1, 1, 2] == 0
+    before = context.snapshot()
+    context.keydown()
+    after = context.snapshot()
+    assert after.counter == (0 if sync else before.counter)
+    assert after.secondary_counter == (before.secondary_counter if sync else 0)
+    assert after.delay_elapsed == after.secondary_delay_elapsed == 0
+    assert after.delay_progress == after.secondary_delay_progress == 0
+    assert after.noise_table == before.noise_table
+    assert after.noise_lfsr == before.noise_lfsr
+
+
+def test_tx81z_dual_lfo_rejects_foreign_secondary_before_restore() -> None:
+    context = TX81ZLFOContext(lfo_voice(), secondary=lfo_voice(3))
+    snapshot = context.snapshot()
+    other = TX81ZLFOContext(lfo_voice(), secondary=lfo_voice(2))
+    with pytest.raises(EngineError, match="different clock definition"):
+        context.restore(other.snapshot())
+    assert context.snapshot() == snapshot
+
+
 @pytest.mark.parametrize("waveform", range(4))
 def test_tx81z_lfo_matches_pinned_ymfm_rows_and_restores_noise(
     tmp_path: Path, waveform: int

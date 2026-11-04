@@ -393,6 +393,30 @@ pinned by enge. Explicit library-template binding, two shared LFO ownership,
 software vibrato and performance rendering remain the next implementation work;
 the decoder alone does not qualify or execute those behaviors.
 
+The existing `TX81ZLFOContext` now accepts a second voice definition and clocks
+both hardware LFOs with one shared noise generator/table. Its paired output is
+`(frames, 2, 4)`; single-mode output remains `(frames, 4)`. Both rates, waveform
+latches, delays and sync flags survive JSON snapshots. A keydown resets each
+enabled sync phase and both configured delays. The two-phase reset follows
+the pinned ymfm model; restarting both performance delay ramps is provisional
+until firmware or hardware evidence establishes that behavior. All 16 waveform
+pairings match the pinned reference over one second at 48 kHz, including the
+shared sample-and-hold table. This implements the shared hardware-clock
+primitive, not allocation routing, software vibrato or complete performance
+rendering. See the [paired comparison](../doc/yamaha-reference/README.md#tx81z-paired-hardware-lfo-comparison).
+
+New evidence for the next depth-integration slice:
+[ax81z Math.md at 5848832](https://github.com/iflyhigh/ax81z/blob/5848832989c7864092a277e9428d44f817c6173f/Math.md)
+describes firmware-derived additive wheel/breath/foot contributions, saturated
+before PMD/AMD register conversion, with delay applied only to the patch depth.
+Its exponential conversion and LFO table reproduce all 100 existing measured
+rate/PMD/AMD rows exactly with zero controllers and completed delay. This is
+stronger evidence than the provisional strongest-depth model, which remains in
+the renderer pending a focused correction and controller regressions. The
+source is a partial reverse engineering, not an independent hardware trace;
+its controller arithmetic still needs that qualification. It does not document
+the software vibrato or breath pitch-bias implementation.
+
 The [delay measurements](https://nornand.hatenablog.com/entry/2020/11/30/185005)
 specify completion times in units of 1/48 second, with observed variation of one
 unit. Both depths remain zero until half that time; PMD then rises linearly,
