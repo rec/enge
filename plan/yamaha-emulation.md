@@ -577,6 +577,36 @@ assignments or portamento.
   reference qualification remain incomplete. No passing component test closes
   those requirements.
 
+### TX81Z firmware-trace qualification path
+
+The [2023 interrupt investigation](https://nornand.hatenablog.com/entry/2023/04/06/114613)
+identified missing OPZ IRQ and CPU Timer 2 handling in the author's MAME setup.
+It locates periodic register writes in the firmware's Timer 2 handler at
+`$8F1F`, relevant to LFO delay and portamento. This explains why a trace from an
+older emulator cannot automatically qualify those behaviors.
+
+Source inspection on 2026-11-04 pins MAME at
+`8f02776aa011cf9d249a35b1f95b434560ad70f6`:
+
+- Its [TX81Z driver](https://github.com/mamedev/mame/blob/8f02776aa011cf9d249a35b1f95b434560ad70f6/src/mame/yamaha/ymtx81z.cpp)
+  connects the OPZ IRQ handler to `HD6301_IRQ1_LINE` and selects an HD6303X CPU.
+- Its [CPU implementation](https://github.com/mamedev/mame/blob/8f02776aa011cf9d249a35b1f95b434560ad70f6/src/devices/cpu/m6800/m6801.cpp)
+  advances Timer 2 from the selected internal clock, sets the compare flag,
+  and dispatches the enabled counter-match interrupt through vector `$FFEC`.
+- The driver identifies firmware versions 1.0 through 1.6. Its default 1.6 image
+  is 65,536 bytes with SHA-1 `208a72c0dc615825c442240e520a6a3c5fe860ea`.
+  It still declares imperfect sound.
+
+These are source-level findings, not an executed firmware qualification. No ROM
+was acquired and no emulator was run. A local firmware dump and permission to
+execute this reference have been requested. Before using its results, verify
+that the IRQ handlers execute and periodic register writes occur. Then capture
+timestamped writes for isolated delayed AMD, foot volume and breath pitch bias,
+including parameter endpoints, intermediate settings and fixed/ratio operators.
+Keep the firmware hash, emulator revision and input events with each trace.
+Measured register behavior would resolve these controller contracts separately
+from OPZ audio accuracy; it would not establish hardware equivalence.
+
 ## Additional work beyond the prompt
 
 None.
