@@ -547,6 +547,16 @@ assignments or portamento.
   Foot-volume attenuation, breath pitch/EG bias and fixed-operator bend behavior
   remain unresolved. Foot routes reject nonzero FC Volume; breath routes reject
   nonneutral pitch bias or nonzero EG bias, rather than ignoring those assignments.
+- The [measured breath EG-bias table](https://nornand.hatenablog.com/entry/2020/11/24/224423)
+  is complete: 100 bias settings × 8 operator sensitivities × 128 CC2 values.
+  The 102,400 values are all in 0..127; attenuation decreases monotonically with
+  breath, reaches zero at CC2 127, and is zero for bias or sensitivity zero.
+  The ordered uint8 payload (bias, sensitivity, CC2 ascending) has SHA-256
+  `80910f5f9803def7904843145433f9428407cd2395cc72ff2da3c8779f3da3ee`.
+  These measurements put EG bias in the TL sum before saturation. Firmware
+  updates are only approximately 48 Hz and the TL high-bit behavior is uncertain.
+  Use of the measured table at the existing per-frame control cadence awaits
+  approval; no guessed EG-bias curve is needed.
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
