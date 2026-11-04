@@ -461,7 +461,8 @@ nonzero velocity sensitivity remains in force.
 The adapter admits transpose for both models and TX81Z delayed pitch modulation.
 Active delayed TX81Z amplitude modulation remains rejected.
 External envelopes and unsupported portable processing remain rejected.
-DX7 hardware controller assignments and TX81Z wheel/breath/foot LFO assignments
+DX7 hardware controller assignments, TX81Z wheel/breath/foot LFO assignments
+and TX81Z breath EG bias
 now use the scoped-control path described below. Other TX81Z hardware-specific
 fields remain stored but inactive; they are not all rejected at admission.
 Released DX7
@@ -544,9 +545,9 @@ assignments or portamento.
   Regressions cover all waveforms, stronger patch depths, fractional controller
   depths, controller modulation during patch delay, scoped smoothing, overlapping
   notes and snapshot restoration. This is provisional, not firmware qualification.
-  Foot-volume attenuation, breath pitch/EG bias and fixed-operator bend behavior
+  Foot-volume attenuation, breath pitch bias and fixed-operator bend behavior
   remain unresolved. Foot routes reject nonzero FC Volume; breath routes reject
-  nonneutral pitch bias or nonzero EG bias, rather than ignoring those assignments.
+  nonneutral pitch bias rather than ignoring that assignment.
 - The [measured breath EG-bias table](https://nornand.hatenablog.com/entry/2020/11/24/224423)
   is complete: 100 bias settings × 8 operator sensitivities × 128 CC2 values.
   The 102,400 values are all in 0..127; attenuation decreases monotonically with
@@ -555,12 +556,18 @@ assignments or portamento.
   `80910f5f9803def7904843145433f9428407cd2395cc72ff2da3c8779f3da3ee`.
   These measurements put EG bias in the TL sum before saturation. Firmware
   updates are only approximately 48 Hz and the TL high-bit behavior is uncertain.
-  Use of the measured table at the existing per-frame control cadence awaits
-  approval; no guessed EG-bias curve is needed.
+  The approved provisional implementation ships this table in
+  `enge/yamaha_breath.npy` and uses the existing per-frame scoped-control cadence.
+  Normalized breath positions truncate to CC2; omitted input means CC2 zero.
+  Each operator applies its own sensitivity and adds attenuation before TL
+  saturation. Audio regressions cover measured values, fractional CC2 inputs,
+  zero sensitivity, saturation, scoped smoothing and snapshot restoration.
+  Firmware cadence and TL high-bit behavior remain unqualified.
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
-  is implemented as above; the other listed behaviors remain unfinished.
+  and breath EG bias are implemented as above; the other listed behaviors remain
+  unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - DX7 integer oscillator/feedback replacement remains awaiting approval.

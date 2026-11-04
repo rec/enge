@@ -1,6 +1,7 @@
 """Dedicated compatible renderers for Yamaha's rate-and-level FM voices."""
 
 from math import exp, isfinite, log2, pi, sin
+from pathlib import Path
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -163,6 +164,8 @@ class TX81ZRenderer:
     Frequencies and waveforms use the nominal floating-point OPZ model.
     Optional render tuning rows are cents relative to the admitted pitch, applied
     to ratio operators before their additive chip-detune offsets.
+    Breath rows are normalized positions, truncated to CC2 before measured
+    EG-bias lookup. An omitted breath input means position zero.
     """
 
     def __init__(
@@ -264,10 +267,17 @@ class TX81ZRenderer:
         modulation: np.ndarray | None = None,
         tuning_cents: np.ndarray | None = None,
         controller_depths: np.ndarray | None = None,
+        breath: np.ndarray | None = None,
     ) -> np.ndarray:
         tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
+        if breath is not None and (
+            breath.shape != (frames,)
+            or not np.all(np.isfinite(breath))
+            or np.any((breath < 0) | (breath > 1))
+        ):
+            raise EngineError("TX81Z breath rows must have shape (frames,) in 0..1")
         if controller_depths is not None and (
             controller_depths.shape != (frames, 2)
             or not np.all(np.isfinite(controller_depths))
@@ -341,7 +351,25 @@ class TX81ZRenderer:
                     frequencies[:, i] = (
                         frequencies[:, i] - self.detune_offsets[i]
                     ) * tuning + self.detune_offsets[i]
-        gains = 2 ** (-attenuation / 64) * self.levels
+        levels = self.levels
+        if self.voice.data[76]:
+            cc = (
+                np.zeros(frames, dtype=np.int64)
+                if breath is None
+                else (127 * breath).astype(np.int64)
+            )
+            bias = np.column_stack(
+                [
+                    _TX_BREATH_ATTENUATION[
+                        self.voice.data[76], o.eg_bias_sensitivity, cc
+                    ]
+                    for o in self.voice.operators
+                ]
+            )
+            levels = np.maximum(
+                2 ** (-127 / 8), self.levels * 2 ** (-bias.astype(float) / 8)
+            )
+        gains = 2 ** (-attenuation / 64) * levels
         output, self.operators = tx81z_operator_samples(
             self.voice.algorithm,
             self.waveforms,
@@ -793,7 +821,7 @@ def tx81z_output_gain(
 
     Sum output, carrier, key-level and velocity attenuation before TL saturation.
     Register attenuation follows androuet's measured TX81Z tables. Envelope
-    attenuation and external controller bias are separate chip inputs.
+    attenuation is separate; the renderer adds breath EG bias before TL saturation.
     """
     if (
         not 1 <= algorithm <= 8
@@ -1793,3 +1821,9 @@ _TX_LFO_REGISTERS = [
     (255, 125, 96),
     (255, 127, 127),
 ]
+
+# Measured TL attenuation, indexed by BC EG Bias, operator sensitivity, CC2.
+# https://nornand.hatenablog.com/entry/2020/11/24/224423
+_TX_BREATH_ATTENUATION = np.load(
+    Path(__file__).with_name("yamaha_breath.npy"), allow_pickle=False
+)

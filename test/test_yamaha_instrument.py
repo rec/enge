@@ -452,6 +452,9 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
         targets.append(("bend", "yamaha", "pitch_bend", "ratio", 0, 1))
     else:
         patch[75] = 50
+        patch[76] = 99
+        for i in range(0, 52, 13):
+            patch[i + 7] = 7
         if scope == "instrument":
             patch[71:73] = bytes([99, 99])
         elif scope == "part":
@@ -570,6 +573,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 modulation,
                 tuning_cents=1200 * signal,
                 controller_depths=np.column_stack([depth, depth]),
+                breath=signal * 0.5,
             )
         amplitude = 1 - 0.8 * signal
         values = np.column_stack([500 + 1500 * signal, 0.5 + signal])[:, None, :]
@@ -926,7 +930,7 @@ def test_dx7_fixed_operators_ignore_pitch_envelope(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "controller,index,value", [("foot", 67, 1), ("breath", 75, 49), ("breath", 76, 1)]
+    "controller,index,value", [("foot", 67, 1), ("breath", 75, 49)]
 )
 def test_tx81z_controller_routes_reject_unimplemented_secondary_assignments(
     controller: str, index: int, value: int

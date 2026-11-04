@@ -1,3 +1,4 @@
+from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
@@ -5,6 +6,7 @@ import pytest
 from test_synth import check_audio
 from ufor import tx81z
 
+from enge import yamaha
 from enge.synth import EngineError
 from enge.yamaha import TX81ZRenderer
 
@@ -57,3 +59,65 @@ def test_tx81z_velocity_scaling_requires_positive_note_on_velocity() -> None:
             69,
             0,
         )
+
+
+@pytest.mark.parametrize("sensitivity,output", [(7, 99), (0, 99), (7, 0)])
+def test_tx81z_breath_uses_measured_attenuation_before_saturation(
+    tmp_path: Path, sensitivity: int, output: int
+) -> None:
+    raw = bytearray(93)
+    for i in range(0, 52, 13):
+        raw[i], raw[i + 3], raw[i + 4] = 31, 15, 15
+        raw[i + 7], raw[i + 11], raw[i + 12] = sensitivity, 4, 3
+    raw[49], raw[52], raw[62], raw[76] = output, 7, 24, 99
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    additional = tx81z.TX81ZAdditional(data=bytes(23))
+    # Measured row BC EG Bias 99, EBS 7, CC2 0..7 and 127.
+    cc = np.repeat([0, 1, 2, 3, 4, 5, 6, 7, 127], [5000] * 8 + [8000])
+    bias = np.repeat([127, 112, 96, 86, 80, 74, 70, 67, 0], [5000] * 8 + [8000])
+    if not sensitivity:
+        bias = np.zeros(48000)
+    gain = 2 ** (-np.minimum(127, (16 if output else 127) + bias) / 8)
+    gain += 3 * 2 ** (-127 / 8)
+    expected = gain * np.sin(2 * np.pi * 440 * np.arange(48000) / 48000)
+    note = TX81ZRenderer(voice, additional, 69, 127)
+    actual = note.render(48000, breath=(cc + 0.25 * (cc < 127)) / 127)
+    check_audio(tmp_path / "breath.wav", actual, expected[:, None])
+    default = TX81ZRenderer(voice, additional, 69, 127).render(48000)
+    explicit = TX81ZRenderer(voice, additional, 69, 127).render(
+        48000, breath=np.zeros(48000)
+    )
+    check_audio(tmp_path / "breath-default.wav", default, explicit)
+
+
+@pytest.mark.parametrize(
+    "breath", [np.zeros((1, 1)), np.array([-0.1]), np.array([1.1]), np.array([np.nan])]
+)
+def test_tx81z_invalid_breath_does_not_advance_note(breath: np.ndarray) -> None:
+    raw = bytearray(93)
+    raw[62] = 24
+    note = TX81ZRenderer(
+        tx81z.TX81ZVoice(data=bytes(raw)),
+        tx81z.TX81ZAdditional(data=bytes(23)),
+        69,
+        127,
+    )
+    before = note.snapshot()
+    with pytest.raises(EngineError, match="breath rows"):
+        note.render(1, breath=breath)
+    assert note.snapshot() == before
+
+
+def test_tx81z_breath_asset_preserves_complete_measured_table() -> None:
+    table = np.load(
+        Path(yamaha.__file__).with_name("yamaha_breath.npy"), allow_pickle=False
+    )
+    assert table.shape == (100, 8, 128)
+    assert table.dtype == np.uint8
+    assert sha256(table.tobytes()).hexdigest() == (
+        "80910f5f9803def7904843145433f9428407cd2395cc72ff2da3c8779f3da3ee"
+    )
+    assert not np.any(table[0])
+    assert not np.any(table[:, 0])
+    assert not np.any(table[:, :, 127])
+    assert np.all(np.diff(table.astype(int), axis=2) <= 0)
