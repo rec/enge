@@ -47,3 +47,47 @@ fixed controls, as does
 Enge now rejects the unavailable fixed combinations as it already did for
 ratio mode; uFor still preserves their original bytes. Boundary regressions
 cover fine seven at low coarse and fine eight at the next coarse range.
+
+## Complete legal ratio-control sweep
+
+The [ratio harness](check-ymfm-ratio.cc) expands the check to all 992 legal
+VCED coarse/ACED fine pairs at each of the 96 wrapped keys, with chip detune
+and modulation disabled. It writes [64 aggregate rows](opz-ratio.csv), one
+per VCED coarse value. Each row retains the tested count, extrema, worst key
+and fine setting, and top-key frequencies at fine zero. No audio is generated.
+
+```sh
+c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/check-ymfm-ratio.cc \
+  "$YMFM/ymfm_opz.cpp" -o /tmp/enge-check-ymfm-ratio
+/tmp/enge-check-ymfm-ratio > /tmp/opz-ratio.csv
+diff doc/yamaha-reference/opz-ratio.csv /tmp/opz-ratio.csv
+```
+
+The harness builds the 64-value displayed-ratio ordering from the four
+documented coarse-detune families and 16 multipliers, matching enge's nominal
+model. It writes those controls to the reference registers, compares cached
+and dynamically computed phase steps (exit 2 on disagreement), and compares
+native Hz with the continuous equations. Fine increments enter the multiplier
+before its final integer shift. All 95,232 cases agree between the reference's
+cached and dynamic paths.
+
+Of those cases, 5,456 hit the native top-octave clamp. The reference applies
+coarse detune in 1/64-semitone units, adjusts the octave, and saturates its base
+phase step at the final table entry before multiplication. Enge's continuous
+formula has no corresponding clamp. Across the full sweep, native minus
+nominal error spans −853.530124156 to +0.221538103 cents. Without clamped cases
+the span is −10.036815924 to +0.221538103 cents; the low-key half multiplier
+and fine-step rounding account for the larger negative extreme.
+
+For example, key 108 with coarse 3 (half multiplier and 950-cent coarse detune),
+fine zero, is nominally 3,623.143872985092 Hz but the reference yields
+2,212.944074869156 Hz. At coarse zero, key 13, fine three, the native result is
+10.036815924 cents below nominal. These differences preclude treating the
+nominal equations as a qualified native frequency implementation.
+
+The next implementation must preserve the native table, octave saturation,
+detune addition and multiplier rounding order together. A fitted correction
+factor or a clamp on the final multiplied frequency would not implement those
+rules. This sweep does not yet cover nonzero chip detune, key fractions,
+modulation, tuning, portamento or output-rate conversion. It does not establish
+hardware equivalence or resolve the independent fixed-mode reference defect.

@@ -694,6 +694,13 @@ The [native frequency audit](../doc/yamaha-reference/opz-frequency.md) records
 96 ratio and 1,984 fixed register cases. The pinned ymfm fixed path produces
 increments about ten octaves below its stated frequencies, so it is not used
 as a fixed-frequency oracle. Native ratio-table qualification remains open.
+The expanded ratio sweep covers all 95,232 legal coarse/fine/key combinations
+with zero chip detune and modulation. It finds 5,456 native top-octave clamps,
+up to 853.530 cents difference from continuous nominal frequency, and up to
+10.037 cents difference even outside saturation. Native ratio implementation
+must preserve table lookup, octave saturation, detune addition and final
+multiplier rounding together; a constant pitch correction cannot close this
+gate. Cached and dynamic reference steps agree in every swept case.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
