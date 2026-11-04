@@ -155,3 +155,62 @@ sines or multiplication after waveform quantization.
 This closes the fixed-gain software-core comparison, not complete dynamic patch,
 controller, native-clock, DAC, WT11 or hardware qualification. The earlier CSVs
 and listening files remain historical measurements of the removed floating core.
+
+## Dynamic envelope integration
+
+The [dynamic harness](render-ymfm-dynamic.cc) combines upstream envelopes and
+integer channel output. It sets exact Q20 increment 9600 for every operator,
+observes output at 48 kHz and advances envelopes with the same rational
+`3579545 / (192 * 48000)` carry as enge. Output-frame phase and feedback clocks
+are separated from envelope ticks through the public operator cache and clock
+APIs. Key-up occurs before frame 24000. This deliberately qualifies enge's
+output-frame model, not native chip-rate resampling.
+
+The 32 cases cover eight algorithms, feedback 0/7 and two profiles. Both use
+MIDI key 69, velocity 127, ratio 1, neutral detune, output level 99 and rate
+scaling zero. Carrier headroom follows the same measured TL offsets used by
+patch preparation. VCED/ACED are constructed explicitly in the Python test:
+
+| Profile | AR/D1R/D2R/RR/D1L | Waveforms, OP1..OP4 | Shifts, OP1..OP4 |
+| --- | --- | --- | --- |
+| 0 | 31/12/4/9/7 | 0, 0, 0, 0 | 0, 0, 0, 0 |
+| 1 | 20/16/12/15/0 | 7, 4, 1, 0 | 0, 1, 2, 0 |
+
+An initial attempt enabled shift on OP4 as well. It exposed a reference mapping
+conflict: pinned ymfm disables shift for register offsets whose `opoffs & 0x18`
+is zero, which is the first channel operator and maps to enge's OP4 in the
+four-operator graph. Its comment cites the manual's OP1 restriction. Enge
+retains the manual-based OP1 rule. Both endpoint operators are unshifted in
+this fixture to isolate the integration; this does **not** qualify OP4 shift
+against the complete reference channel or resolve the upstream conflict.
+
+The [before-correction CSV](opz-dynamic-before.csv) uses enge `700261a` and the
+profiles above. All 16 unshifted cases and eight shifted-modulator cases already
+matched. The eight cases with shifted carriers differed
+because ymfm's `compute_volume` returns zero when raw envelope attenuation is
+strictly greater than `0x380` (896), before applying envelope shift. Enge had
+passed only shifted attenuation to its core. The mixed-waveform algorithm-8,
+feedback-zero case differed in 22,619 samples, with 7.3643% relative RMS error.
+
+`TX81ZEnvelopeBank.attenuation_samples` now returns raw, unshifted attenuation.
+The note renderer computes the raw quiet mask, applies the per-operator shift,
+then combines LFO and total-level attenuation. Quiet operators receive zero
+gain. The gate follows the provisional pinned software model; it is not a new
+hardware measurement. Existing envelope component regressions explicitly apply
+shift when comparing against their captured shifted observations.
+
+After the correction, all **1,536,000 samples match exactly** across the 32
+cases. Tests retain integer reference output in
+`test/data/tx81z-opz-dynamic.npz` and check partitioned attack/release rendering
+and JSON continuation. Separate one-second WAV regressions distinguish raw
+attenuation 896 from 897 and 1023 with shift enabled. The archive's `parameters`
+rows are algorithm/feedback/profile; `case0` through `case31` contain upstream
+signed integer output before division by 8192.
+The archive's SHA-256 is
+`eca6142602178e955fcab6dad38590d64d16f28408b4a57e5e9a6fc3b8a02ffa`.
+
+Build as for the fixed-gain harness, substituting `render-ymfm-dynamic.cc`.
+Arguments are algorithm, feedback, profile and output path; output is 48,000
+host-endian signed 32-bit samples. No graph-file argument is required.
+Complete controller-modulated patches, disputed shift mapping, native frequency
+preparation, DAC behavior and hardware qualification remain open.

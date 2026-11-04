@@ -424,7 +424,7 @@ def test_tx81z_envelope_clock_survives_partitioned_json_continuation(
     initial = bank.model_dump_json()
     actual = bank.attenuation_samples(48000)
     ticks = np.arange(48000, dtype=np.int64) * clock_hz // (192 * 48000)
-    expected = np.minimum(ticks[:, None] * 8, 1023) >> np.arange(4)
+    expected = np.broadcast_to(np.minimum(ticks[:, None] * 8, 1023), (48000, 4))
     np.testing.assert_array_equal(actual, expected)
     assert bank.counter == 48000 * clock_hz // (192 * 48000)
     split = TX81ZEnvelopeBank.model_validate_json(initial)

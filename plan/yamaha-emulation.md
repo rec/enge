@@ -285,6 +285,17 @@ integer OPZ model and matches all 128 captured reference cases exactly,
 including partitioned JSON continuation. This closes that fixed-gain comparison,
 not dynamic-patch, native-clock or hardware qualification.
 
+A subsequent [dynamic integration comparison](../doc/yamaha-reference/opz-core.md#dynamic-envelope-integration)
+combines the integer channel path with attack, decay and release at the existing
+rational envelope clock. It found a missing raw-envelope quiet gate: pinned
+ymfm silences raw attenuation above 896 before applying operator shift. The bank
+now returns raw attenuation; the note renderer applies that provisional gate
+and then shift. All 1,536,000 samples across 32 cases match, including JSON
+continuation. The fixture leaves both endpoint operators unshifted because
+ymfm's register-slot exclusion conflicts with the manual's OP1 restriction
+under the channel mapping. Enge retains its manual-based OP1 rule; complete
+shift mapping, controller-modulated patches and hardware remain unqualified.
+
 Renderer admission checks the raw per-operator VCED amplitude-modulation-enable
 and ACED fixed-frequency flags before using their decoded booleans. Values above
 one are rejected rather than silently treated as true. Regressions cover all

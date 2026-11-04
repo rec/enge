@@ -38,7 +38,7 @@ def test_tx81z_envelope_matches_pinned_ymfm_through_release(
     tail = np.concatenate(
         [bank.attenuation_samples(137), bank.attenuation_samples(23863)]
     )
-    actual = np.concatenate([first, tail])
+    actual = np.concatenate([first, tail]) >> np.arange(4)
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(saved.attenuation_samples(24000), tail)
     carrier = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000)[:, None]

@@ -123,12 +123,13 @@ class TX81ZEnvelopeBank(BaseModel):
             envelope.release()
 
     def attenuation_samples(self, frames: int) -> np.ndarray:
+        """Return raw attenuation before operator shift or the output quiet gate."""
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
         output = np.empty((frames, 4), dtype=np.int64)
         divisor = 192 * self.sample_rate
         for frame in range(frames):
-            output[frame] = [e.attenuation >> e.shift for e in self.envelopes]
+            output[frame] = [e.attenuation for e in self.envelopes]
             ticks, self.remainder = divmod(self.remainder + self.clock_hz, divisor)
             for _ in range(ticks):
                 self.counter += 1
@@ -383,6 +384,8 @@ class TX81ZRenderer:
             tuning = glide if tuning is None else tuning * glide
         frequencies = np.broadcast_to(self.frequencies, (frames, 4))
         attenuation = self.envelopes.attenuation_samples(frames)
+        quiet = attenuation > 896
+        attenuation >>= np.array([e.shift for e in self.envelopes.envelopes])
         if modulation is not None:
             sensitivity = self.pitch_modulation_sensitivity
             if sensitivity:
@@ -442,6 +445,7 @@ class TX81ZRenderer:
                 2 ** (-127 / 8), levels * 2 ** (-attenuation_tl.astype(float) / 8)
             )
         gains = 2 ** (-attenuation / 64) * levels
+        gains[quiet] = 0
         output, self.operators = tx81z_operator_samples(
             self.voice.algorithm,
             self.waveforms,
