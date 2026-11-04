@@ -202,13 +202,6 @@ class TX81ZRenderer:
         self.amplitude_modulation_enabled = np.array(
             [o.amplitude_modulation_enable for o in voice.operators]
         )
-        if (
-            voice.data[55]
-            and self.lfo_amplitude_depth
-            and self.amplitude_modulation_sensitivity
-            and np.any(self.amplitude_modulation_enabled)
-        ):
-            raise EngineError("TX81Z delayed amplitude modulation is not implemented")
         sounding_note = note + voice.data[62] - 24
         key_code = (sounding_note - 13) // 3
         if not 0 <= key_code <= 31:
@@ -330,9 +323,11 @@ class TX81ZRenderer:
         if modulation is not None:
             raw = modulation.astype(np.int64)
             pitch_depth = self.lfo_pitch_depth * raw[:, 2] // raw[:, 3]
-            amplitude_depth = np.full(frames, self.lfo_amplitude_depth)
+            registers = np.asarray(_TX_LFO_REGISTERS)
+            # Provisional curved AMD rise through measured authored-depth values.
+            amplitude_index = self.voice.data[57] * raw[:, 2] // raw[:, 3]
+            amplitude_depth = registers[amplitude_index, 2]
             if controller_depths is not None:
-                registers = np.asarray(_TX_LFO_REGISTERS)
                 indices = controller_depths.astype(np.int64)
                 pitch_depth = np.maximum(pitch_depth, registers[indices[:, 0], 1])
                 amplitude_depth = np.maximum(

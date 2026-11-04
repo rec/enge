@@ -282,7 +282,8 @@ used by one-second WAV regressions alongside fractional-clock/noise
 continuation, fixed-frequency bypass, detune, AME/AMS gating and two-note
 snapshot replay. This qualifies the component against that software model,
 not hardware or the complete TX81Z renderer. Delayed pitch modulation now uses
-the provisional measured timing below; active delayed AMD remains rejected.
+the provisional measured timing below; delayed AMD now uses the provisional
+authored-depth ramp described below.
 Multitimbral LFO routing, software
 LFOs and full engine integration also remain work.
 
@@ -292,10 +293,10 @@ unit. Both depths remain zero until half that time; PMD then rises linearly,
 whereas AMD follows a curve that the report does not quantify. Delay 1 completes
 at 15/48 second and delay 99 at 1022/48 seconds. Implementing a linear AMD ramp
 would therefore invent behavior inconsistent with the stated observation.
-The user approved the provisional pitch-only implementation. It uses the measured
-completion table. The clock latches exact rational delay progress at each OPZ
-observation; each note floors its delayed register depth before multiplying the
-raw waveform. Frames without a chip tick retain the previous observation.
+The initial pitch-only implementation uses the measured completion table.
+The clock latches exact rational delay progress at each OPZ observation; each
+note floors its delayed PMD register depth before multiplying the raw waveform.
+Frames without a chip tick retain the previous observation.
 This preserves the earlier integer ramp without float rounding. Key-down
 restarts the delay even with sync off, while preserving the
 noise and secondary clocks. Snapshot identity includes authored delay; elapsed
@@ -303,9 +304,20 @@ delay time survives partitioned JSON continuation. Rounding and update cadence
 are explicit model choices, not qualified firmware behavior. Regression WAVs
 cover the silent half, ramp, final depth, key-down restart, fractional chip ticks
 and continuation, including maximum delay. Offline integration covers shared
-clock restart by overlapping notes. Active delayed AMD remains rejected; zero
-depth, zero AMS or disabled operator AME permits the pitch-only path.
-Delayed AMD remains a separate unresolved requirement.
+clock restart by overlapping notes.
+
+Under the user's standing instruction to follow recommendations, delayed AMD
+now provisionally ramps the authored 0..99 depth through the existing measured
+AMD register table: `index = authored_depth * progress_numerator // denominator`.
+This produces a curved register rise with the measured completion time and
+static endpoint. It reuses the measured nonlinear depth mapping rather than
+inventing an independent exponent. This interpolation is a model choice, not a
+measured delay curve. PMD retains its linear register ramp; controller depths
+remain undelayed and take the stronger contribution. No snapshot or row-layout
+change is needed. One-second WAV regressions cover quarter-progress values at
+two patch depths, large rational denominators, controller override, shared noise
+and note snapshots during the ramp, release, partitioned continuation and
+offline admission. Exact delayed AMD firmware behavior remains unqualified.
 
 VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
 documented parameter ranges before note preparation. Unused payload bytes and
@@ -492,8 +504,8 @@ uses nearest-integer rounding with ties upward, preserves exact zero and maps
 any positive value to at least 1. Existing TX81Z rejection of velocity zero with
 nonzero velocity sensitivity remains in force.
 
-The adapter admits transpose for both models and TX81Z delayed pitch modulation.
-Active delayed TX81Z amplitude modulation remains rejected.
+The adapter admits transpose for both models and TX81Z delayed pitch and
+amplitude modulation using the provisional models above.
 External envelopes and unsupported portable processing remain rejected.
 DX7 hardware controller assignments, TX81Z wheel/breath/foot LFO assignments
 and TX81Z breath EG bias
@@ -581,8 +593,9 @@ assignments or portamento.
   The approved provisional model takes the strongest controller-position times
   assignment amount for each destination, truncates to authored 0..99 depth,
   then applies the measured register table. The stronger of this undelayed
-  contribution and the patch register depth wins. Patch PMD alone retains its
-  measured delay ramp; controller PMD/AMD bypass it. Depths are applied per note
+  contribution and the patch register depth wins. Patch PMD retains its measured
+  timing and linear ramp; patch AMD uses the provisional curved rise above.
+  Controller PMD/AMD bypass delay. Depths are applied per note
   to shared raw observations, so scoped controls do not advance extra clocks.
   Regressions cover all waveforms, stronger patch depths, fractional controller
   depths, controller modulation during patch delay, scoped smoothing, overlapping
@@ -630,7 +643,7 @@ assignments or portamento.
 - The approved DX7 integer oscillator/feedback replacement is implemented.
   Constant-gain reference comparisons and scoped-control continuation cover the
   new core; complete dynamic patches and hardware output remain unqualified.
-- TX81Z delayed AMD, software/multitimbral LFO routing and complete-renderer
+- TX81Z software/multitimbral LFO routing and complete-renderer
   reference qualification remain incomplete. No passing component test closes
   those requirements.
 

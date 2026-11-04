@@ -48,7 +48,7 @@ def instrument(kind: str, transpose: int = 0, delay: int = 0) -> SynthInstrument
         data[54:63] = bytes([75, 0, 99, 99, 1, 2, 4, 2, 24])
         data[62] += transpose
         if delay:
-            data[55], data[57] = delay, 0
+            data[55] = delay
         template["patch"] = bytes(data).hex()
         template["additional"] = bytes(23).hex()
     raw["body"] = {"voices": [template]}

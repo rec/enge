@@ -122,20 +122,25 @@ def test_tx81z_amplitude_modulation_obeys_channel_sensitivity_and_operator_enabl
     )
 
 
-def test_tx81z_shared_lfo_and_notes_restore_together(tmp_path: Path) -> None:
-    voice = lfo_voice(3)
+@pytest.mark.parametrize("delay", [0, 1])
+def test_tx81z_shared_lfo_and_notes_restore_together(
+    tmp_path: Path, delay: int
+) -> None:
+    raw = bytearray(lfo_voice(3).data)
+    raw[55] = delay
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
     additional = tx81z.TX81ZAdditional(data=bytes(23))
     context = TX81ZLFOContext(voice)
     notes = [TX81ZRenderer(voice, additional, n, 100) for n in (69, 76)]
-    rows = context.advance(24000)
-    first = notes[0].render(24000, rows) + notes[1].render(24000, rows)
+    rows = context.advance(11000)
+    first = notes[0].render(11000, rows) + notes[1].render(11000, rows)
     clock = TX81ZLFOSnapshot.model_validate_json(context.snapshot().model_dump_json())
     snapshots = [
         TX81ZSnapshot.model_validate_json(n.snapshot().model_dump_json()) for n in notes
     ]
     notes[0].release()
-    rows = context.advance(24000)
-    tail = notes[0].render(24000, rows) + notes[1].render(24000, rows)
+    rows = context.advance(37000)
+    tail = notes[0].render(37000, rows) + notes[1].render(37000, rows)
     replay_clock = TX81ZLFOContext(voice)
     replay_clock.restore(clock)
     replay = [TX81ZRenderer(voice, additional, n, 100) for n in (69, 76)]
@@ -143,7 +148,7 @@ def test_tx81z_shared_lfo_and_notes_restore_together(tmp_path: Path) -> None:
         renderer.restore(snapshot)
     replay[0].release()
     blocks = [first]
-    for length in (997, 23003):
+    for length in (997, 36003):
         rows = replay_clock.advance(length)
         blocks.append(replay[1].render(length, rows) + replay[0].render(length, rows))
     check_audio(
@@ -170,17 +175,35 @@ def test_tx81z_keydown_only_resets_synchronized_lfo_counter(sync: bool) -> None:
     assert after.frame == before.frame
 
 
-@pytest.mark.parametrize("delay", [1, 99])
-def test_tx81z_note_rejects_active_delayed_amplitude(delay: int) -> None:
+@pytest.mark.parametrize(
+    "depth,registers", [(50, [0, 2, 6, 10, 16]), (99, [0, 6, 15, 31, 127])]
+)
+@pytest.mark.parametrize("controller", [0, 50])
+def test_tx81z_delayed_amplitude_uses_curved_depth_and_undelayed_controllers(
+    tmp_path: Path, depth: int, registers: list[int], controller: int
+) -> None:
     raw = bytearray(lfo_voice().data)
-    raw[55] = delay
-    with pytest.raises(EngineError, match="delayed amplitude modulation"):
-        TX81ZRenderer(
-            tx81z.TX81ZVoice(data=bytes(raw)),
-            tx81z.TX81ZAdditional(data=bytes(23)),
-            69,
-            100,
-        )
+    raw[55], raw[56], raw[57] = 1, 0, depth
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    extra = tx81z.TX81ZAdditional(data=bytes(23))
+    # Exact quarter-progress observations, including a large rational denominator.
+    rows = np.tile([0, 255, 0, 2**56], (48000, 1))
+    rows[:, 2] = np.repeat(np.arange(5, dtype=np.int64) * 2**54, 9600)
+    controls = np.tile([0, controller], (48000, 1))
+    note = TX81ZRenderer(voice, extra, 69, 100)
+    first = note.render(17003, rows[:17003], controller_depths=controls[:17003])
+    saved = TX81ZSnapshot.model_validate_json(note.snapshot().model_dump_json())
+    note.restore(saved)
+    actual = np.concatenate(
+        [first, note.render(30997, rows[17003:], controller_depths=controls[17003:])]
+    )
+    # Measured AMD register values for authored depths 0/12/25/37/50 or 0/24/49/74/99.
+    depths = np.maximum(np.repeat(registers, 9600), 16 if controller else 0)
+    attenuation = (255 * depths >> 7) << 2
+    expected = np.sin(2 * np.pi * 440 * np.arange(48000) / 48000) * 2 ** (
+        -attenuation / 64
+    )
+    check_audio(tmp_path / "delayed-amplitude.wav", actual, expected[:, None])
 
 
 @pytest.mark.parametrize(
@@ -202,27 +225,6 @@ def test_tx81z_context_rejects_a_different_clock_definition(
     values[field] = value
     with pytest.raises(EngineError, match="different clock definition"):
         context.restore(TX81ZLFOSnapshot.model_validate(values))
-
-
-@pytest.mark.parametrize("gate", ["depth", "sensitivity", "operators"])
-def test_tx81z_delay_accepts_inaudible_amplitude_modulation(gate: str) -> None:
-    raw = bytearray(lfo_voice().data)
-    raw[55] = 1
-    if gate == "depth":
-        raw[57] = 0
-    elif gate == "sensitivity":
-        raw[61] = 0
-    else:
-        for i in range(0, 52, 13):
-            raw[i + 8] = 0
-    context = TX81ZLFOContext(tx81z.TX81ZVoice(data=bytes(raw)))
-    assert context.snapshot().delay == 1
-    TX81ZRenderer(
-        tx81z.TX81ZVoice(data=bytes(raw)),
-        tx81z.TX81ZAdditional(data=bytes(23)),
-        69,
-        100,
-    )
 
 
 @pytest.mark.parametrize(
