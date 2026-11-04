@@ -63,7 +63,7 @@ The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above
 99, which raw voice inspection preserves. Tests exercise packed and unpacked
 voices without changing their stored bytes. This does not yet qualify all
-global Yamaha parameters or dump-to-engine integration.
+global Yamaha parameters. Offline template integration is described below.
 
 DX7 note admission now validates oscillator sync, LFO speed/delay/depth,
 LFO sync/waveform, pitch sensitivity and transpose ranges in both packed and
@@ -93,7 +93,8 @@ DX7 notes now apply their own PMD/PMS calibration to shared LFO rows in octave
 units before phase advancement. Effective pitch modulation requires explicit
 rows; missing/invalid rows are rejected before note state advances. Zero
 sensitivities leave their corresponding modulation depths inaudible.
-Full engine ownership remains work; TX81Z LFO status is recorded below.
+The offline adapter now owns these clocks per template; native engine ownership
+remains work. TX81Z LFO status is recorded below.
 One-second 48 kHz WAV regressions cover all waveform shapes, known random values,
 rate/delay calibration, sync, fractional continuation, pitch calibration and two
 simultaneous notes restoring their clock and note snapshots together.
@@ -342,6 +343,29 @@ qualification remain work.
   state, snapshots, and regressions. Neither is an alias for the other.
 - Add a small set of public imported-patch fixtures only when their licensing
   permits redistribution. Tests may construct parameter bytes directly.
+
+## Offline instrument integration
+
+Dedicated uFor `YamahaDX7Voice` and `YamahaTX81ZVoice` templates now preserve
+raw patch bytes and carry trigger velocity through shared lifecycle preparation.
+`enge.yamaha_instrument` renders those actions with one shared LFO context per
+template, routing, static gain/filter processing, minimum hold, release, stop
+and continuous fade retiming. MIDI-file rendering dispatches Yamaha instruments
+to this NumPy-only adapter. Snapshots include clocks, notes, filter state and
+pending retirement state.
+
+Explicit trigger pitch microtunes ratio operators while the MIDI key continues
+to drive key scaling. Fixed operators retain their authored frequencies. Velocity
+uses nearest-integer rounding with ties upward, preserves exact zero and maps
+any positive value to at least 1. Existing TX81Z rejection of velocity zero with
+nonzero velocity sensitivity remains in force.
+
+The adapter admits the implemented profile explicitly: DX7 oscillator sync on,
+neutral transpose and no multi-operator feedback; TX81Z zero-delay LFO. External
+controller modulation beyond shared sustain handling, external envelopes and
+unsupported processing remain rejected. Released DX7 carriers with nonzero final
+envelope levels remain active until explicitly stopped or faded. This integration
+adds no native callback renderer and does not establish hardware equivalence.
 
 ## Additional work beyond the prompt
 

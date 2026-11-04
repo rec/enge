@@ -16,9 +16,15 @@ from ufor import synth_trace
 from ufor.events import Trigger
 from ufor.instrument_trace import TraceAction
 from ufor.samples import instrument, trace
-from ufor.synth import FMVoice, NoiseVoice, SynthInstrumentScore
+from ufor.synth import (
+    FMVoice,
+    NoiseVoice,
+    SynthInstrumentScore,
+    YamahaDX7Voice,
+    YamahaTX81ZVoice,
+)
 
-from . import fm, noise, sample_instrument, synth
+from . import fm, noise, sample_instrument, synth, yamaha_instrument
 from .midi import MidiPerformance
 
 
@@ -61,7 +67,8 @@ def render_midi(
             fm.OfflineFM
             | noise.OfflineNoise
             | synth.OfflineSynth
-            | sample_instrument.OfflineSampler,
+            | sample_instrument.OfflineSampler
+            | yamaha_instrument.OfflineYamaha,
             list[TraceAction],
         ]
     ] = []
@@ -72,6 +79,7 @@ def render_midi(
             | noise.OfflineNoise
             | synth.OfflineSynth
             | sample_instrument.OfflineSampler
+            | yamaha_instrument.OfflineYamaha
         )
         if isinstance(score, instrument.SampleInstrumentScore):
             renderer = sample_instrument.OfflineSampler(
@@ -79,7 +87,15 @@ def render_midi(
             )
             actions = trace.prepare(score.body, events, seed=0).actions
         else:
-            if isinstance(score.body.voices[0], FMVoice):
+            if isinstance(score.body.voices[0], (YamahaDX7Voice, YamahaTX81ZVoice)):
+                if backend != "numpy":
+                    raise synth.EngineError(
+                        "Yamaha instruments support only offline NumPy rendering"
+                    )
+                renderer = yamaha_instrument.OfflineYamaha(
+                    yamaha_instrument.prepare(score)
+                )
+            elif isinstance(score.body.voices[0], FMVoice):
                 renderer = fm.OfflineFM(fm.prepare(score), backend, control_interval)
             elif isinstance(score.body.voices[0], NoiseVoice):
                 renderer = noise.OfflineNoise(

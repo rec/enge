@@ -1,6 +1,6 @@
 """Dedicated compatible renderers for Yamaha's rate-and-level FM voices."""
 
-from math import exp, log2, pi, sin
+from math import exp, isfinite, log2, pi, sin
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -143,6 +143,7 @@ class TX81ZSnapshot(BaseModel, frozen=True):
     note: int
     velocity: int
     sample_rate: int
+    pitch_hz: float | None = None
     envelopes: TX81ZEnvelopeBank
     operators: TX81ZState
 
@@ -164,6 +165,7 @@ class TX81ZRenderer:
         note: int,
         velocity: int,
         sample_rate: int = 48000,
+        pitch_hz: float | None = None,
     ) -> None:
         for diagnostic in (voice.parameter_diagnostic, additional.parameter_diagnostic):
             if diagnostic is not None:
@@ -196,6 +198,9 @@ class TX81ZRenderer:
         self.note = note
         self.velocity = velocity
         self.sample_rate = sample_rate
+        if pitch_hz is not None and (not isfinite(pitch_hz) or pitch_hz <= 0):
+            raise EngineError("Yamaha pitch_hz must be finite and positive")
+        self.pitch_hz = pitch_hz
         self.envelopes = TX81ZEnvelopeBank(
             envelopes=[
                 TX81ZEnvelope.start(
@@ -216,6 +221,8 @@ class TX81ZRenderer:
             frequency = tx81z_base_frequency(operator, extension, sounding_note)
             offset = 0.0
             if not extension.fixed_frequency:
+                if pitch_hz is not None:
+                    frequency *= pitch_hz / (440 * 2 ** ((note - 69) / 12))
                 multiple = _TX_RATIO_COARSE[operator.coarse][1] + extension.fine / 16
                 offset = (
                     tx81z_detune_step(operator.detune, key_code)
@@ -306,6 +313,7 @@ class TX81ZRenderer:
             note=self.note,
             velocity=self.velocity,
             sample_rate=self.sample_rate,
+            pitch_hz=self.pitch_hz,
             envelopes=self.envelopes.model_copy(deep=True),
             operators=self.operators.model_copy(deep=True),
         )
@@ -317,6 +325,7 @@ class TX81ZRenderer:
             or snapshot.note != self.note
             or snapshot.velocity != self.velocity
             or snapshot.sample_rate != self.sample_rate
+            or snapshot.pitch_hz != self.pitch_hz
         ):
             raise EngineError("TX81Z snapshot belongs to a different note definition")
         self.envelopes = snapshot.envelopes.model_copy(deep=True)
@@ -437,6 +446,7 @@ class DX7Snapshot(BaseModel, frozen=True):
     note: int
     velocity: int
     sample_rate: int
+    pitch_hz: float | None = None
     envelopes: list[DX7Envelope] = Field(min_length=6, max_length=6)
     pitch_envelope: DX7PitchEnvelope
     phases: list[float] = Field(min_length=6, max_length=6)
@@ -454,6 +464,7 @@ class DX7Renderer:
         note: int,
         velocity: int,
         sample_rate: int = 48000,
+        pitch_hz: float | None = None,
     ) -> None:
         if (diagnostic := voice.parameter_diagnostic) is not None:
             raise EngineError(diagnostic)
@@ -482,6 +493,9 @@ class DX7Renderer:
         self.note = note
         self.velocity = velocity
         self.sample_rate = sample_rate
+        if pitch_hz is not None and (not isfinite(pitch_hz) or pitch_hz <= 0):
+            raise EngineError("Yamaha pitch_hz must be finite and positive")
+        self.pitch_hz = pitch_hz
         self.pitch_modulation_depth = parameters[3] * 165 >> 6
         self.pitch_modulation_sensitivity = [0, 10, 20, 33, 55, 92, 153, 255][
             parameters[7]
@@ -506,6 +520,10 @@ class DX7Renderer:
         self.frequencies = np.array(
             [_operator_frequency(operator, note) for operator in voice.operators]
         )
+        if pitch_hz is not None:
+            for i, operator in enumerate(voice.operators):
+                if operator.frequency_mode.value == "ratio":
+                    self.frequencies[i] *= pitch_hz / (440 * 2 ** ((note - 69) / 12))
         self.phases = np.zeros(6)
         self.feedback = [0.0, 0.0]
         self.order = _operator_order(voice)
@@ -516,6 +534,7 @@ class DX7Renderer:
             note=self.note,
             velocity=self.velocity,
             sample_rate=self.sample_rate,
+            pitch_hz=self.pitch_hz,
             envelopes=[e.model_copy(deep=True) for e in self.envelopes],
             pitch_envelope=self.pitch_envelope.model_copy(deep=True),
             phases=self.phases.tolist(),
@@ -528,6 +547,7 @@ class DX7Renderer:
             or snapshot.note != self.note
             or snapshot.velocity != self.velocity
             or snapshot.sample_rate != self.sample_rate
+            or snapshot.pitch_hz != self.pitch_hz
         ):
             raise EngineError("DX7 snapshot belongs to a different note definition")
         self.envelopes = [e.model_copy(deep=True) for e in snapshot.envelopes]
