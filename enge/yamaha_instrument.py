@@ -1,5 +1,6 @@
 """Offline Yamaha instruments consuming uFor's shared lifecycle actions."""
 
+from copy import deepcopy
 from math import ceil, floor
 
 import numpy as np
@@ -151,7 +152,8 @@ class OfflineYamaha:
             voices[saved.voice_id] = Voice(
                 **saved.model_dump(exclude={"note"}), renderer=renderer
             )
-        for name, clock in self.clocks.items():
+        clocks = deepcopy(self.clocks)
+        for name, clock in clocks.items():
             saved_clock = snapshot.clocks[name]
             if isinstance(clock, yamaha_lfo.DX7LFOContext) and isinstance(
                 saved_clock, yamaha_lfo.DX7LFOSnapshot
@@ -166,6 +168,7 @@ class OfflineYamaha:
                     "Yamaha snapshot clock type does not match template"
                 )
         self.voices = voices
+        self.clocks = clocks
         self.oscillator_slots = snapshot.oscillator_slots
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts

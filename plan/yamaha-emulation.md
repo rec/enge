@@ -430,6 +430,12 @@ and continuous fade retiming. MIDI-file rendering dispatches Yamaha instruments
 to this NumPy-only adapter. Snapshots include clocks, notes, filter state and
 pending retirement state.
 
+Instrument snapshot restore now prepares both notes and shared clocks before
+replacing live state. A rejected later clock definition cannot rewind an earlier
+template's clock. Regression coverage reproduces this with both DX7/TX81Z template
+orders, checks unchanged aggregate state after rejection, and compares the next
+one-second audio continuation against an untouched snapshot reference.
+
 Explicit trigger pitch microtunes ratio operators while the transposed MIDI key continues
 to drive key scaling. Fixed operators retain their authored frequencies. Velocity
 uses nearest-integer rounding with ties upward, preserves exact zero and maps

@@ -660,3 +660,43 @@ def test_dx7_rejects_transposed_keys_outside_supported_range(
     raw[144] = transpose
     with pytest.raises(EngineError, match="transposed note"):
         yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), note, 100)
+
+
+@pytest.mark.parametrize("first", ["dx7", "tx81z"])
+def test_rejected_yamaha_clock_restore_preserves_audio_continuation(
+    tmp_path: Path, first: str
+) -> None:
+    second = "tx81z" if first == "dx7" else "dx7"
+    raw = instrument(first).model_dump(mode="json")
+    raw["body"]["voices"][0]["name"] = first
+    other = instrument(second).model_dump(mode="json")["body"]["voices"][0]
+    other["name"] = second
+    raw["body"]["voices"].append(other)
+    document = SynthInstrumentScore.model_validate(raw)
+    definition = yamaha_instrument.prepare(document)
+    renderer = yamaha_instrument.OfflineYamaha(definition)
+    rejected = renderer.snapshot()
+    rejected.clocks[second] = rejected.clocks[second].model_copy(
+        update={"sample_rate": 44100}
+    )
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            Trigger(
+                tick=0, ordinal=0, part="main", trigger_id="note", key=69, velocity=0.5
+            )
+        ],
+        seed=0,
+    ).actions
+    renderer.advance(actions, 0, 24000)
+    before = renderer.snapshot()
+    reference = yamaha_instrument.OfflineYamaha(definition)
+    reference.restore(before)
+    with pytest.raises(EngineError, match="different clock definition"):
+        renderer.restore(rejected)
+    assert renderer.snapshot() == before
+    check_audio(
+        tmp_path / "rejected-clock-restore.wav",
+        renderer.advance([], 24000, 72000),
+        reference.advance([], 24000, 72000),
+    )
