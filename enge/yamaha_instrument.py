@@ -283,6 +283,10 @@ class OfflineYamaha:
                 p.target.parameter == "tuning_cents"
                 for p in template.modulation.parameters
             )
+            pitch_bend = any(
+                p.target.name == "yamaha" and p.target.parameter == "pitch_bend"
+                for p in template.modulation.parameters
+            )
             for i in range(frames):
                 at = start + i
                 if (
@@ -300,15 +304,25 @@ class OfflineYamaha:
                 if _complete(voice):
                     break
                 tuning = None
-                if dynamic_tuning:
+                bend = None
+                if dynamic_tuning or pitch_bend:
                     values = self.controls.values(template, voice.sources, at, 1)
-                    tuning = (
-                        values[("processing", "tuning_cents")]
-                        - template.processing.tuning_cents
-                    )
-                audio[i] = voice.renderer.render(
-                    1, rows[voice.template][i : i + 1], tuning
-                )[0]
+                    if dynamic_tuning:
+                        tuning = (
+                            values[("processing", "tuning_cents")]
+                            - template.processing.tuning_cents
+                        )
+                    if pitch_bend and isinstance(template, YamahaDX7Voice):
+                        bend = (
+                            values[("yamaha", "pitch_bend")]
+                            * template.performance.pitch_bend_range
+                            * 100
+                        )
+                modulation = rows[voice.template][i : i + 1]
+                if isinstance(voice.renderer, yamaha.DX7Renderer):
+                    audio[i] = voice.renderer.render(1, modulation, tuning, bend)[0]
+                else:
+                    audio[i] = voice.renderer.render(1, modulation, tuning)[0]
                 count += 1
             gain = 10 ** (template.processing.volume_db / 20)
             if template.processing.invert_polarity:
@@ -389,7 +403,10 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         synth.validate_generators(
             voice, allow_velocity_bindings=True, allow_key_bindings=True
         )
-        synth.validate_modulation(voice)
+        synth.validate_modulation(
+            voice,
+            (("yamaha", "pitch_bend"),) if isinstance(voice, YamahaDX7Voice) else (),
+        )
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
             invert_polarity=voice.processing.invert_polarity,
@@ -399,6 +416,17 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         ):
             raise synth.EngineError("Unsupported Yamaha processing")
         if isinstance(voice, YamahaDX7Voice):
+            if any(
+                a.pitch or a.amplitude or a.eg_bias
+                for a in (
+                    voice.performance.modulation_wheel,
+                    voice.performance.breath,
+                    voice.performance.foot,
+                )
+            ):
+                raise synth.EngineError(
+                    "DX7 controller assignments are not implemented"
+                )
             yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
         else:
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)

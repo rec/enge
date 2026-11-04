@@ -478,6 +478,7 @@ class DX7Renderer:
     Optional render tuning rows are cents relative to the admitted pitch and
     affect ratio operators only. The caller supplies subsequent tuning rows
     after restoring a snapshot, just as it supplies shared modulation rows.
+    Hardware pitch-bend cents rows affect both fixed and ratio operators.
     """
 
     def __init__(
@@ -603,8 +604,10 @@ class DX7Renderer:
         frames: int,
         modulation: np.ndarray | None = None,
         tuning_cents: np.ndarray | None = None,
+        pitch_bend_cents: np.ndarray | None = None,
     ) -> np.ndarray:
         tuning = _tuning_ratios(tuning_cents, frames)
+        bend = _tuning_ratios(pitch_bend_cents, frames)
         if frames < 0:
             raise EngineError("DX7 frame count must be nonnegative")
         if modulation is None:
@@ -664,6 +667,8 @@ class DX7Renderer:
             self.feedback[0] = self.feedback[1]
             self.feedback[1] = float(values[feedback_source])
             self.phase_steps = self.frequencies * pitch_ratio / self.sample_rate
+            if bend is not None:
+                self.phase_steps *= bend[frame]
             if tuning is not None:
                 for i, operator in enumerate(self.voice.operators):
                     if operator.frequency_mode.value == "ratio":

@@ -434,12 +434,18 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
         }
     ]
     parameters, routes = [], []
-    for name, target_name, parameter, unit, default, amount in [
+    bend_range = {"instrument": 0, "part": 2, "trigger": 12}[scope]
+    targets = [
         ("gain", "processing", "amplitude", "ratio", 1, -0.8),
         ("tuning", "processing", "tuning_cents", "cents", 100, 1200),
         ("cutoff", "filter-tone", "cutoff_hz", "hz", 500, 1500),
         ("resonance", "filter-tone", "q", "ratio", 0.5, 1),
-    ]:
+    ]
+    if kind == "dx7":
+        if bend_range != 2:
+            voice["performance"] = {"pitch_bend_range": bend_range}
+        targets.append(("bend", "yamaha", "pitch_bend", "ratio", 0, 1))
+    for name, target_name, parameter, unit, default, amount in targets:
         target = {"name": target_name, "parameter": parameter}
         parameters.append(
             {
@@ -507,7 +513,14 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
         signal = (
             ramp[start:] if i == 0 or scope == "instrument" else np.zeros(48000 - start)
         )
-        audio = note.render(48000 - start, tuning_cents=1200 * signal)
+        if isinstance(note, yamaha.DX7Renderer):
+            audio = note.render(
+                48000 - start,
+                tuning_cents=1200 * signal,
+                pitch_bend_cents=100 * bend_range * signal,
+            )
+        else:
+            audio = note.render(48000 - start, tuning_cents=1200 * signal)
         amplitude = 1 - 0.8 * signal
         values = np.column_stack([500 + 1500 * signal, 0.5 + signal])[:, None, :]
         if order == "after_amplitude":
@@ -752,3 +765,52 @@ def test_yamaha_tuning_rows_match_static_microtuning_and_preserve_fixed_operator
         with pytest.raises(EngineError, match="tuning"):
             split.render(1, tuning_cents=invalid)
         assert split.snapshot() == before
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_dx7_pitch_bend_moves_fixed_and_ratio_operators_with_tuning(
+    tmp_path: Path, direction: int
+) -> None:
+    raw = bytearray(voice().data)
+    for i in range(6):
+        raw[i * 21 + 17] = i % 2
+        raw[i * 21 + 19] = 20 if i % 2 else 0
+    patch = DX7Voice(data=bytes(raw))
+    for i in range(6):
+        if i % 2:
+            raw[i * 21 + 19] += direction * 10
+    reference_patch = DX7Voice(data=bytes(raw))
+    ratio = 10 ** (direction / 10)
+    cents = np.full(48000, 1200 * np.log2(ratio))
+    tuning = np.full(48000, 100.0)
+    reference = yamaha.DX7Renderer(
+        reference_patch, 69, 100, pitch_hz=440 * ratio * 2 ** (100 / 1200)
+    ).render(48000)
+    note = yamaha.DX7Renderer(patch, 69, 100)
+    head = note.render(
+        12345, tuning_cents=tuning[:12345], pitch_bend_cents=cents[:12345]
+    )
+    saved = yamaha.DX7Snapshot.model_validate_json(note.snapshot().model_dump_json())
+    note = yamaha.DX7Renderer(patch, 69, 100)
+    note.restore(saved)
+    audio = np.concatenate(
+        [
+            head,
+            note.render(
+                35655, tuning_cents=tuning[12345:], pitch_bend_cents=cents[12345:]
+            ),
+        ]
+    )
+    check_audio(tmp_path / "hardware-bend.wav", audio, reference)
+    for invalid in (np.array([np.nan]), np.array([1e300]), np.zeros((1, 1))):
+        before = note.snapshot()
+        with pytest.raises(EngineError):
+            note.render(1, pitch_bend_cents=invalid)
+        assert note.snapshot() == before
+
+
+def test_dx7_rejects_unimplemented_controller_assignments() -> None:
+    raw = instrument("dx7").model_dump(mode="json")
+    raw["body"]["voices"][0]["performance"]["breath"] = {"range": 99, "eg_bias": True}
+    with pytest.raises(EngineError, match="controller assignments"):
+        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))

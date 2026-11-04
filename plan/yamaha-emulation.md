@@ -491,11 +491,22 @@ assignments or portamento.
   `yamaha.pitch_bend` uses a normalized -1..1 domain; `modulation_wheel`,
   `breath` and `foot` use 0..1. All have unit `ratio` and default zero, and
   retain the existing scoped bindings, mappings and smoothing. This is the
-  input contract only. Enge still rejects these targets during preparation
-  until the corresponding assignment rendering is implemented.
-- DX7 controller ranges and assignments need explicit performance settings
-  outside the lossless voice dump. The proposed two-semitone bend range and
-  disabled wheel/breath/foot defaults remain awaiting user approval.
+  input contract. DX7 pitch bend now uses the existing scoped-control path;
+  TX81Z pitch bend and wheel/breath/foot targets remain rejected.
+- The approved DX7 performance settings are available in uFor `e056201`,
+  outside the lossless voice dump: a 0..12-semitone bend range (default two),
+  and wheel/breath/foot ranges with independent pitch, amplitude and EG-bias
+  switches, all disabled by default. Enge rejects enabled assignments until
+  their rendering is implemented.
+- DX7 note rendering accepts per-frame hardware bend cents, applied to both
+  fixed and ratio operators, following the pinned Dexed `dx7note.cc` bend path.
+  Portable tuning remains ratio-only and composes with bend. The offline
+  adapter multiplies normalized bend by the authored semitone range. Snapshots
+  retain oscillator continuation and existing scoped control ramps. WAV
+  regressions compare positive/negative bend against equivalent static mixed
+  fixed/ratio patches and cover scoped smoothing with concurrent tuning.
+  This is continuous bend; hardware MIDI quantization and bend-step settings
+  are not qualified by these tests.
 - The [TX81Z owner's manual, page 22](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
   routes controller-driven modulation separately from delayed patch PMD/AMD.
   The diagram does not specify the arithmetic combining those paths. Controller

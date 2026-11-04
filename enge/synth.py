@@ -2546,7 +2546,9 @@ def validate_generators(
         raise EngineError("Unsupported binding for this renderer")
 
 
-def validate_modulation(settings: SoundSettings) -> None:
+def validate_modulation(
+    settings: SoundSettings, additional_targets: tuple[tuple[str, str], ...] = ()
+) -> None:
     """Accept only targets realized by the common voice processing path."""
     targets = {f"filter-{f.name}" for f in settings.processing.filters}
     if any(
@@ -2556,6 +2558,7 @@ def validate_modulation(settings: SoundSettings) -> None:
                 and p.target.parameter in ("amplitude", "tuning_cents")
             )
             or (p.target.name in targets and p.target.parameter in ("cutoff_hz", "q"))
+            or (p.target.name, p.target.parameter) in additional_targets
         )
         for p in settings.modulation.parameters
     ):
