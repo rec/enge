@@ -156,6 +156,8 @@ class TX81ZRenderer:
     Zero-delay LFO modulation uses caller-owned OPZ rows. Intrinsic key scaling
     uses the transposed key; snapshots retain the original trigger key.
     Frequencies and waveforms use the nominal floating-point OPZ model.
+    Optional render tuning rows are cents relative to the admitted pitch, applied
+    to ratio operators before their additive chip-detune offsets.
     """
 
     def __init__(
@@ -244,7 +246,13 @@ class TX81ZRenderer:
         self.waveforms = [additional.operator(i).waveform for i in range(1, 5)]
         self.operators = TX81ZState()
 
-    def render(self, frames: int, modulation: np.ndarray | None = None) -> np.ndarray:
+    def render(
+        self,
+        frames: int,
+        modulation: np.ndarray | None = None,
+        tuning_cents: np.ndarray | None = None,
+    ) -> np.ndarray:
+        tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
         if modulation is None:
@@ -289,6 +297,13 @@ class TX81ZRenderer:
                     self.amplitude_modulation_sensitivity - 1
                 )
                 attenuation += am[:, None] * self.amplitude_modulation_enabled
+        if tuning is not None:
+            frequencies = frequencies.copy()
+            for i in range(4):
+                if self.ratio_operators[i]:
+                    frequencies[:, i] = (
+                        frequencies[:, i] - self.detune_offsets[i]
+                    ) * tuning + self.detune_offsets[i]
         gains = 2 ** (-attenuation / 64) * self.levels
         output, self.operators = tx81z_operator_samples(
             self.voice.algorithm,
@@ -460,6 +475,9 @@ class DX7Renderer:
     Initial phases are cycles in operator order OP1 through OP6. Sync-on resets
     them; sync-off copies the supplied phases, or starts at zero when omitted.
     The caller owns idle oscillator evolution and subsequent note allocation.
+    Optional render tuning rows are cents relative to the admitted pitch and
+    affect ratio operators only. The caller supplies subsequent tuning rows
+    after restoring a snapshot, just as it supplies shared modulation rows.
     """
 
     def __init__(
@@ -580,7 +598,13 @@ class DX7Renderer:
         for envelope in self.envelopes:
             envelope.release()
 
-    def render(self, frames: int, modulation: np.ndarray | None = None) -> np.ndarray:
+    def render(
+        self,
+        frames: int,
+        modulation: np.ndarray | None = None,
+        tuning_cents: np.ndarray | None = None,
+    ) -> np.ndarray:
+        tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
             raise EngineError("DX7 frame count must be nonnegative")
         if modulation is None:
@@ -640,6 +664,10 @@ class DX7Renderer:
             self.feedback[0] = self.feedback[1]
             self.feedback[1] = float(values[feedback_source])
             self.phase_steps = self.frequencies * pitch_ratio / self.sample_rate
+            if tuning is not None:
+                for i, operator in enumerate(self.voice.operators):
+                    if operator.frequency_mode.value == "ratio":
+                        self.phase_steps[i] *= tuning[frame]
             self.phases = np.remainder(self.phases + self.phase_steps, 1)
         return output
 
@@ -833,6 +861,18 @@ def _operator_order(voice: DX7Voice) -> list[int]:
     if len(result) != 6:
         raise EngineError("DX7 algorithm contains a current-sample cycle")
     return result
+
+
+def _tuning_ratios(cents: np.ndarray | None, frames: int) -> np.ndarray | None:
+    if cents is None:
+        return None
+    if cents.shape != (frames,) or not np.all(np.isfinite(cents)):
+        raise EngineError("Yamaha tuning rows must have shape (frames,) and be finite")
+    with np.errstate(over="ignore", under="ignore"):
+        ratios = np.exp2(cents / 1200)
+    if np.any(~np.isfinite(ratios) | (ratios <= 0)):
+        raise EngineError("Yamaha tuning ratio must be finite and positive")
+    return ratios
 
 
 def _operator_frequency(operator: DX7Operator, note: int) -> float:

@@ -420,6 +420,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
     voice["patch"] = bytes(patch).hex()
     voice["processing"] = {
         "filter_order": order,
+        "tuning_cents": 100,
         "filters": [
             {"name": "tone", "response": "lowpass", "cutoff_hz": 500, "q": 0.5}
         ],
@@ -435,6 +436,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
     parameters, routes = [], []
     for name, target_name, parameter, unit, default, amount in [
         ("gain", "processing", "amplitude", "ratio", 1, -0.8),
+        ("tuning", "processing", "tuning_cents", "cents", 100, 1200),
         ("cutoff", "filter-tone", "cutoff_hz", "hz", 500, 1500),
         ("resonance", "filter-tone", "q", "ratio", 0.5, 1),
     ]:
@@ -490,14 +492,22 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
     expected = np.zeros((48000, 2))
     for i, start in enumerate([0, 1001]):
         if isinstance(template, YamahaDX7Voice):
-            note = yamaha.DX7Renderer(template.patch, 69, 127)
+            note = yamaha.DX7Renderer(
+                template.patch, 69, 127, pitch_hz=440 * 2 ** (100 / 1200)
+            )
         else:
             assert isinstance(template, YamahaTX81ZVoice)
-            note = yamaha.TX81ZRenderer(template.patch, template.additional, 69, 127)
-        audio = note.render(48000 - start)
+            note = yamaha.TX81ZRenderer(
+                template.patch,
+                template.additional,
+                69,
+                127,
+                pitch_hz=440 * 2 ** (100 / 1200),
+            )
         signal = (
             ramp[start:] if i == 0 or scope == "instrument" else np.zeros(48000 - start)
         )
+        audio = note.render(48000 - start, tuning_cents=1200 * signal)
         amplitude = 1 - 0.8 * signal
         values = np.column_stack([500 + 1500 * signal, 0.5 + signal])[:, None, :]
         if order == "after_amplitude":
@@ -577,24 +587,6 @@ def test_yamaha_event_gain_uses_onset_key_or_unquantized_velocity(
     ).advance(synth_trace.prepare(plain.body, [event], seed=0).actions, 0, 48000)
     expected *= 64 / 127 if binding == "key" else 0.25
     check_audio(tmp_path / "event-gain.wav", actual, expected)
-
-
-def test_yamaha_dynamic_tuning_is_rejected_before_rendering() -> None:
-    raw = instrument("dx7").model_dump(mode="json")
-    raw["body"]["voices"][0]["modulation"] = {
-        "parameters": [
-            {
-                "target": {"name": "processing", "parameter": "tuning_cents"},
-                "unit": "cents",
-                "scope": "voice",
-                "minimum": -1200,
-                "maximum": 1200,
-                "default": 0,
-            }
-        ]
-    }
-    with pytest.raises(EngineError, match="dynamic tuning"):
-        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
 
 
 @pytest.mark.parametrize("kind", ["dx7", "tx81z"])
@@ -702,3 +694,61 @@ def test_rejected_yamaha_clock_restore_preserves_audio_continuation(
         renderer.advance([], 24000, 72000),
         reference.advance([], 24000, 72000),
     )
+
+
+@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+def test_yamaha_tuning_rows_match_static_microtuning_and_preserve_fixed_operators(
+    tmp_path: Path, kind: str
+) -> None:
+    template = instrument(kind).body.voices[0]
+    raw = bytearray(template.patch.data)
+    if kind == "dx7":
+        raw[139:141] = bytes(2)
+        for i in range(6):
+            raw[i * 21 + 17] = i % 2
+        template = template.model_copy(update={"patch": DX7Voice(data=bytes(raw))})
+    else:
+        assert isinstance(template, YamahaTX81ZVoice)
+        raw[56:58] = bytes(2)
+        extra = bytearray(template.additional.data)
+        for i in range(4):
+            extra[i * 5] = i % 2
+        template = template.model_copy(
+            update={
+                "patch": tx81z.TX81ZVoice(data=bytes(raw)),
+                "additional": tx81z.TX81ZAdditional(data=bytes(extra)),
+            }
+        )
+
+    def make_note(pitch: float) -> yamaha.DX7Renderer | yamaha.TX81ZRenderer:
+        if isinstance(template, YamahaDX7Voice):
+            return yamaha.DX7Renderer(template.patch, 69, 100, pitch_hz=pitch)
+        return yamaha.TX81ZRenderer(
+            template.patch, template.additional, 69, 100, pitch_hz=pitch
+        )
+
+    cents = np.repeat(np.array([0.0, 1200, -1200, 23]), 12000)
+    expected = []
+    previous = None
+    for value in [0, 1200, -1200, 23]:
+        pitch = 442 * 2 ** (value / 1200)
+        note = make_note(pitch)
+        if previous is not None:
+            note.restore(previous.model_copy(update={"pitch_hz": pitch}))
+        expected.append(note.render(12000))
+        previous = note.snapshot()
+    whole = make_note(442).render(48000, tuning_cents=cents)
+    split = make_note(442)
+    head = split.render(12345, tuning_cents=cents[:12345])
+    saved = type(split.snapshot()).model_validate_json(
+        split.snapshot().model_dump_json()
+    )
+    split.restore(saved)
+    actual = np.concatenate([head, split.render(35655, tuning_cents=cents[12345:])])
+    check_audio(tmp_path / "dynamic-tuning.wav", actual, np.concatenate(expected))
+    np.testing.assert_array_equal(actual, whole)
+    for invalid in (np.array([np.nan]), np.array([1e300]), np.zeros((1, 1))):
+        before = split.snapshot()
+        with pytest.raises(EngineError, match="tuning"):
+            split.render(1, tuning_cents=invalid)
+        assert split.snapshot() == before

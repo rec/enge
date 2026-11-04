@@ -279,6 +279,10 @@ class OfflineYamaha:
             template = self.templates[voice.template]
             audio = np.zeros((frames, 1))
             count = 0
+            dynamic_tuning = any(
+                p.target.parameter == "tuning_cents"
+                for p in template.modulation.parameters
+            )
             for i in range(frames):
                 at = start + i
                 if (
@@ -295,7 +299,16 @@ class OfflineYamaha:
                     voice.released = True
                 if _complete(voice):
                     break
-                audio[i] = voice.renderer.render(1, rows[voice.template][i : i + 1])[0]
+                tuning = None
+                if dynamic_tuning:
+                    values = self.controls.values(template, voice.sources, at, 1)
+                    tuning = (
+                        values[("processing", "tuning_cents")]
+                        - template.processing.tuning_cents
+                    )
+                audio[i] = voice.renderer.render(
+                    1, rows[voice.template][i : i + 1], tuning
+                )[0]
                 count += 1
             gain = 10 ** (template.processing.volume_db / 20)
             if template.processing.invert_polarity:
@@ -377,10 +390,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             voice, allow_velocity_bindings=True, allow_key_bindings=True
         )
         synth.validate_modulation(voice)
-        if any(
-            p.target.parameter == "tuning_cents" for p in voice.modulation.parameters
-        ):
-            raise synth.EngineError("Yamaha dynamic tuning is not implemented")
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
             invert_polarity=voice.processing.invert_polarity,

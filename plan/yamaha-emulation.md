@@ -452,8 +452,8 @@ nonzero velocity sensitivity remains in force.
 
 The adapter admits transpose for both models and TX81Z delayed pitch modulation.
 Active delayed TX81Z amplitude modulation remains rejected.
-Dynamic tuning routes, external envelopes and unsupported portable processing
-remain rejected. Hardware-specific assignment fields are range-validated and
+External envelopes and unsupported portable processing remain rejected.
+Hardware-specific assignment fields are range-validated and
 preserved, but are not connected to controller events. They are not all rejected
 at admission. Released DX7
 carriers with nonzero final
@@ -471,6 +471,20 @@ ramps, restoration during smoothing and both Yamaha models. This is portable
 processing control integration, not emulation of hardware-specific breath,
 mod-wheel or other assignment matrices.
 
+The approved dynamic-tuning integration adds optional per-render cents rows to
+both note renderers. Rows affect ratio operators only; TX81Z additive chip detune
+remains outside the tuning multiplier, matching static microtuning. Invalid row
+shape, nonfinite cents and nonpositive/nonfinite resulting ratios are rejected
+before note state advances. The offline adapter uses existing scoped control
+mapping and smoothing, subtracting static tuning already applied on admission.
+It evaluates tuning only while the voice is active. Note snapshots retain phase
+continuation; instrument snapshots also retain the controlling ramps and scopes.
+One-second WAV regressions compare dynamic rows against successive static
+microtuned references with mixed fixed/ratio operators, then cover instrument,
+part and trigger scopes, interrupted ramps, static tuning, filters and restored
+continuation. This implements portable tuning routes, not hardware pitch-bend
+assignments or portamento.
+
 ### Remaining integration gates
 
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
@@ -478,9 +492,6 @@ mod-wheel or other assignment matrices.
   foot-controller pitch/amplitude assignments. Current rendering does not execute
   those patch-defined behaviors. Portable trigger/release/control preparation is
   not evidence that this hardware assignment layer is implemented.
-- Portable dynamic tuning is explicitly rejected in `prepare`. Reusing scoped
-  control values requires a note-renderer tuning input and a defined fixed/ratio
-  operator policy. The proposed ratio-only per-render rows await approval.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - DX7 integer oscillator/feedback replacement remains awaiting approval.
