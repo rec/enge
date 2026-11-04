@@ -536,7 +536,15 @@ assignments or portamento.
   `breath` and `foot` use 0..1. All have unit `ratio` and default zero, and
   retain the existing scoped bindings, mappings and smoothing. This is the
   input contract. All four DX7 targets now use the existing scoped-control path;
-  TX81Z wheel/breath/foot targets now drive LFO depths; pitch bend remains rejected.
+  TX81Z wheel/breath/foot targets drive LFO depths, and pitch bend now uses the
+  patch's 0–12-semitone range through the existing ratio-only tuning path.
+  The user's standing instruction to use the recommended model resolves the
+  earlier provisional bend decision. Bend combines additively with portable
+  tuning in cents; fixed operators and additive chip-detune offsets are unchanged.
+  This follows the [OPZ phase-step model](https://github.com/aaronsgiles/ymfm/blob/81aec25ccbb98f4873a255f7551ac4dadac59b4a/src/ymfm_opz.cpp),
+  not verified TX81Z firmware register updates. Regressions cover negative,
+  centered and positive positions, zero/full range, mixed operator modes,
+  nonzero detune, scoped interrupted smoothing and snapshot continuation.
 - The approved DX7 performance settings are available in uFor `e056201`,
   outside the lossless voice dump: a 0..12-semitone bend range (default two),
   and wheel/breath/foot ranges with independent pitch, amplitude and EG-bias
@@ -579,8 +587,9 @@ assignments or portamento.
   Regressions cover all waveforms, stronger patch depths, fractional controller
   depths, controller modulation during patch delay, scoped smoothing, overlapping
   notes and snapshot restoration. This is provisional, not firmware qualification.
-  Foot-volume attenuation, breath pitch bias and fixed-operator bend behavior
-  remain unresolved. Foot routes reject nonzero FC Volume; breath routes reject
+  Foot-volume attenuation and breath pitch bias remain unresolved. The provisional
+  bend model leaves fixed operators unchanged; firmware qualification remains
+  open. Foot routes reject nonzero FC Volume; breath routes reject
   nonneutral pitch bias rather than ignoring that assignment.
 - The [measured breath EG-bias table](https://nornand.hatenablog.com/entry/2020/11/24/224423)
   is complete: 100 bias settings × 8 operator sensitivities × 128 CC2 values.
@@ -600,8 +609,8 @@ assignments or portamento.
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
-  and breath EG bias are implemented as above; the other listed behaviors remain
-  unfinished.
+  and breath EG bias, plus ratio-only pitch bend, are implemented as above; the
+  other listed behaviors remain unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - The approved DX7 integer oscillator/feedback replacement is implemented.

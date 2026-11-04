@@ -439,11 +439,13 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
     ]
     parameters, routes = [], []
     bend_range = {"instrument": 0, "part": 2, "trigger": 12}[scope]
+    bend_direction = -1 if order == "before_amplitude" else 1
     targets = [
         ("gain", "processing", "amplitude", "ratio", 1, -0.8),
         ("tuning", "processing", "tuning_cents", "cents", 100, 1200),
         ("cutoff", "filter-tone", "cutoff_hz", "hz", 500, 1500),
         ("resonance", "filter-tone", "q", "ratio", 0.5, 1),
+        ("bend", "yamaha", "pitch_bend", "ratio", 0, bend_direction),
     ]
     if kind == "dx7":
         if bend_range != 2:
@@ -453,8 +455,8 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
             breath={"range": 60, "eg_bias": True},
             foot={"range": 80, "pitch": True, "amplitude": True, "eg_bias": True},
         )
-        targets.append(("bend", "yamaha", "pitch_bend", "ratio", 0, 1))
     else:
+        patch[64] = bend_range
         patch[75] = 50
         patch[76] = 99
         for i in range(0, 52, 13):
@@ -566,7 +568,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
             audio = note.render(
                 48000 - start,
                 tuning_cents=1200 * signal,
-                pitch_bend_cents=100 * bend_range * signal,
+                pitch_bend_cents=100 * bend_range * bend_direction * signal,
                 modulation=modulation,
                 controllers=controllers,
             )
@@ -575,7 +577,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
             audio = note.render(
                 48000 - start,
                 modulation,
-                tuning_cents=1200 * signal,
+                tuning_cents=(1200 + 100 * bend_range * bend_direction) * signal,
                 controller_depths=np.column_stack([depth, depth]),
                 breath=signal * 0.5,
             )
@@ -970,3 +972,75 @@ def test_tx81z_controller_routes_reject_unimplemented_secondary_assignments(
     }
     with pytest.raises(EngineError, match="TX81Z .* not implemented"):
         yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
+
+
+@pytest.mark.parametrize("position", [-1.0, 0.0, 1.0])
+@pytest.mark.parametrize("bend_range", [0, 12])
+def test_tx81z_bend_alone_preserves_fixed_operators_and_additive_detune(
+    tmp_path: Path, position: float, bend_range: int
+) -> None:
+    raw = instrument("tx81z").model_dump(mode="json")
+    raw["body"]["controls"] = {"bend": {"default": position, "polarity": "bipolar"}}
+    template = raw["body"]["voices"][0]
+    template["bindings"] = [{"name": "bend", "kind": "control", "control": "bend"}]
+    patch = bytearray.fromhex(template["patch"])
+    extra = bytearray.fromhex(template["additional"])
+    patch[56:58] = bytes(2)
+    patch[64] = bend_range
+    for i in range(4):
+        patch[i * 13 + 12] = 6
+        extra[i * 5] = i % 2
+        extra[i * 5 + 1] = 2
+    template["patch"], template["additional"] = bytes(patch).hex(), bytes(extra).hex()
+    template["modulation"] = {
+        "sources": [
+            {"name": "bend", "scope": "instrument", "minimum": -1, "maximum": 1}
+        ],
+        "routes": [
+            {
+                "name": "bend",
+                "source": "bend",
+                "target": {"name": "yamaha", "parameter": "pitch_bend"},
+                "unit": "ratio",
+                "operation": "add",
+                "points": [{"input": -1, "amount": -1}, {"input": 1, "amount": 1}],
+            }
+        ],
+        "parameters": [
+            {
+                "target": {"name": "yamaha", "parameter": "pitch_bend"},
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": -1,
+                "maximum": 1,
+                "default": 0,
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            Trigger(
+                tick=0,
+                ordinal=0,
+                part="main",
+                trigger_id="note",
+                key=69,
+                pitch_hz=442,
+                velocity=1,
+            )
+        ],
+        seed=0,
+    ).actions
+    actual = yamaha_instrument.OfflineYamaha(
+        yamaha_instrument.prepare(document)
+    ).advance(actions, 0, 48000)
+    expected = yamaha.TX81ZRenderer(
+        tx81z.TX81ZVoice(data=bytes(patch)),
+        tx81z.TX81ZAdditional(data=bytes(extra)),
+        69,
+        127,
+        pitch_hz=442 * 2 ** (position * bend_range / 12),
+    ).render(48000)
+    check_audio(tmp_path / "tx81z-bend.wav", actual, expected * np.array([[0.3, 0.15]]))

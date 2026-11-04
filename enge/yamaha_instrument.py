@@ -329,12 +329,15 @@ class OfflineYamaha:
                             values[("processing", "tuning_cents")]
                             - template.processing.tuning_cents
                         )
-                    if pitch_bend and isinstance(template, YamahaDX7Voice):
-                        bend = (
-                            values[("yamaha", "pitch_bend")]
-                            * template.performance.pitch_bend_range
-                            * 100
-                        )
+                    if pitch_bend:
+                        position = values[("yamaha", "pitch_bend")]
+                        if isinstance(template, YamahaDX7Voice):
+                            bend = (
+                                position * template.performance.pitch_bend_range * 100
+                            )
+                        else:
+                            cents = position * template.patch.data[64] * 100
+                            tuning = cents if tuning is None else tuning + cents
                     if assignments:
                         controllers = (
                             _dx7_controller_row(template.performance, values)
@@ -437,9 +440,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             tuple(
                 ("yamaha", p)
                 for p in ("pitch_bend", "modulation_wheel", "breath", "foot")
-            )
-            if isinstance(voice, YamahaDX7Voice)
-            else tuple(("yamaha", p) for p in ("modulation_wheel", "breath", "foot")),
+            ),
         )
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
