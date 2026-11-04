@@ -1,5 +1,8 @@
 # Yamaha reference comparisons
 
+The [OPZ native frequency audit](opz-frequency.md) records the pinned reference's
+ratio-table differences and fixed-frequency phase-scale inconsistency.
+
 Measured on 2026-11-03 against MSFA revision
 `f67d41d313b7dc85f6fb99e79e515cc9d208cfff`, using enge `59287dd`.
 This is a failing qualification result, not evidence of hardware equivalence.

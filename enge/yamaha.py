@@ -1103,13 +1103,15 @@ def tx81z_base_frequency(
         raise EngineError("TX81Z frequency requires matching VCED/ACED operators")
     if not 0 <= note <= 127:
         raise EngineError("TX81Z note must be from 0 through 127")
+    if operator.coarse < 4 and additional.fine > 7:
+        raise EngineError(
+            "TX81Z coarse values below four require fine from 0 through 7"
+        )
     if additional.fixed_frequency:
         return (
             max(0.5, operator.coarse >> 2) * 16 + additional.fine
         ) * 2**additional.fixed_frequency_range
     _, multiple, cents = _TX_RATIO_COARSE[operator.coarse]
-    if multiple == 0.5 and additional.fine > 7:
-        raise EngineError("TX81Z half-multiple ratios require fine from 0 through 7")
     ratio = (multiple + additional.fine / 16) * 2 ** (cents / 1200)
     return 440 * 2 ** ((note - 69) / 12) * ratio
 

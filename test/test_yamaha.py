@@ -504,6 +504,9 @@ def test_tx81z_bank_uses_each_operators_selected_waveform(tmp_path: Path) -> Non
         (False, 43, 0, 0, 69, 4400 * np.sqrt(2)),
         (False, 44, 0, 0, 69, 3960 * 2 ** (781 / 1200)),
         (True, 0, 0, 0, 69, 8),
+        (True, 3, 7, 0, 69, 15),
+        (True, 3, 7, 7, 127, 1920),
+        (True, 4, 8, 0, 69, 24),
         (True, 4, 0, 0, 57, 16),
         (True, 63, 15, 7, 127, 32640),
         (True, 32, 5, 3, 0, 1064),
@@ -537,12 +540,16 @@ def test_tx81z_nominal_frequency_preserves_ratio_and_fixed_controls(
 
 
 @pytest.mark.parametrize("coarse", [0, 1, 2, 3])
-def test_tx81z_rejects_unavailable_half_multiple_fine_values(coarse: int) -> None:
+@pytest.mark.parametrize("fixed", [False, True])
+def test_tx81z_rejects_unavailable_low_coarse_fine_values(
+    coarse: int, fixed: bool
+) -> None:
     raw = bytearray(93)
     raw[50] = coarse
     extra = bytearray(23)
+    extra[15] = int(fixed)
     extra[17] = 8
-    with pytest.raises(EngineError, match="half-multiple"):
+    with pytest.raises(EngineError, match="coarse values below four"):
         tx81z_base_frequency(
             tx81z.TX81ZVoice(data=bytes(raw)).operator(1),
             tx81z.TX81ZAdditional(data=bytes(extra)).operator(1),

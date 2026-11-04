@@ -678,17 +678,22 @@ not measured hardware phase alignment or the complete patch renderer.
 
 `tx81z_base_frequency` now prepares nominal frequency from matching VCED/ACED
 operators. Ratio mode orders the 64 multiplier/coarse-detune combinations and
-adds fine steps before coarse detune. Half-multiple entries reject unavailable
-fine values above seven. Fixed mode uses the VCED coarse index shifted by two,
-plus fine and the ACED range, reproducing the manual's 8–32,640 Hz span and its
-range-dependent steps. The equations are cross-checked against ymfm's OPZ
-register model and [DXconvert's `fix_4op`](https://github.com/richotero/dxconvert/blob/master/DXconvert/fourop.py);
+adds fine steps before coarse detune. Both modes reject unavailable fine values
+above seven when VCED coarse is below four. Fixed mode uses the coarse index
+shifted by two, plus fine and the ACED range, reproducing the manual's
+8–32,640 Hz span and its
+range-dependent steps. The nominal equations are cross-checked against
+[DXconvert's `fix_4op`](https://github.com/richotero/dxconvert/blob/27a3c6dbfa97d57dfee0b2bcdbe32ed7bc98d8fa/DXconvert/fourop.py);
 the [Yamaha manual](https://www.polynominal.com/site/studio/gear/sold/yamaha_tx81z/yamaha-tx81z-manual.pdf)
 and [TX81Z Programmer ratio displays](https://github.com/mgregory22/tx81z-programmer/blob/master/src/freqratios.c)
 corroborate the control mapping. Audio regressions cover ratio,
 fine, fixed-frequency boundaries and different played keys. The note renderer
 now applies the chip detune primitive. The operator core quantizes the resulting
 frequency to Q20 increments; full voice-profile qualification remains work.
+The [native frequency audit](../doc/yamaha-reference/opz-frequency.md) records
+96 ratio and 1,984 fixed register cases. The pinned ymfm fixed path produces
+increments about ten octaves below its stated frequencies, so it is not used
+as a fixed-frequency oracle. Native ratio-table qualification remains open.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
