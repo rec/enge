@@ -27,7 +27,9 @@ Pitch envelopes now decode the packed/unpacked four-rate/four-level fields,
 start from level four, hold level three and release toward level four. Integer
 Q24 octave state and a fractional tick carry adapt
 [MSFA's measured pitch rate/level data](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/pitchenv.cc)
-to this renderer's per-sample execution. Pitch affects fixed and ratio operators.
+to this renderer's per-sample execution. Pitch-envelope modulation affects ratio
+operators only; the controller reference audit corrected the earlier fixed-mode
+behavior. Hardware pitch bend still affects both operator modes.
 Tests cover octave calibration, release, partitioned continuation and invalid
 pitch parameters. This is not yet a comparison against a complete reference
 renderer's WAV output.
@@ -453,9 +455,10 @@ nonzero velocity sensitivity remains in force.
 The adapter admits transpose for both models and TX81Z delayed pitch modulation.
 Active delayed TX81Z amplitude modulation remains rejected.
 External envelopes and unsupported portable processing remain rejected.
-Hardware-specific assignment fields are range-validated and
-preserved, but are not connected to controller events. They are not all rejected
-at admission. Released DX7
+DX7 hardware controller assignments now use the scoped-control path described
+below. TX81Z hardware-specific assignment fields are range-validated and
+preserved but remain disconnected from controller events; they are not all
+rejected at admission. Released DX7
 carriers with nonzero final
 envelope levels remain active until explicitly stopped or faded. This integration
 adds no native callback renderer and does not establish hardware equivalence.
@@ -491,13 +494,13 @@ assignments or portamento.
   `yamaha.pitch_bend` uses a normalized -1..1 domain; `modulation_wheel`,
   `breath` and `foot` use 0..1. All have unit `ratio` and default zero, and
   retain the existing scoped bindings, mappings and smoothing. This is the
-  input contract. DX7 pitch bend now uses the existing scoped-control path;
-  TX81Z pitch bend and wheel/breath/foot targets remain rejected.
+  input contract. All four DX7 targets now use the existing scoped-control path;
+  TX81Z hardware-controller targets remain rejected.
 - The approved DX7 performance settings are available in uFor `e056201`,
   outside the lossless voice dump: a 0..12-semitone bend range (default two),
   and wheel/breath/foot ranges with independent pitch, amplitude and EG-bias
-  switches, all disabled by default. Enge rejects enabled assignments until
-  their rendering is implemented.
+  switches, all disabled by default. Enabled assignments now render through
+  the approved provisional combination model.
 - DX7 note rendering accepts per-frame hardware bend cents, applied to both
   fixed and ratio operators, following the pinned Dexed `dx7note.cc` bend path.
   Portable tuning remains ratio-only and composes with bend. The offline
@@ -507,6 +510,23 @@ assignments or portamento.
   fixed/ratio patches and cover scoped smoothing with concurrent tuning.
   This is continuous bend; hardware MIDI quantization and bend-step settings
   are not qualified by these tests.
+- DX7 wheel/breath/foot use the approved provisional
+  [Dexed controller combination](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/msfa/controllers.h):
+  positions truncate to seven-bit values, range scaling truncates again, and
+  each destination takes the strongest assigned contribution. EG attenuation
+  is disabled when no controller has an EG assignment. Missing controller
+  targets supply position zero, including for active EG assignments.
+  Controller modulation bypasses patch delay and competes with patch LFO depth.
+  The approved hybrid retains Hexter's 52.75-unit full-depth attenuation scale
+  and existing patch-only amplitude sound, rather than Dexed's attenuation
+  approximation. Controller pitch modulation affects ratio operators only.
+  The same reference audit corrects the older patch path: fixed operators now
+  ignore pitch-envelope and patch LFO pitch modulation as well, while retaining
+  hardware pitch bend. This changes fixed-operator patches that previously
+  received those modulations incorrectly.
+  One-second WAV regressions cover analytic attenuation, static pitch references,
+  all controller routes, scope ownership, interrupted smoothing and restoration.
+  This remains a provisional model, not hardware qualification.
 - The [TX81Z owner's manual, page 22](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
   routes controller-driven modulation separately from delayed patch PMD/AMD.
   The diagram does not specify the arithmetic combining those paths. Controller

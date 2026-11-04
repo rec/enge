@@ -479,6 +479,8 @@ class DX7Renderer:
     affect ratio operators only. The caller supplies subsequent tuning rows
     after restoring a snapshot, just as it supplies shared modulation rows.
     Hardware pitch-bend cents rows affect both fixed and ratio operators.
+    Controller rows contain normalized pitch depth, amplitude depth and EG
+    attenuation after assignment combination; each column is in 0..1.
     """
 
     def __init__(
@@ -605,15 +607,26 @@ class DX7Renderer:
         modulation: np.ndarray | None = None,
         tuning_cents: np.ndarray | None = None,
         pitch_bend_cents: np.ndarray | None = None,
+        controllers: np.ndarray | None = None,
     ) -> np.ndarray:
         tuning = _tuning_ratios(tuning_cents, frames)
         bend = _tuning_ratios(pitch_bend_cents, frames)
         if frames < 0:
             raise EngineError("DX7 frame count must be nonnegative")
+        if controllers is not None and (
+            controllers.shape != (frames, 3)
+            or not np.all(np.isfinite(controllers))
+            or np.any((controllers < 0) | (controllers > 1))
+        ):
+            raise EngineError("DX7 controller rows must have shape (frames, 3) in 0..1")
         if modulation is None:
-            if (self.pitch_modulation_depth and self.pitch_modulation_sensitivity) or (
-                self.amplitude_modulation_level
-                and any(self.amplitude_modulation_sensitivities)
+            if (
+                (self.pitch_modulation_depth and self.pitch_modulation_sensitivity)
+                or (
+                    self.amplitude_modulation_level
+                    and any(self.amplitude_modulation_sensitivities)
+                )
+                or (controllers is not None and np.any(controllers[:, :2]))
             ):
                 raise EngineError("DX7 modulation requires shared LFO rows")
         elif (
@@ -633,18 +646,24 @@ class DX7Renderer:
         )
         for frame in range(frames):
             pitch_ratio = self.pitch_envelope.sample()
-            amplitude_reduction = 0.0
+            amplitude_reduction = (
+                0.0 if controllers is None else 52.75 / 8 * controllers[frame, 2]
+            )
             if modulation is not None:
                 value, delay = modulation[frame]
-                amplitude_reduction = (
-                    self.amplitude_modulation_level * value * delay / 8
+                amplitude_reduction = max(
+                    amplitude_reduction,
+                    self.amplitude_modulation_level * value * delay / 8,
                 )
+                pitch_depth = self.pitch_modulation_depth * delay / 32768
+                if controllers is not None:
+                    pitch, amplitude, _ = controllers[frame]
+                    amplitude_reduction = max(
+                        amplitude_reduction, 52.75 / 8 * amplitude * value
+                    )
+                    pitch_depth = max(pitch_depth, pitch / 128)
                 pitch_ratio *= 2 ** (
-                    self.pitch_modulation_depth
-                    * self.pitch_modulation_sensitivity
-                    * delay
-                    * (value - 0.5)
-                    / 32768
+                    pitch_depth * self.pitch_modulation_sensitivity * (value - 0.5)
                 )
             values = np.zeros(6)
             for operator in self.order:
@@ -667,12 +686,13 @@ class DX7Renderer:
             self.feedback[0] = self.feedback[1]
             self.feedback[1] = float(values[feedback_source])
             self.phase_steps = self.frequencies * pitch_ratio / self.sample_rate
+            for i, operator in enumerate(self.voice.operators):
+                if operator.frequency_mode.value == "fixed":
+                    self.phase_steps[i] = self.frequencies[i] / self.sample_rate
+                elif tuning is not None:
+                    self.phase_steps[i] *= tuning[frame]
             if bend is not None:
                 self.phase_steps *= bend[frame]
-            if tuning is not None:
-                for i, operator in enumerate(self.voice.operators):
-                    if operator.frequency_mode.value == "ratio":
-                        self.phase_steps[i] *= tuning[frame]
             self.phases = np.remainder(self.phases + self.phase_steps, 1)
         return output
 

@@ -444,7 +444,16 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
     if kind == "dx7":
         if bend_range != 2:
             voice["performance"] = {"pitch_bend_range": bend_range}
+        voice["performance"].update(
+            modulation_wheel={"range": 99, "pitch": True, "amplitude": True},
+            breath={"range": 60, "eg_bias": True},
+            foot={"range": 80, "pitch": True, "amplitude": True, "eg_bias": True},
+        )
         targets.append(("bend", "yamaha", "pitch_bend", "ratio", 0, 1))
+        targets.extend(
+            (n, "yamaha", n, "ratio", 0, a)
+            for n, a in [("modulation_wheel", 1), ("breath", 0.5), ("foot", 0.75)]
+        )
     for name, target_name, parameter, unit, default, amount in targets:
         target = {"name": target_name, "parameter": parameter}
         parameters.append(
@@ -514,10 +523,30 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
             ramp[start:] if i == 0 or scope == "instrument" else np.zeros(48000 - start)
         )
         if isinstance(note, yamaha.DX7Renderer):
+            wheel = np.floor(np.floor(127 * signal) * 0.99)
+            breath = np.floor(np.floor(127 * signal * 0.5) * 0.6)
+            foot = np.floor(np.floor(127 * signal * 0.75) * 0.8)
+            controllers = (
+                np.column_stack(
+                    [
+                        np.maximum(wheel, foot),
+                        np.maximum(wheel, foot),
+                        127 - np.maximum(breath, foot),
+                    ]
+                )
+                / 128
+            )
+            clock = yamaha_lfo.DX7LFOContext(template.patch)
+            clock.keydown()
+            first = clock.advance(1001)
+            clock.keydown()
+            modulation = np.concatenate([first, clock.advance(46999)])[start:]
             audio = note.render(
                 48000 - start,
                 tuning_cents=1200 * signal,
                 pitch_bend_cents=100 * bend_range * signal,
+                modulation=modulation,
+                controllers=controllers,
             )
         else:
             audio = note.render(48000 - start, tuning_cents=1200 * signal)
@@ -809,8 +838,67 @@ def test_dx7_pitch_bend_moves_fixed_and_ratio_operators_with_tuning(
         assert note.snapshot() == before
 
 
-def test_dx7_rejects_unimplemented_controller_assignments() -> None:
-    raw = instrument("dx7").model_dump(mode="json")
-    raw["body"]["voices"][0]["performance"]["breath"] = {"range": 99, "eg_bias": True}
-    with pytest.raises(EngineError, match="controller assignments"):
-        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
+@pytest.mark.parametrize(
+    "depths", [(0, 0, 0), (0, 0.5, 0), (0, 0, 0.75), (0, 0.5, 0.75)]
+)
+@pytest.mark.parametrize("patch_depth", [0, 99])
+def test_dx7_controller_amplitude_uses_strongest_attenuation(
+    tmp_path: Path, depths: tuple[float, float, float], patch_depth: int
+) -> None:
+    raw = bytearray(voice().data)
+    for i in range(6):
+        raw[i * 21 + 14] = 3
+    plain = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100).render(48000)
+    raw[140] = patch_depth
+    rows = np.tile([0.75, 0.5], (48000, 1))
+    reduction = (
+        52.75 / 8 * max(0.75 * 0.5 if patch_depth else 0, 0.75 * depths[1], depths[2])
+    )
+    note = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100)
+    audio = note.render(48000, rows, controllers=np.tile(depths, (48000, 1)))
+    check_audio(tmp_path / "controller-attenuation.wav", audio, plain * 2**-reduction)
+    for invalid in (np.full((1, 3), np.nan), np.full((1, 3), 1.01), np.zeros((1, 2))):
+        before = note.snapshot()
+        with pytest.raises(EngineError, match="controller rows"):
+            note.render(1, controllers=invalid)
+        assert note.snapshot() == before
+
+
+@pytest.mark.parametrize("patch_depth,delay", [(0, 0), (99, 0), (99, 1)])
+@pytest.mark.parametrize("level", [0.0, 1.0])
+def test_dx7_controller_pitch_bypasses_delay_and_preserves_fixed_frequencies(
+    tmp_path: Path, patch_depth: int, delay: int, level: float
+) -> None:
+    raw = bytearray(voice().data)
+    raw[143] = 7
+    for i in range(6):
+        raw[i * 21 + 17] = i % 2
+    depth = max(0.5 / 128, (patch_depth * 165 >> 6) * delay / 32768)
+    expected = yamaha.DX7Renderer(
+        DX7Voice(data=bytes(raw)),
+        69,
+        100,
+        pitch_hz=440 * 2 ** (depth * 255 * (level - 0.5)),
+    ).render(48000)
+    raw[139] = patch_depth
+    patch = DX7Voice(data=bytes(raw))
+    note = yamaha.DX7Renderer(patch, 69, 100)
+    rows = np.tile([level, delay], (48000, 1))
+    controls = np.tile([0.5, 0, 0], (48000, 1))
+    audio = note.render(48000, rows, controllers=controls)
+    check_audio(tmp_path / "controller-pitch.wav", audio, expected)
+    before = note.snapshot()
+    with pytest.raises(EngineError, match="shared LFO"):
+        note.render(1, controllers=controls[:1])
+    assert note.snapshot() == before
+
+
+def test_dx7_fixed_operators_ignore_pitch_envelope(tmp_path: Path) -> None:
+    raw = bytearray(voice().data)
+    for i in range(6):
+        raw[i * 21 + 17] = 1
+    expected = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100).render(48000)
+    raw[126:130] = bytes([99] * 4)
+    raw[130:134] = bytes([75] * 4)
+    actual = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100).render(48000)
+    check_audio(tmp_path / "fixed-pitch-envelope.wav", actual, expected)

@@ -6,6 +6,7 @@ from math import ceil, floor
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 from ufor import instrument_trace, synth_trace
+from ufor.dx7 import DX7Performance
 from ufor.samples.processing import FilterOrder, Processing
 from ufor.streams import AudioType
 from ufor.synth import SynthInstrumentScore, YamahaDX7Voice, YamahaTX81ZVoice
@@ -287,6 +288,14 @@ class OfflineYamaha:
                 p.target.name == "yamaha" and p.target.parameter == "pitch_bend"
                 for p in template.modulation.parameters
             )
+            assignments = isinstance(template, YamahaDX7Voice) and any(
+                a.pitch or a.amplitude or a.eg_bias
+                for a in (
+                    template.performance.modulation_wheel,
+                    template.performance.breath,
+                    template.performance.foot,
+                )
+            )
             for i in range(frames):
                 at = start + i
                 if (
@@ -305,7 +314,8 @@ class OfflineYamaha:
                     break
                 tuning = None
                 bend = None
-                if dynamic_tuning or pitch_bend:
+                controllers = None
+                if dynamic_tuning or pitch_bend or assignments:
                     values = self.controls.values(template, voice.sources, at, 1)
                     if dynamic_tuning:
                         tuning = (
@@ -318,9 +328,13 @@ class OfflineYamaha:
                             * template.performance.pitch_bend_range
                             * 100
                         )
+                    if assignments and isinstance(template, YamahaDX7Voice):
+                        controllers = _dx7_controller_row(template.performance, values)
                 modulation = rows[voice.template][i : i + 1]
                 if isinstance(voice.renderer, yamaha.DX7Renderer):
-                    audio[i] = voice.renderer.render(1, modulation, tuning, bend)[0]
+                    audio[i] = voice.renderer.render(
+                        1, modulation, tuning, bend, controllers
+                    )[0]
                 else:
                     audio[i] = voice.renderer.render(1, modulation, tuning)[0]
                 count += 1
@@ -405,7 +419,12 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         )
         synth.validate_modulation(
             voice,
-            (("yamaha", "pitch_bend"),) if isinstance(voice, YamahaDX7Voice) else (),
+            tuple(
+                ("yamaha", p)
+                for p in ("pitch_bend", "modulation_wheel", "breath", "foot")
+            )
+            if isinstance(voice, YamahaDX7Voice)
+            else (),
         )
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
@@ -416,17 +435,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         ):
             raise synth.EngineError("Unsupported Yamaha processing")
         if isinstance(voice, YamahaDX7Voice):
-            if any(
-                a.pitch or a.amplitude or a.eg_bias
-                for a in (
-                    voice.performance.modulation_wheel,
-                    voice.performance.breath,
-                    voice.performance.foot,
-                )
-            ):
-                raise synth.EngineError(
-                    "DX7 controller assignments are not implemented"
-                )
             yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
         else:
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)
@@ -435,6 +443,31 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
     return PreparedYamaha(
         sample_rate=timebase.rate.numerator, channels=output.channels, score=score
     )
+
+
+def _dx7_controller_row(
+    performance: DX7Performance, values: dict[tuple[str, str], np.ndarray]
+) -> np.ndarray:
+    """Dexed's quantized range scaling and strongest assigned contribution."""
+    row = np.zeros((1, 3))
+    eg_assigned = False
+    for name, assignment in (
+        ("modulation_wheel", performance.modulation_wheel),
+        ("breath", performance.breath),
+        ("foot", performance.foot),
+    ):
+        position = values.get(("yamaha", name))
+        cc = 0 if position is None else int(127 * position[0])
+        amount = int(cc * (0.01 * assignment.range))
+        for i, enabled in enumerate(
+            (assignment.pitch, assignment.amplitude, assignment.eg_bias)
+        ):
+            if enabled:
+                row[0, i] = max(row[0, i], amount)
+        eg_assigned |= assignment.eg_bias
+    row[0, :2] /= 128
+    row[0, 2] = (127 - row[0, 2]) / 128 if eg_assigned else 0
+    return row
 
 
 def _note(
