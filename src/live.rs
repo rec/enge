@@ -1,6 +1,7 @@
 //! One native owner for persistent generated sources and callback scratch.
 
 use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
+use crate::error::{NativeError, NativeResult};
 use crate::filters::{FilterBank, Inputs};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::{ControlBank, control_definitions};
@@ -360,7 +361,7 @@ impl LiveRuntime {
         let amplitude = Amplitude::new(initial, attack, release)?;
         let amplitude_states = (0..voices)
             .map(|_| amplitude.start())
-            .collect::<PyResult<_>>()?;
+            .collect::<NativeResult<_>>()?;
         let runtime = SampleRuntime {
             controls: ControlBank::new(Vec::new(), Vec::new(), voices, 0),
             route_maps: vec![Vec::new(); 5],
@@ -580,7 +581,8 @@ impl LiveRuntime {
         if let Err(error) = result {
             output.as_array_mut().fill(0.0);
             self.failed = true;
-            return Err(error);
+            // Construct the Python exception only after native processing and its audit end.
+            return Err(error.into());
         }
         for (target, value) in output
             .as_array_mut()
@@ -657,7 +659,7 @@ impl LiveRuntime {
 }
 
 impl LiveRuntime {
-    fn process(&mut self, frames: usize) -> PyResult<()> {
+    fn process(&mut self, frames: usize) -> NativeResult<()> {
         for value in self.output_scratch.iter_mut().take(frames * self.channels) {
             *value = 0.0;
         }
@@ -712,12 +714,12 @@ impl LiveRuntime {
             .take(frames * self.channels)
             .any(|v| !v.is_finite())
         {
-            return Err(PyValueError::new_err("Non-finite live runtime output"));
+            return Err(NativeError::Message("Non-finite live runtime output"));
         }
         self.frame = self
             .frame
             .checked_add(frames)
-            .ok_or_else(|| PyValueError::new_err("Live runtime frame overflow"))?;
+            .ok_or(NativeError::Message("Live runtime frame overflow"))?;
         Ok(())
     }
 }
@@ -921,7 +923,7 @@ impl EffectRuntime {
         frames: usize,
         channels: usize,
         rate: f64,
-    ) -> PyResult<()> {
+    ) -> NativeResult<()> {
         let count = self.action_count;
         {
             let actions = &self.action_scratch[..count * 6];
@@ -933,7 +935,7 @@ impl EffectRuntime {
                 .zip(actions.chunks_exact(6).skip(1))
                 .any(|(a, b)| b[0] < a[0])
             {
-                return Err(PyValueError::new_err("Invalid live effect block"));
+                return Err(NativeError::Message("Invalid live effect block"));
             }
         }
         let mut action = 0;
@@ -953,7 +955,7 @@ impl EffectRuntime {
                 let authored_mix = self.parameters[[node, 1]];
                 let bypass = self.parameters[[node, 2]];
                 if !(0.0..=1.0).contains(&authored_mix) || !(0.0..=1.0).contains(&bypass) {
-                    return Err(PyValueError::new_err("Invalid live effect mix"));
+                    return Err(NativeError::Message("Invalid live effect mix"));
                 }
                 let mix = authored_mix * bypass;
                 for channel in 0..channels {
@@ -989,7 +991,7 @@ impl EffectRuntime {
                     4 => {
                         let drive = self.parameters[[node, 0]];
                         if drive <= 0.0 {
-                            return Err(PyValueError::new_err("Invalid live soft clip drive"));
+                            return Err(NativeError::Message("Invalid live soft clip drive"));
                         }
                         let normalization = drive.tanh();
                         for value in &mut self.wet {
@@ -1013,7 +1015,7 @@ impl EffectRuntime {
         Ok(())
     }
 
-    fn apply_action(&mut self, action: &[f64]) -> PyResult<()> {
+    fn apply_action(&mut self, action: &[f64]) -> NativeResult<()> {
         let kind = action[1] as usize;
         let node = action[2] as usize;
         let parameter = action[3] as usize;
@@ -1023,7 +1025,7 @@ impl EffectRuntime {
             || node >= self.parameters.nrows()
             || action[5] != duration as f64
         {
-            return Err(PyValueError::new_err("Invalid live effect action"));
+            return Err(NativeError::Message("Invalid live effect action"));
         }
         if kind == 1 {
             if self.kinds[node] != 3
@@ -1031,7 +1033,7 @@ impl EffectRuntime {
                 || !matches!(action[4], 0.0 | 1.0)
                 || duration != 0
             {
-                return Err(PyValueError::new_err("Invalid live granulator freeze"));
+                return Err(NativeError::Message("Invalid live granulator freeze"));
             }
             self.granulators[node]
                 .as_mut()
@@ -1040,9 +1042,7 @@ impl EffectRuntime {
             return Ok(());
         }
         if kind != 0 || action[3] != parameter as f64 || parameter >= self.parameters.ncols() {
-            return Err(PyValueError::new_err(
-                "Invalid live effect parameter action",
-            ));
+            return Err(NativeError::Message("Invalid live effect parameter action"));
         }
         self.targets[[node, parameter]] = action[4];
         self.remaining[[node, parameter]] = duration;
@@ -1073,7 +1073,7 @@ impl EffectRuntime {
         }
     }
 
-    fn process_filters(&mut self, node: usize, rate: f64) -> PyResult<()> {
+    fn process_filters(&mut self, node: usize, rate: f64) -> NativeResult<()> {
         for (stage, filter) in self.filter_rows.iter().enumerate() {
             if filter.node != node {
                 continue;
@@ -1081,7 +1081,7 @@ impl EffectRuntime {
             let cutoff = self.parameters[[node, filter.parameter]];
             let q = self.parameters[[node, filter.parameter + 1]];
             if !cutoff.is_finite() || cutoff <= 0.0 || cutoff >= rate / 2.0 || q <= 0.0 {
-                return Err(PyValueError::new_err("Invalid live filter cutoff/Q"));
+                return Err(NativeError::Message("Invalid live filter cutoff/Q"));
             }
             let g = (PI * cutoff / rate).tan();
             let d = q * (1.0 + g * g) + g;
@@ -1124,14 +1124,14 @@ impl EffectRuntime {
                     || !self.filter_states[[stage, channel, 0]].is_finite()
                     || !self.filter_states[[stage, channel, 1]].is_finite()
                 {
-                    return Err(PyValueError::new_err("Non-finite live filter state"));
+                    return Err(NativeError::Message("Non-finite live filter state"));
                 }
             }
         }
         Ok(())
     }
 
-    fn process_tap_delay(&mut self, node: usize, channels: usize, rate: f64) -> PyResult<()> {
+    fn process_tap_delay(&mut self, node: usize, channels: usize, rate: f64) -> NativeResult<()> {
         let delay_seconds = self.parameters[[node, 0]];
         let feedback = self.parameters[[node, 3]];
         let delay = self.tap_delays[node]
@@ -1146,7 +1146,7 @@ impl EffectRuntime {
             || !feedback.is_finite()
             || !(0.0..1.0).contains(&feedback)
         {
-            return Err(PyValueError::new_err("Invalid live tap delay parameters"));
+            return Err(NativeError::Message("Invalid live tap delay parameters"));
         }
         let read = (delay.write + frames - delay_frames) % frames;
         for channel in 0..channels {
@@ -1159,7 +1159,12 @@ impl EffectRuntime {
         Ok(())
     }
 
-    fn process_modulated_delay(&mut self, node: usize, channels: usize, rate: f64) -> PyResult<()> {
+    fn process_modulated_delay(
+        &mut self,
+        node: usize,
+        channels: usize,
+        rate: f64,
+    ) -> NativeResult<()> {
         let base = self.parameters[[node, 0]];
         let depth = self.parameters[[node, 3]];
         let rate_hz = self.parameters[[node, 4]];
@@ -1177,7 +1182,7 @@ impl EffectRuntime {
             || !feedback.is_finite()
             || !(0.0..1.0).contains(&feedback)
         {
-            return Err(PyValueError::new_err(
+            return Err(NativeError::Message(
                 "Invalid live modulated delay parameters",
             ));
         }
@@ -1202,7 +1207,7 @@ impl EffectRuntime {
             };
             let delay_frames = ((base + depth * lfo) * rate).round() as usize;
             if delay_frames == 0 || delay_frames > frames {
-                return Err(PyValueError::new_err("Invalid live modulated delay read"));
+                return Err(NativeError::Message("Invalid live modulated delay read"));
             }
             let read = (delay.write + frames - delay_frames) % frames;
             let wet = delay.history[[read, channel]];
@@ -1334,7 +1339,7 @@ impl LiveGranulator {
                 .all(|(a, b)| a.samples.raw_dim() == b.samples.raw_dim())
     }
 
-    fn process(&mut self, input: &mut [f64], parameters: [f64; 5], rate: f64) -> PyResult<()> {
+    fn process(&mut self, input: &mut [f64], parameters: [f64; 5], rate: f64) -> NativeResult<()> {
         let [duration_seconds, density, lookback, ratio, jitter_seconds] = parameters;
         if duration_seconds <= 0.0
             || density <= 0.0
@@ -1343,7 +1348,7 @@ impl LiveGranulator {
             || ratio <= 0.0
             || jitter_seconds < 0.0
         {
-            return Err(PyValueError::new_err("Invalid live granulator parameter"));
+            return Err(NativeError::Message("Invalid live granulator parameter"));
         }
         if !self.frozen {
             for (channel, value) in input.iter().enumerate() {
@@ -1392,7 +1397,7 @@ impl LiveGranulator {
         self.frame = self
             .frame
             .checked_add(1)
-            .ok_or_else(|| PyValueError::new_err("Live granulator frame overflow"))?;
+            .ok_or(NativeError::Message("Live granulator frame overflow"))?;
         Ok(())
     }
 
@@ -1508,16 +1513,14 @@ fn drain_batches(
     consumer: &mut Consumer<ActionBatch>,
     scratch: &mut [f64],
     action_capacity: usize,
-    subject: &str,
-) -> PyResult<usize> {
+    subject: &'static str,
+) -> NativeResult<usize> {
     let batches = consumer.slots();
     let mut count = 0;
     for _ in 0..batches {
         let batch = consumer.pop().expect("captured queue boundary");
         if count + batch.len > action_capacity {
-            return Err(PyValueError::new_err(format!(
-                "Live {subject} actions exceed callback capacity"
-            )));
+            return Err(NativeError::CallbackCapacity(subject));
         }
         for action in &batch.actions[..batch.len] {
             scratch[count * 6..count * 6 + 6].copy_from_slice(action);
@@ -1547,7 +1550,7 @@ impl SourceRuntime {
         }
     }
 
-    fn render_into(&mut self, output: ArrayViewMut2<'_, f64>, actions: &[f64]) -> PyResult<()> {
+    fn render_into(&mut self, output: ArrayViewMut2<'_, f64>, actions: &[f64]) -> NativeResult<()> {
         match self {
             Self::Generated(runtime) => runtime.render_into(output, 0.0, 1.0, 0.0, actions),
             Self::Sample(runtime) => runtime.render_into(output, actions),
@@ -1623,7 +1626,7 @@ impl SourceRuntime {
 }
 
 impl SampleRuntime {
-    fn start_generators(&mut self, voice: usize, frame: usize) -> PyResult<()> {
+    fn start_generators(&mut self, voice: usize, frame: usize) -> NativeResult<()> {
         if !self.generator_active[voice] {
             if let Some(generators) = &mut self.generators {
                 generators.start_patch(voice, frame)?;
@@ -1633,7 +1636,7 @@ impl SampleRuntime {
         Ok(())
     }
 
-    fn parameter(&mut self, voice: usize, parameter: usize, frame: usize) -> PyResult<f64> {
+    fn parameter(&mut self, voice: usize, parameter: usize, frame: usize) -> NativeResult<f64> {
         let mut count = 0;
         let product = self.controls.contributions(
             voice,
@@ -1659,14 +1662,18 @@ impl SampleRuntime {
         let domain = &self.parameters[parameter * 3..parameter * 3 + 3];
         let value = (domain[0] + sum_partials(&self.parameter_partials[..count])) * product;
         if !value.is_finite() || value < domain[1] || value > domain[2] {
-            return Err(PyValueError::new_err(
+            return Err(NativeError::Message(
                 "Modulated sample parameter is outside its domain",
             ));
         }
         Ok(value)
     }
 
-    fn render_into(&mut self, mut output: ArrayViewMut2<'_, f64>, actions: &[f64]) -> PyResult<()> {
+    fn render_into(
+        &mut self,
+        mut output: ArrayViewMut2<'_, f64>,
+        actions: &[f64],
+    ) -> NativeResult<()> {
         let frames = output.nrows();
         if output.ncols() != self.routes.ncols()
             || actions.len() % 6 != 0
@@ -1679,7 +1686,7 @@ impl SampleRuntime {
                 .zip(actions.chunks_exact(6).skip(1))
                 .any(|(a, b)| b[0] < a[0])
         {
-            return Err(PyValueError::new_err("Invalid live sample block"));
+            return Err(NativeError::Message("Invalid live sample block"));
         }
         output.fill(0.0);
         let mut action = 0;
@@ -1688,7 +1695,7 @@ impl SampleRuntime {
             let frame = self
                 .frame
                 .checked_add(offset)
-                .ok_or_else(|| PyValueError::new_err("Live sample frame overflow"))?;
+                .ok_or(NativeError::Message("Live sample frame overflow"))?;
             if action < actions.len() && actions[action] as usize == offset {
                 if let Some(generators) = &mut self.generators {
                     generators.settle_patches(&self.generator_active, frame, false)?;
@@ -1773,7 +1780,7 @@ impl SampleRuntime {
                         / 1200.0)
                         .exp2();
                 let source_frame = i64::try_from(frame)
-                    .map_err(|_| PyValueError::new_err("Live sample frame overflow"))?;
+                    .map_err(|_| NativeError::Message("Live sample frame overflow"))?;
                 let cursor = &mut self.cursors[voice];
                 cursor.settle(source_frame);
                 if cursor.exhausted.is_some() {
@@ -1821,7 +1828,7 @@ impl SampleRuntime {
                         if q <= 0.0
                             || (!route.clamp && (cutoff < route.minimum || cutoff > route.maximum))
                         {
-                            return Err(PyValueError::new_err(
+                            return Err(NativeError::Message(
                                 "Invalid live sample filter cutoff/Q",
                             ));
                         }
@@ -1866,11 +1873,11 @@ impl SampleRuntime {
         self.frame = self
             .frame
             .checked_add(frames)
-            .ok_or_else(|| PyValueError::new_err("Live sample frame overflow"))?;
+            .ok_or(NativeError::Message("Live sample frame overflow"))?;
         Ok(())
     }
 
-    fn apply_action(&mut self, action: &[f64], frame: usize) -> PyResult<()> {
+    fn apply_action(&mut self, action: &[f64], frame: usize) -> NativeResult<()> {
         let kind = action[1] as usize;
         if (7..=11).contains(&kind) {
             let mut control_action = [0.0; 6];
@@ -1892,7 +1899,7 @@ impl SampleRuntime {
                 self.start_generators(voice, frame)?;
             }
             let Some(generators) = &mut self.generators else {
-                return Err(PyValueError::new_err("Sample source has no generators"));
+                return Err(NativeError::Message("Sample source has no generators"));
             };
             return generators.apply_action(
                 &generator_action,
@@ -1903,7 +1910,7 @@ impl SampleRuntime {
         }
         let voice = action[2] as usize;
         if action[1] != kind as f64 || action[2] != voice as f64 || voice >= self.active.len() {
-            return Err(PyValueError::new_err("Invalid live sample action"));
+            return Err(NativeError::Message("Invalid live sample action"));
         }
         match kind {
             0 => {
@@ -1913,7 +1920,7 @@ impl SampleRuntime {
                     || !action[4].is_finite()
                     || action[4] < 0.0
                 {
-                    return Err(PyValueError::new_err("Invalid live sample start"));
+                    return Err(NativeError::Message("Invalid live sample start"));
                 }
                 self.active[voice] = true;
                 self.generator_active[voice] = false;
@@ -1921,13 +1928,13 @@ impl SampleRuntime {
                 let offset = action[5];
                 if !offset.is_finite() || offset.fract() != 0.0 || offset.abs() > 9007199254740992.0
                 {
-                    return Err(PyValueError::new_err("Invalid live sample offset"));
+                    return Err(NativeError::Message("Invalid live sample offset"));
                 }
                 let cursor = &mut self.cursors[voice];
                 cursor.index = cursor
                     .index
                     .checked_add(offset as i64)
-                    .ok_or_else(|| PyValueError::new_err("Live sample offset overflow"))?;
+                    .ok_or(NativeError::Message("Live sample offset overflow"))?;
                 if !(cursor.selection.0..cursor.selection.1).contains(&cursor.index) {
                     cursor.exhausted = Some(frame as i64);
                     self.active[voice] = false;
@@ -1969,7 +1976,7 @@ impl SampleRuntime {
             }
             3 => {
                 if !self.active[voice] || action[3] <= 0.0 || action[4] < 0.0 || action[5] != 0.0 {
-                    return Err(PyValueError::new_err("Invalid live sample control"));
+                    return Err(NativeError::Message("Invalid live sample control"));
                 }
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
@@ -1981,7 +1988,7 @@ impl SampleRuntime {
                     || !action[4].is_finite()
                     || action[5] != 0.0
                 {
-                    return Err(PyValueError::new_err("Invalid live amplitude command"));
+                    return Err(NativeError::Message("Invalid live amplitude command"));
                 }
                 if !self.active[voice] {
                     return Ok(());
@@ -2004,7 +2011,7 @@ impl SampleRuntime {
                     || action[4] != 0.0
                     || action[5] != 0.0
                 {
-                    return Err(PyValueError::new_err("Invalid live sample fade"));
+                    return Err(NativeError::Message("Invalid live sample fade"));
                 }
                 if self.active[voice] {
                     if self.delays[voice] > 0 {
@@ -2029,11 +2036,11 @@ impl SampleRuntime {
                     || action[4] != 0.0
                     || action[5] != 0.0
                 {
-                    return Err(PyValueError::new_err("Invalid live sample delay"));
+                    return Err(NativeError::Message("Invalid live sample delay"));
                 }
                 self.delays[voice] = action[3] as usize;
             }
-            _ => return Err(PyValueError::new_err("Unknown live sample action")),
+            _ => return Err(NativeError::Message("Unknown live sample action")),
         }
         Ok(())
     }

@@ -1,6 +1,7 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
 use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
+use crate::error::{NativeError, NativeResult};
 use envelfo_core::envelope::Envelope;
 use envelfo_core::lfo::Command;
 use envelfo_core::patch::PatchState;
@@ -44,9 +45,9 @@ impl RouteMap {
         })
     }
 
-    pub(crate) fn value(&self, value: f64) -> PyResult<f64> {
+    pub(crate) fn value(&self, value: f64) -> NativeResult<f64> {
         if !value.is_finite() {
-            return Err(PyValueError::new_err("Non-finite modulation source"));
+            return Err(NativeError::Message("Non-finite modulation source"));
         }
         let index = self.points.partition_point(|(input, _)| *input <= value);
         if index == 0 {
@@ -562,7 +563,7 @@ impl SynthRuntime {
                     .map(Amplitude::start)
                     .collect()
             })
-            .collect::<PyResult<_>>()?;
+            .collect::<NativeResult<_>>()?;
         runtime.fm_phase_offsets = [phase_offsets[0], phase_offsets[1]];
         Ok(runtime)
     }
@@ -703,7 +704,7 @@ impl SynthRuntime {
                     .map(Amplitude::start)
                     .collect()
             })
-            .collect::<PyResult<_>>()?;
+            .collect::<NativeResult<_>>()?;
         Ok(runtime)
     }
 
@@ -785,6 +786,7 @@ impl SynthRuntime {
             ));
         }
         self.render_into(output.as_array_mut(), cutoff_hz, q, gain_db, &[])
+            .map_err(Into::into)
     }
 
     fn process_actions_into(
@@ -807,6 +809,7 @@ impl SynthRuntime {
             return Err(PyValueError::new_err("Invalid synth runtime actions"));
         }
         self.render_into(output.as_array_mut(), cutoff_hz, q, gain_db, actions)
+            .map_err(Into::into)
     }
 
     pub(crate) fn active_slots(&self) -> Vec<bool> {
@@ -951,7 +954,9 @@ impl SynthRuntime {
             .voice_trigger_contexts
             .clone_from(&snapshot.voice_trigger_contexts);
         self.generators.patch_storage.fill(None);
-        self.generators.prepare_patch(self.frame)
+        self.generators
+            .prepare_patch(self.frame)
+            .map_err(Into::into)
     }
 }
 
@@ -1028,7 +1033,7 @@ impl SynthRuntime {
         q: f64,
         gain_db: f64,
         actions: &[f64],
-    ) -> PyResult<()> {
+    ) -> NativeResult<()> {
         self.generators.prepare_patch(self.frame)?;
         let frames = output.nrows();
         if frames == 0
@@ -1055,7 +1060,7 @@ impl SynthRuntime {
                 .zip(actions.chunks_exact(6).skip(1))
                 .any(|(a, b)| b[0] < a[0])
         {
-            return Err(PyValueError::new_err("Invalid synth runtime block"));
+            return Err(NativeError::Message("Invalid synth runtime block"));
         }
         let channels = self.routes.ncols();
         let gain = 10_f64.powf(gain_db / 20.0);
@@ -1244,9 +1249,9 @@ impl SynthRuntime {
                     word = (word ^ (word >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
                     word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
                     word ^= word >> 31;
-                    self.noise_counters[voice] = index.checked_add(1).ok_or_else(|| {
-                        PyValueError::new_err("Persistent noise counter exhausted")
-                    })?;
+                    self.noise_counters[voice] = index
+                        .checked_add(1)
+                        .ok_or(NativeError::Message("Persistent noise counter exhausted"))?;
                     2.0 * ((word >> 11) as f64 / 9007199254740992.0) - 1.0
                 };
                 let sample = if self.filter_after_amplitude {
@@ -1295,13 +1300,13 @@ impl SynthRuntime {
             self.frame = self
                 .frame
                 .checked_add(1)
-                .ok_or_else(|| PyValueError::new_err("Synth runtime frame overflow"))?;
+                .ok_or(NativeError::Message("Synth runtime frame overflow"))?;
         }
         self.controls.retire_trigger_contexts(&self.active);
         Ok(())
     }
 
-    fn apply_action(&mut self, action: &[f64], frames: usize) -> PyResult<()> {
+    fn apply_action(&mut self, action: &[f64], frames: usize) -> NativeResult<()> {
         let offset = action[0] as usize;
         let kind = action[1] as usize;
         let voice = action[2] as usize;
@@ -1310,10 +1315,10 @@ impl SynthRuntime {
             || action[1] != kind as f64
             || action[2] != voice as f64
         {
-            return Err(PyValueError::new_err("Invalid synth runtime action"));
+            return Err(NativeError::Message("Invalid synth runtime action"));
         }
         if (kind <= 3 || kind == 5 || (9..=14).contains(&kind)) && voice >= self.frequencies.len() {
-            return Err(PyValueError::new_err("Invalid synth runtime voice"));
+            return Err(NativeError::Message("Invalid synth runtime voice"));
         }
         match kind {
             14 => {
@@ -1333,7 +1338,7 @@ impl SynthRuntime {
                     || (command == 3 && !(0.0..=1.0).contains(&action[5]))
                     || (command != 3 && command != 4 && action[5] != 0.0)
                 {
-                    return Err(PyValueError::new_err("Invalid amplitude command"));
+                    return Err(NativeError::Message("Invalid amplitude command"));
                 }
                 if !self.active[voice] {
                     return Ok(());
@@ -1351,7 +1356,7 @@ impl SynthRuntime {
                             || action[5] < 0.0)
                     || self.active[voice]
                 {
-                    return Err(PyValueError::new_err("Invalid voice start"));
+                    return Err(NativeError::Message("Invalid voice start"));
                 }
                 self.active[voice] = true;
                 self.generators.start_patch(voice, self.frame)?;
@@ -1423,7 +1428,7 @@ impl SynthRuntime {
             3 => {
                 let duration = action[5] as usize;
                 if action[3] <= 0.0 || action[4] < 0.0 || action[5] != duration as f64 {
-                    return Err(PyValueError::new_err("Invalid voice control"));
+                    return Err(NativeError::Message("Invalid voice control"));
                 }
                 self.frequency_steps[voice] =
                     (action[3] - self.frequencies[voice]) / duration.max(1) as f64;
@@ -1439,12 +1444,12 @@ impl SynthRuntime {
             8..=12 => self
                 .generators
                 .apply_action(action, &self.active, self.frame, self.rate)?,
-            _ => return Err(PyValueError::new_err("Unknown synth runtime action")),
+            _ => return Err(NativeError::Message("Unknown synth runtime action")),
         }
         Ok(())
     }
 
-    fn parameter(&mut self, voice: usize, parameter: usize) -> PyResult<f64> {
+    fn parameter(&mut self, voice: usize, parameter: usize) -> NativeResult<f64> {
         let mut partial_count = 0;
         let mut product = self.controls.contributions(
             voice,
@@ -1467,25 +1472,25 @@ impl SynthRuntime {
         let addition = sum_partials(&self.parameter_partials[..partial_count]);
         let value = (definition[0] + addition) * product;
         if !value.is_finite() || value < definition[1] || value > definition[2] {
-            return Err(PyValueError::new_err(
+            return Err(NativeError::Message(
                 "Modulated persistent synth parameter is outside its domain",
             ));
         }
         Ok(value)
     }
 
-    fn filter_voice(&mut self, voice: usize, mut sample: f64) -> PyResult<f64> {
+    fn filter_voice(&mut self, voice: usize, mut sample: f64) -> NativeResult<f64> {
         let mut stage = 0;
         for filter_index in 0..self.filter_definitions.len() {
             let filter = self.filter_definitions[filter_index].clone();
             let mut cutoff = self.parameter(voice, filter.cutoff_parameter)?;
             let q = self.parameter(voice, filter.q_parameter)?;
             if q <= 0.0 {
-                return Err(PyValueError::new_err("Invalid persistent synth filter Q"));
+                return Err(NativeError::Message("Invalid persistent synth filter Q"));
             }
             if cutoff < filter.minimum_hz || cutoff > filter.maximum_hz {
                 if filter.boundary == 0 {
-                    return Err(PyValueError::new_err(
+                    return Err(NativeError::Message(
                         "Invalid persistent synth filter cutoff",
                     ));
                 }
@@ -1523,7 +1528,7 @@ impl SynthRuntime {
                     || !self.voice_filter_states[[voice, stage, 0]].is_finite()
                     || !self.voice_filter_states[[voice, stage, 1]].is_finite()
                 {
-                    return Err(PyValueError::new_err(
+                    return Err(NativeError::Message(
                         "Non-finite persistent synth filter output or state",
                     ));
                 }
@@ -1612,7 +1617,7 @@ fn lfo_definitions(
                 )
                 .map_err(core_error)
             })
-            .collect::<PyResult<Vec<_>>>()?;
+            .collect::<NativeResult<Vec<_>>>()?;
         let beat_clock = row[6] != 0.0;
         let mut body = lfo::LFO::new(if beat_clock {
             exact[1]
@@ -1698,7 +1703,7 @@ fn filter_definitions(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<FilterD
         .collect()
 }
 
-fn initial_lfo(definition: &LfoDefinition, at: Time) -> PyResult<LfoPlayback> {
+fn initial_lfo(definition: &LfoDefinition, at: Time) -> NativeResult<LfoPlayback> {
     Ok(LfoPlayback {
         core: definition.body.initial(at).map_err(core_error)?,
         ordinal: 0,
@@ -1710,7 +1715,7 @@ fn lfo_command(
     state: &mut LfoPlayback,
     at: Time,
     command: Command,
-) -> PyResult<()> {
+) -> NativeResult<()> {
     let ordinal = state
         .ordinal
         .checked_add(1)
@@ -1723,7 +1728,7 @@ fn lfo_command(
     Ok(())
 }
 
-fn control_time(value: f64) -> PyResult<Time> {
+fn control_time(value: f64) -> NativeResult<Time> {
     // Public numeric commands use the same decimal value as Python Fraction(str(value)).
     let mut bytes = [0; 512];
     let mut output = Cursor::new(bytes.as_mut_slice());
@@ -1757,11 +1762,11 @@ fn control_time(value: f64) -> PyResult<Time> {
     Time::new(numerator, denominator).map_err(core_error)
 }
 
-fn core_error(error: envelfo_core::Error) -> PyErr {
-    PyValueError::new_err(format!("Native EnveLFO: {error}"))
+fn core_error(error: envelfo_core::Error) -> NativeError {
+    NativeError::Core(error)
 }
 
-fn ratio_time(value: (i64, i64)) -> PyResult<Time> {
+fn ratio_time(value: (i64, i64)) -> NativeResult<Time> {
     Time::new(value.0, value.1).map_err(core_error)
 }
 

@@ -1,9 +1,9 @@
 //! Per-sample trapezoidal filters, shared by oscillator and sample voices.
+use crate::error::{NativeError, NativeResult};
 use numpy::ndarray::{Array2, Array3};
 use numpy::{
     IntoPyArray, PyArray2, PyArray3, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods,
 };
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::PI;
 
@@ -32,9 +32,9 @@ impl FilterBank {
         rate: f64,
         frames: usize,
         channels: usize,
-    ) -> PyResult<Self> {
+    ) -> NativeResult<Self> {
         if !rate.is_finite() || rate <= 0.0 {
-            return Err(PyValueError::new_err("Invalid native filter rate"));
+            return Err(NativeError::Message("Invalid native filter rate"));
         }
         let Some((responses, states, values)) = inputs else {
             return Ok(Self {
@@ -52,7 +52,7 @@ impl FilterBank {
             || values.shape() != [frames, stages, 2]
             || states.as_array().iter().any(|v| !v.is_finite())
         {
-            return Err(PyValueError::new_err("Invalid native filter buffers"));
+            return Err(NativeError::Message("Invalid native filter buffers"));
         }
         let values = values.as_array().to_owned();
         for i in 0..frames {
@@ -64,7 +64,7 @@ impl FilterBank {
                     || !q.is_finite()
                     || q <= 0.0
                 {
-                    return Err(PyValueError::new_err("Invalid native filter cutoff/Q"));
+                    return Err(NativeError::Message("Invalid native filter cutoff/Q"));
                 }
             }
         }
@@ -76,7 +76,7 @@ impl FilterBank {
         })
     }
 
-    pub fn process(&mut self, frame: usize, sources: &mut [f64]) -> PyResult<()> {
+    pub fn process(&mut self, frame: usize, sources: &mut [f64]) -> NativeResult<()> {
         for j in 0..self.responses.len() {
             self.process_stage(
                 frame,
@@ -96,7 +96,7 @@ impl FilterBank {
         cutoff: f64,
         q: f64,
         sources: &mut [f64],
-    ) -> PyResult<()> {
+    ) -> NativeResult<()> {
         let response = self.responses[j];
         let g = (PI * cutoff / self.rate).tan();
         let d = q * (1.0 + g * g) + g;
@@ -129,9 +129,7 @@ impl FilterBank {
                 || !self.states[[j, c, 0]].is_finite()
                 || !self.states[[j, c, 1]].is_finite()
             {
-                return Err(PyValueError::new_err(format!(
-                    "Non-finite filter output or state at frame {frame}"
-                )));
+                return Err(NativeError::FilterOutput(frame));
             }
         }
         Ok(())

@@ -30,7 +30,11 @@ def test_action_queue_preserves_complete_batches_and_entry_boundary() -> None:
     assert queue.queued_batches() == 0
 
 
-def native_oscillator_runtime() -> _native.SynthRuntime:
+def native_oscillator_runtime(
+    generators: _native.GeneratorBank | None = None,
+) -> _native.SynthRuntime:
+    if generators is None:
+        generators = _native.GeneratorBank(48000, 1, 2, np.empty((0, 7)), [])
     return _native.SynthRuntime(
         48000,
         0,
@@ -42,7 +46,7 @@ def native_oscillator_runtime() -> _native.SynthRuntime:
         (0, 1),
         np.empty((0, 6), dtype=np.float64),
         [],
-        _native.GeneratorBank(48000, 1, 2, np.empty((0, 7)), []),
+        generators,
         np.empty((0, 7), dtype=np.float64),
         [1, 0, 1e300, 0, -120000, 120000],
         1,
@@ -250,11 +254,31 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
     check_audio(tmp_path / "native-live-effects.wav", actual, expected)
 
 
-def test_native_live_runtime_latches_failure_and_zeros_later_blocks() -> None:
-    runtime = _native.LiveRuntime([native_oscillator_runtime()], 64, 64, 1)
-    runtime.submit(0, np.array([[64, 0, 0, 220, 0.2, 0]], dtype=np.float64))
+@pytest.mark.parametrize("failure", ["block", "capacity", "generator"])
+def test_native_live_runtime_latches_failure_and_zeros_later_blocks(
+    failure: str,
+) -> None:
+    generators = _native.GeneratorBank(
+        48000,
+        1,
+        2,
+        np.array([[0, 0, 0, 1, 0.5, 0.5, 0]], dtype=np.float64),
+        [(1, 2), (3, 1), (0, 1), (0, 1), (0, 1)],
+    )
+    runtime = _native.LiveRuntime([native_oscillator_runtime(generators)], 64, 64, 2)
+    actions = np.array([[64, 0, 0, 220, 0.2, 0]], dtype=np.float64)
+    if failure == "capacity":
+        actions = np.repeat(actions, 65, axis=0)
+    elif failure == "generator":
+        actions = np.array([[0, 8, 0, 1, 1e300, 0]], dtype=np.float64)
+    runtime.submit(0, actions)
     output = np.ones((64, 2))
-    with np.testing.assert_raises_regex(ValueError, "runtime block"):
+    message = {
+        "block": "runtime block",
+        "capacity": "Live source actions exceed callback capacity",
+        "generator": "Native EnveLFO: rational time exceeds the signed 64-bit range",
+    }[failure]
+    with np.testing.assert_raises_regex(ValueError, message):
         runtime.process_into(output)
     assert runtime.failed()
     np.testing.assert_array_equal(output, np.zeros_like(output))

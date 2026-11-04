@@ -4,6 +4,7 @@ use super::controls::ControlBank;
 use super::generators::GeneratorBank;
 use super::{BeatPoint, core_error};
 use crate::amplitude::frame_position;
+use crate::error::NativeResult;
 use envelfo_core::envelope::Marker;
 use envelfo_core::lfo;
 use envelfo_core::lfo::Command;
@@ -14,7 +15,6 @@ use envelfo_core::patch::{
 use envelfo_core::sample_hold::SampleHold;
 use envelfo_core::signal::Operator;
 use envelfo_core::time::Time;
-use pyo3::PyResult;
 use std::collections::BTreeMap;
 
 #[derive(Clone, PartialEq)]
@@ -63,7 +63,7 @@ impl envelfo_core::patch::ClockMapping for Clocks<'_> {
 }
 
 impl PatchHost {
-    pub(super) fn prepare(runtime: &GeneratorBank) -> PyResult<Option<Self>> {
+    pub(super) fn prepare(runtime: &GeneratorBank) -> NativeResult<Option<Self>> {
         let lfos: Vec<String> = runtime
             .lfo_owners
             .iter()
@@ -315,7 +315,7 @@ impl PatchHost {
 }
 
 impl GeneratorBank {
-    pub(crate) fn prepare_patch(&mut self, frame: usize) -> PyResult<()> {
+    pub(crate) fn prepare_patch(&mut self, frame: usize) -> NativeResult<()> {
         if self.patch_host.is_none() {
             self.patch_host = PatchHost::prepare(self)?;
         }
@@ -352,7 +352,7 @@ impl GeneratorBank {
         Ok(())
     }
 
-    pub(crate) fn start_patch(&mut self, voice: usize, frame: usize) -> PyResult<()> {
+    pub(crate) fn start_patch(&mut self, voice: usize, frame: usize) -> NativeResult<()> {
         let Some(host) = &self.patch_host else {
             return Ok(());
         };
@@ -410,7 +410,7 @@ impl GeneratorBank {
         source: usize,
         at: Time,
         command: ChildCommand<&str>,
-    ) -> PyResult<()> {
+    ) -> NativeResult<()> {
         let Some(host) = &self.patch_host else {
             return Ok(());
         };
@@ -450,7 +450,7 @@ impl GeneratorBank {
         active: &[bool],
         frame: usize,
         inclusive: bool,
-    ) -> PyResult<()> {
+    ) -> NativeResult<()> {
         let at = frame_position(frame)?;
         for (voice, &running) in active.iter().enumerate() {
             if !running {
@@ -503,7 +503,7 @@ impl GeneratorBank {
         voice: usize,
         frame: usize,
         controls: &ControlBank,
-    ) -> PyResult<()> {
+    ) -> NativeResult<()> {
         let Some(host) = &self.patch_host else {
             return Ok(());
         };
@@ -554,7 +554,7 @@ impl GeneratorBank {
         kind: u8,
         source: usize,
         frame: usize,
-    ) -> PyResult<lfo::Value> {
+    ) -> NativeResult<lfo::Value> {
         let host = self
             .patch_host
             .as_ref()

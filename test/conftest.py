@@ -16,7 +16,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--require-callback-no-allocations",
         action="store_true",
-        help="Require allocation-audit and zero successful-callback heap operations.",
+        help="Require allocation-audit and zero callback heap operations.",
     )
     parser.addoption(
         "--require-rubberband",
@@ -42,6 +42,10 @@ def callback_heap_audit(request: pytest.FixtureRequest) -> Iterator[None]:
     assert list(successful[1:]) == [0, 0, 0], (
         "Successful callbacks used the Rust heap "
         f"(calls, allocs, reallocs, frees): {successful}"
+    )
+    assert list(failed[1:]) == [0, 0, 0], (
+        "Failed callbacks used the Rust heap "
+        f"(calls, allocs, reallocs, frees): {failed}"
     )
 
 

@@ -33,8 +33,8 @@ Each slot permits 4096 pending connections; no named event outputs leave this
 host, so its external event buffer has zero capacity.
 
 Shared-core allocation tests cover reset, observation, cues, delayed events,
-capacity rollback, cloning and snapshot continuation. Enge's successful-callback
-measurement is recorded below; failed callbacks remain outside that guarantee.
+capacity rollback, cloning and snapshot continuation. Enge's successful and failed
+callback measurements are recorded below.
 Low-level native sample sources now attach
 the same prepared bank and execute its lifecycle and commands. Their delayed
 voices reset generators at the first audible frame, and snapshots retain the
@@ -50,14 +50,19 @@ reallocations and deallocations on the processing thread while
 It excludes preparation, Python action admission, GIL transitions, output copying
 and snapshot creation/restoration. A Rust positive-control test verifies that all
 three counters detect heap operations. Successful and failed callback totals are
-kept separately; the pytest check requires zero heap operations for successful
-calls and records both rows in JUnit properties.
+kept separately; the pytest check requires zero heap operations for both outcomes
+and records both rows in JUnit properties.
 
-On 2026-11-04 the full instrumented suite passed 1,994 tests, with 21 skipped.
-382 tests exercised the callback: 7,271 successful calls performed zero Rust
-allocations, reallocations or frees. Five failed calls each allocated one Python
-error. The user approved moving those errors to fixed-size native values and
-creating Python exceptions after the callback; that migration remains work.
+On 2026-11-04 the full instrumented suite passed 1,996 tests, with 21 skipped.
+384 tests exercised the callback: 7,273 successful calls and seven failed calls
+performed zero Rust allocations, reallocations or frees. Callback errors now
+carry only static messages, scalar payloads or the fixed-size shared-core error.
+Python exception construction and dynamic message formatting occur after native
+processing returns. Error messages, output zeroing, failure latching and snapshot
+recovery remain covered. Failure cases include source/effect rejection, sample
+filter bounds, queue overflow beyond the callback action capacity and an
+EnveLFO rational overflow from an instrument LFO rate command. The latter checks
+the shared-core error message and failure latch through the Python boundary.
 The audit exposed allocating decimal formatting in LFO numeric commands. The
 conversion now uses a stack buffer and checked integer arithmetic, preserving
 the existing rational result. Regressions include fractional rates, seeks and

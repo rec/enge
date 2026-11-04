@@ -1,8 +1,7 @@
 //! Shared bounded control ramps, addressed contexts and voice bindings.
 use super::{RouteMap, add_partial};
+use crate::error::{NativeError, NativeResult};
 use numpy::{PyReadonlyArray2, PyUntypedArrayMethods};
-use pyo3::exceptions::PyValueError;
-use pyo3::prelude::*;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct ControlDefinition {
@@ -50,7 +49,7 @@ impl ControlBank {
         maps: &[RouteMap],
         partials: &mut [f64],
         count: &mut usize,
-    ) -> PyResult<f64> {
+    ) -> NativeResult<f64> {
         let mut product = 1.0;
         for (source, definition) in self.control_definitions.iter().enumerate() {
             if definition.parameter != parameter {
@@ -58,7 +57,7 @@ impl ControlBank {
             }
             let mapping = maps
                 .get(source)
-                .ok_or_else(|| PyValueError::new_err("Missing modulation mapping"))?;
+                .ok_or(NativeError::Message("Missing modulation mapping"))?;
             let amount = mapping.value(self.value(voice, source)?)?;
             if definition.operation == 0 {
                 add_partial(partials, count, amount);
@@ -90,7 +89,7 @@ impl ControlBank {
         }
     }
 
-    pub(crate) fn value(&self, voice: usize, source: usize) -> PyResult<f64> {
+    pub(crate) fn value(&self, voice: usize, source: usize) -> NativeResult<f64> {
         let definition = &self.control_definitions[source];
         if definition.scope == 3 {
             return Ok(self.voice_values[voice * self.control_definitions.len() + source]);
@@ -124,7 +123,7 @@ impl ControlBank {
         }
     }
 
-    pub(crate) fn apply(&mut self, action: &[f64]) -> PyResult<()> {
+    pub(crate) fn apply(&mut self, action: &[f64]) -> NativeResult<()> {
         let kind = action[1] as usize;
         let voice = action[2] as usize;
         if action.iter().any(|v| !v.is_finite())
@@ -132,29 +131,29 @@ impl ControlBank {
             || action[2] != voice as f64
             || ((kind == 5 || kind == 8) && voice >= self.voice_part_contexts.len())
         {
-            return Err(PyValueError::new_err("Invalid native control action"));
+            return Err(NativeError::Message("Invalid native control action"));
         }
         match kind {
             8 => {
                 let source = action[3] as usize;
                 let Some(definition) = self.control_definitions.get(source) else {
-                    return Err(PyValueError::new_err("Invalid voice event source"));
+                    return Err(NativeError::Message("Invalid voice event source"));
                 };
                 if action[3] != source as f64
                     || definition.scope != 3
                     || action[4] < definition.minimum
                     || action[4] > definition.maximum
                 {
-                    return Err(PyValueError::new_err("Invalid voice event value"));
+                    return Err(NativeError::Message("Invalid voice event value"));
                 }
                 self.voice_values[voice * self.control_definitions.len() + source] = action[4];
             }
             4 => {
                 let Some(definition) = self.control_definitions.get(voice).cloned() else {
-                    return Err(PyValueError::new_err("Invalid synth runtime control"));
+                    return Err(NativeError::Message("Invalid synth runtime control"));
                 };
                 if action[3] < definition.minimum || action[3] > definition.maximum {
-                    return Err(PyValueError::new_err("Invalid synth control value"));
+                    return Err(NativeError::Message("Invalid synth control value"));
                 }
                 let context = decode_context(action[4], self.context_kinds.len())?;
                 let state = self.control_state_mut(voice, context)?;
@@ -168,18 +167,18 @@ impl ControlBank {
                 if part.is_some_and(|context| self.context_kinds[context] != 1)
                     || trigger.is_some_and(|context| self.context_kinds[context] != 2)
                 {
-                    return Err(PyValueError::new_err("Invalid voice control contexts"));
+                    return Err(NativeError::Message("Invalid voice control contexts"));
                 }
                 self.voice_part_contexts[voice] = part.unwrap_or(usize::MAX);
                 self.voice_trigger_contexts[voice] = trigger.unwrap_or(usize::MAX);
             }
             6 => {
                 if voice >= self.context_kinds.len() || self.context_kinds[voice] != 0 {
-                    return Err(PyValueError::new_err("Invalid synth control context"));
+                    return Err(NativeError::Message("Invalid synth control context"));
                 }
                 let context_kind = action[3] as usize;
                 if action[3] != context_kind as f64 || !(1..=2).contains(&context_kind) {
-                    return Err(PyValueError::new_err("Invalid synth context kind"));
+                    return Err(NativeError::Message("Invalid synth context kind"));
                 }
                 self.context_kinds[voice] = context_kind;
                 let sources = self.control_definitions.len();
@@ -201,7 +200,7 @@ impl ControlBank {
                     || action[4] > self.control_definitions[source].maximum
                     || self.context_kinds[voice] != self.control_definitions[source].scope
                 {
-                    return Err(PyValueError::new_err("Invalid synth context value"));
+                    return Err(NativeError::Message("Invalid synth context value"));
                 }
                 let index = voice * self.control_definitions.len() + source;
                 self.context_states[index].start = action[4];
@@ -209,20 +208,23 @@ impl ControlBank {
                 self.context_states[index].elapsed = 0;
             }
 
-            _ => return Err(PyValueError::new_err("Unknown native control action")),
+            _ => return Err(NativeError::Message("Unknown native control action")),
         }
         Ok(())
     }
-    fn context_state(&self, context: usize, source: usize, kind: usize) -> PyResult<&ControlState> {
+    fn context_state(
+        &self,
+        context: usize,
+        source: usize,
+        kind: usize,
+    ) -> NativeResult<&ControlState> {
         self.context_kind(context, kind)?;
         Ok(&self.context_states[context * self.control_definitions.len() + source])
     }
 
-    pub(crate) fn context_kind(&self, context: usize, kind: usize) -> PyResult<()> {
+    pub(crate) fn context_kind(&self, context: usize, kind: usize) -> NativeResult<()> {
         if context >= self.context_kinds.len() || self.context_kinds[context] != kind {
-            return Err(PyValueError::new_err(
-                "Voice is missing its control context",
-            ));
+            return Err(NativeError::Message("Voice is missing its control context"));
         }
         Ok(())
     }
@@ -231,20 +233,18 @@ impl ControlBank {
         &mut self,
         source: usize,
         context: Option<usize>,
-    ) -> PyResult<&mut ControlState> {
+    ) -> NativeResult<&mut ControlState> {
         let scope = self.control_definitions[source].scope;
         if scope == 0 && context.is_none() {
             return Ok(&mut self.control_states[source]);
         }
         let Some(context) = context else {
-            return Err(PyValueError::new_err(
+            return Err(NativeError::Message(
                 "Control action is missing its context",
             ));
         };
         if self.context_kinds[context] != scope {
-            return Err(PyValueError::new_err(
-                "Control action has the wrong context",
-            ));
+            return Err(NativeError::Message("Control action has the wrong context"));
         }
         Ok(&mut self.context_states[context * self.control_definitions.len() + source])
     }
@@ -262,13 +262,13 @@ impl ControlBank {
         }
     }
 }
-fn decode_context(value: f64, capacity: usize) -> PyResult<Option<usize>> {
+fn decode_context(value: f64, capacity: usize) -> NativeResult<Option<usize>> {
     if value == -1.0 {
         return Ok(None);
     }
     let context = value as usize;
     if value != context as f64 || context >= capacity {
-        return Err(PyValueError::new_err("Invalid synth control context"));
+        return Err(NativeError::Message("Invalid synth control context"));
     }
     Ok(Some(context))
 }
@@ -276,13 +276,13 @@ fn decode_context(value: f64, capacity: usize) -> PyResult<Option<usize>> {
 pub(crate) fn control_definitions(
     values: PyReadonlyArray2<'_, f64>,
     smoothing: &[(u64, u64)],
-) -> PyResult<(Vec<ControlDefinition>, Vec<ControlState>)> {
+) -> NativeResult<(Vec<ControlDefinition>, Vec<ControlState>)> {
     if values.shape()[1] != 6
         || values.shape()[0] != smoothing.len()
         || smoothing.iter().any(|(_, denominator)| *denominator == 0)
         || values.as_array().iter().any(|v| !v.is_finite())
     {
-        return Err(PyValueError::new_err("Invalid synth runtime controls"));
+        return Err(NativeError::Message("Invalid synth runtime controls"));
     }
     let mut definitions = Vec::with_capacity(values.shape()[0]);
     let mut states = Vec::with_capacity(values.shape()[0]);
@@ -301,7 +301,7 @@ pub(crate) fn control_definitions(
             || row[0] < row[4]
             || row[0] > row[5]
         {
-            return Err(PyValueError::new_err("Invalid synth runtime control"));
+            return Err(NativeError::Message("Invalid synth runtime control"));
         }
         definitions.push(ControlDefinition {
             default: row[0],

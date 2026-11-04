@@ -5,6 +5,7 @@
 
 mod amplitude;
 mod effects;
+mod error;
 mod filters;
 mod fm;
 mod granulator;

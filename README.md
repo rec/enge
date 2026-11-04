@@ -69,7 +69,8 @@ retirement keeps the slot storage for reuse. Live-source construction prepares
 these buffers before rendering, and snapshot restoration rebuilds them outside
 rendering. This removes Patch-host temporary input/release lists and allocating
 graph calls. The instrumented callback suite measures zero Rust heap operations
-on successful calls; failed callbacks still allocate Python errors. See the
+on successful and failed calls. Native errors retain fixed-size payloads; Python
+exceptions are constructed after processing returns. See the
 [callback audit](doc/live-callback-audit.md) for coverage and the remaining limits.
 
 Generator definitions, clocks, prepared slots and modulation evaluation now live

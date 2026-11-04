@@ -58,7 +58,7 @@ pub fn render_effects<'py>(
     let mut banks = filter_inputs
         .into_iter()
         .map(|v| FilterBank::new(v, rate, frames, channels))
-        .collect::<PyResult<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
     let (output, states) = py.detach(move || -> PyResult<_> {
         let mut output = Array2::zeros((frames, channels));
         let mut values = vec![vec![0.0; channels]; input_count + nodes];

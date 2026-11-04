@@ -12,6 +12,7 @@ use super::{
 };
 use crate::amplitude::AmplitudeSegments;
 use crate::amplitude::{frame_position, frame_time};
+use crate::error::{NativeError, NativeResult};
 use envelfo_core::envelope::{
     Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
 };
@@ -93,7 +94,7 @@ impl GeneratorBank {
         frame: usize,
         age: usize,
         minimum_hold_frames: Time,
-    ) -> PyResult<Time> {
+    ) -> NativeResult<Time> {
         for source in 0..self.staged_envelfos.len() {
             if self.staged_owners[source] == source {
                 self.patch_command(
@@ -133,9 +134,9 @@ impl GeneratorBank {
         active: &[bool],
         frame: usize,
         rate: f64,
-    ) -> PyResult<()> {
+    ) -> NativeResult<()> {
         if action.len() != 6 {
-            return Err(PyValueError::new_err("Invalid generator action"));
+            return Err(NativeError::Message("Invalid generator action"));
         }
         let kind = action[1] as usize;
         let voice = action[2] as usize;
@@ -143,7 +144,7 @@ impl GeneratorBank {
             || action[2] != voice as f64
             || (kind != 8 && voice >= active.len())
         {
-            return Err(PyValueError::new_err("Invalid generator action"));
+            return Err(NativeError::Message("Invalid generator action"));
         }
         match kind {
             12 => {
@@ -151,7 +152,7 @@ impl GeneratorBank {
                     || action[4] != action[4] as u32 as f64
                     || action[5] != 0.0
                 {
-                    return Err(PyValueError::new_err("Invalid Envelfo stream key"));
+                    return Err(NativeError::Message("Invalid Envelfo stream key"));
                 }
                 self.envelfo_keys[voice] = action[3] as u64 | ((action[4] as u64) << 32);
             }
@@ -169,11 +170,11 @@ impl GeneratorBank {
                     || (action_kind == 1 && action[4] < 0.0)
                     || (action_kind == 5 && !(0.0..=1.0).contains(&action[4]))
                 {
-                    return Err(PyValueError::new_err("Invalid synth LFO action"));
+                    return Err(NativeError::Message("Invalid synth LFO action"));
                 }
                 let definition = &self.lfo_definitions[lfo];
                 if definition.scope != 0 || definition.body.driver == lfo::Driver::Transport {
-                    return Err(PyValueError::new_err("Invalid synth LFO scope"));
+                    return Err(NativeError::Message("Invalid synth LFO scope"));
                 }
                 let at = self.lfo_time(definition, frame_position(frame)?)?;
                 let command = match action_kind {
@@ -206,7 +207,7 @@ impl GeneratorBank {
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
                 {
-                    return Err(PyValueError::new_err("Invalid named Envelfo action"));
+                    return Err(NativeError::Message("Invalid named Envelfo action"));
                 }
                 if self.named_envelopes[source].sample_hold.is_some() {
                     return Ok(());
@@ -235,7 +236,7 @@ impl GeneratorBank {
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
                 {
-                    return Err(PyValueError::new_err("Invalid staged Envelfo action"));
+                    return Err(NativeError::Message("Invalid staged Envelfo action"));
                 }
                 let command = match command {
                     0 => ChildCommand::Playback(Command::Pause),
@@ -262,7 +263,7 @@ impl GeneratorBank {
                     || (command == 4 && !action[5].is_finite())
                     || (command != 3 && command != 4 && action[5] != 0.0)
                 {
-                    return Err(PyValueError::new_err("Invalid voice LFO action"));
+                    return Err(NativeError::Message("Invalid voice LFO action"));
                 }
                 let command = match command {
                     0 => Command::Pause,
@@ -281,12 +282,12 @@ impl GeneratorBank {
                 )?;
             }
 
-            _ => return Err(PyValueError::new_err("Unknown generator action")),
+            _ => return Err(NativeError::Message("Unknown generator action")),
         }
         Ok(())
     }
 
-    pub(super) fn lfo_time(&self, definition: &LfoDefinition, frame: Time) -> PyResult<Time> {
+    pub(super) fn lfo_time(&self, definition: &LfoDefinition, frame: Time) -> NativeResult<Time> {
         if definition.body.driver == lfo::Driver::Transport {
             clock_at(&self.beat_points, 2, frame).map_err(core_error)
         } else if definition.body.clock == lfo::Clock::Beats {
@@ -302,7 +303,7 @@ impl GeneratorBank {
         source: usize,
         frame: usize,
         controls: &ControlBank,
-    ) -> PyResult<(f64, f64)> {
+    ) -> NativeResult<(f64, f64)> {
         let definition = &self.lfo_definitions[source];
         if definition.scope == 1 {
             controls.context_kind(controls.voice_part_contexts[voice], 1)?;
@@ -333,7 +334,7 @@ impl GeneratorBank {
         maps: &[Vec<RouteMap>],
         partials: &mut [f64],
         count: &mut usize,
-    ) -> PyResult<f64> {
+    ) -> NativeResult<f64> {
         for (source, definition) in self.lfo_definitions.iter().enumerate() {
             if definition.parameter != parameter {
                 continue;
@@ -396,10 +397,10 @@ impl GeneratorBank {
     }
 }
 
-fn mapped(maps: &[Vec<RouteMap>], kind: usize, source: usize, value: f64) -> PyResult<f64> {
+fn mapped(maps: &[Vec<RouteMap>], kind: usize, source: usize, value: f64) -> NativeResult<f64> {
     maps[kind]
         .get(source)
-        .ok_or_else(|| PyValueError::new_err("Unprepared modulation mapping"))?
+        .ok_or(NativeError::Message("Unprepared modulation mapping"))?
         .value(value)
 }
 
@@ -519,7 +520,7 @@ impl GeneratorBank {
         let lfo_states = lfo_definitions
             .iter()
             .map(|d| initial_lfo(d, Time::ZERO))
-            .collect::<PyResult<Vec<_>>>()?;
+            .collect::<NativeResult<Vec<_>>>()?;
         let lfo_count = lfo_definitions.len();
         Ok(Self {
             rate,
@@ -813,7 +814,7 @@ impl GeneratorBank {
                         let times = times
                             .into_iter()
                             .map(ratio_time)
-                            .collect::<PyResult<Vec<_>>>()?;
+                            .collect::<NativeResult<Vec<_>>>()?;
                         if times.len() != 5 {
                             return Err(PyValueError::new_err("Invalid staged LFO timing"));
                         }

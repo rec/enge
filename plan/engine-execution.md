@@ -97,11 +97,13 @@ uses this storage for each voice slot, retains it on retirement, and prepares it
 when constructing live sources or restoring snapshots. Input updates and pending
 release scans no longer allocate temporary lists. Shared-core tests count zero
 heap operations, including slot reset and cloned continuation. The opt-in host
-audit now measures zero Rust heap operations across 7,271 successful callbacks
-in the regression suite. Failed callbacks still allocate Python errors; the user
-approved fixed-size native errors with Python conversion after callback return.
-That migration and failure-path qualification remain work. Finite voice/context
-capacity alone does not establish the broader guarantee.
+audit now measures zero Rust heap operations across 7,273 successful callbacks
+and seven failed callbacks in the regression suite. The approved fixed-size native
+error migration is complete: Python exceptions and dynamic messages are created
+after callback return. The audit enforces zero heap operations for both outcomes,
+including callback queue-capacity rejection and shared-core rational overflow.
+This qualifies the tested Rust paths;
+finite voice/context capacity alone does not establish the broader guarantee.
 The [callback audit](../doc/live-callback-audit.md) records the wider boundary.
 The native generator state and modulation evaluator have been extracted from
 `SynthRuntime` into `GeneratorBank`; generated sources use it with explicit frame
@@ -124,7 +126,8 @@ Offline/native-live comparisons cover these scopes, envelopes, stages, filter
 modulation and Patch sample-and-hold events driven by LFOs or stages, with delayed
 starts, slot reuse and exact snapshot replay. Existing shared-profile restrictions
 remain explicit, including Patch-level commands and sampler beat clocks without
-a host tempo map. Failure-path allocation qualification remains outstanding.
+a host tempo map. Tested failure paths now share the allocation qualification
+described above; this does not establish hardware deadlines.
 
 Finite loop `repeat_count` now counts additional traversals in both offline
 backends and the native live sampler, including mirrored and crossfaded loops.
