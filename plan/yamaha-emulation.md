@@ -335,6 +335,12 @@ qualification remain work.
 - Preserve the TX81Z waveform definitions rather than mapping them to enge's
   generic sine, square, and triangle waveforms.
 
+A pinned waveform-table comparison now measures all eight continuous shapes
+against ymfm at 440 Hz in paired one-second, 48 kHz WAVs. Relative RMS differences
+range from 0.338% to 0.803%; table quantization and nonzero zero-substitution remain
+explicit approximation differences. See the [comparison report](../doc/yamaha-reference/README.md#tx81z-waveform-table-comparison).
+This does not qualify hardware or complete the full-renderer requirement.
+
 ## Delivery boundaries
 
 - The compatibility renderer is offline first. Do not claim callback-safe live

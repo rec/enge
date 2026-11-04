@@ -316,3 +316,53 @@ be converted losslessly to the fixture's signed 16-bit arrays.
 This qualifies these envelope profiles against the provisional software model.
 It does not qualify every rate/key combination, full TX81Z synthesis, WT11
 behavior, controller interaction, integer audio output or physical hardware.
+
+## TX81Z waveform-table comparison
+
+`render-ymfm-waveforms.cc` reads all eight waveform tables through the public
+operator cache of the same pinned ymfm revision
+`81aec25ccbb98f4873a255f7551ac4dadac59b4a`. It converts logarithmic attenuation
+with ymfm's own integer volume lookup. It does not apply envelope attenuation,
+feedback, modulation, chip-clock pitch quantization or DAC processing.
+
+Build and capture the table, with `YMFM` pointing to that revision's source
+folder:
+
+```sh
+c++ -std=c++17 -O2 -I"$YMFM" render-ymfm-waveforms.cc "$YMFM/ymfm_opz.cpp" -o /tmp/ymfm-waveforms
+/tmp/ymfm-waveforms > /tmp/ymfm-waveforms.csv
+```
+
+The comparison uses 48,000 frames at 48 kHz and 440 Hz, with each WAV's eight
+channels containing waveform numbers 0 through 7. For frame `n`, the reference
+index is `floor(n * 440 * 1024 / 48000) % 1024`, computed with integer arithmetic;
+the reference sample is the corresponding table value divided by 8192. The enge
+sample is `tx81z_wave_samples(w, ((n * 440) % 48000) / 48000)` using the continuous
+phase, without midpoint alignment or fitted gain. Each file stores samples
+rounded to signed 16-bit PCM after multiplication by 32767. Metrics in
+[waveform-comparison.csv](waveform-comparison.csv) precede PCM conversion.
+
+| Waveform | Relative RMS error | Maximum absolute error |
+| --- | ---: | ---: |
+| 0 | 0.3376% | 0.0046013 |
+| 1 | 0.3887% | 0.0063892 |
+| 2 | 0.5489% | 0.0046013 |
+| 3 | 0.6331% | 0.0063892 |
+| 4 | 0.6955% | 0.0093416 |
+| 5 | 0.8031% | 0.0115181 |
+| 6 | 0.6955% | 0.0093416 |
+| 7 | 0.8031% | 0.0115181 |
+
+Relative RMS divides the error norm by the reference norm. The paired
+[enge WAV](TX-WAVEFORMS-enge.wav) and [ymfm WAV](TX-WAVEFORMS-ymfm.wav) preserve
+these differences without normalization. In particular, ymfm substitutes its
+first sine-table entry where the continuous shapes use zero; waveform 4 and 5
+therefore have reference DC 0.00152587890625, versus approximately zero in enge.
+The table also samples near phase-cell midpoints and quantizes logarithmic
+amplitude. No large shape mismatch appears in this comparison, but agreement is
+not exact and no hardware qualification threshold has been established.
+
+The [pinned source's waveform construction](https://github.com/aaronsgiles/ymfm/blob/81aec25ccbb98f4873a255f7551ac4dadac59b4a/src/ymfm_opz.cpp)
+explicitly treats the signed sine-squared shape as an inference. This comparison
+qualifies enge against that provisional model only, not measured TX81Z or WT11
+hardware. It does not resolve the outstanding full-renderer qualification.
