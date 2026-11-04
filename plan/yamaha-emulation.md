@@ -253,6 +253,17 @@ rejected by the context; its measured timing and incomplete delayed-AMD curve
 still require implementation/qualification. Multitimbral LFO routing, software
 LFOs and full engine integration also remain work.
 
+The [delay measurements](https://nornand.hatenablog.com/entry/2020/11/30/185005)
+specify completion times in units of 1/48 second, with observed variation of one
+unit. Both depths remain zero until half that time; PMD then rises linearly,
+whereas AMD follows a curve that the report does not quantify. Delay 1 completes
+at 15/48 second and delay 99 at 1022/48 seconds. Implementing a linear AMD ramp
+would therefore invent behavior inconsistent with the stated observation.
+A provisional pitch-only implementation is awaiting a user decision. Its
+acceptance evidence must cover the silent half, ramp and final depth, key-down
+restart, fractional sample-rate timing, and snapshot/partition continuation.
+Delayed AMD remains a separate unresolved requirement.
+
 VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
 documented parameter ranges before note preparation. Unused payload bytes and
 voice-name bytes remain losslessly owned by the imported edit buffers. Boundary
@@ -426,8 +437,10 @@ any positive value to at least 1. Existing TX81Z rejection of velocity zero with
 nonzero velocity sensitivity remains in force.
 
 The adapter admits transpose for both models and requires TX81Z zero-delay LFO.
-Hardware-specific controller assignments, dynamic tuning,
-external envelopes and unsupported processing remain rejected. Released DX7
+Dynamic tuning routes, external envelopes and unsupported portable processing
+remain rejected. Hardware-specific assignment fields are range-validated and
+preserved, but are not connected to controller events. They are not all rejected
+at admission. Released DX7
 carriers with nonzero final
 envelope levels remain active until explicitly stopped or faded. This integration
 adds no native callback renderer and does not establish hardware equivalence.
@@ -442,6 +455,25 @@ alongside filter and note state. Regressions cover overlapping parts, interrupte
 ramps, restoration during smoothing and both Yamaha models. This is portable
 processing control integration, not emulation of hardware-specific breath,
 mod-wheel or other assignment matrices.
+
+### Remaining integration gates
+
+- TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
+  sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
+  foot-controller pitch/amplitude assignments. Current rendering does not execute
+  those patch-defined behaviors. Portable trigger/release/control preparation is
+  not evidence that this hardware assignment layer is implemented.
+- Portable dynamic tuning is explicitly rejected in `prepare`. Reusing scoped
+  control values requires a note-renderer tuning input and a defined fixed/ratio
+  operator policy. The proposed ratio-only per-render rows await approval.
+- TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
+  the measured attenuation table covers positive velocities only.
+- DX7 integer oscillator/feedback replacement remains awaiting approval.
+  The existing fixed-gain graph comparison does not qualify dynamic envelopes,
+  complete patches or hardware output.
+- TX81Z delayed AMD, software/multitimbral LFO routing and complete-renderer
+  reference qualification remain incomplete. No passing component test closes
+  those requirements.
 
 ## Additional work beyond the prompt
 
