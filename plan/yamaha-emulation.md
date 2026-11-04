@@ -109,9 +109,12 @@ owned JSON continuation. Snapshot identity includes both edit buffers, key,
 velocity and output rate. Tests cover all algorithms, mixed waveforms, fixed
 and ratio operators, detune, held/released snapshots and mismatched definitions.
 The initial supported pitch span after transpose is MIDI 13–108 (chip key codes
-0–31); out-of-span notes are rejected. Nonzero key-level/velocity scaling and LFO
-modulation are rejected until implemented. Velocity is accepted as
-note metadata but has no gain effect when KVS is zero. This is an incomplete
+0–31); out-of-span notes are rejected. Velocity scaling now applies the measured
+KVS curves to positive note-on velocities. Key-level scaling now applies the
+measured three-key groups when transpose is neutral. Non-neutral transpose with
+key-level scaling and LFO modulation remain rejected. Velocity has no gain effect
+when KVS is zero; its existing zero-velocity metadata behavior remains unchanged
+pending the note-on contract decision. This is an incomplete
 profile, not completion of the full TX81Z/WT11 requirement. Controller integration,
 DAC/integer quantization and hardware/reference
 qualification remain work.
@@ -160,9 +163,12 @@ including three-key level-scaling groups, the documented high-key wrap and
 all seven nonzero KVS curves. KVS zero adds no attenuation. Velocity zero with
 nonzero KVS is rejected because the measurement table covers only 1–127.
 Focused WAV regressions cover boundaries and combined saturation. The note
-renderer still rejects nonzero scaling while the transpose/scaling rule and
-velocity-zero note-creation contract await a decision. Applying the table in
-the gain primitive does not establish audio or hardware qualification.
+renderer now connects both terms for the unambiguous inputs above. Analytic
+one-second WAV regressions cover velocity curves, neutral-transpose key scaling,
+their sum and TL saturation. All eight algorithm continuation tests now use
+distinct nonzero key/velocity sensitivities. The transpose/scaling rule and
+velocity-zero note-creation contract still await decisions. These model-level
+checks do not establish hardware qualification.
 
 The numeric `tx81z_operator_samples` kernel now renders all eight four-operator
 graphs in visible OP1–OP4 order, with OP4 two-sample feedback, independent
@@ -173,8 +179,8 @@ mutating the caller's saved state. Routing/modulation scaling follows
 Analytic 48 kHz WAV regressions cover all graphs, asymmetric operators,
 feedback, waveform selection and partitioned continuation. This is raw carrier
 mixing. The note renderer now connects chip detune, nominal VCED gain conversion
-and the envelope clock. DAC saturation, velocity/key scaling integration and
-the full voice profile remain work.
+and the envelope clock, plus key/velocity scaling in the supported profile.
+DAC saturation and the full voice profile remain work.
 
 The user approved ymfm's waveform model provisionally on 2026-11-03, including
 the inferred signed sine-squared shape. `tx81z_wave_samples` now realizes all

@@ -152,7 +152,7 @@ class TX81ZSnapshot(BaseModel, frozen=True):
 class TX81ZRenderer:
     """Offline provisional four-operator note renderer with explicit edit buffers.
 
-    LFO modulation and velocity/key-level scaling remain unsupported.
+    LFO modulation and key-level scaling with non-neutral transpose are unsupported.
     Frequencies and waveforms use the nominal floating-point OPZ model.
     """
 
@@ -179,9 +179,9 @@ class TX81ZRenderer:
                 raise EngineError(
                     f"TX81Z ACED parameter {index} must be from 0 through {maximum}"
                 )
-        if any(o.level_scaling or o.key_velocity_sensitivity for o in voice.operators):
+        if voice.data[62] != 24 and any(o.level_scaling for o in voice.operators):
             raise EngineError(
-                "TX81Z key-level and velocity scaling are not implemented"
+                "TX81Z key-level scaling with non-neutral transpose is not implemented"
             )
         if voice.data[56] or voice.data[57]:
             raise EngineError("TX81Z LFO modulation is not implemented")

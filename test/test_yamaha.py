@@ -28,8 +28,8 @@ from enge.yamaha import (
 @pytest.mark.parametrize(
     "source,index,value",
     [
-        ("voice", 5, 1),
-        ("voice", 9, 1),
+        ("voice", 5, 100),
+        ("voice", 9, 8),
         ("voice", 56, 1),
         ("additional", 20, 8),
         ("voice", 10, 100),
@@ -108,6 +108,8 @@ def test_tx81z_note_renderer_pairs_buffers_and_restores_release_tails(
         raw[start + 1] = 10
         raw[start + 3] = 15
         raw[start + 4] = 11
+        raw[start + 5] = 10 * i
+        raw[start + 9] = i
         raw[start + 10] = 80 - i
         raw[start + 11] = [4, 8, 10, 13][i - 1]
         raw[start + 12] = i
