@@ -391,7 +391,7 @@ no new voice cap and is not hardware voice-allocation or phase qualification.
 Dedicated uFor `YamahaDX7Voice` and `YamahaTX81ZVoice` templates now preserve
 raw patch bytes and carry trigger velocity through shared lifecycle preparation.
 `enge.yamaha_instrument` renders those actions with one shared LFO context per
-template, routing, static gain/filter processing, minimum hold, release, stop
+template, routing, gain/filter processing, minimum hold, release, stop
 and continuous fade retiming. MIDI-file rendering dispatches Yamaha instruments
 to this NumPy-only adapter. Snapshots include clocks, notes, filter state and
 pending retirement state.
@@ -403,11 +403,22 @@ any positive value to at least 1. Existing TX81Z rejection of velocity zero with
 nonzero velocity sensitivity remains in force.
 
 The adapter admits the implemented profile explicitly: DX7 neutral transpose
-and TX81Z zero-delay LFO. External
-controller modulation beyond shared sustain handling, external envelopes and
-unsupported processing remain rejected. Released DX7 carriers with nonzero final
+and TX81Z zero-delay LFO. Hardware-specific controller assignments, dynamic tuning,
+external envelopes and unsupported processing remain rejected. Released DX7
+carriers with nonzero final
 envelope levels remain active until explicitly stopped or faded. This integration
 adds no native callback renderer and does not establish hardware equivalence.
+
+Shared `ControlRenderer` integration now supplies instrument-, part- and
+trigger-scoped controls to outer amplitude and filter cutoff/Q targets. Authored
+smoothing, route mappings/composition and both filter/amplitude orders reuse the
+existing synth machinery. Key and unquantized trigger velocity can also drive
+onset-latched routes, independently of the patch's intrinsic Yamaha key/velocity
+scaling. Snapshots retain control contexts and each voice's source ownership
+alongside filter and note state. Regressions cover overlapping parts, interrupted
+ramps, restoration during smoothing and both Yamaha models. This is portable
+processing control integration, not emulation of hardware-specific breath,
+mod-wheel or other assignment matrices.
 
 ## Additional work beyond the prompt
 

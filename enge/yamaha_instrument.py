@@ -23,6 +23,7 @@ class VoiceState(BaseModel):
     template: str
     start: int
     oscillator_slot: int | None = None
+    sources: dict[str, int] = Field(default_factory=dict)
     release_at: int | None = None
     released: bool = False
     fade_at: int | None = None
@@ -53,6 +54,7 @@ class YamahaSnapshot(BaseModel, frozen=True):
     voices: list[VoiceSnapshot]
     clocks: dict[str, yamaha_lfo.DX7LFOSnapshot | yamaha_lfo.TX81ZLFOSnapshot]
     oscillator_slots: dict[str, list[OscillatorSlot]]
+    contexts: list[synth.ControlContext]
 
 
 class OfflineYamaha:
@@ -77,6 +79,11 @@ class OfflineYamaha:
             for n, v in self.templates.items()
         }
         self.voices: dict[str, Voice] = {}
+        self.controls = synth.ControlRenderer(
+            definition.sample_rate,
+            self.definition.score.body.controls,
+            list(self.templates.values()),
+        )
         self.oscillator_slots: dict[str, list[OscillatorSlot]] = {
             n: []
             for n, v in self.templates.items()
@@ -109,6 +116,7 @@ class OfflineYamaha:
             ],
             clocks={n: c.snapshot() for n, c in self.clocks.items()},
             oscillator_slots=self.oscillator_slots,
+            contexts=self.controls.contexts,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: YamahaSnapshot) -> None:
@@ -159,20 +167,15 @@ class OfflineYamaha:
                 )
         self.voices = voices
         self.oscillator_slots = snapshot.oscillator_slots
+        self.controls.clear_cache()
+        self.controls.contexts = snapshot.contexts
         self.frame = snapshot.frame
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
-        if isinstance(
-            action, (instrument_trace.TriggerContext, instrument_trace.Diagnostic)
-        ):
+        if isinstance(action, instrument_trace.Diagnostic):
             return
-        if isinstance(action, instrument_trace.ControlObservation):
-            sustain = self.definition.score.body.sustain
-            if sustain is None or action.control != sustain.control:
-                raise synth.EngineError(
-                    "Yamaha external controller modulation is not implemented"
-                )
-            return  # Sustain retirement has already been resolved by uFor.
+        if self.controls.apply(action, self.voices):
+            return
         if isinstance(action, instrument_trace.VoiceRetirement):
             if (voice := self.voices.get(action.voice_id)) is None:
                 return
@@ -261,6 +264,7 @@ class OfflineYamaha:
             template=template.name,
             start=action.tick,
             oscillator_slot=slot_index,
+            sources=self.controls.sources(template, action, action.velocity),
             renderer=renderer,
             filter_states=filters.initial_states(template.processing.filters, 1),
         )
@@ -293,12 +297,13 @@ class OfflineYamaha:
             gain = 10 ** (template.processing.volume_db / 20)
             if template.processing.invert_polarity:
                 gain = -gain
+            values = self.controls.values(template, voice.sources, start, count)
+            _, amplitudes, parameters = synth.processing_parameters(
+                template, values, self.definition.sample_rate, start, count
+            )
             if template.processing.filter_order == FilterOrder.after_amplitude:
-                audio *= gain
+                audio[:count] *= (gain * amplitudes)[:, None]
             if count and template.processing.filters:
-                parameters = filters.parameters(
-                    template.processing.filters, self.definition.sample_rate, count
-                )
                 audio[:count], voice.filter_states = filters.filter_samples(
                     template.processing.filters,
                     voice.filter_states,
@@ -307,7 +312,7 @@ class OfflineYamaha:
                     self.definition.sample_rate,
                 )
             if template.processing.filter_order == FilterOrder.before_amplitude:
-                audio *= gain
+                audio[:count] *= (gain * amplitudes)[:, None]
             if voice.fade_at is not None:
                 audio *= (
                     voice.fade_gain
@@ -340,6 +345,7 @@ class OfflineYamaha:
                 )
             )
         del self.voices[voice.voice_id]
+        self.controls.stop(voice.voice_id)
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
@@ -350,11 +356,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
     timebase = next(t for t in score.timebases if t.name == output.timebase)
     if timebase.rate.denominator != 1:
         raise synth.EngineError("Yamaha output rate must be an integer")
-    sustain = score.body.sustain
-    if any(n != (sustain.control if sustain else None) for n in score.body.controls):
-        raise synth.EngineError(
-            "Yamaha external controller modulation is not implemented"
-        )
     for voice in score.body.voices:
         if not isinstance(voice, (YamahaDX7Voice, YamahaTX81ZVoice)):
             raise synth.EngineError(
@@ -367,13 +368,16 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             raise synth.EngineError(
                 "Untracked Yamaha pitch requires reference_pitch_hz"
             )
-        if (
-            voice.envelfos
-            or voice.bindings
-            or voice.modulation.parameters
-            or voice.event_connections
+        if voice.envelfos or voice.event_connections:
+            raise synth.EngineError("Yamaha external generators are not implemented")
+        synth.validate_generators(
+            voice, allow_velocity_bindings=True, allow_key_bindings=True
+        )
+        synth.validate_modulation(voice)
+        if any(
+            p.target.parameter == "tuning_cents" for p in voice.modulation.parameters
         ):
-            raise synth.EngineError("Yamaha external modulation is not implemented")
+            raise synth.EngineError("Yamaha dynamic tuning is not implemented")
         if voice.processing != Processing(
             volume_db=voice.processing.volume_db,
             invert_polarity=voice.processing.invert_polarity,

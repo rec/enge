@@ -7,11 +7,11 @@ from test_synth import check_audio, score
 from test_yamaha import voice
 from ufor import synth_trace, tx81z
 from ufor.dx7 import DX7Voice
-from ufor.events import Release, Trigger
+from ufor.events import ControlChange, Release, Trigger
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
 from ufor.synth import SynthInstrumentScore, YamahaDX7Voice, YamahaTX81ZVoice
 
-from enge import yamaha, yamaha_instrument, yamaha_lfo
+from enge import filters, yamaha, yamaha_instrument, yamaha_lfo
 from enge.midi import MidiPerformance
 from enge.render import render_midi
 from enge.synth import EngineError
@@ -398,3 +398,194 @@ def test_dx7_reuses_oldest_idle_slots_across_overlaps_and_snapshots(
     assert saved.voices == []
     assert len(saved.oscillator_slots["yamaha"]) == 2
     assert [s.idle_since for s in saved.oscillator_slots["yamaha"]] == [1000, 1100]
+
+
+@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("scope", ["instrument", "part", "trigger"])
+@pytest.mark.parametrize("order", ["before_amplitude", "after_amplitude"])
+def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
+    tmp_path: Path, kind: str, scope: str, order: str
+) -> None:
+    raw = instrument(kind).model_dump(mode="json")
+    raw["body"]["controls"] = {"expression": {"default": 0.0}}
+    voice = raw["body"]["voices"][0]
+    patch = bytearray.fromhex(voice["patch"])
+    offset = 139 if kind == "dx7" else 56
+    patch[offset : offset + 2] = bytes(2)
+    voice["patch"] = bytes(patch).hex()
+    voice["processing"] = {
+        "filter_order": order,
+        "filters": [
+            {"name": "tone", "response": "lowpass", "cutoff_hz": 500, "q": 0.5}
+        ],
+    }
+    voice["bindings"] = [
+        {
+            "name": "expression",
+            "kind": "control",
+            "control": "expression",
+            "smoothing": "1/200",
+        }
+    ]
+    parameters, routes = [], []
+    for name, target_name, parameter, unit, default, amount in [
+        ("gain", "processing", "amplitude", "ratio", 1, -0.8),
+        ("cutoff", "filter-tone", "cutoff_hz", "hz", 500, 1500),
+        ("resonance", "filter-tone", "q", "ratio", 0.5, 1),
+    ]:
+        target = {"name": target_name, "parameter": parameter}
+        parameters.append(
+            {
+                "target": target,
+                "unit": unit,
+                "scope": "voice",
+                "minimum": min(default, default + amount),
+                "maximum": max(default, default + amount),
+                "default": default,
+            }
+        )
+        routes.append(
+            {
+                "name": name,
+                "source": "expression",
+                "target": target,
+                "unit": unit,
+                "operation": "add",
+                "points": [{"input": 0, "amount": 0}, {"input": 1, "amount": amount}],
+            }
+        )
+    voice["modulation"] = {
+        "sources": [{"name": "expression", "scope": scope, "minimum": 0, "maximum": 1}],
+        "parameters": parameters,
+        "routes": routes,
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    events = [
+        Trigger(tick=0, ordinal=0, part="main", trigger_id="first", key=69),
+        Trigger(tick=1001, ordinal=0, part="other", trigger_id="second", key=69),
+    ]
+    changes = [
+        ControlChange(
+            tick=t,
+            ordinal=0,
+            control="expression",
+            value=v,
+            scope=scope,
+            part=None if scope == "instrument" else "main",
+            trigger_id="first" if scope == "trigger" else None,
+        )
+        for t, v in [(2000, 1.0), (2120, 0.4)]
+    ]
+    actions = synth_trace.prepare(document.body, [*events, *changes], seed=0).actions
+    template = document.body.voices[0]
+    ramp = np.zeros(48000)
+    ramp[2000:2120] = np.arange(120) / 240
+    ramp[2120:2360] = 0.5 - 0.1 * np.arange(240) / 240
+    ramp[2360:] = 0.4
+    expected = np.zeros((48000, 2))
+    for i, start in enumerate([0, 1001]):
+        if isinstance(template, YamahaDX7Voice):
+            note = yamaha.DX7Renderer(template.patch, 69, 127)
+        else:
+            assert isinstance(template, YamahaTX81ZVoice)
+            note = yamaha.TX81ZRenderer(template.patch, template.additional, 69, 127)
+        audio = note.render(48000 - start)
+        signal = (
+            ramp[start:] if i == 0 or scope == "instrument" else np.zeros(48000 - start)
+        )
+        amplitude = 1 - 0.8 * signal
+        values = np.column_stack([500 + 1500 * signal, 0.5 + signal])[:, None, :]
+        if order == "after_amplitude":
+            audio *= amplitude[:, None]
+        audio, _ = filters.filter_samples(
+            template.processing.filters,
+            filters.initial_states(template.processing.filters, 1),
+            audio,
+            filters.parameters(template.processing.filters, 48000, len(audio), values),
+            48000,
+        )
+        if order == "before_amplitude":
+            audio *= amplitude[:, None]
+        expected[start:] += audio * [0.3, 0.15]
+    definition = yamaha_instrument.prepare(document)
+    renderer = yamaha_instrument.OfflineYamaha(definition)
+    head = renderer.advance([a for a in actions if a.tick < 2111], 0, 2111)
+    saved = yamaha_instrument.YamahaSnapshot.model_validate_json(
+        renderer.snapshot().model_dump_json()
+    )
+    renderer = yamaha_instrument.OfflineYamaha(definition)
+    renderer.restore(saved)
+    actual = np.concatenate(
+        [head, renderer.advance([a for a in actions if a.tick >= 2111], 2111, 48000)]
+    )
+    check_audio(tmp_path / "scoped-controls.wav", actual, expected)
+    whole = yamaha_instrument.OfflineYamaha(definition).advance(actions, 0, 48000)
+    np.testing.assert_allclose(actual, whole, rtol=0, atol=1e-14)
+
+
+@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("binding", ["key", "velocity"])
+def test_yamaha_event_gain_uses_onset_key_or_unquantized_velocity(
+    tmp_path: Path, kind: str, binding: str
+) -> None:
+    plain = instrument(kind)
+    raw = plain.model_dump(mode="json")
+    voice = raw["body"]["voices"][0]
+    maximum = 127 if binding == "key" else 1
+    target = {"name": "processing", "parameter": "amplitude"}
+    voice["bindings"] = [{"name": "onset", "kind": binding}]
+    voice["modulation"] = {
+        "sources": [
+            {"name": "onset", "scope": "voice", "minimum": 0, "maximum": maximum}
+        ],
+        "parameters": [
+            {
+                "target": target,
+                "unit": "ratio",
+                "scope": "voice",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 1,
+            }
+        ],
+        "routes": [
+            {
+                "name": "gain",
+                "source": "onset",
+                "target": target,
+                "unit": "ratio",
+                "operation": "multiply",
+                "points": [{"input": 0, "amount": 0}, {"input": maximum, "amount": 1}],
+            }
+        ],
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    event = Trigger(
+        tick=0, ordinal=0, part="main", trigger_id="note", key=64, velocity=0.25
+    )
+    actual = yamaha_instrument.OfflineYamaha(
+        yamaha_instrument.prepare(document)
+    ).advance(synth_trace.prepare(document.body, [event], seed=0).actions, 0, 48000)
+    expected = yamaha_instrument.OfflineYamaha(
+        yamaha_instrument.prepare(plain)
+    ).advance(synth_trace.prepare(plain.body, [event], seed=0).actions, 0, 48000)
+    expected *= 64 / 127 if binding == "key" else 0.25
+    check_audio(tmp_path / "event-gain.wav", actual, expected)
+
+
+def test_yamaha_dynamic_tuning_is_rejected_before_rendering() -> None:
+    raw = instrument("dx7").model_dump(mode="json")
+    raw["body"]["voices"][0]["modulation"] = {
+        "parameters": [
+            {
+                "target": {"name": "processing", "parameter": "tuning_cents"},
+                "unit": "cents",
+                "scope": "voice",
+                "minimum": -1200,
+                "maximum": 1200,
+                "default": 0,
+            }
+        ]
+    }
+    with pytest.raises(EngineError, match="dynamic tuning"):
+        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
