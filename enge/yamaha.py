@@ -597,7 +597,12 @@ class DX7Renderer:
         output = np.empty((frames, 1))
         topology = self.voice.topology
         carriers = [operator - 1 for operator in topology.carriers]
-        feedback_operator = topology.feedback - 1
+        feedback_source = topology.feedback.source - 1
+        feedback_destination = topology.feedback.destination - 1
+        # Provisional Dexed Mk I scaling for the two long loops and algorithm 32.
+        feedback_divisor = 2 ** (
+            9 - self.voice.feedback + (2 if self.voice.algorithm in (4, 6, 32) else 0)
+        )
         for frame in range(frames):
             pitch_ratio = self.pitch_envelope.sample()
             amplitude_reduction = 0.0
@@ -620,10 +625,8 @@ class DX7Renderer:
                     for edge in topology.edges
                     if edge.destination - 1 == operator
                 )
-                if operator == feedback_operator and self.voice.feedback:
-                    phase_modulation += sum(self.feedback) / 2 ** (
-                        9 - self.voice.feedback
-                    )
+                if operator == feedback_destination and self.voice.feedback:
+                    phase_modulation += sum(self.feedback) / feedback_divisor
                 gain = self.envelopes[operator].sample()
                 if amplitude_reduction and (
                     sensitivity := self.amplitude_modulation_sensitivities[operator]
@@ -634,7 +637,7 @@ class DX7Renderer:
                 )
             output[frame, 0] = sum(values[carrier] for carrier in carriers)
             self.feedback[0] = self.feedback[1]
-            self.feedback[1] = float(values[feedback_operator])
+            self.feedback[1] = float(values[feedback_source])
             self.phase_steps = self.frequencies * pitch_ratio / self.sample_rate
             self.phases = np.remainder(self.phases + self.phase_steps, 1)
         return output

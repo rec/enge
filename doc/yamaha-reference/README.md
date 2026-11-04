@@ -123,10 +123,25 @@ Algorithms 4 and 6 are excluded from this reference sweep. The pinned
 [MSFA core](https://github.com/google/music-synthesizer-for-android/blob/f67d41d313b7dc85f6fb99e79e515cc9d208cfff/app/src/main/jni/fm_core.cc)
 explicitly leaves multi-operator feedback unimplemented: its feedback kernel
 requires a single operator with both feedback flags. Its algorithm 4/6 tables
-put those flags on different operators. uFor's current single-operator feedback
-field also cannot express those return paths. Extending that shared topology
-contract requires a decision; comparison against this MSFA revision cannot
-qualify those loops even after enge implements them.
+put those flags on different operators. uFor now represents feedback with an
+explicit source/destination edge, and enge's note renderer uses OP4-to-OP6 and
+OP5-to-OP6 for algorithms 4 and 6 respectively. Comparison against this MSFA
+revision still cannot qualify those loops.
+
+Inspection of [Dexed Mk I at the pinned revision](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/engine/EngineMkI.cpp)
+confirms those return endpoints in its two- and three-operator feedback kernels.
+Its dispatcher also adds two to the feedback shift for algorithms 4, 6 and 32,
+reducing feedback strength by four relative to its other algorithms. The user
+approved that rule provisionally. Enge now follows it, including the change to
+algorithm 32. Scalar regressions establish the chosen feedback arithmetic and
+graph behavior, not Mk I waveform equivalence.
+
+The earlier MSFA feedback sweep, sensitivity measurements and retained algorithm-32
+WAV pairs above predate this strength change. They remain historical evidence of
+the previous model; they do not quantify the current algorithm-32 renderer. A
+new complete Mk I patch comparison remains required. The subsequent
+[constant-gain core comparison](dexed-mki-core.md) isolates oscillator arithmetic
+and retains the large high-gain discrepancies in algorithms 4 and 6.
 
 ## TX81Z single-mode LFO comparison
 

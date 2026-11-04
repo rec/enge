@@ -52,11 +52,22 @@ but reach 133.016% in the latter. The report preserves raw patches and paired
 WAVs for the worst case; this is a failing qualification result whose cause
 has not yet been isolated.
 
-Multi-operator feedback in algorithms 4 and 6 requires separate work. uFor's
-current topology exposes only one feedback operator, and extending that API
-to describe distinct return endpoints awaits approval. The pinned MSFA core
-also explicitly omits those loops, so it cannot qualify their implementation.
-Integer sine/gain quantization and feedback reference qualification remain work.
+The user approved replacing uFor's feedback-operator integer with an explicit
+source/destination edge. Algorithm 4 returns OP4 to OP6; algorithm 6 returns OP5
+to OP6; other algorithms retain self-feedback. The dedicated note renderer now
+uses those endpoints, including two-sample return history in snapshots. Scalar
+one-second WAV regressions cover both multi-operator loops at feedback 1 and 7.
+The pinned MSFA core explicitly omits those loops and cannot qualify them.
+The user approved Dexed Mk I's provisional quarter-strength feedback rule for
+algorithms 4, 6 and 32. The note renderer applies that rule, and the offline
+adapter now admits algorithms 4 and 6 with feedback. The earlier MSFA algorithm-32
+sweep values and recordings above are historical results from before this
+strength change. A [constant-gain Mk I comparison](../doc/yamaha-reference/dexed-mki-core.md)
+now fixes operator gain and exact phase increments. Unit-gain/feedback-7 relative
+RMS errors remain 78.34% for algorithm 4 and 41.02% for algorithm 6; a reference-only
+one-bit phase perturbation also demonstrates sensitivity. This does not prove
+that quantization explains all discrepancies. Integer arithmetic isolation and
+a complete reference patch comparison remain work.
 
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above
@@ -387,7 +398,7 @@ any positive value to at least 1. Existing TX81Z rejection of velocity zero with
 nonzero velocity sensitivity remains in force.
 
 The adapter admits the implemented profile explicitly: DX7 neutral transpose
-and no multi-operator feedback; TX81Z zero-delay LFO. External
+and TX81Z zero-delay LFO. External
 controller modulation beyond shared sustain handling, external envelopes and
 unsupported processing remain rejected. Released DX7 carriers with nonzero final
 envelope levels remain active until explicitly stopped or faded. This integration

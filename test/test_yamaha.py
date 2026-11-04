@@ -683,7 +683,11 @@ def test_dx7_feedback_uses_two_delayed_cycle_samples(
     previous = older = 0.0
     rows = np.column_stack([np.linspace(0, 1, 48000), np.ones(48000)])
     for i in range(48000):
-        offset = (older + previous) / 2 ** (9 - feedback) if feedback else 0.0
+        offset = (
+            (older + previous) / 2 ** (9 - feedback + (2 if algorithm == 32 else 0))
+            if feedback
+            else 0.0
+        )
         attenuation = 2 ** (-52.75 * rows[i, 0] / 8) if amplitude_modulation else 1
         value = 0.01 * attenuation * np.sin(2 * np.pi * (i * 440 / 48000 + offset))
         expected[i, 0] = (
@@ -1008,3 +1012,40 @@ def test_dx7_initial_phases_obey_sync_and_remain_owned(
 def test_dx7_rejects_invalid_initial_phases(phases: list[float]) -> None:
     with pytest.raises(EngineError, match="initial phases"):
         DX7Renderer(voice(), 69, 100, initial_phases=phases)
+
+
+@pytest.mark.parametrize("algorithm", [4, 6])
+@pytest.mark.parametrize("feedback", [1, 7])
+def test_dx7_feedback_returns_from_end_of_operator_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, algorithm: int, feedback: int
+) -> None:
+    def gain(self: DX7Envelope) -> float:
+        return 0.02
+
+    monkeypatch.setattr(DX7Envelope, "sample", gain)
+    data = bytearray(voice().data)
+    data[134], data[135] = algorithm - 1, feedback
+    renderer = DX7Renderer(DX7Voice(data=bytes(data)), 69, 100)
+    expected = np.empty((48000, 1))
+    older = previous = 0.0
+    for i in range(48000):
+        phase = i * 440 / 48000
+        unmodulated = 0.02 * np.sin(2 * np.pi * phase)
+        pair = 0.02 * np.sin(2 * np.pi * (phase + unmodulated))
+        returned = 0.02 * np.sin(
+            2 * np.pi * (phase + (older + previous) / 2 ** (11 - feedback))
+        )
+        returned = 0.02 * np.sin(2 * np.pi * (phase + returned))
+        if algorithm == 4:
+            returned = 0.02 * np.sin(2 * np.pi * (phase + returned))
+            other = 0.02 * np.sin(2 * np.pi * (phase + pair))
+        else:
+            other = 2 * pair
+        expected[i, 0] = returned + other
+        older, previous = previous, returned
+    head = renderer.render(12001)
+    renderer.restore(
+        DX7Snapshot.model_validate_json(renderer.snapshot().model_dump_json())
+    )
+    actual = np.concatenate([head, renderer.render(35999)])
+    check_audio(tmp_path / "multi-operator-feedback.wav", actual, expected)

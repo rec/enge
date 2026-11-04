@@ -386,10 +386,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             parameters = yamaha.dx7_global_parameters(voice.patch)
             if parameters[8] != 24:
                 raise synth.EngineError("DX7 integration requires neutral transpose")
-            if voice.patch.algorithm in (4, 6) and voice.patch.feedback:
-                raise synth.EngineError(
-                    "DX7 multi-operator feedback is not implemented"
-                )
             yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
         else:
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)

@@ -277,15 +277,24 @@ def test_minimum_hold_and_retimed_fade_survive_snapshot(
 
 
 @pytest.mark.parametrize(
-    "kind,synchronize", [("dx7", False), ("dx7", True), ("tx81z", True)]
+    "kind,synchronize,algorithm",
+    [
+        ("dx7", False, 32),
+        ("dx7", True, 32),
+        ("tx81z", True, 0),
+        ("dx7", True, 4),
+        ("dx7", True, 6),
+    ],
 )
 def test_midi_render_dispatches_yamaha_instruments(
-    tmp_path: Path, kind: str, synchronize: bool
+    tmp_path: Path, kind: str, synchronize: bool, algorithm: int
 ) -> None:
     document = instrument(kind)
     raw = document.model_dump(mode="json")
     patch = bytearray.fromhex(raw["body"]["voices"][0]["patch"])
     if kind == "dx7":
+        patch[134] = algorithm - 1
+        patch[135] = 7 if algorithm in (4, 6) else 0
         patch[136] = int(synchronize)
         for i in range(0, 126, 21):
             patch[i + 7] = 0
