@@ -1,0 +1,1654 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="🚂 an audio synthesizer engine in Python and Rust 🚂">
+      
+      
+      
+        <link rel="canonical" href="https://rec.github.io/enge/performance-binding/">
+      
+      
+      
+        <link rel="prev" href="../live-effects-benchmark/">
+      
+      
+        <link rel="next" href="../test-performance/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.73">
+    
+    
+      
+        <title>MIDI performance binding conversion - enge</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ab2de0c.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="enge" class="md-header__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+      <span class="md-visually-hidden">Navigation</span>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            enge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              MIDI performance binding conversion
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <span class="md-visually-hidden">Search</span>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="enge" class="md-nav__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    enge
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../envelfo-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enveLFO extraction contract and closeout evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../live-callback-audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live callback audit
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../live-effects-benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live effects benchmark
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MIDI performance binding conversion
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MIDI performance binding conversion
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#preparation-and-reference-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Preparation and reference ownership
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feeding-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Feeding messages
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failure-and-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Failure and restart
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-file-import-and-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        MIDI-file import and rendering
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#caller-polled-live-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Caller-polled live input
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../test-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Test performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../yamaha-reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Yamaha reference
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_7">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Yamaha reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../yamaha-reference/dexed-mki-core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Dexed Mk I constant-gain core comparison
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  API Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_8">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  API Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../reference/enge/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_8_1" id="__nav_8_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_1_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_8_1">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  enge
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/_native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  _native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  control
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/effects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  effects
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/envelfo_graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  envelfo_graph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/filters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  filters
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/fm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  fm
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/lfo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/live/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  live
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/midi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  midi
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/native_sample/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native_sample
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/noise/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  noise
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/presets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  presets
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/render/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  render
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/rubberband/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  rubberband
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/sample_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/sample_regions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_regions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/sampler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sampler
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/synth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  synth
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/yamaha/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/yamaha_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/yamaha_lfo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#preparation-and-reference-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Preparation and reference ownership
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feeding-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Feeding messages
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failure-and-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Failure and restart
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-file-import-and-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        MIDI-file import and rendering
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#caller-polled-live-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Caller-polled live input
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+
+<h1 id="midi-performance-binding-conversion">MIDI performance binding conversion<a class="headerlink" href="#midi-performance-binding-conversion" title="Permanent link">&para;</a></h1>
+<p><code>enge.performance.MidiConverter</code> is a caller-driven MIDI 1 adapter. It accepts
+decoded meedee messages and emits uFor <code>Trigger</code>, <code>Release</code> and <code>ControlChange</code>
+values. It opens no files, devices or audio streams and starts no threads.
+<code>enge.midi.read_midi()</code> supplies file timing to configured converters. Live
+transport and audio-clock integration remain host responsibilities.</p>
+<h2 id="preparation-and-reference-ownership">Preparation and reference ownership<a class="headerlink" href="#preparation-and-reference-ownership" title="Permanent link">&para;</a></h2>
+<p>Construct one converter per independent input source. Supply a
+<code>PerformanceBindingScore</code> and its resolved <code>SynthInstrumentScore</code> or
+<code>SampleInstrumentScore</code>. Synth, FM and noise share the synth instrument model.
+The host resolves score references, verifies any hashes and ensures that the
+supplied instrument is the referenced target. This adapter does not introduce
+another score loader or infer identity from document names.
+The host must serialize feed, loss, finish and restart calls on each instance;
+the converter does not add threads or locks.</p>
+<p>For each referenced tuning, supply its resolved uFor <code>Tuning</code> body in <code>tunings</code>,
+keyed by <code>ScoreReference.key</code>: a relative path, or <code>selector:</code> followed by the
+selector. Missing referenced tunings fail preparation. With no tuning reference,
+notes use 12-tone equal temperament with A4 at 440 Hz. Finite tunings do not wrap
+or fall back to equal temperament when a key is unavailable.</p>
+<p>Preparation snapshots the binding and used tunings, and checks every CC/bend
+target and output range against the instrument's control declarations. It does
+not synthesize initial controller observations. Defaults remain the engine's
+responsibility. Input channels are 1–16; output parts are the binding's named
+parts rather than channel numbers. Several channels can share a part, while
+their note-pairing queues remain separate.</p>
+<h2 id="feeding-messages">Feeding messages<a class="headerlink" href="#feeding-messages" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">enge.performance</span><span class="w"> </span><span class="kn">import</span> <span class="n">MidiConverter</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">converter</span> <span class="o">=</span> <span class="n">MidiConverter</span><span class="p">(</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">source</span><span class="o">=</span><span class="s2">"keyboard-a"</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">binding</span><span class="o">=</span><span class="n">binding</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">instrument</span><span class="o">=</span><span class="n">instrument</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">tunings</span><span class="o">=</span><span class="n">resolved_tunings</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">events</span> <span class="o">=</span> <span class="n">converter</span><span class="o">.</span><span class="n">feed</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">tick</span><span class="o">=</span><span class="n">destination_tick</span><span class="p">,</span> <span class="n">ordinal</span><span class="o">=</span><span class="n">input_ordinal</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The host supplies integer destination ticks and nonnegative integer ordinals.
+Pairs <code>(tick, ordinal)</code> must increase strictly, including ignored messages;
+ordinals need only disambiguate equal ticks. Ticks can be negative for preroll.
+No timestamps are rounded, clocks guessed or units converted. The host owns any
+native-clock mapping and conversion to instrument frames.</p>
+<p>Every nonzero NoteOn produces a fresh trigger identity with the source prefix.
+Source names follow uFor identifier rules and must distinguish converter
+instances whose outputs could be combined, including recreated instances.
+<code>restart()</code> keeps the instance's ID counter, so abandoned identities are not
+reused. NoteOff and zero-velocity NoteOn release the oldest or newest held
+identity as selected by the binding, independently for each channel/key.
+Velocity populates <code>Trigger.velocity</code>; no named <code>velocity</code> control is invented.</p>
+<p>CC values follow the binding's declared linear ranges. Optional pitch bend uses
+the explicit minimum/center/maximum mapping in
+<a href="https://github.com/rec/ufor/blob/main/doc/performance-binding.md">uFor's contract</a>, reaching the endpoints
+exactly. It emits a named part control and does not modify trigger pitch itself.
+Unselected channels, unmapped CCs and unconfigured bend have no effect. Program
+changes, pressure, timing messages and SysEx have no conversion in this source
+profile. They return an empty list; the host may process them separately.
+Sustain is only a mapped control, not an implicit converter note-lifetime rule.
+UMP messages and compound commands are rejected explicitly; a shared <code>Message</code>
+base does not make them primitive MIDI 1 input.</p>
+<h2 id="failure-and-restart">Failure and restart<a class="headerlink" href="#failure-and-restart" title="Permanent link">&para;</a></h2>
+<p>The default <code>max_held_notes=4096</code> bounds held identities across all selected
+channels. A host may choose a different positive integer. Released identities
+leave the budget even if an engine is still sounding a sustained voice or tail.
+This is not an engine voice limit or a total-memory/CPU guarantee; definitions,
+identifier lengths, integer sizes and application-retained outputs also cost
+resources. There is no growing registry of sources or previously emitted events.</p>
+<p>Overflow, unmatched releases, unavailable tuning notes, out-of-order input,
+MIDI System Reset and unsupported message families raise <code>ValueError</code>, discard
+pairing state and require an explicit <code>restart()</code>. Later conversion attempts
+raise <code>RuntimeError</code> until then.
+Ordinary argument validation rejects invalid values before consuming the input.
+When a transport/decoder reports loss, the host must call <code>report_loss()</code>;
+missing MIDI traffic is not independently detectable here.</p>
+<p><code>finish()</code> verifies that all observed notes were released and stops the instance
+until restart; unreleased notes are an error. Neither failure, loss, finish nor
+restart emits releases or restores controls. The host retains responsibility
+for downstream voices and musical recovery. Never treat restarting observation
+as evidence that an instrument is silent or synchronized.</p>
+<h2 id="midi-file-import-and-rendering">MIDI-file import and rendering<a class="headerlink" href="#midi-file-import-and-rendering" title="Permanent link">&para;</a></h2>
+<p><code>read_midi(path, *, converters=[...], sample_rate=48000)</code> requires at least one
+ready converter. <code>ready</code> is true on construction or after an explicit restart;
+an instance already fed messages or finished is not ready. Read-only <code>source</code>
+and <code>parts</code> describe the converter's configured routing. Source names and part
+names must be distinct across converters. Channels may overlap across converters
+for deliberate layering; channels sharing a part within one converter remain
+supported. Each converter retains its own held-note budget.</p>
+<p>The importer checks arguments and routing before opening the file. It supports
+synchronous PPQN SMF types 0/1, merges tracks stably, accumulates tempo with exact
+rational arithmetic and rounds absolute times to frames, ties to even. Metadata
+and track ends retain their timing effects, including trailing silence. SysEx
+and escape file records are rejected: an escape record could contain arbitrary
+MIDI traffic rather than a decoded SysEx message. Type 2 and SMPTE remain
+unsupported by this adapter. The existing meedee reader defaults apply: 1 MiB
+per record, 128 tracks and 8 MiB of merge lookahead.</p>
+<p>Every primitive message is fed to each converter. Its binding chooses notes,
+tuning, pairing and CC/bend semantics. Unmapped controls and pressure are ignored,
+replacing the former importer's hard-coded rejection policy. Positive bend now
+reaches its declared maximum at +8191 rather than falling slightly short.</p>
+<p><code>MidiPerformance.parts</code> maps binding names to event lists, including configured
+parts with no events. No channel numbers are inferred as part names. The importer
+finishes every converter on success. A failed file read, conversion, finish or
+interruption invalidates all participating converters and returns no partial
+performance. Argument/routing rejection before reading leaves their state alone.
+There is no implicit restart, retry or rollback of previously emitted identities.</p>
+<p>Prepare an instrument once with <code>Patch.prepare_score(sample_rate)</code> or supply an
+equivalent resolved <code>(score, assets)</code> pair. Use the score to configure its
+converter and pass that same pair to <code>render_midi</code>, keyed by the part name.
+The Bach example resolves selectors from its fixed in-memory instrument map;
+there is no implicit library discovery or score-file loading.</p>
+<p>The renderer requires one instrument per configured part, matching sample rates
+and the stereo <code>left</code>, <code>right</code> layout. It selects oscillator/FM/noise from the
+resolved voice type or uses the sampler for sample scores. Existing engine
+preparation rejects unsupported mixed-engine scores. Output retains the 250 ms
+tail budget; a voice still active afterward fails rendering before publication.
+Presets consume <code>Trigger.velocity</code> through uFor's velocity event binding, not a
+synthetic named control. Offline oscillator, FM and noise rendering retain onset
+velocity in their shared control-context snapshots; sampler slot velocities
+continue to use the sampler's resolved onset values. Persistent oscillator/FM/
+noise renderers retain their existing supported binding profile.</p>
+<h2 id="caller-polled-live-input">Caller-polled live input<a class="headerlink" href="#caller-polled-live-input" title="Permanent link">&para;</a></h2>
+<p><code>enge.midi.LiveInput(connection, converters=[...], message_limit=128)</code> wraps a
+caller-owned, queue-mode MIDI 1.0 <code>meedee.midi.TypedInputConnection</code>. UMP is
+unsupported by this converter and fails explicitly. Configure fresh or
+explicitly restarted converters with distinct source names and destination parts,
+as for file import. Use one adapter per independent input connection. The host
+opens and closes the connection, selects meedee's isolation mode and must be its
+only queue consumer. Do not share its converters with another active adapter or
+file import. The adapter adds no queue, thread or audio-device ownership.</p>
+<p>Call <code>drain(frame=destination_frame)</code> on one host control thread. It polls at most
+<code>message_limit</code> typed items without waiting for MIDI, including ignored messages,
+and returns a dictionary of named parts with their ordered uFor events. Frames
+must be integers and must not decrease; equal frames retain input order through
+increasing ordinals across calls. Every message in a drain receives that frame.
+Backend timestamps are not mapped to an audio clock. This is block-quantized
+scheduling, not a hard real-time audio callback API.</p>
+<p>The adapter checks receive-drop counts, connection failure and closure before and
+after receiving. Any observed loss, decoder diagnostic, conversion failure or
+interruption invalidates all participating converters, permanently stops the
+adapter and discards that drain's result. In isolated mode drop updates are
+asynchronous: detection cannot retract events returned by an earlier drain.
+Silence alone does not establish device health. Previously returned events and
+musical cleanup remain the host's responsibility.</p>
+<p><code>stop()</code> is idempotent and invalidates conversion state. It sends no messages,
+closes no ports and generates no releases. Recovery requires a fresh healthy
+connection, fresh or explicitly restarted converters, and a new adapter. Do not
+reuse queued events from a failed session. The adapter does not produce sound or
+add an audio-device host.</p>
+<p>For supervised macOS qualification using only temporary test-created virtual
+endpoints in both process modes, run explicitly:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>run<span class="w"> </span>--frozen<span class="w"> </span>pytest<span class="w"> </span>-q<span class="w"> </span>-s<span class="w"> </span>-n<span class="w"> </span><span class="m">0</span><span class="w"> </span>test/qualification/midi_input.py
+</span></code></pre></div>
+<p>Each native case has a 45-second outer deadline. The checks cover note/control/
+bend conversion, release pairing, host-frame ordering, caller-owned close and
+receive loss followed by silence. They do not qualify physical devices or other
+operating systems.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["navigation.indexes","content.code.copy"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.77dd0ce9.min.js"></script>
+      
+    
+  </body>
+</html>

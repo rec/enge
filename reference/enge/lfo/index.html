@@ -1,0 +1,1658 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="🚂 an audio synthesizer engine in Python and Rust 🚂">
+      
+      
+      
+        <link rel="canonical" href="https://rec.github.io/enge/reference/enge/lfo/">
+      
+      
+      
+        <link rel="prev" href="../fm/">
+      
+      
+        <link rel="next" href="../live/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.73">
+    
+    
+      
+        <title>lfo - enge</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../../../assets/stylesheets/modern/main.4ab2de0c.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../../..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="enge" class="md-header__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+      <span class="md-visually-hidden">Navigation</span>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            enge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              lfo
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <span class="md-visually-hidden">Search</span>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="enge" class="md-nav__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    enge
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../envelfo-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enveLFO extraction contract and closeout evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../live-callback-audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live callback audit
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../live-effects-benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live effects benchmark
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../performance-binding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MIDI performance binding conversion
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../test-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Test performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../yamaha-reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Yamaha reference
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_7">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Yamaha reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../yamaha-reference/dexed-mki-core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Dexed Mk I constant-gain core comparison
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  API Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_8">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  API Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_1" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_8_1" id="__nav_8_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_1_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_8_1">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  enge
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../_native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  _native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  control
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../effects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  effects
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../envelfo_graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  envelfo_graph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../filters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  filters
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  fm
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lfo
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#enge.lfo" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        lfo
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#enge.lfo.lfo_samples" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        lfo_samples
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../live/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  live
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../midi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  midi
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../native_sample/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native_sample
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../noise/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  noise
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../presets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  presets
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../render/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  render
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rubberband/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  rubberband
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sample_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sample_regions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_regions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sampler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sampler
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../synth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  synth
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../yamaha/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../yamaha_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../yamaha_lfo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#enge.lfo" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        lfo
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#enge.lfo.lfo_samples" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        lfo_samples
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+
+  <h1>lfo</h1>
+
+<div class="doc doc-object doc-module">
+
+
+
+<a id="enge.lfo"></a>
+    <div class="doc doc-contents first">
+
+        <p>Block LFO evaluation with exact event anchors and optional sine interpolation.</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="enge.lfo.lfo_samples" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">lfo_samples</span><span class="p">(</span><span class="n">definition</span><span class="p">:</span> <span class="n">LFO</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">EnvelfoState</span><span class="p">,</span> <span class="n">start</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">frames</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">backend</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s1">'numpy'</span><span class="p">,</span> <span class="s1">'native'</span><span class="p">]</span> <span class="o">=</span> <span class="s1">'numpy'</span><span class="p">,</span> <span class="n">control_interval</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span></code>
+
+<a href="#enge.lfo.lfo_samples" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return value/activation columns without re-anchoring persistent state.</p>
+<p>Sine knots use an event-anchored grid independent of render partitions.
+Linear waveforms, discontinuities, and activation weights remain exact.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>enge/lfo.py</code></summary>
+              <div class="language-python highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-13">13</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-14">14</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-15">15</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-16">16</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-17">17</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-18">18</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-19">19</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-20">20</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-21">21</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-22">22</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-23">23</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-24">24</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-25">25</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-26">26</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-27">27</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-28">28</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-29">29</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-30">30</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-31">31</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-32">32</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-33">33</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-34">34</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-35">35</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-36">36</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-37">37</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-38">38</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-39">39</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-40">40</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-41">41</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-42">42</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-43">43</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-44">44</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-45">45</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-46">46</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-47">47</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-48">48</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-49">49</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-50">50</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-51">51</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-52">52</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-53">53</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-54">54</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-55">55</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-56">56</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-57">57</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-58">58</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-59">59</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-60">60</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-61">61</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-62">62</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-63">63</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-64">64</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-65">65</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-66">66</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-67">67</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-68">68</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-69">69</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-70">70</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-71">71</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-72">72</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-73">73</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-74">74</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-75">75</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-76">76</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-77">77</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-78">78</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-79">79</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-80">80</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-81">81</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-82">82</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-83">83</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-84">84</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-85">85</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-86">86</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-87">87</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-88">88</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-89">89</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-90">90</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-91">91</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-92">92</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-93">93</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-94">94</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-95">95</a></span>
+<span class="normal"><a href="#enge.lfo.lfo_samples--source--__codelineno-0-96">96</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="enge.lfo.lfo_samples--source--__span-0-13"><a id="enge.lfo.lfo_samples--source--__codelineno-0-13" name="enge.lfo.lfo_samples--source--__codelineno-0-13"></a><span class="k">def</span><span class="w"> </span><span class="nf">lfo_samples</span><span class="p">(</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-14"><a id="enge.lfo.lfo_samples--source--__codelineno-0-14" name="enge.lfo.lfo_samples--source--__codelineno-0-14"></a>    <span class="n">definition</span><span class="p">:</span> <span class="n">LFO</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-15"><a id="enge.lfo.lfo_samples--source--__codelineno-0-15" name="enge.lfo.lfo_samples--source--__codelineno-0-15"></a>    <span class="n">state</span><span class="p">:</span> <span class="n">EnvelfoState</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-16"><a id="enge.lfo.lfo_samples--source--__codelineno-0-16" name="enge.lfo.lfo_samples--source--__codelineno-0-16"></a>    <span class="n">start</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-17"><a id="enge.lfo.lfo_samples--source--__codelineno-0-17" name="enge.lfo.lfo_samples--source--__codelineno-0-17"></a>    <span class="n">frames</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-18"><a id="enge.lfo.lfo_samples--source--__codelineno-0-18" name="enge.lfo.lfo_samples--source--__codelineno-0-18"></a>    <span class="n">sample_rate</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-19"><a id="enge.lfo.lfo_samples--source--__codelineno-0-19" name="enge.lfo.lfo_samples--source--__codelineno-0-19"></a>    <span class="n">backend</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"numpy"</span><span class="p">,</span> <span class="s2">"native"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"numpy"</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-20"><a id="enge.lfo.lfo_samples--source--__codelineno-0-20" name="enge.lfo.lfo_samples--source--__codelineno-0-20"></a>    <span class="n">control_interval</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-21"><a id="enge.lfo.lfo_samples--source--__codelineno-0-21" name="enge.lfo.lfo_samples--source--__codelineno-0-21"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-22"><a id="enge.lfo.lfo_samples--source--__codelineno-0-22" name="enge.lfo.lfo_samples--source--__codelineno-0-22"></a><span class="w">    </span><span class="sd">"""Return value/activation columns without re-anchoring persistent state.</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-23"><a id="enge.lfo.lfo_samples--source--__codelineno-0-23" name="enge.lfo.lfo_samples--source--__codelineno-0-23"></a>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-24"><a id="enge.lfo.lfo_samples--source--__codelineno-0-24" name="enge.lfo.lfo_samples--source--__codelineno-0-24"></a><span class="sd">    Sine knots use an event-anchored grid independent of render partitions.</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-25"><a id="enge.lfo.lfo_samples--source--__codelineno-0-25" name="enge.lfo.lfo_samples--source--__codelineno-0-25"></a><span class="sd">    Linear waveforms, discontinuities, and activation weights remain exact.</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-26"><a id="enge.lfo.lfo_samples--source--__codelineno-0-26" name="enge.lfo.lfo_samples--source--__codelineno-0-26"></a><span class="sd">    """</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-27"><a id="enge.lfo.lfo_samples--source--__codelineno-0-27" name="enge.lfo.lfo_samples--source--__codelineno-0-27"></a>    <span class="k">if</span> <span class="n">definition</span><span class="o">.</span><span class="n">clock</span> <span class="o">!=</span> <span class="s2">"seconds"</span> <span class="ow">or</span> <span class="n">sample_rate</span> <span class="o">&lt;=</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">frames</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-28"><a id="enge.lfo.lfo_samples--source--__codelineno-0-28" name="enge.lfo.lfo_samples--source--__codelineno-0-28"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-29"><a id="enge.lfo.lfo_samples--source--__codelineno-0-29" name="enge.lfo.lfo_samples--source--__codelineno-0-29"></a>            <span class="s2">"LFO rendering requires a seconds clock and valid frame layout"</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-30"><a id="enge.lfo.lfo_samples--source--__codelineno-0-30" name="enge.lfo.lfo_samples--source--__codelineno-0-30"></a>        <span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-31"><a id="enge.lfo.lfo_samples--source--__codelineno-0-31" name="enge.lfo.lfo_samples--source--__codelineno-0-31"></a>    <span class="k">if</span> <span class="nb">type</span><span class="p">(</span><span class="n">control_interval</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="nb">int</span> <span class="ow">or</span> <span class="n">control_interval</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-32"><a id="enge.lfo.lfo_samples--source--__codelineno-0-32" name="enge.lfo.lfo_samples--source--__codelineno-0-32"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"Control interval must be a positive integer"</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-33"><a id="enge.lfo.lfo_samples--source--__codelineno-0-33" name="enge.lfo.lfo_samples--source--__codelineno-0-33"></a>    <span class="k">if</span> <span class="n">backend</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"numpy"</span><span class="p">,</span> <span class="s2">"native"</span><span class="p">):</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-34"><a id="enge.lfo.lfo_samples--source--__codelineno-0-34" name="enge.lfo.lfo_samples--source--__codelineno-0-34"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Unknown LFO backend: </span><span class="si">{</span><span class="n">backend</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-35"><a id="enge.lfo.lfo_samples--source--__codelineno-0-35" name="enge.lfo.lfo_samples--source--__codelineno-0-35"></a>    <span class="n">current</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">runtime</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-36"><a id="enge.lfo.lfo_samples--source--__codelineno-0-36" name="enge.lfo.lfo_samples--source--__codelineno-0-36"></a>    <span class="k">assert</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">current</span><span class="p">,</span> <span class="n">LFOState</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-37"><a id="enge.lfo.lfo_samples--source--__codelineno-0-37" name="enge.lfo.lfo_samples--source--__codelineno-0-37"></a>    <span class="n">position</span> <span class="o">=</span> <span class="n">current</span><span class="o">.</span><span class="n">position</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-38"><a id="enge.lfo.lfo_samples--source--__codelineno-0-38" name="enge.lfo.lfo_samples--source--__codelineno-0-38"></a>    <span class="k">if</span> <span class="n">position</span><span class="o">.</span><span class="n">paused</span> <span class="ow">or</span> <span class="n">position</span><span class="o">.</span><span class="n">direction</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-39"><a id="enge.lfo.lfo_samples--source--__codelineno-0-39" name="enge.lfo.lfo_samples--source--__codelineno-0-39"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"Block LFO rendering requires forward, unpaused playback"</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-40"><a id="enge.lfo.lfo_samples--source--__codelineno-0-40" name="enge.lfo.lfo_samples--source--__codelineno-0-40"></a>    <span class="n">at</span> <span class="o">=</span> <span class="n">Fraction</span><span class="p">(</span><span class="n">start</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-41"><a id="enge.lfo.lfo_samples--source--__codelineno-0-41" name="enge.lfo.lfo_samples--source--__codelineno-0-41"></a>    <span class="k">if</span> <span class="n">at</span> <span class="o">&lt;</span> <span class="n">position</span><span class="o">.</span><span class="n">at</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-42"><a id="enge.lfo.lfo_samples--source--__codelineno-0-42" name="enge.lfo.lfo_samples--source--__codelineno-0-42"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"LFO query precedes its current state"</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-43"><a id="enge.lfo.lfo_samples--source--__codelineno-0-43" name="enge.lfo.lfo_samples--source--__codelineno-0-43"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">frames</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-44"><a id="enge.lfo.lfo_samples--source--__codelineno-0-44" name="enge.lfo.lfo_samples--source--__codelineno-0-44"></a>        <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-45"><a id="enge.lfo.lfo_samples--source--__codelineno-0-45" name="enge.lfo.lfo_samples--source--__codelineno-0-45"></a>    <span class="n">interval</span> <span class="o">=</span> <span class="n">control_interval</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-46"><a id="enge.lfo.lfo_samples--source--__codelineno-0-46" name="enge.lfo.lfo_samples--source--__codelineno-0-46"></a>    <span class="k">if</span> <span class="n">definition</span><span class="o">.</span><span class="n">shape</span> <span class="o">!=</span> <span class="n">Waveform</span><span class="o">.</span><span class="n">sine</span> <span class="ow">or</span> <span class="n">position</span><span class="o">.</span><span class="n">rate</span> <span class="o">*</span> <span class="n">interval</span> <span class="o">*</span> <span class="mi">2</span> <span class="o">&gt;=</span> <span class="n">sample_rate</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-47"><a id="enge.lfo.lfo_samples--source--__codelineno-0-47" name="enge.lfo.lfo_samples--source--__codelineno-0-47"></a>        <span class="n">interval</span> <span class="o">=</span> <span class="mi">1</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-48"><a id="enge.lfo.lfo_samples--source--__codelineno-0-48" name="enge.lfo.lfo_samples--source--__codelineno-0-48"></a>    <span class="k">if</span> <span class="n">frames</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">interval</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">backend</span> <span class="o">==</span> <span class="s2">"numpy"</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-49"><a id="enge.lfo.lfo_samples--source--__codelineno-0-49" name="enge.lfo.lfo_samples--source--__codelineno-0-49"></a>        <span class="n">value</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">envelfo_at</span><span class="p">(</span><span class="n">definition</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">at</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-50"><a id="enge.lfo.lfo_samples--source--__codelineno-0-50" name="enge.lfo.lfo_samples--source--__codelineno-0-50"></a>        <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="n">value</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="n">value</span><span class="o">.</span><span class="n">weight</span><span class="p">]])</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-51"><a id="enge.lfo.lfo_samples--source--__codelineno-0-51" name="enge.lfo.lfo_samples--source--__codelineno-0-51"></a>    <span class="n">weights</span> <span class="o">=</span> <span class="n">_activation_spans</span><span class="p">(</span><span class="n">definition</span><span class="p">,</span> <span class="n">current</span><span class="p">,</span> <span class="n">at</span><span class="p">,</span> <span class="n">frames</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-52"><a id="enge.lfo.lfo_samples--source--__codelineno-0-52" name="enge.lfo.lfo_samples--source--__codelineno-0-52"></a>    <span class="n">anchor</span> <span class="o">=</span> <span class="n">ceil</span><span class="p">(</span><span class="n">position</span><span class="o">.</span><span class="n">at</span> <span class="o">*</span> <span class="n">sample_rate</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-53"><a id="enge.lfo.lfo_samples--source--__codelineno-0-53" name="enge.lfo.lfo_samples--source--__codelineno-0-53"></a>    <span class="n">offset</span> <span class="o">=</span> <span class="p">(</span><span class="n">start</span> <span class="o">-</span> <span class="n">anchor</span><span class="p">)</span> <span class="o">%</span> <span class="n">interval</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-54"><a id="enge.lfo.lfo_samples--source--__codelineno-0-54" name="enge.lfo.lfo_samples--source--__codelineno-0-54"></a>    <span class="n">count</span> <span class="o">=</span> <span class="n">frames</span> <span class="k">if</span> <span class="n">interval</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="p">(</span><span class="n">offset</span> <span class="o">+</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">frames</span> <span class="o">-</span> <span class="mi">1</span><span class="p">))</span> <span class="o">//</span> <span class="n">interval</span> <span class="o">+</span> <span class="mi">2</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-55"><a id="enge.lfo.lfo_samples--source--__codelineno-0-55" name="enge.lfo.lfo_samples--source--__codelineno-0-55"></a>    <span class="n">first</span> <span class="o">=</span> <span class="n">start</span> <span class="k">if</span> <span class="n">interval</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="n">start</span> <span class="o">-</span> <span class="n">offset</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-56"><a id="enge.lfo.lfo_samples--source--__codelineno-0-56" name="enge.lfo.lfo_samples--source--__codelineno-0-56"></a>    <span class="n">spans</span> <span class="o">=</span> <span class="n">_phase_spans</span><span class="p">(</span><span class="n">definition</span><span class="p">,</span> <span class="n">current</span><span class="p">,</span> <span class="n">first</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">,</span> <span class="n">interval</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-57"><a id="enge.lfo.lfo_samples--source--__codelineno-0-57" name="enge.lfo.lfo_samples--source--__codelineno-0-57"></a>    <span class="n">sample_weights</span> <span class="o">=</span> <span class="p">(</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-58"><a id="enge.lfo.lfo_samples--source--__codelineno-0-58" name="enge.lfo.lfo_samples--source--__codelineno-0-58"></a>        <span class="n">weights</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-59"><a id="enge.lfo.lfo_samples--source--__codelineno-0-59" name="enge.lfo.lfo_samples--source--__codelineno-0-59"></a>        <span class="k">if</span> <span class="n">interval</span> <span class="o">==</span> <span class="mi">1</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-60"><a id="enge.lfo.lfo_samples--source--__codelineno-0-60" name="enge.lfo.lfo_samples--source--__codelineno-0-60"></a>        <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">]],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-61"><a id="enge.lfo.lfo_samples--source--__codelineno-0-61" name="enge.lfo.lfo_samples--source--__codelineno-0-61"></a>    <span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-62"><a id="enge.lfo.lfo_samples--source--__codelineno-0-62" name="enge.lfo.lfo_samples--source--__codelineno-0-62"></a>    <span class="k">if</span> <span class="n">backend</span> <span class="o">==</span> <span class="s2">"native"</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-63"><a id="enge.lfo.lfo_samples--source--__codelineno-0-63" name="enge.lfo.lfo_samples--source--__codelineno-0-63"></a>        <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">_native</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-64"><a id="enge.lfo.lfo_samples--source--__codelineno-0-64" name="enge.lfo.lfo_samples--source--__codelineno-0-64"></a>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-65"><a id="enge.lfo.lfo_samples--source--__codelineno-0-65" name="enge.lfo.lfo_samples--source--__codelineno-0-65"></a>        <span class="n">output</span> <span class="o">=</span> <span class="n">_native</span><span class="o">.</span><span class="n">render_lfo</span><span class="p">(</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-66"><a id="enge.lfo.lfo_samples--source--__codelineno-0-66" name="enge.lfo.lfo_samples--source--__codelineno-0-66"></a>            <span class="p">[</span><span class="n">Waveform</span><span class="o">.</span><span class="n">sine</span><span class="p">,</span> <span class="n">Waveform</span><span class="o">.</span><span class="n">square</span><span class="p">,</span> <span class="n">Waveform</span><span class="o">.</span><span class="n">triangle</span><span class="p">]</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="n">definition</span><span class="o">.</span><span class="n">shape</span><span class="p">),</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-67"><a id="enge.lfo.lfo_samples--source--__codelineno-0-67" name="enge.lfo.lfo_samples--source--__codelineno-0-67"></a>            <span class="n">spans</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-68"><a id="enge.lfo.lfo_samples--source--__codelineno-0-68" name="enge.lfo.lfo_samples--source--__codelineno-0-68"></a>            <span class="n">sample_weights</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-69"><a id="enge.lfo.lfo_samples--source--__codelineno-0-69" name="enge.lfo.lfo_samples--source--__codelineno-0-69"></a>            <span class="n">count</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-70"><a id="enge.lfo.lfo_samples--source--__codelineno-0-70" name="enge.lfo.lfo_samples--source--__codelineno-0-70"></a>        <span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-71"><a id="enge.lfo.lfo_samples--source--__codelineno-0-71" name="enge.lfo.lfo_samples--source--__codelineno-0-71"></a>    <span class="k">else</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-72"><a id="enge.lfo.lfo_samples--source--__codelineno-0-72" name="enge.lfo.lfo_samples--source--__codelineno-0-72"></a>        <span class="n">output</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="n">count</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-73"><a id="enge.lfo.lfo_samples--source--__codelineno-0-73" name="enge.lfo.lfo_samples--source--__codelineno-0-73"></a>        <span class="k">for</span> <span class="n">span</span> <span class="ow">in</span> <span class="n">spans</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-74"><a id="enge.lfo.lfo_samples--source--__codelineno-0-74" name="enge.lfo.lfo_samples--source--__codelineno-0-74"></a>            <span class="n">begin</span><span class="p">,</span> <span class="n">end</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">span</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="nb">int</span><span class="p">(</span><span class="n">span</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-75"><a id="enge.lfo.lfo_samples--source--__codelineno-0-75" name="enge.lfo.lfo_samples--source--__codelineno-0-75"></a>            <span class="n">phase</span> <span class="o">=</span> <span class="n">span</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">end</span> <span class="o">-</span> <span class="n">begin</span><span class="p">)</span> <span class="o">*</span> <span class="n">span</span><span class="p">[</span><span class="mi">3</span><span class="p">]</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-76"><a id="enge.lfo.lfo_samples--source--__codelineno-0-76" name="enge.lfo.lfo_samples--source--__codelineno-0-76"></a>            <span class="k">if</span> <span class="n">definition</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">Waveform</span><span class="o">.</span><span class="n">sine</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-77"><a id="enge.lfo.lfo_samples--source--__codelineno-0-77" name="enge.lfo.lfo_samples--source--__codelineno-0-77"></a>                <span class="n">values</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="n">phase</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-78"><a id="enge.lfo.lfo_samples--source--__codelineno-0-78" name="enge.lfo.lfo_samples--source--__codelineno-0-78"></a>            <span class="k">elif</span> <span class="n">definition</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">Waveform</span><span class="o">.</span><span class="n">square</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-79"><a id="enge.lfo.lfo_samples--source--__codelineno-0-79" name="enge.lfo.lfo_samples--source--__codelineno-0-79"></a>                <span class="n">values</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">end</span> <span class="o">-</span> <span class="n">begin</span><span class="p">,</span> <span class="mi">1</span> <span class="k">if</span> <span class="n">span</span><span class="p">[</span><span class="mi">4</span><span class="p">]</span> <span class="k">else</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-80"><a id="enge.lfo.lfo_samples--source--__codelineno-0-80" name="enge.lfo.lfo_samples--source--__codelineno-0-80"></a>            <span class="k">else</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-81"><a id="enge.lfo.lfo_samples--source--__codelineno-0-81" name="enge.lfo.lfo_samples--source--__codelineno-0-81"></a>                <span class="n">values</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">phase</span> <span class="o">-</span> <span class="mi">1</span> <span class="k">if</span> <span class="n">span</span><span class="p">[</span><span class="mi">4</span><span class="p">]</span> <span class="k">else</span> <span class="mi">1</span> <span class="o">-</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">phase</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-82"><a id="enge.lfo.lfo_samples--source--__codelineno-0-82" name="enge.lfo.lfo_samples--source--__codelineno-0-82"></a>            <span class="n">output</span><span class="p">[</span><span class="n">begin</span><span class="p">:</span><span class="n">end</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-83"><a id="enge.lfo.lfo_samples--source--__codelineno-0-83" name="enge.lfo.lfo_samples--source--__codelineno-0-83"></a>        <span class="n">output</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">_weights</span><span class="p">(</span><span class="n">sample_weights</span><span class="p">,</span> <span class="n">count</span><span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-84"><a id="enge.lfo.lfo_samples--source--__codelineno-0-84" name="enge.lfo.lfo_samples--source--__codelineno-0-84"></a>    <span class="k">if</span> <span class="n">interval</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">:</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-85"><a id="enge.lfo.lfo_samples--source--__codelineno-0-85" name="enge.lfo.lfo_samples--source--__codelineno-0-85"></a>        <span class="n">output</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">column_stack</span><span class="p">(</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-86"><a id="enge.lfo.lfo_samples--source--__codelineno-0-86" name="enge.lfo.lfo_samples--source--__codelineno-0-86"></a>            <span class="p">(</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-87"><a id="enge.lfo.lfo_samples--source--__codelineno-0-87" name="enge.lfo.lfo_samples--source--__codelineno-0-87"></a>                <span class="n">np</span><span class="o">.</span><span class="n">interp</span><span class="p">(</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-88"><a id="enge.lfo.lfo_samples--source--__codelineno-0-88" name="enge.lfo.lfo_samples--source--__codelineno-0-88"></a>                    <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">frames</span><span class="p">)</span> <span class="o">+</span> <span class="n">offset</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-89"><a id="enge.lfo.lfo_samples--source--__codelineno-0-89" name="enge.lfo.lfo_samples--source--__codelineno-0-89"></a>                    <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">count</span><span class="p">)</span> <span class="o">*</span> <span class="n">interval</span><span class="p">,</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-90"><a id="enge.lfo.lfo_samples--source--__codelineno-0-90" name="enge.lfo.lfo_samples--source--__codelineno-0-90"></a>                    <span class="n">output</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">],</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-91"><a id="enge.lfo.lfo_samples--source--__codelineno-0-91" name="enge.lfo.lfo_samples--source--__codelineno-0-91"></a>                <span class="p">),</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-92"><a id="enge.lfo.lfo_samples--source--__codelineno-0-92" name="enge.lfo.lfo_samples--source--__codelineno-0-92"></a>                <span class="n">_weights</span><span class="p">(</span><span class="n">weights</span><span class="p">,</span> <span class="n">frames</span><span class="p">),</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-93"><a id="enge.lfo.lfo_samples--source--__codelineno-0-93" name="enge.lfo.lfo_samples--source--__codelineno-0-93"></a>            <span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-94"><a id="enge.lfo.lfo_samples--source--__codelineno-0-94" name="enge.lfo.lfo_samples--source--__codelineno-0-94"></a>        <span class="p">)</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-95"><a id="enge.lfo.lfo_samples--source--__codelineno-0-95" name="enge.lfo.lfo_samples--source--__codelineno-0-95"></a>    <span class="n">output</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">definition</span><span class="o">.</span><span class="n">center</span> <span class="o">+</span> <span class="n">definition</span><span class="o">.</span><span class="n">depth</span> <span class="o">*</span> <span class="n">output</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>
+</span><span id="enge.lfo.lfo_samples--source--__span-0-96"><a id="enge.lfo.lfo_samples--source--__codelineno-0-96" name="enge.lfo.lfo_samples--source--__codelineno-0-96"></a>    <span class="k">return</span> <span class="n">output</span>
+</span></code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"../../..","features":["navigation.indexes","content.code.copy"],"redirect":null,"search":"../../../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.77dd0ce9.min.js"></script>
+      
+    
+  </body>
+</html>

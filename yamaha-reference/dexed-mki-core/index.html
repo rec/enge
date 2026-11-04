@@ -1,0 +1,1745 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="🚂 an audio synthesizer engine in Python and Rust 🚂">
+      
+      
+      
+        <link rel="canonical" href="https://rec.github.io/enge/yamaha-reference/dexed-mki-core/">
+      
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../../reference/enge/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.73">
+    
+    
+      
+        <title>Dexed Mk I constant-gain core comparison - enge</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../../assets/stylesheets/modern/main.4ab2de0c.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="enge" class="md-header__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+      <span class="md-visually-hidden">Navigation</span>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            enge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Dexed Mk I constant-gain core comparison
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <span class="md-visually-hidden">Search</span>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="enge" class="md-nav__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    enge
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../envelfo-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enveLFO extraction contract and closeout evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../live-callback-audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live callback audit
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../live-effects-benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live effects benchmark
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance-binding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MIDI performance binding conversion
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../test-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Test performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Yamaha reference
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_7">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Yamaha reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Dexed Mk I constant-gain core comparison
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Dexed Mk I constant-gain core comparison
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#method" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Method
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Results
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#one-bit-phase-sensitivity-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        One-bit phase sensitivity control
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reproduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Reproduction
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integer-kernel-graph-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Integer-kernel graph isolation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  API Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_8">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  API Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../reference/enge/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_8_1" id="__nav_8_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_1_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_8_1">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  enge
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/_native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  _native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  control
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/effects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  effects
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/envelfo_graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  envelfo_graph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/filters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  filters
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/fm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  fm
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/lfo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/live/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  live
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/midi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  midi
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/native_sample/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native_sample
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/noise/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  noise
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/presets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  presets
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/render/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  render
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/rubberband/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  rubberband
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/sample_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/sample_regions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_regions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/sampler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sampler
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/synth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  synth
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/yamaha/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/yamaha_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/enge/yamaha_lfo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#method" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Method
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Results
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#one-bit-phase-sensitivity-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        One-bit phase sensitivity control
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reproduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Reproduction
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integer-kernel-graph-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Integer-kernel graph isolation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+
+<h1 id="dexed-mk-i-constant-gain-core-comparison">Dexed Mk I constant-gain core comparison<a class="headerlink" href="#dexed-mk-i-constant-gain-core-comparison" title="Permanent link">&para;</a></h1>
+<p>Measured on 2026-11-04 against Dexed revision
+<a href="https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/engine/EngineMkI.cpp"><code>fea2f0f0f2c397799f59b27eb11c038cd34b22c5</code></a>.
+The enge renderer includes the approved explicit feedback endpoints and
+quarter-strength rule for algorithms 4, 6 and 32. Its <code>enge/yamaha.py</code> SHA-256 is
+<code>4f9d45516a947cb926fc76f8ba3b9f291094dcad386cc7ac745741b28692d6bc</code>.
+The reference uses the actual Mk I core, including its integer sine/amplitude
+lookups, feedback shifts and two- and three-operator kernels.</p>
+<h2 id="method">Method<a class="headerlink" href="#method" title="Permanent link">&para;</a></h2>
+<p>The <a href="../render-dexed-mki.cc">standalone harness</a> renders 750 blocks of 64 samples,
+exactly one second at 48 kHz. Algorithms 3, 4, 5, 6, 31 and 32 each run at
+feedback 0, 1, 4 and 7 with constant, equal operator gains of 0.03125, 0.25 and 1:
+72 cases in <a href="../dexed-mki-core.csv">the complete CSV</a>.</p>
+<p>For every operator, the Q24 frequency increment is exactly 153791 and the initial
+phase is zero. <code>level_in</code> is <code>L * 2**24</code> for <code>L</code> in 9, 12 and 14; <code>gain_out</code> starts
+at <code>(16 - L) * 1024</code> to avoid an initial block gain ramp. This corresponds to
+continuous gain <code>2**(L - 14)</code>. Feedback history starts at zero. Each raw signed
+32-bit reference output is divided by <code>2**24</code> before comparison.</p>
+<p>The enge comparison constructs an unpacked DX7 voice with the same algorithm and
+feedback; all operators use ratio mode, coarse 1, fine 0 and neutral detune 7.
+Oscillator sync is on, transpose is neutral, and pitch-envelope levels are 50.
+LFO depths and sensitivities are zero. Explicit <code>pitch_hz</code> is
+<code>153791 * 48000 / 2**24</code>. A public note snapshot sets every amplitude envelope's
+<code>level</code> to <code>L * 2**24</code>, <code>stage</code> to 3 and <code>held</code> to true before restoring and rendering
+48,000 frames. Thus there is no amplitude ramp, pitch drift, release or LFO
+variation in either stream. The remaining differences are within core execution;
+this experiment does not determine whether they all follow from quantization.</p>
+<p>Relative RMS is <code>norm(enge - reference) / norm(reference)</code> over all 48,000 frames.
+The CSV also records maximum absolute error and each stream's RMS before any
+WAV scaling. Retained WAV pairs use one common divisor per pair, recorded in the
+CSV, and round to signed 32-bit PCM using <code>round(sample / divisor * (2**31 - 1))</code>.
+No independent level fitting or time alignment is applied.</p>
+<h2 id="results">Results<a class="headerlink" href="#results" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Constant operator gain</th>
+<th style="text-align: right;">Smallest relative RMS error</th>
+<th style="text-align: right;">Largest relative RMS error</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.03125</td>
+<td style="text-align: right;">1.2274%</td>
+<td style="text-align: right;">1.3017%</td>
+</tr>
+<tr>
+<td>0.25</td>
+<td style="text-align: right;">0.1665%</td>
+<td style="text-align: right;">0.3249%</td>
+</tr>
+<tr>
+<td>1</td>
+<td style="text-align: right;">0.0816%</td>
+<td style="text-align: right;">78.3386%</td>
+</tr>
+</tbody>
+</table>
+<p>At unit gain and maximum feedback:</p>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th style="text-align: right;">Relative RMS error</th>
+<th style="text-align: right;">Reference RMS</th>
+<th style="text-align: right;">enge RMS</th>
+<th>Paired recordings</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4</td>
+<td style="text-align: right;">78.3386%</td>
+<td style="text-align: right;">1.17170</td>
+<td style="text-align: right;">1.17598</td>
+<td><a href="../MKI-ALG04-FB7-mki.wav">Mk I</a>, <a href="../MKI-ALG04-FB7-enge.wav">enge</a></td>
+</tr>
+<tr>
+<td>6</td>
+<td style="text-align: right;">41.0212%</td>
+<td style="text-align: right;">1.90573</td>
+<td style="text-align: right;">1.90841</td>
+<td><a href="../MKI-ALG06-FB7-mki.wav">Mk I</a>, <a href="../MKI-ALG06-FB7-enge.wav">enge</a></td>
+</tr>
+<tr>
+<td>32</td>
+<td style="text-align: right;">0.0816%</td>
+<td style="text-align: right;">4.18646</td>
+<td style="text-align: right;">4.18894</td>
+<td><a href="../MKI-ALG32-FB7-mki.wav">Mk I</a>, <a href="../MKI-ALG32-FB7-enge.wav">enge</a></td>
+</tr>
+</tbody>
+</table>
+<p>The two multi-operator loops still fail reference qualification at the high-gain
+setting. Their similar overall RMS values do not establish waveform agreement.
+The large differences persist after removing envelope timing, block gain ramps
+and pitch drift. At gain 0.25, maximum-feedback errors for algorithms 4 and 6 are
+0.2329% and 0.2990% respectively. These observations are consistent with feedback
+sensitivity to arithmetic differences, but do not prove that explanation or
+exclude a core-model error. Integer arithmetic isolation remains required.</p>
+<p>This is a controlled FM-core comparison, not a complete named-patch comparison,
+DAC model, native callback qualification or hardware validation. The reference's
+hardware accuracy is not established by agreement with it. These results do not
+replace the earlier MSFA patch/envelope comparisons, which exercise other paths.</p>
+<h2 id="one-bit-phase-sensitivity-control">One-bit phase sensitivity control<a class="headerlink" href="#one-bit-phase-sensitivity-control" title="Permanent link">&para;</a></h2>
+<p>The <a href="../dexed-mki-sensitivity.csv">reference-only control</a> runs the same Mk I core
+twice, changing only OP6's initial phase from zero to one Q24 least-significant
+bit: <code>2**-24</code> cycles. At maximum feedback and unit operator gain:</p>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th style="text-align: right;">Relative RMS difference</th>
+<th style="text-align: right;">First differing frame</th>
+<th>Perturbed reference WAV</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4</td>
+<td style="text-align: right;">19.9127%</td>
+<td style="text-align: right;">1729</td>
+<td><a href="../MKI-ALG04-FB7-phase-lsb.wav">one phase bit</a></td>
+</tr>
+<tr>
+<td>6</td>
+<td style="text-align: right;">2.2912%</td>
+<td style="text-align: right;">705</td>
+<td><a href="../MKI-ALG06-FB7-phase-lsb.wav">one phase bit</a></td>
+</tr>
+<tr>
+<td>32</td>
+<td style="text-align: right;">0.0006941%</td>
+<td style="text-align: right;">2753</td>
+<td><a href="../MKI-ALG32-FB7-phase-lsb.wav">one phase bit</a></td>
+</tr>
+</tbody>
+</table>
+<p>These recordings use the same divisors as their unperturbed Mk I recordings
+above. At gain 0.03125, the one-bit perturbation produces identical output in all
+three cases; at gain 0.25 all relative differences remain below 0.0021%.
+Thus the high-gain loops amplify a tiny initial-state difference even with
+identical arithmetic. This demonstrates sensitivity, but does not fully explain
+the larger enge differences or prove that enge's core is otherwise correct.</p>
+<h2 id="reproduction">Reproduction<a class="headerlink" href="#reproduction" title="Permanent link">&para;</a></h2>
+<p>Download <code>source/engine/EngineMkI.cpp</code> and <code>.h</code>, plus <code>source/msfa/</code> files
+<code>synth.h</code>, <code>aligned_buf.h</code>, <code>fm_op_kernel.h</code>, <code>fm_op_kernel.cc</code>, <code>controllers.h</code>,
+<code>fm_core.h</code>, <code>fm_core.cc</code>, <code>sin.h</code>, <code>sin.cc</code>, <code>exp2.h</code> and <code>exp2.cc</code> from the pinned
+revision. Place the engine files in a temporary directory and the others in its
+<code>msfa</code> subdirectory. In that temporary <code>controllers.h</code> only, omit the unused
+<code>#include "../debugger/Logger.h"</code> to avoid pulling in the JUCE application logger.
+No DSP code is changed. Set <code>DEXED_CORE</code> to that directory and compile:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>c++<span class="w"> </span>-std<span class="o">=</span>c++17<span class="w"> </span>-O2<span class="w"> </span>-fwrapv<span class="w"> </span>-I<span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">"</span><span class="w"> </span>render-dexed-mki.cc<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/EngineMkI.cpp"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/fm_core.cc"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/fm_op_kernel.cc"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/sin.cc"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/exp2.cc"</span><span class="w"> </span>-o<span class="w"> </span>/tmp/render-dexed-mki
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>/tmp/render-dexed-mki<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="m">7</span><span class="w"> </span><span class="m">14</span><span class="w"> </span><span class="m">0</span><span class="w"> </span>/tmp/mki-alg4.i32
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>/tmp/render-dexed-mki<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="m">7</span><span class="w"> </span><span class="m">14</span><span class="w"> </span><span class="m">1</span><span class="w"> </span>/tmp/mki-alg4-phase-lsb.i32
+</span></code></pre></div>
+<p><code>-fwrapv</code> specifies the signed integer wrap used by the reference phase
+accumulators. The output is 48,000 native-endian signed 32-bit samples; this run
+used little-endian macOS. The harness was also checked with <code>-Wall -Wextra
+-Werror -Wno-unused-parameter -fsyntax-only</code>. Reference source licenses remain
+with Dexed; the repository contains the harness and generated measurements,
+not copied reference DSP source.</p>
+<h2 id="integer-kernel-graph-isolation">Integer-kernel graph isolation<a class="headerlink" href="#integer-kernel-graph-isolation" title="Permanent link">&para;</a></h2>
+<p>The <a href="../compare-dexed-mki-graph.cc">graph-isolation harness</a> executes the exported
+<a href="../dx7-feedback-graphs.txt">uFor topology data</a> using the pinned Mk I <code>mkiSin</code>
+function, then compares it with Mk I's own algorithm dispatcher and feedback
+kernels. It includes <code>EngineMkI.cpp</code> directly to reuse that exact integer kernel;
+there is no independently implemented sine or gain lookup in this control.
+The graph data comes from uFor revision <code>829ba12dbc926489101aa5376a10a5e0803c3914</code>.
+Each row contains algorithm number, feedback source/destination, carrier count
+and carrier numbers, followed by edge count and source/destination pairs.</p>
+<p>All 32 algorithms run at feedback 0, 1, 4 and 7 with four profiles:</p>
+<table>
+<thead>
+<tr>
+<th>Profile</th>
+<th>Constant log levels</th>
+<th>Q24 increments</th>
+<th>Initial Q24 phases</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>all 9</td>
+<td>all 153791</td>
+<td>all zero</td>
+</tr>
+<tr>
+<td>1</td>
+<td>all 12</td>
+<td>all 153791</td>
+<td>all zero</td>
+</tr>
+<tr>
+<td>2</td>
+<td>all 14</td>
+<td>all 153791</td>
+<td>all zero</td>
+</tr>
+<tr>
+<td>3</td>
+<td>OP1 through OP6: 9 through 14</td>
+<td><code>153791 * operator_number</code></td>
+<td><code>123456 * (operator_number - 1)</code></td>
+</tr>
+</tbody>
+</table>
+<p>The asymmetric profile separates operator order, gain and frequency. Every case
+renders 48,000 frames. Graph execution sums the exported modulation edges,
+reads the two preceding samples from the feedback source, shifts their sum into
+the feedback destination with the approved strength rule, and sums the exported
+carriers. All operators in these DX7 graphs have feed-forward edges toward lower
+operator numbers, so descending operator order is valid. Each case resets phases,
+operator gains and both feedback histories. No amplitude envelopes are advanced.</p>
+<p><strong>All 512 cases agree exactly: zero mismatches across 24,576,000 integer samples.</strong>
+The <a href="../dexed-mki-graph.csv">complete CSV</a> records mismatch count, maximum absolute
+Q24 error and relative RMS error for each case. The retained unit-gain,
+feedback-7 graph WAVs are byte-identical to the corresponding Mk I WAVs above:
+<a href="../MKI-ALG04-FB7-integer-graph.wav">algorithm 4</a>,
+<a href="../MKI-ALG06-FB7-integer-graph.wav">algorithm 6</a> and
+<a href="../MKI-ALG32-FB7-integer-graph.wav">algorithm 32</a>.</p>
+<p>This establishes agreement of the exported graph, operator ordering, carrier
+sum and feedback scheduling with the pinned dispatcher under these fixed-gain
+conditions. It does not establish an independent implementation of the integer
+kernel, dynamic-gain behavior, the production floating renderer's equivalence,
+complete patch rendering or hardware accuracy. It supports replacing the
+floating core as the next model decision, rather than another topology change.</p>
+<p>Build with the same temporary reference source directory described above. Since
+the harness includes <code>EngineMkI.cpp</code>, do not also list that file as a separate
+translation unit:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>c++<span class="w"> </span>-std<span class="o">=</span>c++17<span class="w"> </span>-O2<span class="w"> </span>-fwrapv<span class="w"> </span>-I<span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">"</span><span class="w"> </span>compare-dexed-mki-graph.cc<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/fm_core.cc"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/fm_op_kernel.cc"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/sin.cc"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DEXED_CORE</span><span class="s2">/msfa/exp2.cc"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>-o<span class="w"> </span>/tmp/compare-dexed-mki-graph
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>/tmp/compare-dexed-mki-graph<span class="w"> </span>dx7-feedback-graphs.txt<span class="w"> </span>/tmp<span class="w"> </span>&gt;<span class="w"> </span>/tmp/mki-graph.csv
+</span></code></pre></div>
+<p>The output directory must exist. The harness also writes <code>graph-4.i32</code>,
+<code>graph-6.i32</code> and <code>graph-32.i32</code> there; convert them to WAV using the matching
+<code>wav_divisor</code> values in <code>dexed-mki-core.csv</code>, as in the original comparison.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"../..","features":["navigation.indexes","content.code.copy"],"redirect":null,"search":"../../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.77dd0ce9.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1590 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="🚂 an audio synthesizer engine in Python and Rust 🚂">
+      
+      
+      
+        <link rel="canonical" href="https://rec.github.io/enge/live-effects-benchmark/">
+      
+      
+      
+        <link rel="prev" href="../live-callback-audit/">
+      
+      
+        <link rel="next" href="../performance-binding/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.73">
+    
+    
+      
+        <title>Live effects benchmark - enge</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ab2de0c.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="enge" class="md-header__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+      <span class="md-visually-hidden">Navigation</span>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            enge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Live effects benchmark
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <span class="md-visually-hidden">Search</span>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="enge" class="md-nav__button md-logo" aria-label="enge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    enge
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../envelfo-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enveLFO extraction contract and closeout evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../live-callback-audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live callback audit
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Live effects benchmark
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../performance-binding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MIDI performance binding conversion
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../test-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Test performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../yamaha-reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Yamaha reference
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_7">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Yamaha reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../yamaha-reference/dexed-mki-core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Dexed Mk I constant-gain core comparison
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  API Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_8">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  API Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../reference/enge/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  enge
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_8_1" id="__nav_8_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_1_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_8_1">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  enge
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/_native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  _native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  control
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/effects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  effects
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/envelfo_graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  envelfo_graph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/filters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  filters
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/fm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  fm
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/lfo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/live/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  live
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/midi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  midi
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/native_sample/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  native_sample
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/noise/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  noise
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/presets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  presets
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/render/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  render
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/rubberband/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  rubberband
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/sample_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/sample_regions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample_regions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/sampler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sampler
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/synth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  synth
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/yamaha/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/yamaha_instrument/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_instrument
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/enge/yamaha_lfo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  yamaha_lfo
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+
+<h1 id="live-effects-benchmark">Live effects benchmark<a class="headerlink" href="#live-effects-benchmark" title="Permanent link">&para;</a></h1>
+<p>Generated by <code>scripts/benchmark-effects.py</code> on macOS-14.5-arm64-arm-64bit-Mach-O with Python
+3.13.12. The run used 48 kHz, 4 parallel chains,
+four active oscillator voices per chain, changing controls in every block, and
+1 second per case. The committed measurements used a Rust release
+build produced by <code>maturin develop --release</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th style="text-align: right;">Frames</th>
+<th style="text-align: right;">Worst us</th>
+<th style="text-align: right;">p99 us</th>
+<th style="text-align: right;">Deadline us</th>
+<th style="text-align: right;">Misses</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>persistent-16-voice</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">77.0</td>
+<td style="text-align: right;">57.9</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">0/750</td>
+</tr>
+<tr>
+<td>persistent-16-voice</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">252.8</td>
+<td style="text-align: right;">194.7</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">0/188</td>
+</tr>
+<tr>
+<td>persistent-16-voice</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">740.0</td>
+<td style="text-align: right;">712.3</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">0/47</td>
+</tr>
+<tr>
+<td>filter</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">14031.6</td>
+<td style="text-align: right;">4432.6</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>filter</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">14543.3</td>
+<td style="text-align: right;">6134.7</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">151/188</td>
+</tr>
+<tr>
+<td>filter</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">22310.2</td>
+<td style="text-align: right;">18376.6</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">1/47</td>
+</tr>
+<tr>
+<td>filter-actions</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">15129.7</td>
+<td style="text-align: right;">5664.3</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>filter-actions</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">17297.5</td>
+<td style="text-align: right;">10110.9</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">188/188</td>
+</tr>
+<tr>
+<td>filter-actions</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">25327.5</td>
+<td style="text-align: right;">20547.5</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">1/47</td>
+</tr>
+<tr>
+<td>fanout</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">13355.2</td>
+<td style="text-align: right;">4984.1</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>fanout</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">15735.4</td>
+<td style="text-align: right;">6756.8</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">187/188</td>
+</tr>
+<tr>
+<td>fanout</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">25234.5</td>
+<td style="text-align: right;">20860.2</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">1/47</td>
+</tr>
+<tr>
+<td>granulator</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">48662.0</td>
+<td style="text-align: right;">29996.8</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>granulator</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">34071.9</td>
+<td style="text-align: right;">32825.1</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">188/188</td>
+</tr>
+<tr>
+<td>granulator</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">46127.5</td>
+<td style="text-align: right;">45290.2</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">44/47</td>
+</tr>
+<tr>
+<td>filter+granulator</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">73479.7</td>
+<td style="text-align: right;">21801.4</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>filter+granulator</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">108355.0</td>
+<td style="text-align: right;">66764.8</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">188/188</td>
+</tr>
+<tr>
+<td>filter+granulator</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">205645.2</td>
+<td style="text-align: right;">203505.5</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">47/47</td>
+</tr>
+<tr>
+<td>freeze</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">69742.8</td>
+<td style="text-align: right;">28673.0</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>freeze</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">72186.1</td>
+<td style="text-align: right;">39565.5</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">188/188</td>
+</tr>
+<tr>
+<td>freeze</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">107942.0</td>
+<td style="text-align: right;">95746.7</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">47/47</td>
+</tr>
+<tr>
+<td>subnormal</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">69417.0</td>
+<td style="text-align: right;">23025.0</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>subnormal</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">30512.2</td>
+<td style="text-align: right;">24169.4</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">187/188</td>
+</tr>
+<tr>
+<td>subnormal</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">89368.9</td>
+<td style="text-align: right;">69103.1</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">17/47</td>
+</tr>
+<tr>
+<td>filter-tail</td>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">31643.8</td>
+<td style="text-align: right;">19288.4</td>
+<td style="text-align: right;">1333.3</td>
+<td style="text-align: right;">750/750</td>
+</tr>
+<tr>
+<td>filter-tail</td>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">15759.0</td>
+<td style="text-align: right;">7551.1</td>
+<td style="text-align: right;">5333.3</td>
+<td style="text-align: right;">86/188</td>
+</tr>
+<tr>
+<td>filter-tail</td>
+<td style="text-align: right;">1024</td>
+<td style="text-align: right;">22761.4</td>
+<td style="text-align: right;">21782.2</td>
+<td style="text-align: right;">21333.3</td>
+<td style="text-align: right;">1/47</td>
+</tr>
+</tbody>
+</table>
+<p><code>persistent-16-voice</code> owns all oscillator phases, routing, filter integrators, and
+gain state in one Rust object and crosses Python once per block. <code>filter</code>,
+<code>filter-actions</code>, <code>subnormal</code>, and <code>fanout</code> execute one whole graph per
+Rust call. The action case submits the maximum 64 actions at every block boundary.
+The subnormal case scales source output by <code>1e-310</code>. <code>filter-tail</code> ends every graph
+halfway through the run and measures the reference tail path. <code>granulator</code> and
+<code>freeze</code> execute the Rust granular kernel, including bounded frozen-history circular
+replay. <code>filter+granulator</code> currently uses the NumPy graph because the offline
+native graph kernel does not compose granulation with other processors. That row
+still measures Python orchestration rather than a callback-safe native graph.</p>
+<p>This harness includes Python source/action orchestration around native DSP and
+therefore measures the current callable system rather than a GIL-free native host.
+It does not test a lock-free action queue, bounded callback error status, tail-pool
+retirement, a physical audio device, or thread-local subnormal handling. Those
+items remain required before enge can claim live callback readiness.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["navigation.indexes","content.code.copy"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.77dd0ce9.min.js"></script>
+      
+    
+  </body>
+</html>
