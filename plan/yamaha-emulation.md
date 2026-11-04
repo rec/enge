@@ -94,6 +94,10 @@ instead of inheriting Dexed's inverse rate conversion. Remaining frame counts
 survive snapshots and release interrupts a hold. Zero-level attacks use the
 reference's faster hold rule. Focused regressions cover table/high-rate
 boundaries, prepared rate scaling, multiple sample rates and JSON continuation.
+The moving stages now convert Dexed's 64-frame increment to a per-frame
+increment before sample-rate scaling. Previously they ran approximately 64
+times too fast. A pinned `Env` release trace verifies the rate-50 slope;
+regressions cover 44.1, 48 and 96 kHz while retaining the approved hold durations.
 Full-note reference errors remain explicit in the report; hardware timing and
 the remaining envelope/block-model differences are not qualified.
 

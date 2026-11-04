@@ -52,7 +52,7 @@ roadmap and Yamaha requirements, while optional catalogues remain deferred.
 
 - Complete and qualify [Yamaha emulation](yamaha-emulation.md); dedicated
   offline DX7 and provisional TX81Z renderers are already started.
-  Outstanding work includes controller contracts, delayed AMD, integer/DAC
+  Outstanding work includes remaining controller behavior, integer/DAC
   behavior, full reference comparison and hardware qualification. Firmware
   tracing is optional: the user has no dump available and asked us to proceed
   without making it a prerequisite.

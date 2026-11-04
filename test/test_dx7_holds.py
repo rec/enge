@@ -10,6 +10,33 @@ from enge.yamaha import DX7Envelope, DX7Renderer, DX7Snapshot
 
 
 @pytest.mark.parametrize(
+    "sample_rate,step", [(44100, 4096), (48000, 3763), (96000, 1882)]
+)
+def test_release_rate_uses_per_frame_reference_timing(
+    tmp_path: Path, sample_rate: int, step: int
+) -> None:
+    raw = bytearray(voice().data)
+    raw[3], raw[7] = 50, 0
+    envelope = DX7Envelope.start(
+        DX7Voice(data=bytes(raw)).operator(6), 69, 100, sample_rate
+    )
+    for _ in range(1000):
+        envelope.sample()
+    assert envelope.stage == 3
+    initial = envelope.level
+    envelope.release()
+    # Pinned Dexed Env drops 262144 units per 64 frames at 44.1 kHz.
+    # Convert its measured slope to the nearest integer per output frame.
+    gains = np.array([envelope.sample() for _ in range(sample_rate)])
+    expected = 2 ** (
+        ((initial - step * np.arange(1, sample_rate + 1)) / 65536 - 14 * 256) / 256
+    )
+    np.testing.assert_array_equal(gains, expected)
+    if sample_rate == 48000:
+        check_audio(tmp_path / "release-rate.wav", gains[:, None], expected[:, None])
+
+
+@pytest.mark.parametrize(
     "rate,scaling,frames",
     [(50, 0, 7200), (49, 1, 7200), (76, 0, 480), (77, 0, 479), (98, 0, 22)],
 )
@@ -21,7 +48,10 @@ def test_equal_levels_hold_for_measured_duration(
     envelope = DX7Envelope.start(DX7Voice(data=bytes(raw)).operator(6), 69, 100, 48000)
     # Key rate scaling is already prepared by admission; isolate its contribution.
     envelope.rate_scaling = scaling
-    envelope.sample()
+    for _ in range(1000):
+        envelope.sample()
+        if envelope.stage == 1:
+            break
     assert envelope.stage == 1
     assert envelope.hold_frames == frames
     level = envelope.level
@@ -44,7 +74,11 @@ def test_hold_duration_stays_constant_across_sample_rates(
     envelope = DX7Envelope.start(
         DX7Voice(data=bytes(raw)).operator(6), 69, 100, sample_rate
     )
-    envelope.sample()
+    for _ in range(1000):
+        envelope.sample()
+        if envelope.stage == 1:
+            break
+    assert envelope.stage == 1
     assert envelope.hold_frames == frames
 
 

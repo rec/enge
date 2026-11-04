@@ -249,6 +249,42 @@ also retain waveform differences after differing attacks; constant-gain equality
 does not imply equality after a different excitation history. The hold model
 fixes missing behavior, not complete agreement with this reference.
 
+### Per-frame rate correction
+
+The tables above predate the moving-stage rate correction. Pinned `Env::advance`
+includes `LG_N=6` in its increment because `getsample()` advances once per
+64-frame block. Enge previously applied that increment on every output frame,
+making moving stages approximately 64 times too fast. It now omits the block
+factor before sample-rate scaling and rounds to the nearest per-frame integer.
+
+A standalone trace of the pinned, otherwise unchanged `Env` uses output level
+4064, no rate scaling, rates 99/99/99/50 and levels 99/99/99/0. After 750 held
+updates at 48 kHz, key-up produces logarithmic levels 251417396, 251176552 and
+250935708 at release frames 64, 128 and 192. The decrement is 240844 per block,
+or about 3763.1875 per frame. Enge uses 3763; the unscaled 44.1 kHz increment is
+4096 per frame, and 96 kHz rounds to 1882. Regression tests check a full second
+of release at each rate and write the 48 kHz result to WAV.
+
+This corrects the time units without adopting block gain ramps. Attack
+integration granularity, rounding, hold timing and gain interpolation still
+differ from Dexed. The [corrected-rate results](dexed-mki-envelope-rates.csv)
+repeat the same six full-note comparisons:
+
+| Algorithm | Feedback | Profile | Corrected whole-file error |
+| --- | ---: | --- | ---: |
+| 4 | 7 | Fast | 91.2675% |
+| 4 | 7 | Equal-level hold | 101.4955% |
+| 6 | 7 | Fast | 42.7878% |
+| 6 | 7 | Equal-level hold | 72.0260% |
+| 32 | 0 | Fast | 3.1404% |
+| 32 | 0 | Equal-level hold | 43.0782% |
+
+The unmodulated fast-note error falls from 5.1516% to 3.1404%; the other cases
+remain divergent. Correct time units do not establish complete reference or
+hardware agreement. Corrected carrier WAVs are retained for
+[fast](DYN-32-0-enge-rates.wav) and
+[equal-level hold](DYN-32-1-enge-rates.wav) profiles.
+
 The user approved interpreting Dexed's measured hold table as 44.1 kHz durations
 and preserving seconds across output rates. Enge rounds up to the next frame,
 uses the provisional additive rate-scaling rule, and retains the reference's

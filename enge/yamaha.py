@@ -603,8 +603,9 @@ class DX7Envelope(BaseModel):
                 duration //= 20
             self.hold_frames = (duration * self.sample_rate + 44099) // 44100
         qrate = min(63, (self.rates[stage] * 41 >> 6) + self.rate_scaling)
+        # Dexed includes LG_N=6 for its 64-frame updates; we advance every frame.
         self.increment = round(
-            ((4 + (qrate & 3)) << (8 + (qrate >> 2))) * 44100 / self.sample_rate
+            ((4 + (qrate & 3)) << (2 + (qrate >> 2))) * 44100 / self.sample_rate
         )
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
