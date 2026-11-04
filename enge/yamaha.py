@@ -409,27 +409,7 @@ class DX7Renderer:
             raise EngineError(diagnostic)
         if any(v > 99 for o in voice.operators for v in (*o.rates, *o.levels)):
             raise EngineError("DX7 envelope rates and levels must be from 0 through 99")
-        if voice.packed:
-            data = voice.data
-            parameters = [
-                (data[111] >> 3) & 1,
-                *data[112:116],
-                data[116] & 1,
-                (data[116] >> 1) & 7,
-                data[116] >> 4,
-                data[117],
-            ]
-        else:
-            parameters = list(voice.data[136:145])
-            if any(voice.data[i + 17] > 1 for i in range(0, 126, 21)):
-                raise EngineError("DX7 oscillator mode must be 0 or 1")
-        for index, (value, maximum) in enumerate(
-            zip(parameters, _DX7_GLOBAL_LIMITS, strict=True), start=136
-        ):
-            if value > maximum:
-                raise EngineError(
-                    f"DX7 parameter {index} must be from 0 through {maximum}"
-                )
+        parameters = dx7_global_parameters(voice)
         if not 0 <= note <= 127:
             raise EngineError("DX7 note must be from 0 through 127")
         if not 0 <= velocity <= 127:
@@ -452,6 +432,11 @@ class DX7Renderer:
         self.note = note
         self.velocity = velocity
         self.sample_rate = sample_rate
+        self.pitch_modulation_depth = parameters[3] * 165 >> 6
+        self.pitch_modulation_sensitivity = [0, 10, 20, 33, 55, 92, 153, 255][
+            parameters[7]
+        ]
+        self.amplitude_modulation_depth = parameters[4]
         self.envelopes = [
             DX7Envelope.start(operator, note, velocity, sample_rate)
             for operator in voice.operators
@@ -493,27 +478,51 @@ class DX7Renderer:
         for envelope in self.envelopes:
             envelope.release()
 
-    def render(self, frames: int) -> np.ndarray:
+    def render(self, frames: int, modulation: np.ndarray | None = None) -> np.ndarray:
         if frames < 0:
             raise EngineError("DX7 frame count must be nonnegative")
+        if self.amplitude_modulation_depth and any(
+            o.amplitude_modulation_sensitivity for o in self.voice.operators
+        ):
+            raise EngineError("DX7 LFO amplitude modulation is not implemented")
+        if modulation is None:
+            if self.pitch_modulation_depth and self.pitch_modulation_sensitivity:
+                raise EngineError("DX7 pitch modulation requires shared LFO rows")
+        elif (
+            modulation.shape != (frames, 2)
+            or not np.all(np.isfinite(modulation))
+            or np.any((modulation < 0) | (modulation > 1))
+        ):
+            raise EngineError("DX7 shared LFO rows must have shape (frames, 2) in 0..1")
         output = np.empty((frames, 1))
         topology = self.voice.topology
         carriers = [operator - 1 for operator in topology.carriers]
         feedback_operator = topology.feedback - 1
         for frame in range(frames):
             pitch_ratio = self.pitch_envelope.sample()
+            if modulation is not None:
+                value, delay = modulation[frame]
+                pitch_ratio *= 2 ** (
+                    self.pitch_modulation_depth
+                    * self.pitch_modulation_sensitivity
+                    * delay
+                    * (value - 0.5)
+                    / 32768
+                )
             values = np.zeros(6)
             for operator in self.order:
-                modulation = sum(
+                phase_modulation = sum(
                     values[edge.source - 1]
                     for edge in topology.edges
                     if edge.destination - 1 == operator
                 )
                 if operator == feedback_operator and self.voice.feedback:
-                    modulation += sum(self.feedback) / 2 ** (9 - self.voice.feedback)
+                    phase_modulation += sum(self.feedback) / 2 ** (
+                        9 - self.voice.feedback
+                    )
                 gain = self.envelopes[operator].sample()
                 values[operator] = gain * sin(
-                    2 * pi * (self.phases[operator] + modulation)
+                    2 * pi * (self.phases[operator] + phase_modulation)
                 )
             output[frame, 0] = sum(values[carrier] for carrier in carriers)
             self.feedback[0] = self.feedback[1]
@@ -522,6 +531,30 @@ class DX7Renderer:
                 self.phases + self.frequencies * pitch_ratio / self.sample_rate, 1
             )
         return output
+
+
+def dx7_global_parameters(voice: DX7Voice) -> list[int]:
+    """Decode and validate globals in unpacked parameter order 136..144."""
+    if voice.packed:
+        data = voice.data
+        parameters = [
+            (data[111] >> 3) & 1,
+            *data[112:116],
+            data[116] & 1,
+            (data[116] >> 1) & 7,
+            data[116] >> 4,
+            data[117],
+        ]
+    else:
+        parameters = list(voice.data[136:145])
+        if any(voice.data[i + 17] > 1 for i in range(0, 126, 21)):
+            raise EngineError("DX7 oscillator mode must be 0 or 1")
+    for index, (value, maximum) in enumerate(
+        zip(parameters, _DX7_GLOBAL_LIMITS, strict=True), start=136
+    ):
+        if value > maximum:
+            raise EngineError(f"DX7 parameter {index} must be from 0 through {maximum}")
+    return parameters
 
 
 def tx81z_detune_step(detune: int, key_code: int) -> int:

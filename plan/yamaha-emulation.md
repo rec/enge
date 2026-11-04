@@ -70,7 +70,35 @@ LFO sync/waveform, pitch sensitivity and transpose ranges in both packed and
 unpacked inputs. Unpacked oscillator mode must also be 0 or 1. Rejected voices
 remain losslessly inspectable. Boundary tests include waveform 5 (sample and
 hold), which is implemented in the pinned MSFA reference. Validation does not
-implement the missing LFO, transpose or oscillator-sync behavior.
+implement the missing transpose or oscillator-sync behavior.
+
+The user approved a caller-owned shared Yamaha clock/LFO context on 2026-11-04.
+`DX7LFOContext` now emits normalized waveform/delay rows once per render interval;
+the caller passes those same rows to each note's `render(frames, rows)` call.
+Notes never advance the shared clock. Explicit `keydown()` delivery applies
+LFO sync and restarts delay without resetting sample-and-hold random state.
+`DX7LFOSnapshot` retains configuration identity, output-frame position, Q32 phase,
+fractional carries, delay progression and random state. Restore checks the clock
+definition. Hosts retain that snapshot alongside their existing note snapshots.
+
+The six DX7 LFO waveforms and speed/delay calibration follow the pinned
+[MSFA LFO implementation](https://github.com/google/music-synthesizer-for-android/blob/f67d41d313b7dc85f6fb99e79e515cc9d208cfff/app/src/main/jni/lfo.cc).
+The context starts from zero phase/random state and advances per output frame,
+carrying fractional reference ticks. Delay zero applies full modulation from the
+first frame. This is the nominal per-sample model, without MSFA block-held control
+artifacts or integer sine-table quantization. The outstanding envelope-reference
+target decision remains separate.
+
+DX7 notes now apply their own PMD/PMS calibration to shared LFO rows in octave
+units before phase advancement. Effective pitch modulation requires explicit
+rows; missing/invalid rows are rejected before note state advances. Effective
+amplitude modulation (nonzero AMD and operator sensitivity) is now diagnosed as
+unsupported on rendering instead of being silently ignored. Zero sensitivities
+leave their corresponding modulation depths inaudible.
+Amplitude modulation, TX81Z LFO integration and full engine ownership remain work.
+One-second 48 kHz WAV regressions cover all waveform shapes, known random values,
+rate/delay calibration, sync, fractional continuation, pitch calibration and two
+simultaneous notes restoring their clock and note snapshots together.
 
 Fixed-frequency operators now use the low two coarse bits and key-independent,
 positive-only logarithmic detune, following the frequency equations in
