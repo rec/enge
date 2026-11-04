@@ -170,6 +170,7 @@ def prepare(
             sample_rate=sample_rate,
             slice=selection,
             play_count=slot.playback.play_count or 1,
+            end_fade_seconds=slot.playback.end_fade_seconds,
             playback=playback.Playback(
                 direction=slot.playback.direction
                 or score.body.settings.playback.direction,
@@ -655,6 +656,7 @@ class PersistentSampler(OfflineSampler):
                 None,
                 None if loop is None else loop.repeat_count,
                 sample.play_count - 1,
+                None,
             )
             routes = np.array(
                 self.definition.routes[slot.name],
@@ -689,6 +691,7 @@ class PersistentSampler(OfflineSampler):
                 batch_capacity,
                 filters.native_inputs(filter_definitions, filter_states, filter_values),
                 filter_order == processing.FilterOrder.after_amplitude,
+                sample.end_fade_seconds * sample.sample_rate,
             )
             rows = []
             smoothing = []

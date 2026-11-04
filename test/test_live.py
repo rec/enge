@@ -587,7 +587,7 @@ def test_native_live_runtime_owns_sample_asset_and_traversal(tmp_path: Path) -> 
         source = runtime.add_sample(
             buffer,
             (0, 96000, False, None),
-            (0, 0, 0, 1, False, False, False, None, None, 0),
+            (0, 0, 0, 1, False, False, False, None, None, 0, None),
             48000,
             np.array([[1.0, 0.5]]),
             1,

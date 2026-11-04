@@ -842,7 +842,7 @@ def test_malformed_parameters_remain_inspectable_but_cannot_render(
     positions = {
         "algorithm": (110 if packed else 134, 32),
         "feedback": (111 if packed else 135, 8),
-        "output": (13 if packed else 16, 100),
+        "output": (14 if packed else 16, 100),
         "rate": (0, 100),
         "level": (4, 100),
         "pitch_rate": (102 if packed else 126, 100),
@@ -855,6 +855,51 @@ def test_malformed_parameters_remain_inspectable_but_cannot_render(
     assert len(malformed.title) == 10
     with pytest.raises(EngineError):
         DX7Renderer(malformed, note=69, velocity=100)
+
+
+def test_dx7_packed_bank_and_edit_buffer_render_the_same_note(tmp_path: Path) -> None:
+    unpacked = bytearray(voice().data)
+    packed = bytearray(128)
+    for i in range(6):
+        start = i * 21
+        unpacked[start : start + 21] = bytes(
+            [99, 71, 33, 62, 99, 75, 61, 0, 18 + i, 7 + i, 14 + i]
+            + [1, 2, i, 1, i + 1, 85 - 3 * i, i % 2, i + 1, 17 + i, 4 + i]
+        )
+        target = i * 17
+        packed[target : target + 11] = unpacked[start : start + 11]
+        packed[target + 11 : target + 17] = bytes(
+            [
+                1 | (2 << 2),
+                i | ((4 + i) << 3),
+                1 | ((i + 1) << 2),
+                85 - 3 * i,
+                (i % 2) | ((i + 1) << 1),
+                17 + i,
+            ]
+        )
+    unpacked[134:137] = bytes([15, 4, 1])
+    unpacked[144] = 24
+    packed[102:111] = unpacked[126:135]
+    packed[111] = 4 | (1 << 3)
+    packed[117] = 24
+    edit_voice = DX7Voice(data=bytes(unpacked))
+    bank_voice = DX7Voice(data=bytes(packed))
+    assert bank_voice.operators == edit_voice.operators
+    actual = DX7Renderer(bank_voice, 69, 93)
+    expected = DX7Renderer(edit_voice, 69, 93)
+    first = actual.render(24000)
+    held = expected.render(24000)
+    assert np.max(np.abs(first)) > 0
+    actual.release()
+    expected.release()
+    check_audio(
+        tmp_path / "dx7-packed-bank.wav",
+        np.concatenate([first, actual.render(24000)]),
+        np.concatenate([held, expected.render(24000)]),
+    )
+    assert bank_voice.data == bytes(packed)
+    assert edit_voice.data == bytes(unpacked)
 
 
 def test_dx7_renderer_has_deterministic_one_second_wav_regression(

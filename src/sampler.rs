@@ -19,6 +19,7 @@ pub(crate) type State = (
     Option<i64>,
     Option<u64>,
     u64,
+    Option<i64>,
 );
 pub(crate) type Selection = (i64, i64, bool, Option<(i64, i64, i64, bool)>);
 type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
@@ -56,10 +57,12 @@ pub(crate) struct Cursor {
     pub(crate) exhausted: Option<i64>,
     pub(crate) repeats_remaining: Option<u64>,
     pub(crate) plays_remaining: u64,
+    pub(crate) end_fade_at: Option<i64>,
+    pub(crate) end_fade_frames: f64,
 }
 
 impl Cursor {
-    pub(crate) fn new(selection: Selection, rate: f64, state: State) -> Self {
+    pub(crate) fn new(selection: Selection, rate: f64, state: State, end_fade_frames: f64) -> Self {
         let (
             index,
             position,
@@ -71,6 +74,7 @@ impl Cursor {
             exhausted,
             repeats_remaining,
             plays_remaining,
+            end_fade_at,
         ) = state;
         Self {
             selection,
@@ -85,7 +89,71 @@ impl Cursor {
             exhausted,
             repeats_remaining,
             plays_remaining,
+            end_fade_at,
+            end_fade_frames,
         }
+    }
+
+    fn remaining(&self) -> Option<f64> {
+        let (start, end, mirror, loop_) = self.selection;
+        let mut distance = if self.direction == 1 {
+            end - self.index
+        } else {
+            self.index - start + 1
+        } as f64;
+        if let Some((a, b, overlap, _)) = loop_.filter(|_| self.looping || self.overlap) {
+            let repeats = if self.looping {
+                self.repeats_remaining?
+            } else {
+                0
+            };
+            let length = b - a;
+            if mirror && repeats > 0 {
+                let boundary = if self.direction == 1 { b - 1 } else { a };
+                let direction = self.direction * if repeats % 2 == 0 { 1 } else { -1 };
+                let last = if direction == -1 { b - 1 } else { a };
+                let tail = if direction == 1 {
+                    end - last
+                } else {
+                    last - start + 1
+                };
+                distance = (self.direction * (boundary - self.index)) as f64
+                    + (repeats - 1) as f64 * (length - 1) as f64
+                    + tail as f64;
+            } else if !mirror {
+                distance += (repeats as f64 + f64::from(self.overlap)) * (length - overlap) as f64;
+            }
+        } else if mirror && loop_.is_none() && self.direction == 1 {
+            distance += (end - start - 1) as f64;
+        }
+        let length = end - start;
+        distance += self.plays_remaining as f64
+            * if mirror {
+                2.0 * length as f64 - 1.0
+            } else {
+                length as f64
+            };
+        Some(distance - self.position / self.rate)
+    }
+
+    pub(crate) fn end_gain(&mut self, frame: i64, step: f64) -> f64 {
+        if self.end_fade_frames == 0.0 {
+            return 1.0;
+        }
+        if self.end_fade_at.is_none()
+            && self
+                .remaining()
+                .is_some_and(|d| d * self.rate / step <= self.end_fade_frames)
+        {
+            self.end_fade_at = Some(frame);
+        }
+        let gain = self.end_fade_at.map_or(1.0, |at| {
+            (1.0 - (frame - at) as f64 / self.end_fade_frames).max(0.0)
+        });
+        if gain == 0.0 {
+            self.exhausted = Some(frame);
+        }
+        gain
     }
 
     pub(crate) fn release(&mut self) {
@@ -302,7 +370,7 @@ impl Cursor {
 }
 
 #[pyfunction]
-#[pyo3(signature = (buffer, selection, state, frame, rate, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None, filter_after_amplitude=false))]
+#[pyo3(signature = (buffer, selection, state, frame, rate, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None, filter_after_amplitude=false, end_fade_frames=0.0))]
 #[allow(clippy::too_many_arguments)]
 pub fn render_sample<'py>(
     py: Python<'py>,
@@ -320,6 +388,7 @@ pub fn render_sample<'py>(
     frames: usize,
     filters: Option<super::filters::Inputs<'py>>,
     filter_after_amplitude: bool,
+    end_fade_frames: f64,
 ) -> PyResult<RenderedSample<'py>> {
     let count = steps.len();
     let channels = routes.shape()[1];
@@ -335,6 +404,7 @@ pub fn render_sample<'py>(
         exhausted,
         repeats_remaining,
         plays_remaining,
+        end_fade_at,
     ) = state;
     if start < 0 || end <= start || end as u64 > buffer.audio.nrows() as u64 {
         return Err(PyValueError::new_err("Invalid native sample slice"));
@@ -358,6 +428,9 @@ pub fn render_sample<'py>(
                 }
         });
     if invalid_loop
+        || !end_fade_frames.is_finite()
+        || end_fade_frames < 0.0
+        || end_fade_at.is_some_and(|at| at < 0 || at > frame)
         || (looping && loop_.is_none())
         || (overlap && !valid_overlap)
         || ![-1, 1].contains(&direction)
@@ -401,6 +474,8 @@ pub fn render_sample<'py>(
         exhausted,
         repeats_remaining,
         plays_remaining,
+        end_fade_at,
+        end_fade_frames,
     };
     let mut settled = initial;
     settled.settle(frame);
@@ -431,6 +506,10 @@ pub fn render_sample<'py>(
                 cursor.release();
             }
             cursor.settle(current);
+            if cursor.exhausted.is_some() {
+                break;
+            }
+            let end_gain = cursor.end_gain(current, step);
             if cursor.exhausted.is_some() {
                 break;
             }
@@ -465,11 +544,12 @@ pub fn render_sample<'py>(
                 for (s, source) in sources.iter().enumerate() {
                     mixed += source * routes[s * channels + c];
                 }
-                output[[i, c]] = if filter_after_amplitude {
-                    mixed
-                } else {
-                    mixed * gain
-                };
+                output[[i, c]] = end_gain
+                    * if filter_after_amplitude {
+                        mixed
+                    } else {
+                        mixed * gain
+                    };
             }
             if let Some((_, _, before, after)) = split.filter(|r| r.1) {
                 cursor.advance(before, current + 1);
@@ -495,6 +575,7 @@ pub fn render_sample<'py>(
                 cursor.exhausted,
                 cursor.repeats_remaining,
                 cursor.plays_remaining,
+                cursor.end_fade_at,
             ),
             filters.states,
         ))

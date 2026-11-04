@@ -120,6 +120,16 @@ cannot qualify this path. WAV regressions cover all four sensitivities, depth
 boundaries, zero depth/level/delay, modulator/carrier feedback ordering, mixed
 pitch/amplitude modulation and aggregate snapshot continuation.
 
+Packed-bank operator decoding was corrected in uFor `217bf7d`: curve byte 11,
+detune/rate-scaling byte 12, sensitivity byte 13, output byte 14,
+mode/coarse byte 15 and fine-frequency byte 16 now follow the 17-byte VMEM
+layout used by the pinned reference unpacker. A 48 kHz one-second regression
+compares equivalent packed and unpacked notes with six distinct operators,
+fixed/ratio frequencies, detune, key/velocity scaling, feedback and release.
+Both imported byte payloads remain unchanged. The existing malformed-output
+regression now targets packed output byte 14. The earlier reference sweeps used
+unpacked VCED inputs, so this correction does not resolve their measured errors.
+
 Fixed-frequency operators now use the low two coarse bits and key-independent,
 positive-only logarithmic detune, following the frequency equations in
 [MSFA's DX7 note implementation](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/dx7note.cc).

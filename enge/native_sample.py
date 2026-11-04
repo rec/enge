@@ -65,6 +65,7 @@ def render(
             state.exhaustion_frame,
             state.repeats_remaining,
             state.plays_remaining,
+            state.end_fade_at,
         ),
         state.frame,
         definition.sample_rate,
@@ -77,6 +78,7 @@ def render(
         frames,
         filters,
         filter_after_amplitude,
+        definition.end_fade_seconds * definition.sample_rate,
     )
     (
         index,
@@ -89,6 +91,7 @@ def render(
         exhaustion,
         repeats_remaining,
         plays_remaining,
+        end_fade_at,
     ) = values
     return (
         audio,
@@ -104,6 +107,7 @@ def render(
             exhaustion_frame=exhaustion,
             repeats_remaining=repeats_remaining,
             plays_remaining=plays_remaining,
+            end_fade_at=end_fade_at,
         ),
         filter_states,
     )

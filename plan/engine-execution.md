@@ -112,11 +112,21 @@ rendering, preserving voice state and remaining plays across snapshots.
 Only the first traversal uses alignment/random offsets; subsequent traversals
 restart at the trimmed boundary. Counts are bounded to 2**64 plays.
 
-The completion audit also found an authored playback field that is not yet
-consumed by the sampler: `end_fade_seconds`.
-These remain required rendering work. The final-fade
-contract leaves loop/repetition interactions unspecified; changing pitch also
-needs an explicit timing decision before implementation.
+The user resolved the `end_fade_seconds` contract on 2026-11-04: fade once at
+final exhaustion, and latch the authored duration when remaining distance at
+the current speed first reaches it. Later pitch changes do not retime the fade.
+Faster traversal can exhaust early; slower traversal retires at zero fade gain.
+The offline NumPy/native and native live renderers now retain fade onset in
+cursor snapshots and multiply final output after filters and alongside existing
+retirement fades. Finite repeats, mirrored turns and committed loop crossfades
+contribute to remaining distance; indefinite loops wait until release permits
+exit. Native processing adds fixed scalar state, with no per-frame allocation.
+
+uFor revision `a4c9a3a` removes the old admission restriction on end fades with
+loops or repeated playback. One-second 48 kHz regressions cover all traversal
+directions, finite repetition and overlap, release from an indefinite loop,
+faster/slower pitch changes, delayed starts, filter ordering, simultaneous
+retirement fades and partitioned snapshot continuation across all three renderers.
 
 ## Dynamic filters
 

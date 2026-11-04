@@ -81,7 +81,17 @@ class LiveRuntime:
         buffer: SampleBuffer,
         selection: tuple[int, int, bool, tuple[int, int, int, bool] | None],
         state: tuple[
-            int, float, float, int, bool, bool, bool, int | None, int | None, int
+            int,
+            float,
+            float,
+            int,
+            bool,
+            bool,
+            bool,
+            int | None,
+            int | None,
+            int,
+            int | None,
         ],
         rate: float,
         routes: np.ndarray,
@@ -93,6 +103,7 @@ class LiveRuntime:
         batch_capacity: int,
         filters: tuple[list[int], np.ndarray, np.ndarray],
         filter_after_amplitude: bool,
+        end_fade_frames: float = 0,
     ) -> int: ...
     def submit(self, source: int, actions: np.ndarray) -> None: ...
     def process_into(self, output: np.ndarray) -> None: ...
@@ -388,7 +399,17 @@ class SampleBuffer:
     def __init__(self, samples: np.ndarray) -> None: ...
 
 type SampleState = tuple[
-    int, float, float, Literal[-1, 1], bool, bool, bool, int | None, int | None, int
+    int,
+    float,
+    float,
+    Literal[-1, 1],
+    bool,
+    bool,
+    bool,
+    int | None,
+    int | None,
+    int,
+    int | None,
 ]
 
 def render_sample(
@@ -406,6 +427,7 @@ def render_sample(
     frames: int,
     filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
     filter_after_amplitude: bool = False,
+    end_fade_frames: float = 0,
 ) -> tuple[np.ndarray, SampleState, np.ndarray]: ...
 def render_fm(
     rate: float,

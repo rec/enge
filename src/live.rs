@@ -309,6 +309,7 @@ impl LiveRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (buffer, selection, state, rate, routes, initial, attack, release, minimum_hold_frames, voices, batch_capacity, filters, filter_after_amplitude, end_fade_frames=0.0))]
     fn add_sample(
         &mut self,
         py: Python<'_>,
@@ -325,8 +326,11 @@ impl LiveRuntime {
         batch_capacity: usize,
         filters: Inputs<'_>,
         filter_after_amplitude: bool,
+        end_fade_frames: f64,
     ) -> PyResult<usize> {
         if self.frame != 0
+            || !end_fade_frames.is_finite()
+            || end_fade_frames < 0.0
             || voices == 0
             || batch_capacity == 0
             || rate != self.rate
@@ -339,7 +343,7 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Invalid live sample source"));
         }
         let buffer = buffer.borrow(py).clone();
-        let mut cursor = Cursor::new(selection, rate, state);
+        let mut cursor = Cursor::new(selection, rate, state, end_fade_frames);
         cursor.settle(0);
         if cursor.exhausted.is_some() {
             return Err(PyValueError::new_err("Live sample starts exhausted"));
@@ -1502,6 +1506,8 @@ impl SourceRuntime {
             }
             (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
                 if runtime.routes != state.routes
+                    || runtime.initial_cursor.end_fade_frames
+                        != state.initial_cursor.end_fade_frames
                     || runtime.initial_cursor.selection != state.initial_cursor.selection
                     || runtime.initial_cursor.repeats_remaining
                         != state.initial_cursor.repeats_remaining
@@ -1660,6 +1666,11 @@ impl SampleRuntime {
                     self.active[voice] = false;
                     continue;
                 }
+                let end_gain = cursor.end_gain(frame, step);
+                if cursor.exhausted.is_some() {
+                    self.active[voice] = false;
+                    continue;
+                }
                 let mut following = *cursor;
                 if cursor.position != 0.0 {
                     following.index += following.direction;
@@ -1714,6 +1725,7 @@ impl SampleRuntime {
                     }
                 }
                 let output_gain = fade
+                    * end_gain
                     * if self.filter_after_amplitude {
                         1.0
                     } else {

@@ -29,6 +29,7 @@ class PreparedSample(Model, frozen=True):
     slice: Slice
     playback: Playback = Playback()
     play_count: int = Field(default=1, ge=1, le=2**64)
+    end_fade_seconds: float = Field(default=0, ge=0)
 
     @cached_property
     def native_buffer(self) -> "SampleBuffer":
@@ -55,6 +56,8 @@ class PreparedSample(Model, frozen=True):
 
     @model_validator(mode="after")
     def supported_traversal(self) -> Self:
+        if not isfinite(self.end_fade_seconds * self.sample_rate):
+            raise EngineError("Sample end fade must have a finite duration")
         if self.play_count > 1 and self.playback.mode != PlaybackMode.one_shot:
             raise EngineError("Repeated sample playback requires one_shot mode")
         if self.slice.end_frame > len(self.samples):
@@ -95,6 +98,7 @@ class SampleState(Model, frozen=True):
     exhaustion_frame: int | None = None
     repeats_remaining: int | None = Field(default=None, ge=0, le=2**64 - 1)
     plays_remaining: int = Field(default=0, ge=0, le=2**64 - 1)
+    end_fade_at: int | None = Field(default=None, ge=0)
 
     @classmethod
     def start(cls, definition: PreparedSample) -> Self:
@@ -283,6 +287,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
             return output
         output = np.zeros((frames, len(self.definition.routes[0])))
         if count:
+            end_fades = np.ones(count)
             audio, self.source = sample_frames(
                 sample,
                 self.source,
@@ -290,6 +295,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                 if pitch_ratios is None
                 else pitch_ratios[:count],
                 self.release_frame,
+                end_fades=end_fades,
             )
             amplitude = self.amplitude_samples(count) * self.definition.gain
             if gains is not None:
@@ -314,6 +320,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
             output[:count] = synth.route_samples(audio, self.definition.routes)
             if self.definition.filter_order == FilterOrder.before_amplitude:
                 output[:count] *= amplitude[:, None]
+            output[:count] *= end_fades[:, None]
         if fade is not None:
             output *= fade[:, None]
         self.frame_count += frames
@@ -326,6 +333,7 @@ def sample_frames(
     pitch_ratios: np.ndarray,
     release_frame: Fraction | None = None,
     backend: Literal["numpy", "native"] = "numpy",
+    end_fades: np.ndarray | None = None,
 ) -> tuple[np.ndarray, SampleState]:
     """Read, then advance for each ratio; return audio and independent next state.
 
@@ -333,8 +341,12 @@ def sample_frames(
     sustain and the voice's minimum hold. An enclosing voice handles envelopes,
     gain, routing and stop. Ratios already contain resolved tuning, but not the
     native/output rate factor. One-shot key-release policy belongs to uFor.
+    An optional NumPy end_fades output receives final gains separately so a
+    voice can apply them after its filters; otherwise they multiply the audio.
     """
     steps = pitch_steps(definition, state, pitch_ratios, release_frame)
+    if end_fades is not None and (backend != "numpy" or end_fades.shape != steps.shape):
+        raise EngineError("End fade output requires a matching NumPy frame vector")
     if backend == "native":
         from . import native_sample
 
@@ -366,6 +378,11 @@ def sample_frames(
         cursor.settle(frame)
         if cursor.exhaustion_frame is not None:
             break
+        end_gain = cursor.end_gain(frame, float(step))
+        if cursor.exhaustion_frame is not None:
+            break
+        if end_fades is not None:
+            end_fades[i] = end_gain
         first = cursor.read()
         if cursor.position:
             # Lookahead uses a separate cursor and cannot commit a wrap, turn,
@@ -380,6 +397,8 @@ def sample_frames(
             )
         else:
             output[i] = first
+        if end_fades is None:
+            output[i] *= end_gain
         if release_frame is not None and frame < release_frame < frame + 1:
             # Multiply the rational time before converting to float. Rounding
             # time first can put an exactly coincident release past a turn.
@@ -403,6 +422,7 @@ def sample_frames(
         exhaustion_frame=cursor.exhaustion_frame,
         repeats_remaining=cursor.repeats_remaining,
         plays_remaining=cursor.plays_remaining,
+        end_fade_at=cursor.end_fade_at,
     )
 
 
@@ -439,6 +459,67 @@ class _Cursor:
         self.exhaustion_frame = state.exhaustion_frame
         self.repeats_remaining = state.repeats_remaining
         self.plays_remaining = state.plays_remaining
+        self.end_fade_at = state.end_fade_at
+
+    def remaining(self) -> float | None:
+        selection = self.definition.slice
+        loop = selection.loop
+        mirror = self.definition.playback.direction == Direction.mirror
+        distance = (
+            selection.end_frame - self.index
+            if self.direction == 1
+            else self.index - selection.start_frame + 1
+        )
+        if loop is not None and (self.looping or self.overlap):
+            repeats = self.repeats_remaining if self.looping else 0
+            if repeats is None:
+                return None
+            length = loop.end_frame - loop.start_frame
+            if mirror and repeats:
+                boundary = (
+                    loop.end_frame - 1 if self.direction == 1 else loop.start_frame
+                )
+                direction = self.direction * (-1 if repeats % 2 else 1)
+                last = loop.end_frame - 1 if direction == -1 else loop.start_frame
+                tail = (
+                    selection.end_frame - last
+                    if direction == 1
+                    else last - selection.start_frame + 1
+                )
+                distance = (
+                    self.direction * (boundary - self.index)
+                    + (repeats - 1) * (length - 1)
+                    + tail
+                )
+            elif not mirror:
+                distance += (repeats + int(self.overlap)) * (
+                    length - loop.crossfade_frames
+                )
+        elif mirror and loop is None and self.direction == 1:
+            distance += selection.end_frame - selection.start_frame - 1
+        length = selection.end_frame - selection.start_frame
+        distance += self.plays_remaining * (2 * length - 1 if mirror else length)
+        return distance - self.position / self.definition.sample_rate
+
+    def end_gain(self, frame: int, step: float) -> float:
+        duration = self.definition.end_fade_seconds * self.definition.sample_rate
+        if duration == 0:
+            return 1.0
+        if self.end_fade_at is None:
+            remaining = self.remaining()
+            if (
+                remaining is not None
+                and remaining * self.definition.sample_rate / step <= duration
+            ):
+                self.end_fade_at = frame
+        gain = (
+            1.0
+            if self.end_fade_at is None
+            else max(0.0, 1 - (frame - self.end_fade_at) / duration)
+        )
+        if gain == 0:
+            self.exhaustion_frame = frame
+        return gain
 
     def take_repeat(self) -> bool:
         if self.repeats_remaining == 0:

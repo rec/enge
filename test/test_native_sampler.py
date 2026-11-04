@@ -118,7 +118,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
     actual, state, _ = _native.render_sample(
         buffer,
         (0, 48000, False, None),
-        (0, 0, 0, 1, False, False, False, None, None, 0),
+        (0, 0, 0, 1, False, False, False, None, None, 0, None),
         origin,
         48000,
         np.full(48000, 48000.0),
@@ -130,7 +130,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
         48000,
     )
     check_audio(tmp_path / "owned-sample.wav", actual, expected)
-    assert state == (48000, 0, 0, 1, False, False, True, None, None, 0)
+    assert state == (48000, 0, 0, 1, False, False, True, None, None, 0, None)
     tail, ended, _ = _native.render_sample(
         buffer,
         (0, 48000, False, None),
@@ -146,7 +146,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
         1,
     )
     assert not np.any(tail)
-    assert ended[-3] == origin + 48000
+    assert ended[-4] == origin + 48000
     assert not np.shares_memory(actual, original)
 
 
@@ -182,6 +182,7 @@ def test_native_sample_rejects_invalid_inputs(invalid: str) -> None:
         None,
         None,
         0,
+        None,
     )
     steps = np.array([float("inf") if invalid == "steps" else 48000], dtype=np.float64)
     with pytest.raises(ValueError):
