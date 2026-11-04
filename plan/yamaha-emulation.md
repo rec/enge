@@ -88,6 +88,19 @@ hold), which is implemented in the pinned MSFA reference. Validation does not
 implement transpose. The note-level phase ownership added below implements
 oscillator-sync reset and offline polyphonic sync-off allocation.
 
+A transpose audit of pinned Dexed revision
+`fea2f0f0f2c397799f59b27eb11c038cd34b22c5` finds that its
+[standard-tuning shift](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/Tuning.cpp)
+is the patch transpose minus 24. Its
+[note admission](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/PluginProcessor.cpp)
+applies that shift before calling the note renderer, whose
+[operator preparation](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/msfa/dx7note.cc)
+uses the resulting key for level scaling, envelope rate scaling and ratio
+frequency. This supports transposed-key intrinsic scaling for the provisional
+DX7 model. It does not establish TX81Z hardware behavior or the desired handling
+of pitches outside MIDI 0–127. The enge behavior decision remains pending;
+portable key bindings need not change with intrinsic Yamaha scaling.
+
 The user approved a caller-owned shared Yamaha clock/LFO context on 2026-11-04.
 `DX7LFOContext` now emits normalized waveform/delay rows once per render interval;
 the caller passes those same rows to each note's `render(frames, rows)` call.
