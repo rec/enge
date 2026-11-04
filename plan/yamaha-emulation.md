@@ -136,8 +136,15 @@ positive-only logarithmic detune, following the frequency equations in
 One-second 48 kHz regressions cover repeated decades, different played keys and
 negative/neutral/positive detune. The renderer still uses floating-point
 oscillators; these checks do not establish bit-exact hardware equivalence.
-Ratio-mode detune retains the existing approximation and still needs reference
-qualification.
+Ratio-mode detune now applies the existing Dexed measured-fit coefficients to
+log-frequency, as approved on 2026-11-04. The former implementation incorrectly
+used the fitted value as a linear frequency multiplier. The
+[detune audit](../doc/yamaha-reference/README.md#ratio-mode-detune-audit)
+records the discrepancy and the difference from MSFA's constant-cents model.
+One-second 48 kHz WAV regressions use independently calculated frequency anchors
+at low, middle and high keys, negative/neutral/positive detune, coarse/fine ratio
+scaling and JSON snapshot replay. This is the continuous Dexed fit; Q24 pitch
+rounding, frequency-table quantization and hardware qualification remain work.
 
 Implement a dedicated Yamaha renderer for the DX7 and TX81Z instead of
 projecting their patches into the general FM voice profile. The general graph

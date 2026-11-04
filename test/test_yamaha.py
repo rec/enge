@@ -803,6 +803,42 @@ def test_fixed_operators_repeat_decades_and_ignore_played_key(
         check_audio(tmp_path / "fixed-negative-detune.wav", actual, neutral)
 
 
+@pytest.mark.parametrize(
+    "note,positive_hz",
+    [(21, 27.788284414879204), (69, 441.73227187499987), (108, 4192.235613457401)],
+)
+@pytest.mark.parametrize("detune", [0, 7, 14])
+@pytest.mark.parametrize("coarse,fine", [(0, 0), (3, 37)])
+def test_ratio_detune_uses_key_dependent_log_frequency_fit(
+    tmp_path: Path, note: int, positive_hz: float, detune: int, coarse: int, fine: int
+) -> None:
+    # Positive anchors were evaluated with 50-digit decimal arithmetic from
+    # Dexed's continuous fit. Opposite detune has the reciprocal frequency ratio.
+    neutral = 440 * 2 ** ((note - 69) / 12)
+    frequency = {0: neutral**2 / positive_hz, 7: neutral, 14: positive_hz}[detune]
+    frequency *= (0.5 if coarse == 0 else coarse) * (1 + fine / 100)
+    data = bytearray(voice().data)
+    for i in range(0, 126, 21):
+        data[i + 16] = 67
+        data[i + 18 : i + 21] = bytes([coarse, fine, detune])
+    patch = DX7Voice(data=bytes(data))
+    renderer = DX7Renderer(patch, note=note, velocity=100)
+    first = renderer.render(1001)
+    saved = DX7Snapshot.model_validate_json(renderer.snapshot().model_dump_json())
+    tail = renderer.render(46999)
+    envelope = DX7Envelope.start(patch.operator(1), note, 100, 48000)
+    amplitude = np.array([6 * envelope.sample() for _ in range(48000)])
+    phases = np.zeros(48000)
+    for i in range(1, len(phases)):
+        phases[i] = (phases[i - 1] + frequency / 48000) % 1
+    expected = amplitude * np.sin(2 * np.pi * phases)
+    check_audio(
+        tmp_path / "ratio-detune.wav", np.concatenate([first, tail]), expected[:, None]
+    )
+    renderer.restore(saved)
+    np.testing.assert_array_equal(renderer.render(46999), tail)
+
+
 def voice() -> DX7Voice:
     data = bytearray(155)
     for start in range(0, 126, 21):

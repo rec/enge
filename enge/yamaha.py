@@ -802,9 +802,13 @@ def _operator_frequency(operator: DX7Operator, note: int) -> float:
             * 2**detune_octaves
         )
     note_frequency = 440 * 2 ** ((note - 69) / 12)
-    detune = 0.0209 * exp(-0.396 * log2(note_frequency)) * (operator.detune - 7) / 7
+    log_frequency = log2(note_frequency)
+    # Dexed's measured fit scales log-frequency, not frequency directly.
+    detune = (
+        0.0209 * exp(-0.396 * log_frequency) * log_frequency * (operator.detune - 7) / 7
+    )
     ratio = 0.5 if operator.coarse == 0 else operator.coarse
-    return note_frequency * ratio * (1 + operator.fine / 100) * (1 + detune)
+    return note_frequency * ratio * (1 + operator.fine / 100) * 2**detune
 
 
 def _scale_output_level(level: int) -> int:
