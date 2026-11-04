@@ -93,7 +93,7 @@ DX7 notes now apply their own PMD/PMS calibration to shared LFO rows in octave
 units before phase advancement. Effective pitch modulation requires explicit
 rows; missing/invalid rows are rejected before note state advances. Zero
 sensitivities leave their corresponding modulation depths inaudible.
-TX81Z LFO integration and full engine ownership remain work.
+Full engine ownership remains work; TX81Z LFO status is recorded below.
 One-second 48 kHz WAV regressions cover all waveform shapes, known random values,
 rate/delay calibration, sync, fractional continuation, pitch calibration and two
 simultaneous notes restoring their clock and note snapshots together.
@@ -160,12 +160,41 @@ The initial supported pitch span after transpose is MIDI 13–108 (chip key code
 0–31); out-of-span notes are rejected. Velocity scaling now applies the measured
 KVS curves to positive note-on velocities. Key-level scaling now applies the
 measured three-key groups when transpose is neutral. Non-neutral transpose with
-key-level scaling and LFO modulation remain rejected. Velocity has no gain effect
+key-level scaling remains rejected. Zero-delay LFO modulation now uses explicit
+shared OPZ rows as described below. Velocity has no gain effect
 when KVS is zero; its existing zero-velocity metadata behavior remains unchanged
 pending the note-on contract decision. This is an incomplete
 profile, not completion of the full TX81Z/WT11 requirement. Controller integration,
 DAC/integer quantization and hardware/reference
 qualification remain work.
+
+The user approved a provisional OPZ LFO context on 2026-11-04.
+`TX81ZLFOContext` now prepares the measured VCED speed/PMD/AMD register mappings
+and emits signed PM and unsigned AM chip-unit rows. Sample-and-hold uses the
+measured alternate speed mapping. The single-mode model advances LFO1 plus the
+reset-configured secondary clock, retaining their shared noise history and latch
+table. Key-down sync resets the primary counter without rewinding noise or the
+chip clock. JSON snapshots retain all of that state and reject a different
+clock definition.
+
+Register maps follow [androuet's hardware register measurements](https://nornand.hatenablog.com/entry/2020/11/25/171659).
+Clock, waveform, noise and modulation arithmetic follow pinned
+[ymfm OPZ](https://github.com/aaronsgiles/ymfm/blob/81aec25ccbb98f4873a255f7551ac4dadac59b4a/src/ymfm_opz.cpp).
+Note rendering consumes the same shared rows for simultaneous voices, applies
+PMS before ratio frequency multiplication while leaving fine-detune offsets
+outside it, and bypasses fixed-frequency operators. AMS contributes envelope
+attenuation only to operators with AME enabled. Effective modulation requires
+explicit rows; malformed rows are rejected before voice state advances.
+
+The [pinned LFO comparison](../doc/yamaha-reference/README.md) has exact agreement
+for all 48,000 PM/AM rows of each of four waveforms. Its compressed reference
+rows are used by one-second WAV regressions alongside fractional-clock/noise
+continuation, fixed-frequency bypass, detune, AME/AMS gating and two-note
+snapshot replay. This qualifies the component against that software model,
+not hardware or the complete TX81Z renderer. Nonzero LFO delay remains explicitly
+rejected by the context; its measured timing and incomplete delayed-AMD curve
+still require implementation/qualification. Multitimbral LFO routing, software
+LFOs and full engine integration also remain work.
 
 VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
 documented parameter ranges before note preparation. Unused payload bytes and

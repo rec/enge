@@ -1,19 +1,53 @@
-"""Caller-owned DX7 LFO clock, shared by independently rendered notes.
+# The OPZ LFO arithmetic below is adapted from ymfm under this license:
+# BSD 3-Clause License
+#
+# Copyright (c) 2021, Aaron Giles
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+"""Caller-owned Yamaha LFO clocks, shared by independently rendered notes.
 
 Rate/delay calibration and waveform numbering follow the pinned MSFA model.
 Source: google/music-synthesizer-for-android, f67d41d, lfo.cc (Google Inc.).
-The clock advances per output frame; this does not reproduce block-held controls
-or establish hardware equivalence.
+The DX7 clock advances per output frame, without reproducing block-held controls.
+The TX81Z clock follows ymfm's provisional OPZ model and measured register maps.
+Neither implementation establishes hardware equivalence.
 """
 
 from math import pi, sin
+from typing import Annotated
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+from ufor import tx81z
 from ufor.dx7 import DX7Voice
 
 from .synth import EngineError
-from .yamaha import dx7_global_parameters
+from .yamaha import dx7_global_parameters, tx81z_lfo_registers
 
 
 class DX7LFOSnapshot(BaseModel, frozen=True):
@@ -125,6 +159,129 @@ class DX7LFOContext:
                 "delay_position": delay_position,
                 "delay_remainder": delay_remainder,
                 "random_state": random_state,
+            }
+        )
+        return output
+
+
+class TX81ZLFOSnapshot(BaseModel, frozen=True):
+    rate: int = Field(ge=0, le=255)
+    pitch_depth: int = Field(ge=0, le=127)
+    amplitude_depth: int = Field(ge=0, le=127)
+    sync: bool
+    waveform: int = Field(ge=0, le=3)
+    sample_rate: int = Field(gt=0)
+    clock_hz: int = Field(gt=0)
+    frame: int = Field(default=0, ge=0)
+    counter: int = Field(default=0, ge=0, lt=2**32)
+    secondary_counter: int = Field(default=0, ge=0, lt=2**32)
+    clock_remainder: int = Field(default=0, ge=0)
+    noise_lfsr: int = Field(default=1, ge=0, lt=2**32)
+    noise_table: list[Annotated[int, Field(ge=0, le=255)]] = Field(
+        default_factory=lambda: [0] * 256, min_length=256, max_length=256
+    )
+    pitch: int = Field(default=0, ge=-128, le=127)
+    amplitude: int = Field(default=0, ge=0, le=255)
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class TX81ZLFOContext:
+    """Single-mode OPZ LFO1, with the secondary LFO left at reset settings.
+
+    Rows contain depth-scaled signed PM and unsigned AM chip units. The clock
+    and noise model follow ymfm provisionally; delayed modulation is unsupported.
+    """
+
+    def __init__(
+        self, voice: tx81z.TX81ZVoice, sample_rate: int = 48000, clock_hz: int = 3579545
+    ) -> None:
+        rate, pitch, amplitude = tx81z_lfo_registers(voice)
+        if voice.data[55]:
+            raise EngineError("TX81Z LFO delay is not implemented")
+        self.state = TX81ZLFOSnapshot(
+            rate=rate,
+            pitch_depth=pitch,
+            amplitude_depth=amplitude,
+            sync=bool(voice.data[58]),
+            waveform=voice.data[59],
+            sample_rate=sample_rate,
+            clock_hz=clock_hz,
+        )
+
+    def snapshot(self) -> TX81ZLFOSnapshot:
+        return self.state.model_copy(deep=True)
+
+    def restore(self, snapshot: TX81ZLFOSnapshot) -> None:
+        if (
+            snapshot.rate != self.state.rate
+            or snapshot.pitch_depth != self.state.pitch_depth
+            or snapshot.amplitude_depth != self.state.amplitude_depth
+            or snapshot.sync != self.state.sync
+            or snapshot.waveform != self.state.waveform
+            or snapshot.sample_rate != self.state.sample_rate
+            or snapshot.clock_hz != self.state.clock_hz
+        ):
+            raise EngineError(
+                "TX81Z LFO snapshot belongs to a different clock definition"
+            )
+        self.state = snapshot.model_copy(deep=True)
+
+    def keydown(self) -> None:
+        if self.state.sync:
+            self.state = self.state.model_copy(update={"counter": 0})
+
+    def advance(self, frames: int) -> np.ndarray:
+        if frames < 0:
+            raise EngineError("TX81Z LFO frame count must be nonnegative")
+        state = self.state
+        counter, secondary = state.counter, state.secondary_counter
+        remainder, noise = state.clock_remainder, state.noise_lfsr
+        table = state.noise_table.copy()
+        pitch, amplitude = state.pitch, state.amplitude
+        increment = (16 | (state.rate & 15)) << (state.rate >> 4)
+        output = np.empty((frames, 2), dtype=np.int64)
+        for frame in range(frames):
+            ticks, remainder = divmod(
+                remainder + state.clock_hz, 64 * state.sample_rate
+            )
+            for _ in range(ticks):
+                for _ in range(2):
+                    noise = (noise << 1) & (2**32 - 1)
+                    noise |= ((noise >> 17) ^ (noise >> 14) ^ 1) & 1
+                counter = (counter + increment) & (2**32 - 1)
+                secondary = (secondary + 16) & (2**32 - 1)
+                index = (counter >> 22) & 255
+                noise_value = (noise >> 17) & 255
+                table[(index + 1) & 255] = noise_value
+                table[(((secondary >> 22) & 255) + 1) & 255] = noise_value
+                match state.waveform:
+                    case 0:
+                        am, pm = index ^ 255, index
+                    case 1:
+                        am = 0 if index & 128 else 255
+                        pm = am ^ 128
+                    case 2:
+                        am = (
+                            (index << 1) if index & 128 else ((index ^ 255) << 1)
+                        ) & 255
+                        pm = am if index & 64 else (am ^ 255)
+                    case _:
+                        am = pm = table[index]
+                signed_pm = pm if pm < 128 else pm - 256
+                pitch = (signed_pm * state.pitch_depth) >> 7
+                amplitude = (am * state.amplitude_depth) >> 7
+            output[frame] = pitch, amplitude
+        self.state = state.model_copy(
+            update={
+                "frame": state.frame + frames,
+                "counter": counter,
+                "secondary_counter": secondary,
+                "clock_remainder": remainder,
+                "noise_lfsr": noise,
+                "noise_table": table,
+                "pitch": pitch,
+                "amplitude": amplitude,
             }
         )
         return output

@@ -30,7 +30,7 @@ from enge.yamaha import (
     [
         ("voice", 5, 100),
         ("voice", 9, 8),
-        ("voice", 56, 1),
+        ("voice", 56, 100),
         ("additional", 20, 8),
         ("voice", 10, 100),
         ("additional", 3, 8),

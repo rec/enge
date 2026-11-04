@@ -1,4 +1,4 @@
-# Initial DX7 reference comparison
+# Yamaha reference comparisons
 
 Measured on 2026-11-03 against MSFA revision
 `f67d41d313b7dc85f6fb99e79e515cc9d208cfff`, using enge `59287dd`.
@@ -128,7 +128,48 @@ field also cannot express those return paths. Extending that shared topology
 contract requires a decision; comparison against this MSFA revision cannot
 qualify those loops even after enge implements them.
 
-## Reproducing the reference
+## TX81Z single-mode LFO comparison
+
+The TX81Z shared LFO context is compared against ymfm revision
+`81aec25ccbb98f4873a255f7551ac4dadac59b4a`, using the included
+[register-level harness](render-ymfm-lfo.cc). It clocks `opz_registers` directly,
+with the secondary LFO left at reset settings. The master clock is 3,579,545 Hz,
+with one native step per 64 clocks; an integer remainder converts this to 48 kHz
+output rows. Each case contains 48,000 signed-PM/unsigned-AM pairs. No phase or
+noise reset is injected after initialization.
+
+All cases use authored speed 75, PMD 99 and AMD 99. The measured register values
+are rate 242 for saw/square/triangle and 193 for sample-and-hold, with PMD/AMD
+both 127. The harness selects channel AMS 1 so the AM result is the raw,
+depth-scaled LFO output. Waveform numbers are 0, 1, 2 and 3 respectively.
+
+| Waveform | Compared PM/AM rows | Maximum absolute error |
+| --- | ---: | ---: |
+| Saw | 48,000 | 0 |
+| Square | 48,000 | 0 |
+| Triangle | 48,000 | 0 |
+| Sample-and-hold | 48,000 | 0 |
+
+The [compressed oracle](../../test/data/tx81z-lfo.npz) retains the reference as
+four portable NumPy arrays named `wave0` through `wave3`, each containing signed
+16-bit pairs without loss of register values. Tests compare complete rows,
+write paired one-second 48 kHz WAVs and check partitioned JSON continuation.
+The initial chip noise state, shared latch table and secondary counter matter
+for sample-and-hold; reproducing only a free-running random value is insufficient.
+
+Compile the harness as C++17 with `-O2`, `ymfm_opz.cpp` and the pinned upstream
+include directory. Its five arguments are rate, PMD, AMD, waveform and output
+filename. The output is 48,000 native-endian signed 32-bit pairs. For example,
+the saw case uses `242 127 127 0 output.i32`; sample-and-hold uses
+`193 127 127 3 output.i32`. The upstream source files used by the harness are
+`ymfm_opz.cpp`, `ymfm_opz.h`, `ymfm_fm.ipp`, `ymfm_fm.h` and `ymfm.h`.
+
+This is software-model conformance of the single-mode LFO component. It does
+not qualify note synthesis, nonzero delay, multitimbral routing, the firmware's
+software LFO or physical hardware behavior. ymfm's documented OPZ uncertainties
+remain applicable.
+
+## Reproducing the DX7 reference
 
 Use the pinned [upstream source](https://github.com/google/music-synthesizer-for-android/tree/f67d41d313b7dc85f6fb99e79e515cc9d208cfff).
 Compile the included harness with the upstream JNI directory on the include

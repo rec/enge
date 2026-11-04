@@ -152,7 +152,8 @@ class TX81ZSnapshot(BaseModel, frozen=True):
 class TX81ZRenderer:
     """Offline provisional four-operator note renderer with explicit edit buffers.
 
-    LFO modulation and key-level scaling with non-neutral transpose are unsupported.
+    Zero-delay LFO modulation uses caller-owned OPZ rows. Key-level scaling with
+    non-neutral transpose remains unsupported.
     Frequencies and waveforms use the nominal floating-point OPZ model.
     """
 
@@ -169,11 +170,7 @@ class TX81ZRenderer:
                 raise EngineError(diagnostic)
         if not 0 <= note <= 127 or not 0 <= velocity <= 127 or sample_rate <= 0:
             raise EngineError("Invalid TX81Z note, velocity or sample rate")
-        for index, maximum in enumerate(_TX_GLOBAL_LIMITS, start=54):
-            if voice.data[index] > maximum:
-                raise EngineError(
-                    f"TX81Z VCED parameter {index} must be from 0 through {maximum}"
-                )
+        _, self.lfo_pitch_depth, self.lfo_amplitude_depth = tx81z_lfo_registers(voice)
         for index, maximum in enumerate([7, 99, 99], start=20):
             if additional.data[index] > maximum:
                 raise EngineError(
@@ -183,8 +180,11 @@ class TX81ZRenderer:
             raise EngineError(
                 "TX81Z key-level scaling with non-neutral transpose is not implemented"
             )
-        if voice.data[56] or voice.data[57]:
-            raise EngineError("TX81Z LFO modulation is not implemented")
+        self.pitch_modulation_sensitivity = voice.data[60]
+        self.amplitude_modulation_sensitivity = voice.data[61]
+        self.amplitude_modulation_enabled = np.array(
+            [o.amplitude_modulation_enable for o in voice.operators]
+        )
         sounding_note = note + voice.data[62] - 24
         key_code = (sounding_note - 13) // 3
         if not 0 <= key_code <= 31:
@@ -209,20 +209,27 @@ class TX81ZRenderer:
             sample_rate=sample_rate,
         )
         frequencies = []
+        detune_offsets = []
         for number in range(1, 5):
             operator = voice.operator(number)
             extension = additional.operator(number)
             frequency = tx81z_base_frequency(operator, extension, sounding_note)
+            offset = 0.0
             if not extension.fixed_frequency:
                 multiple = _TX_RATIO_COARSE[operator.coarse][1] + extension.fine / 16
-                frequency += (
+                offset = (
                     tx81z_detune_step(operator.detune, key_code)
                     * multiple
                     * self.envelopes.clock_hz
                     / (64 * 2**20)
                 )
-            frequencies.append(frequency)
+            frequencies.append(frequency + offset)
+            detune_offsets.append(offset)
         self.frequencies = np.array(frequencies)
+        self.detune_offsets = np.array(detune_offsets)
+        self.ratio_operators = [
+            not additional.operator(i).fixed_frequency for i in range(1, 5)
+        ]
         self.levels = np.array(
             [
                 tx81z_output_gain(voice.operator(i), voice.algorithm, note, velocity)
@@ -232,14 +239,57 @@ class TX81ZRenderer:
         self.waveforms = [additional.operator(i).waveform for i in range(1, 5)]
         self.operators = TX81ZState()
 
-    def render(self, frames: int) -> np.ndarray:
+    def render(self, frames: int, modulation: np.ndarray | None = None) -> np.ndarray:
+        if frames < 0:
+            raise EngineError("TX81Z frame count must be nonnegative")
+        if modulation is None:
+            if (
+                self.lfo_pitch_depth
+                and self.pitch_modulation_sensitivity
+                and any(self.ratio_operators)
+            ) or (
+                self.lfo_amplitude_depth
+                and self.amplitude_modulation_sensitivity
+                and np.any(self.amplitude_modulation_enabled)
+            ):
+                raise EngineError("TX81Z modulation requires shared LFO rows")
+        elif (
+            modulation.shape != (frames, 2)
+            or not np.all(np.isfinite(modulation))
+            or np.any(modulation != np.floor(modulation))
+            or np.any((modulation[:, 0] < -128) | (modulation[:, 0] > 127))
+            or np.any((modulation[:, 1] < 0) | (modulation[:, 1] > 255))
+        ):
+            raise EngineError("Invalid TX81Z shared LFO rows")
+        frequencies = np.broadcast_to(self.frequencies, (frames, 4))
         attenuation = self.envelopes.attenuation_samples(frames)
+        if modulation is not None:
+            sensitivity = self.pitch_modulation_sensitivity
+            if sensitivity:
+                pm = modulation[:, 0].astype(np.int64)
+                delta = (
+                    pm >> (6 - sensitivity)
+                    if sensitivity < 6
+                    else pm << (sensitivity - 5)
+                )
+                ratio = 2 ** (delta / 768)
+                frequencies = frequencies.copy()
+                for i in range(4):
+                    if self.ratio_operators[i]:
+                        frequencies[:, i] = (
+                            self.frequencies[i] - self.detune_offsets[i]
+                        ) * ratio + self.detune_offsets[i]
+            if self.amplitude_modulation_sensitivity:
+                am = modulation[:, 1].astype(np.int64) << (
+                    self.amplitude_modulation_sensitivity - 1
+                )
+                attenuation += am[:, None] * self.amplitude_modulation_enabled
         gains = 2 ** (-attenuation / 64) * self.levels
         output, self.operators = tx81z_operator_samples(
             self.voice.algorithm,
             self.waveforms,
             self.operators,
-            np.broadcast_to(self.frequencies, (frames, 4)),
+            frequencies,
             gains,
             self.sample_rate,
             self.voice.feedback,
@@ -574,6 +624,22 @@ def dx7_global_parameters(voice: DX7Voice) -> list[int]:
         if value > maximum:
             raise EngineError(f"DX7 parameter {index} must be from 0 through {maximum}")
     return parameters
+
+
+def tx81z_lfo_registers(voice: tx81z.TX81ZVoice) -> tuple[int, int, int]:
+    """Validate globals and prepare native LFS, PMD and AMD register values."""
+    for index, maximum in enumerate(_TX_GLOBAL_LIMITS, start=54):
+        if voice.data[index] > maximum:
+            raise EngineError(
+                f"TX81Z VCED parameter {index} must be from 0 through {maximum}"
+            )
+    speed = voice.data[54]
+    rate = (660 * speed) >> 8 if voice.data[59] == 3 else _TX_LFO_REGISTERS[speed][0]
+    return (
+        rate,
+        _TX_LFO_REGISTERS[voice.data[56]][1],
+        _TX_LFO_REGISTERS[voice.data[57]][2],
+    )
 
 
 def tx81z_detune_step(detune: int, key_code: int) -> int:
@@ -1474,3 +1540,108 @@ _DX7_GLOBAL_LIMITS = [
 
 # Hexter's provisional full-depth amplitude reduction ratios for AMS 0..3.
 _DX7_AMPLITUDE_SENSITIVITIES = [0.0, 0.238058, 0.460510, 1.0]
+
+# Measured VCED 0..99 mappings: LFS (waves 0..2), PMD, AMD.
+# https://nornand.hatenablog.com/entry/2020/11/25/171659
+_TX_LFO_REGISTERS = [
+    (0, 0, 0),
+    (31, 0, 0),
+    (74, 2, 0),
+    (89, 3, 0),
+    (106, 4, 0),
+    (114, 5, 1),
+    (125, 7, 1),
+    (133, 8, 1),
+    (138, 9, 1),
+    (144, 11, 2),
+    (148, 12, 2),
+    (153, 13, 2),
+    (157, 14, 2),
+    (161, 16, 3),
+    (165, 17, 3),
+    (167, 18, 3),
+    (171, 20, 3),
+    (173, 21, 4),
+    (176, 22, 4),
+    (178, 23, 4),
+    (181, 25, 5),
+    (184, 26, 5),
+    (185, 27, 5),
+    (188, 29, 6),
+    (189, 30, 6),
+    (191, 31, 6),
+    (194, 33, 7),
+    (195, 34, 7),
+    (197, 35, 7),
+    (198, 36, 7),
+    (200, 38, 8),
+    (201, 39, 8),
+    (203, 40, 8),
+    (205, 42, 9),
+    (206, 43, 9),
+    (207, 44, 9),
+    (208, 45, 10),
+    (210, 47, 10),
+    (211, 48, 10),
+    (212, 49, 11),
+    (213, 51, 11),
+    (214, 52, 12),
+    (216, 53, 12),
+    (217, 54, 12),
+    (218, 56, 13),
+    (219, 57, 13),
+    (220, 58, 14),
+    (221, 60, 14),
+    (222, 61, 15),
+    (223, 62, 15),
+    (223, 63, 16),
+    (225, 65, 16),
+    (226, 66, 17),
+    (226, 67, 17),
+    (227, 69, 18),
+    (228, 70, 18),
+    (229, 71, 19),
+    (230, 72, 19),
+    (231, 74, 20),
+    (231, 75, 20),
+    (232, 76, 21),
+    (233, 78, 21),
+    (234, 79, 22),
+    (234, 80, 23),
+    (235, 82, 23),
+    (236, 83, 24),
+    (237, 84, 25),
+    (237, 85, 25),
+    (238, 87, 26),
+    (238, 88, 27),
+    (239, 89, 28),
+    (240, 91, 28),
+    (240, 92, 29),
+    (241, 93, 30),
+    (242, 94, 31),
+    (242, 96, 32),
+    (243, 97, 33),
+    (244, 98, 34),
+    (244, 100, 35),
+    (245, 101, 36),
+    (246, 102, 37),
+    (246, 103, 38),
+    (247, 105, 40),
+    (247, 106, 41),
+    (248, 107, 42),
+    (249, 109, 44),
+    (249, 110, 45),
+    (250, 111, 48),
+    (250, 112, 49),
+    (251, 114, 51),
+    (251, 115, 54),
+    (252, 116, 56),
+    (252, 118, 60),
+    (253, 119, 62),
+    (253, 120, 67),
+    (253, 121, 70),
+    (254, 123, 77),
+    (255, 124, 86),
+    (255, 125, 96),
+    (255, 127, 127),
+]
