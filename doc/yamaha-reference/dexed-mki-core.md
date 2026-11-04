@@ -385,3 +385,76 @@ work to envelope trajectories, block attenuation interpolation and silence
 admission, followed by modulation integration. Neither modified reference is
 adopted as hardware truth, and neither comparison passes whole-note
 qualification. Do not replace the failing full-note fixtures with these controls.
+
+## Matched per-frame attenuation trajectories
+
+The next control removes envelope evolution and block interpolation from the
+comparison by supplying identical per-frame attenuation to both cores. It uses
+the unchanged production `DX7Renderer` from enge `51fca69`, with a separate copy
+of its public amplitude-envelope state to capture the inputs ahead of rendering.
+No reference samples come from the enge oscillator implementation.
+
+For each of 48,000 frames, the capture advances the six envelope copies and
+stores `16384 - (level >> 14)` in OP1 through OP6 order. Key-up occurs before
+frame 24,000. The note renderer independently processes the original patch,
+including its envelopes. The
+[reference harness](render-dexed-mki-trajectory.cc) consumes those captured rows
+and calls the pinned upstream `mkiSin` kernel with an independently traversed
+exported graph and feedback history. Its phase increment is exactly 153791 Q24
+units per frame, as in the prior comparisons. Compile with signed wrap enabled.
+
+Both paths use enge's existing per-frame silence policy: attenuation above
+16284 yields zero. That policy is an explicit controlled input, not something
+this experiment qualifies against Dexed's block admission or hardware. The
+reference graph scheduler was separately checked against the complete Mk I
+block engine for constant gains above; this experiment exercises its dynamic
+inputs without adopting the block engine's interpolation.
+
+Algorithms 4 and 6 use feedback seven; algorithm 32 uses feedback zero. Each
+runs three profiles:
+
+- Profile 0 is the prior fast envelope.
+- Profile 1 is the prior equal-level hold envelope.
+- Profile 2 gives the six operators distinct moving envelopes. For slot index
+  `i = 0..5` in VCED order OP6 through OP1, rates are
+  `[70 + 4*i, 30 + 7*i, 40 + 5*i, 65 + 5*i]` and levels are
+  `[99, 80 - 5*i, 30 + 7*i, 0]`. The authored bytes are retained as
+  `DYN-aa-trajectory-2.vced`.
+
+All **432,000 samples match exactly** in the
+[complete results](dexed-mki-matched-trajectory.csv). A sensitivity control
+increases only OP6's attenuation by one 1/1024-octave unit for frames
+1,000–1,255. Every case changes: mismatch counts range from 223 to 22,962.
+Thus this comparison is sensitive to small trajectory differences, including
+their continuing effect on high-feedback histories.
+
+The captured inputs, patch bytes, case parameters and independent reference
+outputs are retained in `test/data/dx7-mki-dynamic.npz`, SHA-256
+`2326047c946991aa3115d00a6acb1b3e7432eb7c0bb3183b5acf654fad1ab3ee`.
+Arrays `attenuation0` through `attenuation2` contain little-endian signed-32-bit
+OP1..OP6 rows; `parameters` lists algorithm, feedback and profile; `patchN`
+contains VCED bytes; `caseN` contains raw signed Q24 reference samples.
+Export a profile array unchanged as native little-endian `int32_t` rows, then
+run the retained harness against the pinned reference directory:
+
+```sh
+c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" render-dexed-mki-trajectory.cc \
+  "$DEXED_CORE/msfa/fm_core.cc" "$DEXED_CORE/msfa/fm_op_kernel.cc" \
+  "$DEXED_CORE/msfa/sin.cc" "$DEXED_CORE/msfa/exp2.cc" \
+  -o /tmp/render-dexed-mki-trajectory
+/tmp/render-dexed-mki-trajectory dx7-feedback-graphs.txt 4 7 \
+  /tmp/attenuation0.i32 /tmp/trajectory-output.i32
+```
+
+The harness requires exactly 48,000 rows and rejects truncated or extra input.
+The nine production regressions render one-second paired 48 kHz WAVs and require
+exact unscaled sample equality. They also replay JSON snapshots from frame
+17,003 through key-up and release. Changing the intentional envelope model may
+require recapturing inputs and rerunning the reference; these captured rows are
+not an independent hardware-envelope oracle.
+
+This closes the tested dynamic-core arithmetic comparison under matched inputs.
+It does not close the original full-note comparisons: envelope trajectories,
+block interpolation, silence admission, controller modulation and hardware
+qualification remain separate. Do not interpret the exact result as evidence
+that the original 43–101% full-note discrepancies have disappeared.

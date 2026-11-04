@@ -99,6 +99,17 @@ interpolation and silence admission require isolation before treating the
 full-note comparisons as passed. The retained patches are experiments, not
 production changes or verified hardware corrections.
 
+The subsequent
+[matched-trajectory comparison](../doc/yamaha-reference/dexed-mki-core.md#matched-per-frame-attenuation-trajectories)
+feeds captured enge envelope attenuation to upstream Mk I integer kernels with
+the same per-frame silence policy. All 432,000 samples across nine fast, held
+and asymmetric-envelope cases match exactly, including algorithms 4 and 6 at
+feedback seven. One-unit attenuation perturbations change every case. Retained
+fixtures and production regressions cover exact audio and JSON replay through
+release. This qualifies the tested dynamic-core arithmetic under controlled
+inputs; it does not independently qualify the captured envelope trajectories or
+resolve the failing whole-note comparisons.
+
 A subsequent [dynamic-envelope comparison](../doc/yamaha-reference/dexed-mki-core.md#dynamic-envelope-comparison)
 combines upstream Dexed envelopes with the Mk I core. It confirms that
 constant-gain agreement does not close attack/release or equal-level timing.
