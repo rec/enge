@@ -153,8 +153,8 @@ class TX81ZSnapshot(BaseModel, frozen=True):
 class TX81ZRenderer:
     """Offline provisional four-operator note renderer with explicit edit buffers.
 
-    Zero-delay LFO modulation uses caller-owned OPZ rows. Key-level scaling with
-    non-neutral transpose remains unsupported.
+    Zero-delay LFO modulation uses caller-owned OPZ rows. Intrinsic key scaling
+    uses the transposed key; snapshots retain the original trigger key.
     Frequencies and waveforms use the nominal floating-point OPZ model.
     """
 
@@ -178,10 +178,6 @@ class TX81ZRenderer:
                 raise EngineError(
                     f"TX81Z ACED parameter {index} must be from 0 through {maximum}"
                 )
-        if voice.data[62] != 24 and any(o.level_scaling for o in voice.operators):
-            raise EngineError(
-                "TX81Z key-level scaling with non-neutral transpose is not implemented"
-            )
         self.pitch_modulation_sensitivity = voice.data[60]
         self.amplitude_modulation_sensitivity = voice.data[61]
         self.amplitude_modulation_enabled = np.array(
@@ -239,7 +235,9 @@ class TX81ZRenderer:
         ]
         self.levels = np.array(
             [
-                tx81z_output_gain(voice.operator(i), voice.algorithm, note, velocity)
+                tx81z_output_gain(
+                    voice.operator(i), voice.algorithm, sounding_note, velocity
+                )
                 for i in range(1, 5)
             ]
         )
@@ -480,6 +478,9 @@ class DX7Renderer:
         parameters = dx7_global_parameters(voice)
         if not 0 <= note <= 127:
             raise EngineError("DX7 note must be from 0 through 127")
+        sounding_note = note + parameters[8] - 24
+        if not 0 <= sounding_note <= 127:
+            raise EngineError("DX7 transposed note must be from 0 through 127")
         if not 0 <= velocity <= 127:
             raise EngineError("DX7 velocity must be from 0 through 127")
         if sample_rate <= 0:
@@ -521,11 +522,11 @@ class DX7Renderer:
             for o in voice.operators
         ]
         self.envelopes = [
-            DX7Envelope.start(operator, note, velocity, sample_rate)
-            for operator in voice.operators
+            DX7Envelope.start(o, sounding_note, velocity, sample_rate)
+            for o in voice.operators
         ]
         self.frequencies = np.array(
-            [_operator_frequency(operator, note) for operator in voice.operators]
+            [_operator_frequency(o, sounding_note) for o in voice.operators]
         )
         if pitch_hz is not None:
             for i, operator in enumerate(voice.operators):

@@ -20,6 +20,7 @@ from enge.yamaha import TX81ZRenderer
         (31, 99, 0, 100, 1),
     ],
 )
+@pytest.mark.parametrize("transpose", [-12, 0, 12])
 def test_tx81z_note_applies_key_and_velocity_attenuation_before_saturation(
     tmp_path: Path,
     note: int,
@@ -27,37 +28,23 @@ def test_tx81z_note_applies_key_and_velocity_attenuation_before_saturation(
     sensitivity: int,
     velocity: int,
     attenuation: int,
+    transpose: int,
 ) -> None:
     raw = bytearray(93)
     for i in range(0, 52, 13):
         raw[i], raw[i + 3], raw[i + 4] = 31, 15, 15
         raw[i + 11], raw[i + 12] = 4, 3
     raw[44], raw[48], raw[49] = scaling, sensitivity, 99
-    raw[52], raw[62] = 7, 24
+    raw[52], raw[62] = 7, 24 + transpose
     voice = tx81z.TX81ZVoice(data=bytes(raw))
     additional = tx81z.TX81ZAdditional(data=bytes(23))
-    actual = TX81ZRenderer(voice, additional, note, velocity).render(48000)
+    actual = TX81ZRenderer(voice, additional, note - transpose, velocity).render(48000)
     frequency = 440 * 2 ** ((note - 69) / 12)
     # Algorithm 8 adds 16 TL to each carrier. The other three operators have OUT 0.
     gain = 2 ** (-min(127, 16 + attenuation) / 8) + 3 * 2 ** (-127 / 8)
     expected = gain * np.sin(2 * np.pi * frequency * np.arange(48000) / 48000)
     check_audio(tmp_path / "tx81z-note-scaling.wav", actual, expected[:, None])
     assert voice.data == bytes(raw)
-
-
-@pytest.mark.parametrize("transpose", [23, 25])
-def test_tx81z_key_level_scaling_rejects_non_neutral_transpose(
-    transpose: int,
-) -> None:
-    raw = bytearray(93)
-    raw[44], raw[62] = 50, transpose
-    with pytest.raises(EngineError, match="key-level scaling with non-neutral"):
-        TX81ZRenderer(
-            tx81z.TX81ZVoice(data=bytes(raw)),
-            tx81z.TX81ZAdditional(data=bytes(23)),
-            69,
-            100,
-        )
 
 
 def test_tx81z_velocity_scaling_requires_positive_note_on_velocity() -> None:

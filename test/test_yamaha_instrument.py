@@ -17,7 +17,7 @@ from enge.render import render_midi
 from enge.synth import EngineError
 
 
-def instrument(kind: str) -> SynthInstrumentScore:
+def instrument(kind: str, transpose: int = 0) -> SynthInstrumentScore:
     raw = score().model_dump(mode="json")
     template = {
         "name": "yamaha",
@@ -37,6 +37,7 @@ def instrument(kind: str) -> SynthInstrumentScore:
             data[i + 16] = 60
         data[136] = 1
         data[137:145] = bytes([75, 0, 50, 30, 1, 2, 4, 24])
+        data[144] += transpose
         template["patch"] = bytes(data).hex()
     else:
         data = bytearray(93)
@@ -45,6 +46,7 @@ def instrument(kind: str) -> SynthInstrumentScore:
             data[i + 8 : i + 13] = bytes([1, 3, 60, 4, 3])
         data[52] = 7
         data[54:63] = bytes([75, 0, 99, 99, 1, 2, 4, 2, 24])
+        data[62] += transpose
         template["patch"] = bytes(data).hex()
         template["additional"] = bytes(23).hex()
     raw["body"] = {"voices": [template]}
@@ -52,10 +54,11 @@ def instrument(kind: str) -> SynthInstrumentScore:
 
 
 @pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("transpose", [0, 12])
 def test_yamaha_instrument_shares_clock_and_restores_overlapping_microtuned_notes(
-    tmp_path: Path, kind: str
+    tmp_path: Path, kind: str, transpose: int
 ) -> None:
-    document = instrument(kind)
+    document = instrument(kind, transpose)
     definition = yamaha_instrument.prepare(document)
     actions = synth_trace.prepare(
         document.body,
@@ -525,10 +528,11 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
 
 @pytest.mark.parametrize("kind", ["dx7", "tx81z"])
 @pytest.mark.parametrize("binding", ["key", "velocity"])
+@pytest.mark.parametrize("transpose", [0, 12])
 def test_yamaha_event_gain_uses_onset_key_or_unquantized_velocity(
-    tmp_path: Path, kind: str, binding: str
+    tmp_path: Path, kind: str, binding: str, transpose: int
 ) -> None:
-    plain = instrument(kind)
+    plain = instrument(kind, transpose)
     raw = plain.model_dump(mode="json")
     voice = raw["body"]["voices"][0]
     maximum = 127 if binding == "key" else 1
@@ -589,3 +593,70 @@ def test_yamaha_dynamic_tuning_is_rejected_before_rendering() -> None:
     }
     with pytest.raises(EngineError, match="dynamic tuning"):
         yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
+
+
+@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("transpose", [-24, 12, 24])
+def test_yamaha_transpose_matches_shifted_key_with_microtuning_and_snapshot(
+    tmp_path: Path, kind: str, transpose: int
+) -> None:
+    template = instrument(kind).body.voices[0]
+    raw = bytearray(template.patch.data)
+    if isinstance(template, YamahaDX7Voice):
+        raw[139:141] = bytes(2)
+        for i in range(0, 126, 21):
+            raw[i + 8 : i + 14] = bytes([35, 17, 29, 0, 0, 4])
+            raw[i + 17] = (i // 21) % 2
+        neutral = DX7Voice(data=bytes(raw))
+        raw[144] = 24 + transpose
+        actual = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100, pitch_hz=442)
+        expected = yamaha.DX7Renderer(
+            neutral, 69 + transpose, 100, pitch_hz=442 * 2 ** (transpose / 12)
+        )
+    else:
+        assert isinstance(template, YamahaTX81ZVoice)
+        raw[56:58] = bytes(2)
+        extra = bytearray(template.additional.data)
+        for i in range(4):
+            raw[i * 13 + 5] = 50
+            raw[i * 13 + 6] = 2
+            extra[i * 5] = i % 2
+        additional = tx81z.TX81ZAdditional(data=bytes(extra))
+        neutral = tx81z.TX81ZVoice(data=bytes(raw))
+        raw[62] = 24 + transpose
+        actual = yamaha.TX81ZRenderer(
+            tx81z.TX81ZVoice(data=bytes(raw)), additional, 69, 100, pitch_hz=442
+        )
+        expected = yamaha.TX81ZRenderer(
+            neutral,
+            additional,
+            69 + transpose,
+            100,
+            pitch_hz=442 * 2 ** (transpose / 12),
+        )
+    head = actual.render(24000)
+    expected_head = expected.render(24000)
+    actual.release()
+    expected.release()
+    saved = type(actual.snapshot()).model_validate_json(
+        actual.snapshot().model_dump_json()
+    )
+    assert saved.note == 69
+    tail = actual.render(24000)
+    check_audio(
+        tmp_path / "yamaha-transpose.wav",
+        np.concatenate([head, tail]),
+        np.concatenate([expected_head, expected.render(24000)]),
+    )
+    actual.restore(saved)
+    np.testing.assert_array_equal(actual.render(24000), tail)
+
+
+@pytest.mark.parametrize("note,transpose", [(0, 23), (127, 25)])
+def test_dx7_rejects_transposed_keys_outside_supported_range(
+    note: int, transpose: int
+) -> None:
+    raw = bytearray(voice().data)
+    raw[144] = transpose
+    with pytest.raises(EngineError, match="transposed note"):
+        yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), note, 100)

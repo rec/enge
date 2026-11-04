@@ -852,6 +852,7 @@ def voice() -> DX7Voice:
         data[start + 18] = 1
         data[start + 20] = 7
     data[134] = 31
+    data[144] = 24
     data[130:134] = bytes([50] * 4)
     return DX7Voice(data=bytes(data))
 
@@ -897,7 +898,10 @@ def test_malformed_parameters_remain_inspectable_but_cannot_render(
         DX7Renderer(malformed, note=69, velocity=100)
 
 
-def test_dx7_packed_bank_and_edit_buffer_render_the_same_note(tmp_path: Path) -> None:
+@pytest.mark.parametrize("transpose", [0, 12])
+def test_dx7_packed_bank_and_edit_buffer_render_the_same_note(
+    tmp_path: Path, transpose: int
+) -> None:
     unpacked = bytearray(voice().data)
     packed = bytearray(128)
     for i in range(6):
@@ -919,10 +923,10 @@ def test_dx7_packed_bank_and_edit_buffer_render_the_same_note(tmp_path: Path) ->
             ]
         )
     unpacked[134:137] = bytes([15, 4, 1])
-    unpacked[144] = 24
+    unpacked[144] = 24 + transpose
     packed[102:111] = unpacked[126:135]
     packed[111] = 4 | (1 << 3)
-    packed[117] = 24
+    packed[117] = 24 + transpose
     edit_voice = DX7Voice(data=bytes(unpacked))
     bank_voice = DX7Voice(data=bytes(packed))
     assert bank_voice.operators == edit_voice.operators

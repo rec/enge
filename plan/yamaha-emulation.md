@@ -84,8 +84,8 @@ DX7 note admission now validates oscillator sync, LFO speed/delay/depth,
 LFO sync/waveform, pitch sensitivity and transpose ranges in both packed and
 unpacked inputs. Unpacked oscillator mode must also be 0 or 1. Rejected voices
 remain losslessly inspectable. Boundary tests include waveform 5 (sample and
-hold), which is implemented in the pinned MSFA reference. Validation does not
-implement transpose. The note-level phase ownership added below implements
+hold), which is implemented in the pinned MSFA reference. Transpose execution
+is described below. The note-level phase ownership added below implements
 oscillator-sync reset and offline polyphonic sync-off allocation.
 
 A transpose audit of pinned Dexed revision
@@ -97,9 +97,20 @@ applies that shift before calling the note renderer, whose
 [operator preparation](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/msfa/dx7note.cc)
 uses the resulting key for level scaling, envelope rate scaling and ratio
 frequency. This supports transposed-key intrinsic scaling for the provisional
-DX7 model. It does not establish TX81Z hardware behavior or the desired handling
-of pitches outside MIDI 0–127. The enge behavior decision remains pending;
-portable key bindings need not change with intrinsic Yamaha scaling.
+DX7 model. It does not establish TX81Z hardware behavior.
+
+The user approved transposed-key intrinsic scaling for both Yamaha models and
+explicit rejection of DX7 sounding keys outside MIDI 0–127. DX7 now applies
+patch transpose to ratio frequency, detune, envelope rates and level scaling;
+TX81Z level scaling now uses the same transposed key as its existing frequency
+and envelope preparation. Fixed frequencies remain independent of transpose.
+Explicit pitch retains its microtuning interval relative to the original trigger
+key, and patch transpose is applied in addition. Portable key bindings and
+snapshot note identity retain the original trigger key. The offline adapter
+admits non-neutral transpose. One-second 48 kHz regressions cover positive and
+negative shifts, mixed fixed/ratio operators, key scaling, microtuning, packed
+DX7 voices, shared clocks, portable bindings and JSON continuation through
+release. This is the approved provisional model, not hardware qualification.
 
 The user approved a caller-owned shared Yamaha clock/LFO context on 2026-11-04.
 `DX7LFOContext` now emits normalized waveform/delay rows once per render interval;
@@ -206,8 +217,7 @@ and ratio operators, detune, held/released snapshots and mismatched definitions.
 The initial supported pitch span after transpose is MIDI 13–108 (chip key codes
 0–31); out-of-span notes are rejected. Velocity scaling now applies the measured
 KVS curves to positive note-on velocities. Key-level scaling now applies the
-measured three-key groups when transpose is neutral. Non-neutral transpose with
-key-level scaling remains rejected. Zero-delay LFO modulation now uses explicit
+measured three-key groups at the transposed key. Zero-delay LFO modulation uses explicit
 shared OPZ rows as described below. Velocity has no gain effect
 when KVS is zero; its existing zero-velocity metadata behavior remains unchanged
 pending the note-on contract decision. This is an incomplete
@@ -288,10 +298,10 @@ all seven nonzero KVS curves. KVS zero adds no attenuation. Velocity zero with
 nonzero KVS is rejected because the measurement table covers only 1–127.
 Focused WAV regressions cover boundaries and combined saturation. The note
 renderer now connects both terms for the unambiguous inputs above. Analytic
-one-second WAV regressions cover velocity curves, neutral-transpose key scaling,
+one-second WAV regressions cover velocity curves, transposed-key scaling,
 their sum and TL saturation. All eight algorithm continuation tests now use
-distinct nonzero key/velocity sensitivities. The transpose/scaling rule and
-velocity-zero note-creation contract still await decisions. These model-level
+distinct nonzero key/velocity sensitivities. The velocity-zero note-creation
+contract still awaits a decision. These model-level
 checks do not establish hardware qualification.
 
 The numeric `tx81z_operator_samples` kernel now renders all eight four-operator
@@ -409,14 +419,14 @@ and continuous fade retiming. MIDI-file rendering dispatches Yamaha instruments
 to this NumPy-only adapter. Snapshots include clocks, notes, filter state and
 pending retirement state.
 
-Explicit trigger pitch microtunes ratio operators while the MIDI key continues
+Explicit trigger pitch microtunes ratio operators while the transposed MIDI key continues
 to drive key scaling. Fixed operators retain their authored frequencies. Velocity
 uses nearest-integer rounding with ties upward, preserves exact zero and maps
 any positive value to at least 1. Existing TX81Z rejection of velocity zero with
 nonzero velocity sensitivity remains in force.
 
-The adapter admits the implemented profile explicitly: DX7 neutral transpose
-and TX81Z zero-delay LFO. Hardware-specific controller assignments, dynamic tuning,
+The adapter admits transpose for both models and requires TX81Z zero-delay LFO.
+Hardware-specific controller assignments, dynamic tuning,
 external envelopes and unsupported processing remain rejected. Released DX7
 carriers with nonzero final
 envelope levels remain active until explicitly stopped or faded. This integration

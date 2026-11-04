@@ -387,9 +387,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         ):
             raise synth.EngineError("Unsupported Yamaha processing")
         if isinstance(voice, YamahaDX7Voice):
-            parameters = yamaha.dx7_global_parameters(voice.patch)
-            if parameters[8] != 24:
-                raise synth.EngineError("DX7 integration requires neutral transpose")
             yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
         else:
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)
