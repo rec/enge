@@ -183,3 +183,49 @@ Divide by 2**24 to obtain the unscaled reference signal. For enge, construct
 `DX7Renderer` from the same payload, render 24,000 frames, release, then render
 24,000 more. Preserve the raw amplitude relationship when comparing or writing
 the WAV pair.
+
+## Feedback sensitivity diagnostic
+
+A scalar recurrence diagnostic on 2026-11-04 separates sensitivity to initial
+feedback state from differences between renderers. It uses neither renderer,
+no envelope transient and no sine-table approximation. The
+[measurements](feedback-sensitivity.csv) compare two otherwise identical
+floating-point recurrences for 48,000 samples at 48 kHz:
+
+```
+y[n] = gain * sin(2*pi*(phase[n] + (y[n-2] + y[n-1])/2**(9-feedback)))
+phase[0] = 0
+phase[n+1] = (phase[n] + 2640/48000) % 1
+```
+
+The reference starts with both history values zero; the other starts with
+`y[-2]=0` and `y[-1]=2**-24`, one MSFA output-unit LSB. Both use Python's
+binary64 `math.sin` and the same separately maintained phase. Output levels
+65 and 99 give held gains `2**(-3.25)` and `2`, using the existing neutral
+scaling and level-99 sustain equations. Feedback settings are 1, 4 and 7.
+Held relative RMS difference uses frames 12,000 through 23,999, as above.
+A blank first-error field means no sample exceeded one percent of gain.
+This diagnostic is not a replacement for the reference WAV comparisons.
+
+At output 99 and feedback 7, the initial difference exceeds one percent of
+gain at frame 26 and gives 138.026% held relative RMS difference. Every other
+case converges to identical floating-point samples before the held interval.
+Thus a large sample-wise discrepancy is possible even with identical
+frequency, gain, feedback scaling and sine implementation. It does not by
+itself establish a routing or gain bug, nor does this experiment attribute the
+actual MSFA mismatch to one particular numerical difference.
+
+For equal phase and gain, the sine derivative bounds the next output error by
+`2*pi*gain/2**(9-feedback)` times the sum of the two history errors. The CSV
+records twice that coefficient. Below one, the maximum history error contracts
+over each pair of steps; above one, this bound gives no convergence guarantee.
+The high-output/feedback-7 case has bound `2*pi`, while all other cases are below
+one. This is a sufficient contraction bound, not a proof of chaos or a hardware
+accuracy criterion.
+
+Source inspection also confirms the nominal feedback denominator agrees:
+MSFA sets `fb_shift=8-feedback` and shifts the history sum by `fb_shift+1`;
+enge divides by `2**(9-feedback)`. MSFA additionally quantizes the history,
+sine, gain and frequency and interpolates block gains. Their individual effects
+remain unisolated. Qualification still fails; resolving the execution/reference
+target remains necessary before changing arithmetic to chase sample equality.
