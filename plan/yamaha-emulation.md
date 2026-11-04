@@ -384,6 +384,15 @@ performance allocations and selectors. Existing DAC output groups do not
 provide that information and must not silently infer LFO ownership from their
 template list or current polyphony.
 
+The format prerequisite is implemented in uFor `85bce42`: lossless PCED bulk
+inspection retains all 110 parameter bytes and decodes the eight instrument
+allocations, including maximum notes and LFO selectors. Invalid parameters
+remain inspectable with diagnostics, and performance messages are distinguished
+from ACED operator data. All 1,378 uFor tests pass. This revision is not yet
+pinned by enge. Explicit library-template binding, two shared LFO ownership,
+software vibrato and performance rendering remain the next implementation work;
+the decoder alone does not qualify or execute those behaviors.
+
 The [delay measurements](https://nornand.hatenablog.com/entry/2020/11/30/185005)
 specify completion times in units of 1/48 second, with observed variation of one
 unit. Both depths remain zero until half that time; PMD then rises linearly,
