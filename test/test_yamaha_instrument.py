@@ -17,7 +17,7 @@ from enge.render import render_midi
 from enge.synth import EngineError
 
 
-def instrument(kind: str, transpose: int = 0) -> SynthInstrumentScore:
+def instrument(kind: str, transpose: int = 0, delay: int = 0) -> SynthInstrumentScore:
     raw = score().model_dump(mode="json")
     template = {
         "name": "yamaha",
@@ -47,18 +47,20 @@ def instrument(kind: str, transpose: int = 0) -> SynthInstrumentScore:
         data[52] = 7
         data[54:63] = bytes([75, 0, 99, 99, 1, 2, 4, 2, 24])
         data[62] += transpose
+        if delay:
+            data[55], data[57] = delay, 0
         template["patch"] = bytes(data).hex()
         template["additional"] = bytes(23).hex()
     raw["body"] = {"voices": [template]}
     return SynthInstrumentScore.model_validate(raw)
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("kind,delay", [("dx7", 0), ("tx81z", 0), ("tx81z", 1)])
 @pytest.mark.parametrize("transpose", [0, 12])
 def test_yamaha_instrument_shares_clock_and_restores_overlapping_microtuned_notes(
-    tmp_path: Path, kind: str, transpose: int
+    tmp_path: Path, kind: str, transpose: int, delay: int
 ) -> None:
-    document = instrument(kind, transpose)
+    document = instrument(kind, transpose, delay)
     definition = yamaha_instrument.prepare(document)
     actions = synth_trace.prepare(
         document.body,

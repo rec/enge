@@ -166,10 +166,10 @@ def test_tx81z_keydown_only_resets_synchronized_lfo_counter(sync: bool) -> None:
 
 
 @pytest.mark.parametrize("delay", [1, 99])
-def test_tx81z_shared_context_rejects_unimplemented_delay(delay: int) -> None:
+def test_tx81z_shared_context_rejects_active_delayed_amplitude(delay: int) -> None:
     raw = bytearray(lfo_voice().data)
     raw[55] = delay
-    with pytest.raises(EngineError, match="LFO delay is not implemented"):
+    with pytest.raises(EngineError, match="delayed amplitude modulation"):
         TX81ZLFOContext(tx81z.TX81ZVoice(data=bytes(raw)))
 
 
@@ -183,6 +183,7 @@ def test_tx81z_shared_context_rejects_unimplemented_delay(delay: int) -> None:
         ("waveform", 1),
         ("sample_rate", 44100),
         ("clock_hz", 3072000),
+        ("delay", 1),
     ],
 )
 def test_tx81z_context_rejects_a_different_clock_definition(
@@ -193,6 +194,21 @@ def test_tx81z_context_rejects_a_different_clock_definition(
     values[field] = value
     with pytest.raises(EngineError, match="different clock definition"):
         context.restore(TX81ZLFOSnapshot.model_validate(values))
+
+
+@pytest.mark.parametrize("gate", ["depth", "sensitivity", "operators"])
+def test_tx81z_delay_accepts_inaudible_amplitude_modulation(gate: str) -> None:
+    raw = bytearray(lfo_voice().data)
+    raw[55] = 1
+    if gate == "depth":
+        raw[57] = 0
+    elif gate == "sensitivity":
+        raw[61] = 0
+    else:
+        for i in range(0, 52, 13):
+            raw[i + 8] = 0
+    context = TX81ZLFOContext(tx81z.TX81ZVoice(data=bytes(raw)))
+    assert context.snapshot().delay == 1
 
 
 @pytest.mark.parametrize(
@@ -217,3 +233,35 @@ def test_tx81z_rejects_invalid_shared_rows_before_advancing(invalid: str) -> Non
     with pytest.raises(EngineError, match="shared LFO rows"):
         renderer.render(2, None if invalid == "missing" else rows)
     assert renderer.snapshot() == saved
+
+
+@pytest.mark.parametrize(
+    "delay,ticks,clock_hz",
+    [(1, 15, 3579545), (50, 121, 3579545), (99, 1022, 3579545), (1, 15, 1536000)],
+)
+def test_tx81z_delayed_pitch_uses_measured_half_wait_and_linear_register_ramp(
+    tmp_path: Path, delay: int, ticks: int, clock_hz: int
+) -> None:
+    raw = bytearray(lfo_voice(1).data)
+    raw[54], raw[55], raw[57], raw[58] = 0, delay, 0, 0
+    voice = tx81z.TX81ZVoice(data=bytes(raw))
+    context = TX81ZLFOContext(voice, clock_hz=clock_hz)
+    frames = max(48000, ticks * 1000 + 1000)
+    expected = np.zeros((frames, 2))
+    # At speed zero the square remains at +127 PM through this interval.
+    elapsed = np.arange(frames)
+    if clock_hz == 1536000:
+        elapsed = np.maximum(0, (elapsed - 1) // 2 * 2 + 1)
+    depth = np.floor(127 * np.clip(2 * elapsed / (ticks * 1000) - 1, 0, 1))
+    expected[:, 0] = np.floor(127 * depth / 128)
+    first = context.advance(12345)
+    saved = TX81ZLFOSnapshot.model_validate_json(context.snapshot().model_dump_json())
+    restored = TX81ZLFOContext(voice, clock_hz=clock_hz)
+    restored.restore(saved)
+    actual = np.concatenate([first, restored.advance(frames - len(first))])
+    check_audio(tmp_path / "delayed-pitch.wav", actual.astype(float), expected)
+    restored.keydown()
+    assert restored.snapshot().delay_elapsed == 0
+    assert restored.snapshot().counter != 0
+    np.testing.assert_array_equal(restored.advance(1), [[0, 0]])
+    assert saved.delay_elapsed == len(first)

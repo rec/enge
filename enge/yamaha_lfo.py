@@ -172,6 +172,8 @@ class TX81ZLFOSnapshot(BaseModel, frozen=True):
     waveform: int = Field(ge=0, le=3)
     sample_rate: int = Field(gt=0)
     clock_hz: int = Field(gt=0)
+    delay: int = Field(default=0, ge=0, le=99)
+    delay_elapsed: int = Field(default=0, ge=0)
     frame: int = Field(default=0, ge=0)
     counter: int = Field(default=0, ge=0, lt=2**32)
     secondary_counter: int = Field(default=0, ge=0, lt=2**32)
@@ -190,15 +192,21 @@ class TX81ZLFOContext:
     """Single-mode OPZ LFO1, with the secondary LFO left at reset settings.
 
     Rows contain depth-scaled signed PM and unsigned AM chip units. The clock
-    and noise model follow ymfm provisionally; delayed modulation is unsupported.
+    and noise model follow ymfm provisionally. Delayed PMD uses measured timing;
+    active delayed AMD remains unsupported because its curve is unspecified.
     """
 
     def __init__(
         self, voice: tx81z.TX81ZVoice, sample_rate: int = 48000, clock_hz: int = 3579545
     ) -> None:
         rate, pitch, amplitude = tx81z_lfo_registers(voice)
-        if voice.data[55]:
-            raise EngineError("TX81Z LFO delay is not implemented")
+        if (
+            voice.data[55]
+            and amplitude
+            and voice.data[61]
+            and any(o.amplitude_modulation_enable for o in voice.operators)
+        ):
+            raise EngineError("TX81Z delayed amplitude modulation is not implemented")
         self.state = TX81ZLFOSnapshot(
             rate=rate,
             pitch_depth=pitch,
@@ -207,6 +215,7 @@ class TX81ZLFOContext:
             waveform=voice.data[59],
             sample_rate=sample_rate,
             clock_hz=clock_hz,
+            delay=voice.data[55],
         )
 
     def snapshot(self) -> TX81ZLFOSnapshot:
@@ -221,6 +230,7 @@ class TX81ZLFOContext:
             or snapshot.waveform != self.state.waveform
             or snapshot.sample_rate != self.state.sample_rate
             or snapshot.clock_hz != self.state.clock_hz
+            or snapshot.delay != self.state.delay
         ):
             raise EngineError(
                 "TX81Z LFO snapshot belongs to a different clock definition"
@@ -228,8 +238,12 @@ class TX81ZLFOContext:
         self.state = snapshot.model_copy(deep=True)
 
     def keydown(self) -> None:
+        updates = {"delay_elapsed": 0}
+        if self.state.delay:
+            updates["pitch"] = 0
         if self.state.sync:
-            self.state = self.state.model_copy(update={"counter": 0})
+            updates["counter"] = 0
+        self.state = self.state.model_copy(update=updates)
 
     def advance(self, frames: int) -> np.ndarray:
         if frames < 0:
@@ -241,7 +255,14 @@ class TX81ZLFOContext:
         pitch, amplitude = state.pitch, state.amplitude
         increment = (16 | (state.rate & 15)) << (state.rate >> 4)
         output = np.empty((frames, 2), dtype=np.int64)
+        duration = _TX_DELAY_TICKS[state.delay] * state.sample_rate
         for frame in range(frames):
+            depth = state.pitch_depth
+            if duration:
+                progress = min(
+                    duration, max(0, 96 * (state.delay_elapsed + frame) - duration)
+                )
+                depth = depth * progress // duration
             ticks, remainder = divmod(
                 remainder + state.clock_hz, 64 * state.sample_rate
             )
@@ -269,12 +290,13 @@ class TX81ZLFOContext:
                     case _:
                         am = pm = table[index]
                 signed_pm = pm if pm < 128 else pm - 256
-                pitch = (signed_pm * state.pitch_depth) >> 7
-                amplitude = (am * state.amplitude_depth) >> 7
+                pitch = (signed_pm * depth) >> 7
+                amplitude = 0 if duration else (am * state.amplitude_depth) >> 7
             output[frame] = pitch, amplitude
         self.state = state.model_copy(
             update={
                 "frame": state.frame + frames,
+                "delay_elapsed": state.delay_elapsed + frames,
                 "counter": counter,
                 "secondary_counter": secondary,
                 "clock_remainder": remainder,
@@ -285,3 +307,109 @@ class TX81ZLFOContext:
             }
         )
         return output
+
+
+# Measured completion times in 1/48 second, with reported uncertainty of one tick.
+# https://nornand.hatenablog.com/entry/2020/11/30/185005
+_TX_DELAY_TICKS = [
+    0,
+    15,
+    16,
+    16,
+    17,
+    18,
+    18,
+    19,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    29,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    40,
+    41,
+    43,
+    45,
+    47,
+    49,
+    52,
+    54,
+    57,
+    61,
+    64,
+    67,
+    69,
+    71,
+    74,
+    76,
+    79,
+    82,
+    86,
+    90,
+    94,
+    98,
+    103,
+    108,
+    114,
+    121,
+    128,
+    133,
+    137,
+    142,
+    147,
+    152,
+    158,
+    164,
+    171,
+    179,
+    187,
+    196,
+    205,
+    216,
+    228,
+    241,
+    256,
+    265,
+    273,
+    283,
+    293,
+    304,
+    315,
+    328,
+    341,
+    356,
+    372,
+    390,
+    409,
+    431,
+    455,
+    481,
+    511,
+    528,
+    546,
+    564,
+    585,
+    606,
+    630,
+    655,
+    682,
+    711,
+    744,
+    780,
+    818,
+    861,
+    909,
+    963,
+    1022,
+]

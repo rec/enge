@@ -248,9 +248,9 @@ for all 48,000 PM/AM rows of each of four waveforms. Its compressed reference
 rows are used by one-second WAV regressions alongside fractional-clock/noise
 continuation, fixed-frequency bypass, detune, AME/AMS gating and two-note
 snapshot replay. This qualifies the component against that software model,
-not hardware or the complete TX81Z renderer. Nonzero LFO delay remains explicitly
-rejected by the context; its measured timing and incomplete delayed-AMD curve
-still require implementation/qualification. Multitimbral LFO routing, software
+not hardware or the complete TX81Z renderer. Delayed pitch modulation now uses
+the provisional measured timing below; active delayed AMD remains rejected.
+Multitimbral LFO routing, software
 LFOs and full engine integration also remain work.
 
 The [delay measurements](https://nornand.hatenablog.com/entry/2020/11/30/185005)
@@ -259,9 +259,17 @@ unit. Both depths remain zero until half that time; PMD then rises linearly,
 whereas AMD follows a curve that the report does not quantify. Delay 1 completes
 at 15/48 second and delay 99 at 1022/48 seconds. Implementing a linear AMD ramp
 would therefore invent behavior inconsistent with the stated observation.
-A provisional pitch-only implementation is awaiting a user decision. Its
-acceptance evidence must cover the silent half, ramp and final depth, key-down
-restart, fractional sample-rate timing, and snapshot/partition continuation.
+The user approved the provisional pitch-only implementation. It uses the measured
+completion table and floors the linear depth to integer register values at output
+frame time before OPZ ticks. Frames without a chip tick retain the previous chip
+output. Key-down restarts the delay even with sync off, while preserving the
+noise and secondary clocks. Snapshot identity includes authored delay; elapsed
+delay time survives partitioned JSON continuation. Rounding and update cadence
+are explicit model choices, not qualified firmware behavior. Regression WAVs
+cover the silent half, ramp, final depth, key-down restart, fractional chip ticks
+and continuation, including maximum delay. Offline integration covers shared
+clock restart by overlapping notes. Active delayed AMD remains rejected; zero
+depth, zero AMS or disabled operator AME permits the pitch-only path.
 Delayed AMD remains a separate unresolved requirement.
 
 VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
@@ -442,7 +450,8 @@ uses nearest-integer rounding with ties upward, preserves exact zero and maps
 any positive value to at least 1. Existing TX81Z rejection of velocity zero with
 nonzero velocity sensitivity remains in force.
 
-The adapter admits transpose for both models and requires TX81Z zero-delay LFO.
+The adapter admits transpose for both models and TX81Z delayed pitch modulation.
+Active delayed TX81Z amplitude modulation remains rejected.
 Dynamic tuning routes, external envelopes and unsupported portable processing
 remain rejected. Hardware-specific assignment fields are range-validated and
 preserved, but are not connected to controller events. They are not all rejected
