@@ -54,6 +54,8 @@ class OscillatorSlot(BaseModel):
 
 
 class PitchHistory(BaseModel):
+    """Previous TX81Z sounding fundamental, after transpose and octave wrapping."""
+
     voice_id: str
     pitch_hz: float
 
@@ -366,8 +368,9 @@ class OfflineYamaha:
                 slots[slot_index] = slot
         self.clocks[template.name].keydown()
         if template.name in self.pitch_history:
+            assert isinstance(renderer, yamaha.TX81ZRenderer)
             self.pitch_history[template.name][action.part] = PitchHistory(
-                voice_id=action.voice_id, pitch_hz=pitch
+                voice_id=action.voice_id, pitch_hz=renderer.sounding_pitch_hz
             )
         self.voices[action.voice_id] = Voice(
             voice_id=action.voice_id,
@@ -411,7 +414,7 @@ class OfflineYamaha:
         self.voices[voice.voice_id] = voice
         if voice.template in self.pitch_history:
             self.pitch_history[voice.template][voice.part] = PitchHistory(
-                voice_id=voice.voice_id, pitch_hz=note.pitch_hz
+                voice_id=voice.voice_id, pitch_hz=voice.renderer.sounding_pitch_hz
             )
 
     def _render(self, start: int, frames: int) -> np.ndarray:

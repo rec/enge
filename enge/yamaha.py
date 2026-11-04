@@ -169,6 +169,8 @@ class TX81ZRenderer:
     to ratio operators before their additive chip-detune offsets.
     Breath rows are normalized positions, truncated to CC2 before measured
     EG-bias lookup. An omitted breath input means position zero.
+    start_pitch_hz is the previous sounding fundamental after transpose and
+    octave wrapping; portamento state uses those same sounding-Hz coordinates.
     """
 
     def __init__(
@@ -220,6 +222,9 @@ class TX81ZRenderer:
         if pitch_hz is not None and (not isfinite(pitch_hz) or pitch_hz <= 0):
             raise EngineError("Yamaha pitch_hz must be finite and positive")
         self.pitch_hz = pitch_hz
+        self.sounding_pitch_hz = (
+            pitch_hz if pitch_hz is not None else 440 * 2 ** ((note - 69) / 12)
+        ) * 2 ** ((sounding_note - note) / 12)
         if start_pitch_hz is not None and (
             not isfinite(start_pitch_hz) or start_pitch_hz <= 0
         ):
@@ -230,7 +235,7 @@ class TX81ZRenderer:
                 voice.data[66],
                 sample_rate,
                 start_pitch_hz,
-                pitch_hz if pitch_hz is not None else 440 * 2 ** ((note - 69) / 12),
+                self.sounding_pitch_hz,
             )
             if start_pitch_hz is not None and voice.data[66]
             else None
@@ -457,9 +462,7 @@ class TX81ZRenderer:
         start = (
             self.portamento.current_hz
             if self.portamento is not None
-            else self.pitch_hz
-            if self.pitch_hz is not None
-            else 440 * 2 ** ((self.note - 69) / 12)
+            else self.sounding_pitch_hz
         )
         target = TX81ZRenderer(
             self.voice,
@@ -473,6 +476,7 @@ class TX81ZRenderer:
         self.note = target.note
         self.velocity = target.velocity
         self.pitch_hz = target.pitch_hz
+        self.sounding_pitch_hz = target.sounding_pitch_hz
         self.start_pitch_hz = target.start_pitch_hz
         self.portamento = target.portamento
         self.frequencies = target.frequencies

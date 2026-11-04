@@ -1,4 +1,4 @@
-from math import ceil
+from math import ceil, fsum
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +16,54 @@ from enge import yamaha, yamaha_instrument
 from enge.performance import MidiConverter
 from enge.synth import EngineError
 from enge.yamaha_portamento import TX81ZPortamento
+
+
+@pytest.mark.parametrize(
+    "first,last,source,target", [(108, 109, 108, 97), (13, 12, 13, 24)]
+)
+def test_legato_glide_starts_at_previous_sounding_pitch_across_wrap(
+    tmp_path: Path, first: int, last: int, source: int, target: int
+) -> None:
+    raw = bytearray(lfo_voice().data)
+    raw[56:58] = bytes(2)
+    raw[66] = 18
+    patch = tx81z.TX81ZVoice(data=bytes(raw))
+    extra = tx81z.TX81ZAdditional(data=bytes(23))
+    note = yamaha.TX81ZRenderer(
+        patch, extra, first, 127, pitch_hz=440 * 2 ** ((first - 69) / 12) * 1.01
+    )
+    head = note.render(1001)
+    note.retarget(last, 127, pitch_hz=440 * 2 ** ((last - 69) / 12) * 1.01)
+    start_hz = 440 * 2 ** ((source - 69) / 12) * 1.01
+    target_hz = 440 * 2 ** ((target - 69) / 12) * 1.01
+    assert note.portamento is not None
+    assert note.portamento.current_hz == pytest.approx(start_hz)
+    glide = TX81ZPortamento.start(18, 48000, start_hz, target_hz)
+    frequencies = np.concatenate(
+        [np.full(1001, start_hz), target_hz * glide.ratios(46999)]
+    )
+    # Glide frequency is constant between firmware ticks. Sum completed runs
+    # accurately instead of accumulating 48000 rounded additions in the oracle.
+    boundaries = np.concatenate(
+        [[0], np.flatnonzero(np.diff(frequencies)) + 1, [48000]]
+    )
+    phases = np.empty(48000)
+    completed = []
+    for start, end in zip(boundaries[:-1], boundaries[1:], strict=True):
+        phases[start:end] = (
+            fsum(completed) + frequencies[start] * np.arange(end - start)
+        ) / 48000
+        completed.append(frequencies[start] * (end - start))
+    expected = np.sin(2 * np.pi * phases)[:, None]
+    saved = note.snapshot()
+    actual = np.concatenate([head, note.render(46999)])
+    check_audio(tmp_path / "legato-wrap.wav", actual, expected)
+    note.restore(yamaha.TX81ZSnapshot.model_validate_json(saved.model_dump_json()))
+    check_audio(
+        tmp_path / "legato-wrap-replay.wav",
+        np.concatenate([head, note.render(46999)]),
+        actual,
+    )
 
 
 @pytest.mark.parametrize(
@@ -161,25 +209,38 @@ def test_note_portamento_preserves_fixed_operators_detune_and_snapshot(
     )
 
 
+@pytest.mark.parametrize(
+    "keys,transpose,sounding",
+    [
+        ([69, 81, 57], 0, [69, 81, 57]),
+        ([108, 109, 12], 0, [108, 97, 24]),
+        ([84, 85, 0], 24, [108, 97, 24]),
+        ([37, 36, 127], -24, [13, 24, 103]),
+    ],
+)
 def test_polyphonic_portamento_uses_current_pitch_and_retains_part_history(
     tmp_path: Path,
+    keys: list[int],
+    transpose: int,
+    sounding: list[int],
 ) -> None:
     raw = instrument("tx81z").model_dump(mode="json")
     template = raw["body"]["voices"][0]
     patch = bytearray.fromhex(template["patch"])
     patch[56:58] = bytes(2)
     patch[66] = 18
+    patch[62] = 24 + transpose
     template["patch"] = bytes(patch).hex()
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         Trigger(tick=t, ordinal=0, part=p, trigger_id=f"note-{i}", key=k, velocity=1)
         for i, (t, p, k) in enumerate(
             [
-                (0, "main", 69),
-                (1001, "main", 81),
-                (2002, "main", 57),
+                (0, "main", keys[0]),
+                (1001, "main", keys[1]),
+                (2002, "main", keys[2]),
                 (3003, "other", 76),
-                (5005, "main", 69),
+                (5005, "main", keys[0]),
             ]
         )
     ]
@@ -207,12 +268,13 @@ def test_polyphonic_portamento_uses_current_pitch_and_retains_part_history(
         np.concatenate([first, tail]),
         np.concatenate([first, replay]),
     )
-    second_glide = TX81ZPortamento.start(18, 48000, 440, 880)
+    pitches = [440 * 2 ** ((k - 69) / 12) for k in sounding]
+    second_glide = TX81ZPortamento.start(18, 48000, pitches[0], pitches[1])
     second_glide.ratios(1001)
     third_start = second_glide.current_hz
-    third_glide = TX81ZPortamento.start(18, 48000, third_start, 220)
+    third_glide = TX81ZPortamento.start(18, 48000, third_start, pitches[2])
     third_glide.ratios(2002)
-    starts = [None, 440, third_start, None, third_glide.current_hz]
+    starts = [None, pitches[0], third_start, None, third_glide.current_hz]
     expected = np.zeros((48000, 1))
     for i, event in enumerate(events):
         end = 4004 if i == 2 else 48000

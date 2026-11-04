@@ -251,9 +251,15 @@ portable key bindings retain the original trigger key. Explicit pitch remains
 a ratio relative to the original key's equal-tempered frequency, applied to
 ratio operators only. Regression renders cover both boundaries, extreme
 transpose, microtuning, mixed fixed/ratio operators and snapshot continuation.
-Portamento across an octave-wrap boundary still needs separate qualification:
-the existing glide uses unwrapped trigger-pitch coordinates. This onset rule
-does not establish the firmware's continuous glide or bend behavior there.
+Portamento now stores sounding Hz after transpose and wrapping, so a new or
+legato note starts from the preceding sounding fundamental rather than applying
+the destination's octave shift to the previous trigger pitch. The direct
+renderer's `start_pitch_hz` argument uses these sounding-Hz coordinates.
+Per-part history, interrupted glides, retired voices and snapshots use the same
+coordinates. Regression renders cover both wrap boundaries, positive/negative
+transpose, microtuned legato notes and JSON replay. This is the provisional
+continuous-between-endpoints model; firmware glide and bend behavior across
+wrap boundaries remains unqualified.
 Velocity scaling now applies the measured
 KVS curves to positive note-on velocities. Key-level scaling now applies the
 measured three-key groups at the transposed key. Zero-delay LFO modulation uses explicit
@@ -341,7 +347,8 @@ descending correction and 100-entry time coefficient table. The implementation
 uses exactly 96 updates per second, with the first update one tick after onset;
 the source reports approximately that cadence. Fractional sample-clock carry
 keeps partitioned renders and non-48-kHz rates consistent. Time zero bypasses
-glide. An explicit `start_pitch_hz` gives standalone notes a source pitch.
+glide. An explicit `start_pitch_hz` gives standalone notes a sounding source
+pitch after transpose and octave wrapping.
 Ratio operators receive glide before additive detune; fixed operators remain
 fixed. Dynamic tuning multiplies the same ratio. Start and target microtuning
 remain exact, while intermediate pitch steps use the firmware model's grid
