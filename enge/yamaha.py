@@ -277,6 +277,7 @@ class TX81ZRenderer:
         tuning_cents: np.ndarray | None = None,
         controller_depths: np.ndarray | None = None,
         breath: np.ndarray | None = None,
+        foot: np.ndarray | None = None,
     ) -> np.ndarray:
         tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
@@ -287,6 +288,12 @@ class TX81ZRenderer:
             or np.any((breath < 0) | (breath > 1))
         ):
             raise EngineError("TX81Z breath rows must have shape (frames,) in 0..1")
+        if foot is not None and (
+            foot.shape != (frames,)
+            or not np.all(np.isfinite(foot))
+            or np.any((foot < 0) | (foot > 1))
+        ):
+            raise EngineError("TX81Z foot rows must have shape (frames,) in 0..1")
         if controller_depths is not None and (
             controller_depths.shape != (frames, 2)
             or not np.all(np.isfinite(controller_depths))
@@ -377,6 +384,21 @@ class TX81ZRenderer:
             )
             levels = np.maximum(
                 2 ** (-127 / 8), self.levels * 2 ** (-bias.astype(float) / 8)
+            )
+        if amount := self.voice.data[67]:
+            cc = (
+                np.zeros(frames, dtype=np.int64)
+                if foot is None
+                else (127 * foot).astype(np.int64)
+            )
+            # Provisional FC range mapping onto measured master-volume TL.
+            volume = 127 - (127 - cc) * amount // 99
+            carriers = np.array(
+                [i in _TX_ALGORITHMS[self.voice.algorithm - 1][1] for i in range(1, 5)]
+            )
+            attenuation_tl = np.asarray(_TX_VOLUME_ATTENUATION)[volume, None] * carriers
+            levels = np.maximum(
+                2 ** (-127 / 8), levels * 2 ** (-attenuation_tl.astype(float) / 8)
             )
         gains = 2 ** (-attenuation / 64) * levels
         output, self.operators = tx81z_operator_samples(
@@ -1220,6 +1242,139 @@ _TX_DETUNE_STEPS = (
 )
 # DXconvert's total-level curve and reported TX81Z carrier headroom measurements.
 _TX_CARRIER_ATTENUATION = [0, 0, 0, 0, 8, 13, 13, 16]
+
+# Master-volume register measurements, internal positions 0..127:
+# https://nornand.hatenablog.com/entry/2020/11/21/201911
+_TX_VOLUME_ATTENUATION = [
+    127,
+    102,
+    90,
+    83,
+    77,
+    72,
+    68,
+    65,
+    62,
+    60,
+    57,
+    55,
+    53,
+    51,
+    50,
+    48,
+    47,
+    45,
+    44,
+    43,
+    42,
+    41,
+    40,
+    39,
+    38,
+    37,
+    36,
+    35,
+    34,
+    33,
+    33,
+    32,
+    31,
+    30,
+    30,
+    29,
+    28,
+    28,
+    27,
+    27,
+    26,
+    25,
+    25,
+    24,
+    24,
+    23,
+    23,
+    22,
+    22,
+    21,
+    21,
+    21,
+    20,
+    20,
+    19,
+    19,
+    18,
+    18,
+    18,
+    17,
+    17,
+    16,
+    16,
+    16,
+    15,
+    15,
+    15,
+    14,
+    14,
+    14,
+    13,
+    13,
+    13,
+    12,
+    12,
+    12,
+    11,
+    11,
+    11,
+    10,
+    10,
+    10,
+    10,
+    9,
+    9,
+    9,
+    9,
+    8,
+    8,
+    8,
+    8,
+    7,
+    7,
+    7,
+    7,
+    6,
+    6,
+    6,
+    6,
+    5,
+    5,
+    5,
+    5,
+    4,
+    4,
+    4,
+    4,
+    3,
+    3,
+    3,
+    3,
+    3,
+    2,
+    2,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+]
 _TX_OUTPUT_ATTENUATION = [
     127,
     122,

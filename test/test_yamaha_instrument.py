@@ -457,6 +457,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
         )
     else:
         patch[64] = bend_range
+        patch[67] = 99
         patch[75] = 50
         patch[76] = 99
         for i in range(0, 52, 13):
@@ -580,6 +581,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 tuning_cents=(1200 + 100 * bend_range * bend_direction) * signal,
                 controller_depths=np.column_stack([depth, depth]),
                 breath=signal * 0.5,
+                foot=signal * 0.75,
             )
         amplitude = 1 - 0.8 * signal
         values = np.column_stack([500 + 1500 * signal, 0.5 + signal])[:, None, :]
@@ -946,22 +948,49 @@ def test_dx7_fixed_operators_ignore_pitch_envelope(tmp_path: Path) -> None:
     check_audio(tmp_path / "fixed-pitch-envelope.wav", actual, expected)
 
 
-@pytest.mark.parametrize(
-    "controller,index,value", [("foot", 67, 1), ("breath", 75, 49)]
-)
-def test_tx81z_controller_routes_reject_unimplemented_secondary_assignments(
-    controller: str, index: int, value: int
+def test_tx81z_foot_volume_without_routes_uses_neutral_control_position(
+    tmp_path: Path,
 ) -> None:
     raw = instrument("tx81z").model_dump(mode="json")
     template = raw["body"]["voices"][0]
     patch = bytearray.fromhex(template["patch"])
-    patch[75] = 50
-    patch[index] = value
+    patch[56:58] = bytes(2)
+    patch[67] = 99
+    template["patch"] = bytes(patch).hex()
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            Trigger(
+                tick=0, ordinal=0, part="main", trigger_id="note", key=69, velocity=1
+            )
+        ],
+        seed=0,
+    ).actions
+    actual = yamaha_instrument.OfflineYamaha(
+        yamaha_instrument.prepare(document)
+    ).advance(actions, 0, 48000)
+    expected = yamaha.TX81ZRenderer(
+        tx81z.TX81ZVoice(data=bytes(patch)),
+        tx81z.TX81ZAdditional(data=bytes(23)),
+        69,
+        127,
+    ).render(48000, foot=np.zeros(48000))
+    check_audio(
+        tmp_path / "foot-default.wav", actual, expected * np.array([[0.3, 0.15]])
+    )
+
+
+def test_tx81z_breath_route_rejects_unimplemented_pitch_bias() -> None:
+    raw = instrument("tx81z").model_dump(mode="json")
+    template = raw["body"]["voices"][0]
+    patch = bytearray.fromhex(template["patch"])
+    patch[75] = 49
     template["patch"] = bytes(patch).hex()
     template["modulation"] = {
         "parameters": [
             {
-                "target": {"name": "yamaha", "parameter": controller},
+                "target": {"name": "yamaha", "parameter": "breath"},
                 "unit": "ratio",
                 "scope": "voice",
                 "minimum": 0,

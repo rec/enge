@@ -301,7 +301,7 @@ class OfflineYamaha:
             if isinstance(template, YamahaTX81ZVoice):
                 assignments = any(
                     template.patch.data[71:75] + template.additional.data[21:23]
-                ) or bool(template.patch.data[76])
+                ) or bool(template.patch.data[67] or template.patch.data[76])
             for i in range(frames):
                 at = start + i
                 if (
@@ -322,6 +322,7 @@ class OfflineYamaha:
                 bend = None
                 controllers = None
                 breath = None
+                foot = None
                 if dynamic_tuning or pitch_bend or assignments:
                     values = self.controls.values(template, voice.sources, at, 1)
                     if dynamic_tuning:
@@ -346,6 +347,7 @@ class OfflineYamaha:
                         )
                         if isinstance(template, YamahaTX81ZVoice):
                             breath = values.get(("yamaha", "breath"))
+                            foot = values.get(("yamaha", "foot"))
                 modulation = rows[voice.template][i : i + 1]
                 if isinstance(voice.renderer, yamaha.DX7Renderer):
                     audio[i] = voice.renderer.render(
@@ -353,7 +355,7 @@ class OfflineYamaha:
                     )[0]
                 else:
                     audio[i] = voice.renderer.render(
-                        1, modulation, tuning, controllers, breath
+                        1, modulation, tuning, controllers, breath, foot
                     )[0]
                 count += 1
             gain = 10 ** (template.processing.volume_db / 20)
@@ -458,8 +460,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
                 for p in voice.modulation.parameters
                 if p.target.name == "yamaha"
             }
-            if "foot" in targets and voice.patch.data[67]:
-                raise synth.EngineError("TX81Z foot volume is not implemented")
             if "breath" in targets and voice.patch.data[75] != 50:
                 raise synth.EngineError("TX81Z breath pitch bias is not implemented")
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)

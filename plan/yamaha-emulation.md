@@ -587,9 +587,9 @@ assignments or portamento.
   Regressions cover all waveforms, stronger patch depths, fractional controller
   depths, controller modulation during patch delay, scoped smoothing, overlapping
   notes and snapshot restoration. This is provisional, not firmware qualification.
-  Foot-volume attenuation and breath pitch bias remain unresolved. The provisional
+  Breath pitch bias remains unresolved. The provisional
   bend model leaves fixed operators unchanged; firmware qualification remains
-  open. Foot routes reject nonzero FC Volume; breath routes reject
+  open. Breath routes reject
   nonneutral pitch bias rather than ignoring that assignment.
 - The [measured breath EG-bias table](https://nornand.hatenablog.com/entry/2020/11/24/224423)
   is complete: 100 bias settings × 8 operator sensitivities × 128 CC2 values.
@@ -606,11 +606,25 @@ assignments or portamento.
   saturation. Audio regressions cover measured values, fractional CC2 inputs,
   zero sensitivity, saturation, scoped smoothing and snapshot restoration.
   Firmware cadence and TL high-bit behavior remain unqualified.
+- TX81Z FC Volume now uses a provisional range mapping onto the
+  [measured master-volume attenuation table](https://nornand.hatenablog.com/entry/2020/11/21/201911).
+  The owner's manual specifies full control at assignment 99 and residual sound
+  at intermediate assignments, but does not specify the arithmetic. Normalized
+  foot position truncates to CC 0..127; the selected internal volume position is
+  `127 - ((127 - CC) * assignment // 99)`. Assignment zero has no effect;
+  omitted foot input means position zero, consistent with the portable target.
+  The measured 128-entry volume table applies only to carriers, before TL
+  saturation, alongside breath bias. Minimum volume reaches the renderer's
+  existing TL-127 floor. Per-frame updates reuse scoped controls and smoothing.
+  One-second WAV regressions cover disabled, partial and full ranges, fractional
+  CC input, unchanged modulators, combined breath saturation, overlapping notes,
+  all control scopes and snapshot restoration. Range arithmetic, firmware
+  cadence and hardware silence remain unqualified.
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
-  and breath EG bias, plus ratio-only pitch bend, are implemented as above; the
-  other listed behaviors remain unfinished.
+  and breath EG bias, foot volume and ratio-only pitch bend are implemented as
+  above; the other listed behaviors remain unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - The approved DX7 integer oscillator/feedback replacement is implemented.
