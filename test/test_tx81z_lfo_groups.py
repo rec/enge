@@ -121,8 +121,132 @@ def test_performance_routes_silent_owners_and_restores_shared_clocks(
     assert engine.snapshot() == replay.snapshot()
 
 
-def test_performance_rejects_unimplemented_software_vibrato() -> None:
+def vibrato_performance() -> SynthInstrumentScore:
     raw = performance().model_dump(mode="json")
-    raw["body"]["tx81z_lfos"][0]["routes"]["first"] = "vibrato"
-    with pytest.raises(EngineError, match="software vibrato"):
-        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
+    raw["body"]["controls"] = {"wheel": {"default": 1.0}}
+    raw["body"]["tx81z_lfos"][0]["routes"].update(a="vibrato", b="vibrato")
+    for voice in raw["body"]["voices"]:
+        key = {"a": 69, "b": 70, "first": 69, "second": 71, "off": 72}[voice["name"]]
+        voice["mapping"]["lowest_key"] = voice["mapping"]["highest_key"] = key
+        if voice["name"] == "a":
+            patch = bytearray.fromhex(voice["patch"])
+            patch[71:73] = bytes([99, 99])
+            voice["patch"] = bytes(patch).hex()
+            voice["bindings"] = [
+                {"name": "wheel", "kind": "control", "control": "wheel"}
+            ]
+            voice["modulation"] = {
+                "sources": [
+                    {"name": "wheel", "scope": "instrument", "minimum": 0, "maximum": 1}
+                ],
+                "parameters": [
+                    {
+                        "target": {"name": "yamaha", "parameter": "modulation_wheel"},
+                        "unit": "ratio",
+                        "scope": "voice",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0,
+                    }
+                ],
+                "routes": [
+                    {
+                        "name": "wheel",
+                        "source": "wheel",
+                        "target": {"name": "yamaha", "parameter": "modulation_wheel"},
+                        "unit": "ratio",
+                        "operation": "add",
+                        "points": [
+                            {"input": 0, "amount": 0},
+                            {"input": 1, "amount": 1},
+                        ],
+                    }
+                ],
+            }
+    return SynthInstrumentScore.model_validate(raw)
+
+
+def test_vibrato_uses_own_pitch_clock_without_amplitude_or_foreign_resets(
+    tmp_path: Path,
+) -> None:
+    document = vibrato_performance()
+    templates = {v.name: v for v in document.body.voices}
+    first, second = templates["a"], templates["b"]
+    assert isinstance(first, YamahaTX81ZVoice)
+    assert isinstance(second, YamahaTX81ZVoice)
+    hardware = yamaha_lfo.TX81ZLFOContext(first.patch, secondary=second.patch)
+    clocks = {
+        "a": yamaha_lfo.TX81ZLFOContext(first.patch),
+        "b": yamaha_lfo.TX81ZLFOContext(second.patch),
+    }
+    segments: dict[str, list[np.ndarray]] = {"a": [], "b": [], "first": []}
+    for start, end, name in [(0, 1001, "a"), (1001, 2003, "b"), (2003, 48000, "a")]:
+        hardware.keydown()
+        clocks[name].keydown()
+        segments["first"].append(hardware.advance(end - start)[:, 0])
+        for owner, clock in clocks.items():
+            rows = clock.advance(end - start)
+            rows[:, 1] = 0
+            segments[owner].append(rows)
+    expected = np.zeros((48000, 2))
+    for name, key, starts in [
+        ("a", 69, [0, 2003]),
+        ("b", 70, [1001]),
+        ("first", 69, [0, 2003]),
+    ]:
+        template = templates[name]
+        assert isinstance(template, YamahaTX81ZVoice)
+        patch = bytearray(template.patch.data)
+        if name == "first":
+            patch[56:58] = first.patch.data[56:58]
+        rows = np.concatenate(segments[name])
+        for start in starts:
+            note = yamaha.TX81ZRenderer(
+                tx81z.TX81ZVoice(data=bytes(patch)), template.additional, key, 127
+            )
+            controllers = np.full((48000 - start, 2), 253) if name == "a" else None
+            expected[start:] += note.render(
+                48000 - start, rows[start:], controller_depths=controllers
+            ) * [0.3, 0.15]
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            Trigger(
+                tick=t,
+                ordinal=0,
+                part="main",
+                trigger_id=f"note-{t}",
+                key=k,
+                velocity=1,
+            )
+            for t, k in [(0, 69), (1001, 70), (2003, 69)]
+        ],
+        seed=0,
+    ).actions
+    definition = yamaha_instrument.prepare(document)
+    engine = yamaha_instrument.OfflineYamaha(definition)
+    head = engine.advance(actions, 0, 17003)
+    saved = yamaha_instrument.YamahaSnapshot.model_validate_json(
+        engine.snapshot().model_dump_json()
+    )
+    restored = yamaha_instrument.OfflineYamaha(definition)
+    restored.restore(saved)
+    actual = np.concatenate([head, restored.advance([], 17003, 48000)])
+    check_audio(tmp_path / "software-vibrato.wav", actual, expected)
+    final = restored.snapshot()
+    assert final.vibrato_clocks == {n: c.snapshot() for n, c in clocks.items()}
+    assert final.clocks["a"] == hardware.snapshot()
+
+
+def test_vibrato_restore_rejects_foreign_clock_without_changing_state() -> None:
+    engine = yamaha_instrument.OfflineYamaha(
+        yamaha_instrument.prepare(vibrato_performance())
+    )
+    saved = engine.snapshot()
+    invalid = saved.model_copy(deep=True)
+    invalid.vibrato_clocks["a"] = invalid.vibrato_clocks["a"].model_copy(
+        update={"rate": 1}
+    )
+    with pytest.raises(EngineError, match="different clock definition"):
+        engine.restore(invalid)
+    assert engine.snapshot() == saved

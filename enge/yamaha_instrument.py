@@ -71,6 +71,7 @@ class YamahaSnapshot(BaseModel, frozen=True):
     frame: int
     voices: list[VoiceSnapshot]
     clocks: dict[str, yamaha_lfo.DX7LFOSnapshot | yamaha_lfo.TX81ZLFOSnapshot]
+    vibrato_clocks: dict[str, yamaha_lfo.TX81ZLFOSnapshot]
     oscillator_slots: dict[str, list[OscillatorSlot]]
     pitch_history: dict[str, dict[str, PitchHistory]]
     mono_notes: list[MonoNote]
@@ -125,6 +126,14 @@ class OfflineYamaha:
                 self.templates[name] = template.model_copy(
                     update={"patch": tx81z.TX81ZVoice(data=bytes(patch))}
                 )
+        # Provisional software-vibrato model: independent patch clocks, PM only.
+        self.vibrato_clocks = {
+            n: yamaha_lfo.TX81ZLFOContext(v.patch, definition.sample_rate)
+            for n, v in self.templates.items()
+            if isinstance(v, YamahaTX81ZVoice)
+            and n in self.lfo_groups
+            and self.lfo_groups[n].routes[n] == "vibrato"
+        }
         self.voices: dict[str, Voice] = {}
         self.output_groups = {
             v: o.name
@@ -177,6 +186,7 @@ class OfflineYamaha:
                 for v in self.voices.values()
             ],
             clocks={n: c.snapshot() for n, c in self.clocks.items()},
+            vibrato_clocks={n: c.snapshot() for n, c in self.vibrato_clocks.items()},
             oscillator_slots=self.oscillator_slots,
             pitch_history=self.pitch_history,
             mono_notes=self.mono_notes,
@@ -188,6 +198,7 @@ class OfflineYamaha:
         if (
             snapshot.definition != self.definition
             or snapshot.clocks.keys() != self.clocks.keys()
+            or snapshot.vibrato_clocks.keys() != self.vibrato_clocks.keys()
             or snapshot.oscillator_slots.keys() != self.oscillator_slots.keys()
             or snapshot.pitch_history.keys() != self.pitch_history.keys()
             or snapshot.output_filters.keys() != self.output_filters.keys()
@@ -236,8 +247,12 @@ class OfflineYamaha:
                 raise synth.EngineError(
                     "Yamaha snapshot clock type does not match template"
                 )
+        vibrato_clocks = deepcopy(self.vibrato_clocks)
+        for name, clock in vibrato_clocks.items():
+            clock.restore(snapshot.vibrato_clocks[name])
         self.voices = voices
         self.clocks = clocks
+        self.vibrato_clocks = vibrato_clocks
         self.oscillator_slots = snapshot.oscillator_slots
         self.pitch_history = snapshot.pitch_history
         self.mono_notes = snapshot.mono_notes
@@ -407,6 +422,8 @@ class OfflineYamaha:
                 slots[slot_index] = slot
         group = self.lfo_groups.get(template.name)
         self.clocks[group.first if group else template.name].keydown()
+        if template.name in self.vibrato_clocks:
+            self.vibrato_clocks[template.name].keydown()
         if template.name in self.pitch_history:
             assert isinstance(renderer, yamaha.TX81ZRenderer)
             self.pitch_history[template.name][action.part] = PitchHistory(
@@ -461,12 +478,16 @@ class OfflineYamaha:
         output = np.zeros((frames, len(self.definition.channels)))
         groups = {n: np.zeros((frames, 1)) for n in self.output_filters}
         rows = {n: c.advance(frames) for n, c in self.clocks.items()}
+        vibrato_rows = {n: c.advance(frames) for n, c in self.vibrato_clocks.items()}
         for group in self.definition.score.body.tx81z_lfos:
             shared = rows[group.first]
             for name, selector in group.routes.items():
                 if selector == "off":
                     rows[name] = np.zeros((frames, 4), dtype=np.int64)
                     rows[name][:, 3] = 1
+                elif selector == "vibrato":
+                    rows[name] = vibrato_rows[name]
+                    rows[name][:, 1] = 0
                 else:
                     rows[name] = (
                         shared[:, int(selector == "second")] if group.second else shared
@@ -659,8 +680,6 @@ class OfflineYamaha:
 
 def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
     score = SynthInstrumentScore.model_validate(score.model_dump())
-    if any("vibrato" in g.routes.values() for g in score.body.tx81z_lfos):
-        raise synth.EngineError("TX81Z performance software vibrato is not implemented")
     output = score.outputs[0].stream
     if not isinstance(output, AudioType):
         raise synth.EngineError("Yamaha output must be sampled audio")

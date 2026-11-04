@@ -371,7 +371,8 @@ snapshot replay. This qualifies the component against that software model,
 not hardware or the complete TX81Z renderer. Delayed pitch modulation now uses
 the provisional measured timing below; delayed AMD now uses the provisional
 authored-depth ramp described below.
-Software LFOs and the remaining full performance integration still need work.
+Software-LFO firmware qualification and the remaining full performance integration
+still need work.
 
 The [owner's manual, printed page 40](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
 defines the performance-mode ownership boundary: the first two instruments
@@ -389,7 +390,7 @@ allocations, including maximum notes and LFO selectors. Invalid parameters
 remain inspectable with diagnostics, and performance messages are distinguished
 from ACED operator data. The decoder is included in enge's uFor pin `a32cfe3`,
 which also adds explicit `TX81ZLFOGroup` owner-to-template bindings.
-Software vibrato and remaining performance settings still need work;
+Software-vibrato qualification and remaining performance settings still need work;
 the decoder alone does not qualify or execute those behaviors.
 
 The existing `TX81ZLFOContext` now accepts a second voice definition and clocks
@@ -412,10 +413,27 @@ controller assignments. Keeping scoped assignments independent is a host
 extension, not qualified firmware controller ownership. Prepared actions remain
 validated against the original authored templates; derived render patches and
 group clocks restore through the existing JSON snapshots. Off routes suppress
-both PM and AM. Software vibrato routes are explicitly rejected at preparation.
+both PM and AM. Software vibrato routes use the provisional model below.
 One-second WAV regressions cover one/two owners, silent owners, overlapping
 notes, independent owner rates/delays/sync, off routes and JSON continuation.
 This does not impose a hardware voice allocator or implement other PCED fields.
+
+The `vibrato` selector now has a provisional independent pitch-only path. Each
+selected template owns a separate `TX81ZLFOContext` using its own patch settings;
+notes of that template share it, and only its own onsets restart its delay/sync.
+Shared hardware clocks still receive every group onset, so an owner can select
+vibrato for itself while supplying a hardware LFO to other members. AM waveform
+rows are zeroed, suppressing both patch and controller AM without suppressing
+independent EG-bias or volume controls. Separate `vibrato_clocks` are required in
+Yamaha JSON snapshots; restoration validates their identities before committing
+any state. One-second WAV coverage combines two vibrato owners and a hardware
+recipient, independent keydowns, additive controllers and partitioned replay.
+
+The manual establishes own-patch pitch-only behavior, but does not specify the
+software oscillator update cadence, phase quantization or noise algorithm.
+Reusing OPZ rate/waveform/noise machinery is an explicit provisional proxy,
+not firmware or hardware equivalence. The software-LFO qualification gate stays
+open until those details can be compared against an independent reference.
 
 Firmware-derived depth integration:
 [ax81z Math.md at 5848832](https://github.com/iflyhigh/ax81z/blob/5848832989c7864092a277e9428d44f817c6173f/Math.md)
@@ -909,9 +927,10 @@ assignments or portamento.
 - The approved DX7 integer oscillator/feedback replacement is implemented.
   Constant-gain reference comparisons and scoped-control continuation cover the
   new core; complete dynamic patches and hardware output remain unqualified.
-- TX81Z software/multitimbral LFO routing and complete-renderer
-  reference qualification remain incomplete. No passing component test closes
-  those requirements.
+- TX81Z multitimbral LFO routing is implemented for shared hardware owners and
+  provisional independent vibrato. Software-LFO firmware behavior and
+  complete-renderer reference qualification remain incomplete. No passing
+  component test closes those qualification requirements.
 
 ### TX81Z firmware-trace qualification path
 
