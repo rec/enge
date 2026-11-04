@@ -364,6 +364,7 @@ class TX81ZRenderer:
         if self.portamento is not None:
             if (
                 portamento_enabled is not None
+                and not (self.voice.data[63] and self.voice.data[65])
                 and (disabled := np.flatnonzero(portamento_enabled < 0.5)).size
             ):
                 at = int(disabled[0])
@@ -446,6 +447,42 @@ class TX81ZRenderer:
             self.voice.feedback,
         )
         return output
+
+    def retarget(self, note: int, velocity: int, pitch_hz: float | None = None) -> None:
+        """Select a legato key without restarting operators or envelope progress.
+
+        Key-scaled rates and levels follow the selected key provisionally; the
+        shared envelope counter, attenuation, stages and oscillator state persist.
+        """
+        start = (
+            self.portamento.current_hz
+            if self.portamento is not None
+            else self.pitch_hz
+            if self.pitch_hz is not None
+            else 440 * 2 ** ((self.note - 69) / 12)
+        )
+        target = TX81ZRenderer(
+            self.voice,
+            self.additional,
+            note,
+            velocity,
+            self.sample_rate,
+            pitch_hz,
+            start,
+        )
+        self.note = target.note
+        self.velocity = target.velocity
+        self.pitch_hz = target.pitch_hz
+        self.start_pitch_hz = target.start_pitch_hz
+        self.portamento = target.portamento
+        self.frequencies = target.frequencies
+        self.detune_offsets = target.detune_offsets
+        self.levels = target.levels
+        for current, prepared in zip(
+            self.envelopes.envelopes, target.envelopes.envelopes, strict=True
+        ):
+            current.rates = prepared.rates
+            current.reverb_rate = prepared.reverb_rate
 
     def release(self) -> None:
         self.envelopes.release()

@@ -58,6 +58,12 @@ class PitchHistory(BaseModel):
     pitch_hz: float
 
 
+class MonoNote(BaseModel, frozen=True):
+    action: synth_trace.VoiceStart
+    pitch_hz: float
+    sources: dict[str, int]
+
+
 class YamahaSnapshot(BaseModel, frozen=True):
     definition: PreparedYamaha
     frame: int
@@ -65,6 +71,7 @@ class YamahaSnapshot(BaseModel, frozen=True):
     clocks: dict[str, yamaha_lfo.DX7LFOSnapshot | yamaha_lfo.TX81ZLFOSnapshot]
     oscillator_slots: dict[str, list[OscillatorSlot]]
     pitch_history: dict[str, dict[str, PitchHistory]]
+    mono_notes: list[MonoNote]
     contexts: list[synth.ControlContext]
 
 
@@ -90,6 +97,7 @@ class OfflineYamaha:
             for n, v in self.templates.items()
         }
         self.voices: dict[str, Voice] = {}
+        self.mono_notes: list[MonoNote] = []
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
             self.definition.score.body.controls,
@@ -133,6 +141,7 @@ class OfflineYamaha:
             clocks={n: c.snapshot() for n, c in self.clocks.items()},
             oscillator_slots=self.oscillator_slots,
             pitch_history=self.pitch_history,
+            mono_notes=self.mono_notes,
             contexts=self.controls.contexts,
         ).model_copy(deep=True)
 
@@ -191,6 +200,7 @@ class OfflineYamaha:
         self.clocks = clocks
         self.oscillator_slots = snapshot.oscillator_slots
         self.pitch_history = snapshot.pitch_history
+        self.mono_notes = snapshot.mono_notes
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.frame = snapshot.frame
@@ -198,9 +208,31 @@ class OfflineYamaha:
     def _apply(self, action: instrument_trace.TraceAction) -> None:
         if isinstance(action, instrument_trace.Diagnostic):
             return
+        if isinstance(action, instrument_trace.TriggerRelease):
+            released = [
+                n
+                for n in self.mono_notes
+                if (n.action.part, n.action.trigger_id)
+                == (action.part, action.trigger_id)
+            ]
+            self.mono_notes = [n for n in self.mono_notes if n not in released]
+            for note in released:
+                if (voice := self.voices.get(note.action.voice_id)) is not None:
+                    previous = [
+                        n
+                        for n in self.mono_notes
+                        if (n.action.template, n.action.part)
+                        == (voice.template, voice.part)
+                    ]
+                    if previous and voice.release_at is None and voice.fade_at is None:
+                        self._legato(voice, previous[-1])
+            return
         if self.controls.apply(action, self.voices):
             return
         if isinstance(action, instrument_trace.VoiceRetirement):
+            self.mono_notes = [
+                n for n in self.mono_notes if n.action.voice_id != action.voice_id
+            ]
             if (voice := self.voices.get(action.voice_id)) is None:
                 return
             if action.action == "stop":
@@ -236,7 +268,9 @@ class OfflineYamaha:
             raise synth.EngineError(
                 "Yamaha start must match its prepared template and carry key/velocity"
             )
-        if action.voice_id in self.voices:
+        if action.voice_id in self.voices or any(
+            n.action.voice_id == action.voice_id for n in self.mono_notes
+        ):
             raise synth.EngineError("Duplicate active Yamaha voice")
         velocity = (
             0 if action.velocity == 0 else max(1, floor(action.velocity * 127 + 0.5))
@@ -249,6 +283,34 @@ class OfflineYamaha:
         elif pitch is None:
             pitch = 440 * 2 ** ((action.key - 69) / 12) + template.frequency_offset_hz
         pitch *= 2 ** (template.processing.tuning_cents / 1200)
+        mono = isinstance(template, YamahaTX81ZVoice) and bool(template.patch.data[63])
+        sources = self.controls.sources(template, action, action.velocity)
+        mono_voice = None
+        note = None
+        if mono:
+            held = [
+                n
+                for n in self.mono_notes
+                if (n.action.template, n.action.part) == (template.name, action.part)
+            ]
+            note = MonoNote(action=action, pitch_hz=pitch, sources=sources)
+            mono_voice = next(
+                (
+                    v
+                    for v in self.voices.values()
+                    if (v.template, v.part) == (template.name, action.part)
+                ),
+                None,
+            )
+            if mono_voice is not None:
+                if (
+                    held
+                    and mono_voice.release_at is None
+                    and mono_voice.fade_at is None
+                ):
+                    self._legato(mono_voice, note)
+                    self._remember(note)
+                    return
         slot_index = None
         phases = None
         if template.name in self.oscillator_slots:
@@ -276,6 +338,8 @@ class OfflineYamaha:
                     assert isinstance(active.renderer, yamaha.TX81ZRenderer)
                     if active.renderer.portamento is not None:
                         start_pitch = active.renderer.portamento.current_hz
+        if mono and template.patch.data[65]:
+            start_pitch = None
         renderer = _note(
             template,
             action.key,
@@ -285,6 +349,10 @@ class OfflineYamaha:
             phases,
             start_pitch,
         )
+        if mono_voice is not None:
+            self._retire(mono_voice, action.tick)
+        if note is not None:
+            self._remember(note)
         if slot_index is not None:
             assert isinstance(renderer, yamaha.DX7Renderer)
             slot = OscillatorSlot(
@@ -307,10 +375,44 @@ class OfflineYamaha:
             part=action.part,
             start=action.tick,
             oscillator_slot=slot_index,
-            sources=self.controls.sources(template, action, action.velocity),
+            sources=sources,
             renderer=renderer,
             filter_states=filters.initial_states(template.processing.filters, 1),
         )
+
+    def _remember(self, note: MonoNote) -> None:
+        # Only onset templates represent a physically held key. Single mode
+        # remembers eight previous keys in addition to the selected key.
+        if note.action.settings.trigger != "start":
+            return
+        held = [
+            n
+            for n in self.mono_notes
+            if (n.action.template, n.action.part)
+            == (note.action.template, note.action.part)
+        ]
+        if len(held) == 9:
+            self.mono_notes.remove(held[0])
+        self.mono_notes.append(note)
+
+    def _legato(self, voice: Voice, note: MonoNote) -> None:
+        assert isinstance(voice.renderer, yamaha.TX81ZRenderer)
+        action = note.action
+        assert action.key is not None and action.velocity is not None
+        velocity = (
+            0 if action.velocity == 0 else max(1, floor(action.velocity * 127 + 0.5))
+        )
+        voice.renderer.retarget(action.key, velocity, note.pitch_hz)
+        del self.voices[voice.voice_id]
+        self.controls.stop(voice.voice_id)
+        voice.voice_id = action.voice_id
+        voice.sources = note.sources
+        voice.release_at = None
+        self.voices[voice.voice_id] = voice
+        if voice.template in self.pitch_history:
+            self.pitch_history[voice.template][voice.part] = PitchHistory(
+                voice_id=voice.voice_id, pitch_hz=note.pitch_hz
+            )
 
     def _render(self, start: int, frames: int) -> np.ndarray:
         output = np.zeros((frames, len(self.definition.channels)))
@@ -449,6 +551,9 @@ class OfflineYamaha:
         return output
 
     def _retire(self, voice: Voice, frame: int) -> None:
+        self.mono_notes = [
+            n for n in self.mono_notes if n.action.voice_id != voice.voice_id
+        ]
         if voice.template in self.pitch_history:
             previous = self.pitch_history[voice.template].get(voice.part)
             if previous is not None and previous.voice_id == voice.voice_id:
@@ -517,8 +622,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         if isinstance(voice, YamahaDX7Voice):
             yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
         else:
-            if voice.patch.data[63]:
-                raise synth.EngineError("TX81Z mono mode is not implemented")
             targets = {
                 p.target.parameter
                 for p in voice.modulation.parameters

@@ -231,16 +231,6 @@ def test_polyphonic_portamento_uses_current_pitch_and_retains_part_history(
     )
 
 
-def test_instrument_rejects_mono_until_legato_lifecycle_is_implemented() -> None:
-    raw = instrument("tx81z").model_dump(mode="json")
-    template = raw["body"]["voices"][0]
-    patch = bytearray.fromhex(template["patch"])
-    patch[63] = 1
-    template["patch"] = bytes(patch).hex()
-    with pytest.raises(EngineError, match="mono mode"):
-        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
-
-
 @pytest.mark.parametrize("disabled_at", [None, 0, 1001])
 def test_portamento_switch_cancels_without_restarting_the_glide(
     tmp_path: Path, disabled_at: int | None

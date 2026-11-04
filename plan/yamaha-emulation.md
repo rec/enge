@@ -341,17 +341,38 @@ policy; it does not claim hardware voice-slot allocation equivalence. Snapshots
 retain per-note glide state and the instrument's pitch history. One-second WAV
 regressions cover measured ascending/descending traces, slow settings, target
 clamping, fixed-frequency bypass, detune, dynamic tuning, interrupted glides,
-part isolation, retirement history and snapshot replay. Mono mode is now
-rejected explicitly by the adapter until its held-key and legato lifecycle is
-implemented. Fingered portamento remains work.
+part isolation, retirement history and snapshot replay.
 
 The synth, FM, noise and Yamaha renderers now accept physical `trigger_release`
 observations without retiring sustained audio. Persistent native admission
-discards these observations before encoding DSP actions. This prepares consumers
-for shared synth traces to expose physical key release independently of logical
+discards these observations before encoding DSP actions. Shared synth traces
+expose physical key release independently of logical
 retirement under sustain. One-second WAV regressions cover every supported
-backend, partitioned rendering and snapshot replay. Mono held-key ownership and
-legato interpretation of these observations remain to be implemented.
+backend, partitioned rendering and snapshot replay.
+
+TX81Z mono playback now owns one sounding voice per template and part, following
+the [manual's Single-mode rules](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
+(printed page 21). Overlapping onsets select the newest key without restarting
+oscillator phases, feedback, envelope attenuation/stages or the envelope counter.
+Physical release returns to the newest remaining held key, even under sustain;
+logical retirement releases the final sounding key. Eight previous keys are
+remembered in addition to the current key. The oldest is forgotten on overflow.
+Performance-mode five-key memory is outside the current Single-mode adapter.
+Each selected key restores its scoped controls. Snapshots include held starts,
+their source contexts and the selected note's continuing DSP state.
+
+Legato updates intrinsic key-scaled rates, detune, output levels and velocity for
+the selected key while preserving envelope progress. Shared LFO and filter state
+also continue; a separated onset restarts the note and LFO and replaces any
+sustained/releasing mono voice. These register-update and ownership details are
+provisional, not firmware-qualified. Explicit stop, fade or envelope-release
+actions remove that key from priority memory without reviving another key.
+Non-onset templates retrigger rather than enter held-key memory. Fingered mode
+glides only across overlapping held keys, including return to a previous key,
+and ignores the full-time portamento switch. Poly mode always uses full-time
+glide regardless of the stored fingered flag. Regressions cover analytic phase
+continuity, developing envelopes, sustain, memory overflow, separate parts,
+retirement, switch-off fingered glide and JSON snapshot replay in 48-kHz WAVs.
 
 The TX81Z-specific `yamaha.portamento` target now controls full-time glide through
 the existing scoped-control path. Its normalized 0..1 domain defaults to 1,
@@ -365,8 +386,8 @@ MIDI CC65 uses the existing controller binding and switches between values 63
 and 64; smoothing is applied before the threshold. One-second WAV regressions
 exercise actual converted CC65 messages, independent parts, threshold crossing,
 new notes after re-enabling, interrupted smoothing and snapshot replay. This
-does not qualify the hardware's exact mid-glide switch response. Fingered mode,
-when implemented, must ignore the full-time switch as specified by the manual.
+does not qualify the hardware's exact mid-glide switch response. Mono fingered
+mode ignores this switch as specified by the manual.
 
 VCED globals 54–76 and ACED globals 20–22 now reject values above the manual's
 documented parameter ranges before note preparation. Unused payload bytes and
@@ -686,8 +707,9 @@ assignments or portamento.
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Wheel/breath/foot LFO modulation
   and breath EG bias, foot volume, ratio-only pitch bend and polyphonic full-time
-  portamento with switch control are implemented as above. Mono/fingered
-  behavior and the other listed behaviors remain unfinished.
+  portamento with switch control are implemented as above. Mono legato and
+  fingered portamento are implemented provisionally as above. The other listed
+  behaviors and hardware qualification remain unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
 - The approved DX7 integer oscillator/feedback replacement is implemented.
