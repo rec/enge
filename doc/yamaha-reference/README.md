@@ -264,3 +264,55 @@ scaling. They compare complete one-second 48 kHz renders against analytic
 sines with the existing envelope, and verify JSON snapshot continuation.
 These checks qualify the continuous equation, not Dexed's Q24 rounding or
 frequency lookup, and do not establish measured hardware equivalence.
+
+## TX81Z envelope comparison
+
+The [envelope harness](render-ymfm-envelope.cc) uses the same pinned ymfm
+revision `81aec25ccbb98f4873a255f7551ac4dadac59b4a`. It creates OPZ operators
+through the public API and reads their debug attenuation and prepared shift.
+The upstream source is unchanged. Four operators share each parameter profile,
+with envelope shifts 0, 1, 2 and 3; the unshifted operator uses OP1's register
+position. Key-on is prepared before frame zero and release before frame 24,000.
+
+| Case | AR | D1R | D2R | RR | D1L | RS | Key code | Reverb |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 31 | 0 | 0 | 15 | 15 | 0 | 0 | 0 |
+| 1 | 0 | 0 | 0 | 0 | 15 | 0 | 0 | 0 |
+| 2 | 12 | 9 | 5 | 4 | 7 | 0 | 0 | 0 |
+| 3 | 12 | 9 | 5 | 4 | 7 | 3 | 31 | 0 |
+| 4 | 31 | 31 | 7 | 10 | 0 | 1 | 18 | 0 |
+| 5 | 31 | 0 | 0 | 15 | 15 | 0 | 0 | 2 |
+| 6 | 31 | 0 | 0 | 0 | 15 | 0 | 0 | 7 |
+| 7 | 24 | 20 | 11 | 8 | 11 | 2 | 13 | 4 |
+
+The profiles cover immediate and zero-rate attack, slower attack/decay, key-rate
+scaling, sustain-level extremes, release, reverb transition and a release slower
+than the requested reverb rate. D1L is the authored control; the harness writes
+`15-D1L` to the chip sustain-level register. The five-bit key code is written
+into the upper channel pitch bits, independently of MIDI-to-key-code mapping.
+
+The host observes attenuation before each 48 kHz output-frame interval and
+advances the shared envelope counter using a 3,579,545 Hz master clock divided
+by 192, retaining its integer remainder. The harness passes each envelope tick
+as `counter << 2` to ymfm's operator clock, whose counter uses two fractional
+bits. This tests envelope arithmetic and the chosen host clock conversion; it
+does not independently qualify physical chip key-on timing.
+
+All 48,000 four-operator rows in each case match exactly: 1,536,000 attenuation
+values, maximum absolute error zero. The
+[compressed reference](../../test/data/tx81z-envelope.npz) stores eight signed
+16-bit arrays, `case0` through `case7`, and the eight-column `parameters` table
+above. Regressions also check partitioned JSON continuation after release and
+write paired one-second 48 kHz WAVs using these attenuations on a 440 Hz carrier.
+No production renderer changes were needed for these profiles.
+
+Compile as C++17 with `-O2`, the pinned upstream include directory and
+`ymfm_opz.cpp`. The harness includes `ymfm_fm.ipp` for the operator template
+implementations. Its nine arguments are the eight parameter columns followed
+by an output filename; case 2 is `12 9 5 4 7 0 0 0 output.i32`. Output is
+48,000 rows of four native-endian signed 32-bit attenuation values, which can
+be converted losslessly to the fixture's signed 16-bit arrays.
+
+This qualifies these envelope profiles against the provisional software model.
+It does not qualify every rate/key combination, full TX81Z synthesis, WT11
+behavior, controller interaction, integer audio output or physical hardware.
