@@ -22,6 +22,7 @@ class VoiceState(BaseModel):
     voice_id: str
     template: str
     start: int
+    oscillator_slot: int | None = None
     release_at: int | None = None
     released: bool = False
     fade_at: int | None = None
@@ -40,11 +41,18 @@ class VoiceSnapshot(VoiceState):
     note: yamaha.DX7Snapshot | yamaha.TX81ZSnapshot
 
 
+class OscillatorSlot(BaseModel):
+    phases: list[float] = Field(min_length=6, max_length=6)
+    phase_steps: list[float] = Field(min_length=6, max_length=6)
+    idle_since: int | None = None
+
+
 class YamahaSnapshot(BaseModel, frozen=True):
     definition: PreparedYamaha
     frame: int
     voices: list[VoiceSnapshot]
     clocks: dict[str, yamaha_lfo.DX7LFOSnapshot | yamaha_lfo.TX81ZLFOSnapshot]
+    oscillator_slots: dict[str, list[OscillatorSlot]]
 
 
 class OfflineYamaha:
@@ -69,6 +77,12 @@ class OfflineYamaha:
             for n, v in self.templates.items()
         }
         self.voices: dict[str, Voice] = {}
+        self.oscillator_slots: dict[str, list[OscillatorSlot]] = {
+            n: []
+            for n, v in self.templates.items()
+            if isinstance(v, YamahaDX7Voice)
+            and not yamaha.dx7_global_parameters(v.patch)[0]
+        }
 
     def advance(
         self, actions: list[instrument_trace.TraceAction], start: int, end: int
@@ -94,12 +108,14 @@ class OfflineYamaha:
                 for v in self.voices.values()
             ],
             clocks={n: c.snapshot() for n, c in self.clocks.items()},
+            oscillator_slots=self.oscillator_slots,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: YamahaSnapshot) -> None:
         if (
             snapshot.definition != self.definition
             or snapshot.clocks.keys() != self.clocks.keys()
+            or snapshot.oscillator_slots.keys() != self.oscillator_slots.keys()
         ):
             raise synth.EngineError("Snapshot belongs to a different Yamaha instrument")
         snapshot = snapshot.model_copy(deep=True)
@@ -142,6 +158,7 @@ class OfflineYamaha:
                     "Yamaha snapshot clock type does not match template"
                 )
         self.voices = voices
+        self.oscillator_slots = snapshot.oscillator_slots
         self.frame = snapshot.frame
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
@@ -160,7 +177,7 @@ class OfflineYamaha:
             if (voice := self.voices.get(action.voice_id)) is None:
                 return
             if action.action == "stop":
-                del self.voices[action.voice_id]
+                self._retire(voice, action.tick)
             elif action.action == "fade":
                 assert action.fade_seconds is not None
                 if voice.fade_at is not None:
@@ -205,14 +222,45 @@ class OfflineYamaha:
         elif pitch is None:
             pitch = 440 * 2 ** ((action.key - 69) / 12) + template.frequency_offset_hz
         pitch *= 2 ** (template.processing.tuning_cents / 1200)
+        slot_index = None
+        phases = None
+        if template.name in self.oscillator_slots:
+            slots = self.oscillator_slots[template.name]
+            idle = [
+                (s.idle_since, i)
+                for i, s in enumerate(slots)
+                if s.idle_since is not None
+            ]
+            if idle:
+                idle_since, slot_index = min(idle)
+                slot = slots[slot_index]
+                elapsed = action.tick - idle_since
+                phases = [
+                    (p + elapsed * s) % 1
+                    for p, s in zip(slot.phases, slot.phase_steps, strict=True)
+                ]
+            else:
+                slot_index = len(slots)
         renderer = _note(
-            template, action.key, velocity, self.definition.sample_rate, pitch
+            template, action.key, velocity, self.definition.sample_rate, pitch, phases
         )
+        if slot_index is not None:
+            assert isinstance(renderer, yamaha.DX7Renderer)
+            slot = OscillatorSlot(
+                phases=renderer.phases.tolist(),
+                phase_steps=renderer.phase_steps.tolist(),
+            )
+            slots = self.oscillator_slots[template.name]
+            if slot_index == len(slots):
+                slots.append(slot)
+            else:
+                slots[slot_index] = slot
         self.clocks[template.name].keydown()
         self.voices[action.voice_id] = Voice(
             voice_id=action.voice_id,
             template=template.name,
             start=action.tick,
+            oscillator_slot=slot_index,
             renderer=renderer,
             filter_states=filters.initial_states(template.processing.filters, 1),
         )
@@ -278,8 +326,20 @@ class OfflineYamaha:
             ]
             output += synth.route_samples(audio, routes)
             if count < frames or _complete(voice):
-                del self.voices[voice.voice_id]
+                self._retire(voice, start + count)
         return output
+
+    def _retire(self, voice: Voice, frame: int) -> None:
+        if voice.oscillator_slot is not None:
+            assert isinstance(voice.renderer, yamaha.DX7Renderer)
+            self.oscillator_slots[voice.template][voice.oscillator_slot] = (
+                OscillatorSlot(
+                    phases=voice.renderer.phases.tolist(),
+                    phase_steps=voice.renderer.phase_steps.tolist(),
+                    idle_since=frame,
+                )
+            )
+        del self.voices[voice.voice_id]
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
@@ -324,10 +384,8 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             raise synth.EngineError("Unsupported Yamaha processing")
         if isinstance(voice, YamahaDX7Voice):
             parameters = yamaha.dx7_global_parameters(voice.patch)
-            if parameters[0] != 1 or parameters[8] != 24:
-                raise synth.EngineError(
-                    "DX7 integration requires oscillator sync and neutral transpose"
-                )
+            if parameters[8] != 24:
+                raise synth.EngineError("DX7 integration requires neutral transpose")
             if voice.patch.algorithm in (4, 6) and voice.patch.feedback:
                 raise synth.EngineError(
                     "DX7 multi-operator feedback is not implemented"
@@ -348,9 +406,10 @@ def _note(
     velocity: int,
     rate: int,
     pitch: float | None,
+    phases: list[float] | None = None,
 ) -> yamaha.DX7Renderer | yamaha.TX81ZRenderer:
     if isinstance(template, YamahaDX7Voice):
-        return yamaha.DX7Renderer(template.patch, key, velocity, rate, pitch)
+        return yamaha.DX7Renderer(template.patch, key, velocity, rate, pitch, phases)
     return yamaha.TX81ZRenderer(
         template.patch, template.additional, key, velocity, rate, pitch
     )

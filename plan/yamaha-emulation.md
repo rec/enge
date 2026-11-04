@@ -5,9 +5,8 @@
 `enge/yamaha.py` already contains a Python DX7 note renderer, operator envelopes,
 frequency and level scaling, algorithm routing and feedback. This is partial
 implementation, not verified hardware equivalence. The requirements below remain
-the target contract; oscillator-sync behavior, reference
-qualification, completion of TX81Z/WT11 rendering and full engine integration require further
-work. Do not restart the existing DX7 implementation.
+the target contract; hardware/reference qualification, completion of TX81Z/WT11
+rendering and full engine integration require further work. Do not restart the existing DX7 implementation.
 
 An initial [pinned MSFA comparison](../doc/yamaha-reference/README.md) now includes
 constructed named patches, the reference harness and paired 48 kHz WAV files.
@@ -71,7 +70,7 @@ unpacked inputs. Unpacked oscillator mode must also be 0 or 1. Rejected voices
 remain losslessly inspectable. Boundary tests include waveform 5 (sample and
 hold), which is implemented in the pinned MSFA reference. Validation does not
 implement transpose. The note-level phase ownership added below implements
-oscillator-sync reset, while offline polyphonic sync-off allocation remains work.
+oscillator-sync reset and offline polyphonic sync-off allocation.
 
 The user approved a caller-owned shared Yamaha clock/LFO context on 2026-11-04.
 `DX7LFOContext` now emits normalized waveform/delay rows once per render interval;
@@ -358,11 +357,18 @@ The user approved explicit caller-owned phase initialization on 2026-11-04.
 OP6. Sync-on resets them to zero; sync-off copies the supplied phases. Omitting
 phases starts a standalone note at zero. Invalid lengths, nonfinite values and
 values outside `[0, 1)` are rejected. Caller mutation cannot affect a live note.
-Existing JSON note snapshots preserve running phases across continuation.
+Existing JSON note snapshots preserve running phases and the last per-frame
+phase increments across continuation.
 One-second WAV regressions cover both sync states, input ownership and restored
-continuation. Offline instrument sync-off remains rejected until its reusable
-oscillator-slot policy is resolved and implemented; idle phase evolution is not
-yet owned by the adapter. This is not hardware phase qualification.
+continuation. The approved offline adapter owns reusable slots per template for sync-off
+patches. Overlapping notes receive distinct slots. Retired slots advance at their
+last effective frequencies, including the final pitch-envelope/LFO contribution,
+and a new note takes the oldest idle slot or creates a zero-phase slot when all
+are active. A retirement-frame origin makes idle continuation independent of
+render block size. Stop, fade and envelope completion all return a slot; snapshots
+retain idle slots alongside active voices. Regressions cover overlapping notes,
+stop/fade retirement and restoration with idle and active slots. This policy has
+no new voice cap and is not hardware voice-allocation or phase qualification.
 
 ## Offline instrument integration
 
@@ -380,8 +386,8 @@ uses nearest-integer rounding with ties upward, preserves exact zero and maps
 any positive value to at least 1. Existing TX81Z rejection of velocity zero with
 nonzero velocity sensitivity remains in force.
 
-The adapter admits the implemented profile explicitly: DX7 oscillator sync on,
-neutral transpose and no multi-operator feedback; TX81Z zero-delay LFO. External
+The adapter admits the implemented profile explicitly: DX7 neutral transpose
+and no multi-operator feedback; TX81Z zero-delay LFO. External
 controller modulation beyond shared sustain handling, external envelopes and
 unsupported processing remain rejected. Released DX7 carriers with nonzero final
 envelope levels remain active until explicitly stopped or faded. This integration

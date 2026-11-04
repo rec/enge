@@ -276,12 +276,17 @@ def test_minimum_hold_and_retimed_fade_survive_snapshot(
     assert renderer.snapshot().voices == []
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
-def test_midi_render_dispatches_yamaha_instruments(tmp_path: Path, kind: str) -> None:
+@pytest.mark.parametrize(
+    "kind,synchronize", [("dx7", False), ("dx7", True), ("tx81z", True)]
+)
+def test_midi_render_dispatches_yamaha_instruments(
+    tmp_path: Path, kind: str, synchronize: bool
+) -> None:
     document = instrument(kind)
     raw = document.model_dump(mode="json")
     patch = bytearray.fromhex(raw["body"]["voices"][0]["patch"])
     if kind == "dx7":
+        patch[136] = int(synchronize)
         for i in range(0, 126, 21):
             patch[i + 7] = 0
     else:
@@ -309,3 +314,78 @@ def test_midi_render_dispatches_yamaha_instruments(tmp_path: Path, kind: str) ->
         decode(path),
         np.rint(expected * (2**23 - 1)) / (2**23 - 1),
     )
+
+
+@pytest.mark.parametrize("retirement", ["stop", "fade"])
+def test_dx7_reuses_oldest_idle_slots_across_overlaps_and_snapshots(
+    tmp_path: Path, retirement: str
+) -> None:
+    raw = instrument("dx7").model_dump(mode="json")
+    data = bytearray.fromhex(raw["body"]["voices"][0]["patch"])
+    data[136] = 0
+    data[139:141] = bytes(2)
+    raw["body"]["voices"][0]["patch"] = bytes(data).hex()
+    document = SynthInstrumentScore.model_validate(raw)
+    patch = DX7Voice(data=bytes(data))
+    events = [
+        Trigger(tick=t, ordinal=0, part="main", trigger_id=f"note-{i}", key=k)
+        for i, (t, k) in enumerate([(0, 69), (100, 72), (500, 65), (600, 67)])
+    ]
+    actions = synth_trace.prepare(document.body, events, seed=0).actions
+    for i, end in enumerate([200, 300, 1000, 1100]):
+        actions.append(
+            VoiceRetirement(
+                tick=end if retirement == "stop" else end - 100,
+                ordinal=1,
+                voice_id=f"voice-{i}",
+                cause=RetirementCause.transport_stop,
+                action=retirement,
+                fade_seconds=None if retirement == "stop" else 100 / 48000,
+            )
+        )
+    actions.sort(key=lambda a: (a.tick, a.ordinal))
+    expected = np.zeros((48000, 2))
+    first = yamaha.DX7Renderer(patch, 69, 127)
+    second = yamaha.DX7Renderer(patch, 72, 127)
+    first_audio, second_audio = first.render(200), second.render(200)
+    third = yamaha.DX7Renderer(
+        patch,
+        65,
+        127,
+        initial_phases=((first.phases + 300 * first.phase_steps) % 1).tolist(),
+    )
+    fourth = yamaha.DX7Renderer(
+        patch,
+        67,
+        127,
+        initial_phases=((second.phases + 300 * second.phase_steps) % 1).tolist(),
+    )
+    for start, audio in [
+        (0, first_audio),
+        (100, second_audio),
+        (500, third.render(500)),
+        (600, fourth.render(500)),
+    ]:
+        if retirement == "fade":
+            audio[-100:] *= (1 - np.arange(100) / 100)[:, None]
+        expected[start : start + len(audio)] += audio * [0.3, 0.15]
+    definition = yamaha_instrument.prepare(document)
+    renderer = yamaha_instrument.OfflineYamaha(definition)
+    chunks = []
+    for start, end in [(0, 400), (400, 550), (550, 48000)]:
+        chunks.append(
+            renderer.advance([a for a in actions if start <= a.tick < end], start, end)
+        )
+        snapshot = yamaha_instrument.YamahaSnapshot.model_validate_json(
+            renderer.snapshot().model_dump_json()
+        )
+        renderer = yamaha_instrument.OfflineYamaha(definition)
+        renderer.restore(snapshot)
+    actual = np.concatenate(chunks)
+    check_audio(tmp_path / "oscillator-slots.wav", actual, expected)
+    whole = yamaha_instrument.OfflineYamaha(definition).advance(actions, 0, 48000)
+    np.testing.assert_array_equal(actual, whole)
+    saved = renderer.snapshot()
+    assert saved.voices == []
+    assert len(saved.oscillator_slots["yamaha"]) == 2
+    assert [s.idle_since for s in saved.oscillator_slots["yamaha"]] == [1000, 1100]

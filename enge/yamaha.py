@@ -450,6 +450,7 @@ class DX7Snapshot(BaseModel, frozen=True):
     envelopes: list[DX7Envelope] = Field(min_length=6, max_length=6)
     pitch_envelope: DX7PitchEnvelope
     phases: list[float] = Field(min_length=6, max_length=6)
+    phase_steps: list[float] = Field(min_length=6, max_length=6)
     feedback: list[float] = Field(min_length=2, max_length=2)
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -542,6 +543,7 @@ class DX7Renderer:
         )
         self.feedback = [0.0, 0.0]
         self.order = _operator_order(voice)
+        self.phase_steps = self.frequencies / self.sample_rate
 
     def snapshot(self) -> DX7Snapshot:
         return DX7Snapshot(
@@ -553,6 +555,7 @@ class DX7Renderer:
             envelopes=[e.model_copy(deep=True) for e in self.envelopes],
             pitch_envelope=self.pitch_envelope.model_copy(deep=True),
             phases=self.phases.tolist(),
+            phase_steps=self.phase_steps.tolist(),
             feedback=self.feedback.copy(),
         )
 
@@ -568,6 +571,7 @@ class DX7Renderer:
         self.envelopes = [e.model_copy(deep=True) for e in snapshot.envelopes]
         self.pitch_envelope = snapshot.pitch_envelope.model_copy(deep=True)
         self.phases = np.array(snapshot.phases)
+        self.phase_steps = np.array(snapshot.phase_steps)
         self.feedback = snapshot.feedback.copy()
 
     def release(self) -> None:
@@ -631,9 +635,8 @@ class DX7Renderer:
             output[frame, 0] = sum(values[carrier] for carrier in carriers)
             self.feedback[0] = self.feedback[1]
             self.feedback[1] = float(values[feedback_operator])
-            self.phases = np.remainder(
-                self.phases + self.frequencies * pitch_ratio / self.sample_rate, 1
-            )
+            self.phase_steps = self.frequencies * pitch_ratio / self.sample_rate
+            self.phases = np.remainder(self.phases + self.phase_steps, 1)
         return output
 
 
