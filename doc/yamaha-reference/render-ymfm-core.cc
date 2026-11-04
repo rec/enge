@@ -5,14 +5,21 @@
 #include "ymfm_opz.h"
 #include "ymfm_fm.ipp"
 
-// Arguments: algorithm (1..8), feedback (0..7), profile (0..1), output.i32.
+// Arguments: algorithm (1..8), feedback (0..7), profile (0..1), output.i32, graphs.txt.
 // Fixed Q20 phase steps and TL isolate the operator graph from patch decoding.
 int main(int argc, char **argv) {
-    if (argc != 5) return 2;
+    if (argc != 6) return 2;
     const int algorithm = std::atoi(argv[1]);
     const int feedback = std::atoi(argv[2]);
     const int profile = std::atoi(argv[3]);
     if (algorithm < 1 || algorithm > 8 || feedback < 0 || feedback > 7 || profile < 0 || profile > 1) return 2;
+    unsigned graphs[8][5];
+    FILE *graph_file = std::fopen(argv[5], "r");
+    if (!graph_file) return 3;
+    for (auto &graph : graphs)
+        for (auto &mask : graph)
+            if (std::fscanf(graph_file, "%u", &mask) != 1 || mask > 15) return 2;
+    if (std::fclose(graph_file)) return 3;
     ymfm::ymfm_interface interface;
     ymfm::fm_engine_base<ymfm::opz_registers> engine(interface);
     engine.reset();
@@ -43,13 +50,36 @@ int main(int argc, char **argv) {
     }
     FILE *output = std::fopen(argv[4], "wb");
     if (!output) return 3;
+    int32_t history[2] = {};
+    unsigned mismatches = 0;
     for (int frame = 0; frame < 48000; ++frame) {
         ymfm::fm_engine_base<ymfm::opz_registers>::output_data sample{};
         // No DAC clipping: isolate the raw carrier sum.
         channel.output_4op(sample, 0, 32767);
         const int32_t value = sample.data[0];
+        // Execute exported enge edges with the exact same integer operator
+        // kernel and phase state, but an independent two-sample feedback path.
+        int32_t values[4] = {};
+        const auto &graph = graphs[algorithm - 1];
+        for (int op = 3; op >= 0; --op) {
+            int32_t modulation = 0;
+            for (int source = 0; source < 4; ++source)
+                if (graph[op] & (1U << source)) modulation += values[source];
+            modulation >>= 1;
+            if (op == 3 && feedback)
+                modulation += (history[0] + history[1]) >> (10 - feedback);
+            values[op] = ops[3 - op].compute_volume(ops[3 - op].phase() + modulation, 0);
+        }
+        int32_t graph_value = 0;
+        for (int op = 0; op < 4; ++op)
+            if (graph[4] & (1U << op)) graph_value += values[op];
+        history[0] = history[1];
+        history[1] = values[3];
+        mismatches += graph_value != value;
         if (std::fwrite(&value, sizeof(value), 1, output) != 1) return 4;
         channel.clock(0, 0);
     }
-    return std::fclose(output) != 0;
+    if (std::fclose(output)) return 4;
+    std::fprintf(stderr, "%d,%d,%d,48000,%u\n", algorithm, feedback, profile, mismatches);
+    return mismatches ? 6 : 0;
 }

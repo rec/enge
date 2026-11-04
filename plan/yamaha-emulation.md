@@ -276,9 +276,13 @@ profiles: 128 one-second cases, or 6,144,000 samples. It bypasses patch decoding
 envelope movement, LFO and DAC processing. Unmodulated carriers differ by about
 0.34%, while the worst modulated case reaches 141.1251% relative RMS. These are
 failing qualification results. The report retains the pinned-source harness,
-complete metrics and paired WAVs. Next isolate graph/feedback scheduling with
-a shared integer kernel before attributing all differences to quantization or
-replacing the floating TX81Z core.
+complete metrics and paired WAVs. A subsequent shared-integer-kernel control
+executes the exported enge graphs with upstream operator kernels and independent
+feedback history. All 6,144,000 samples match exactly; a deliberately removed
+edge produces 46,406 mismatches. This supports graph and feedback scheduling
+for the tested fixed-gain profiles. It does not qualify the production floating
+kernel. The next implementation step is the provisional integer OPZ core,
+followed by production comparison and dynamic-patch qualification.
 
 Renderer admission checks the raw per-operator VCED amplitude-modulation-enable
 and ACED fixed-frequency flags before using their decoded booleans. Values above
