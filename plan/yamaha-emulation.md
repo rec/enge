@@ -487,6 +487,21 @@ assignments or portamento.
 
 ### Remaining integration gates
 
+- The approved shared controller schema is available in uFor `047c741`:
+  `yamaha.pitch_bend` uses a normalized -1..1 domain; `modulation_wheel`,
+  `breath` and `foot` use 0..1. All have unit `ratio` and default zero, and
+  retain the existing scoped bindings, mappings and smoothing. This is the
+  input contract only. Enge still rejects these targets during preparation
+  until the corresponding assignment rendering is implemented.
+- DX7 controller ranges and assignments need explicit performance settings
+  outside the lossless voice dump. The proposed two-semitone bend range and
+  disabled wheel/breath/foot defaults remain awaiting user approval.
+- The [TX81Z owner's manual, page 22](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
+  routes controller-driven modulation separately from delayed patch PMD/AMD.
+  The diagram does not specify the arithmetic combining those paths. Controller
+  depth conversion and combination, foot-volume attenuation, breath pitch bias
+  and fixed-operator bend behavior still need reference evidence or an explicitly
+  approved provisional model. Do not infer those rules from portable tuning.
 - TX81Z VCED 63–76 retains poly/mono, pitch-bend range, portamento, foot volume,
   sustain, chorus and modulation-wheel/breath assignments. ACED 21–22 retains
   foot-controller pitch/amplitude assignments. Current rendering does not execute
