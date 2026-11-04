@@ -1,10 +1,15 @@
-#![cfg_attr(not(feature = "rubberband"), forbid(unsafe_code))]
+#![cfg_attr(
+    not(any(feature = "rubberband", feature = "allocation-audit")),
+    forbid(unsafe_code)
+)]
 
 mod amplitude;
 mod effects;
 mod filters;
 mod fm;
 mod granulator;
+#[cfg(feature = "allocation-audit")]
+mod heap_audit;
 mod lfo;
 mod live;
 mod noise;
@@ -185,6 +190,8 @@ fn render<'py>(
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(feature = "allocation-audit")]
+    module.add_function(wrap_pyfunction!(heap_audit::take_callback_audit, module)?)?;
     module.add_function(wrap_pyfunction!(effects::render_effects, module)?)?;
     module.add_function(wrap_pyfunction!(filters::render_filters, module)?)?;
     module.add_function(wrap_pyfunction!(render, module)?)?;

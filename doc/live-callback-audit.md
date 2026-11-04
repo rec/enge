@@ -33,14 +33,49 @@ Each slot permits 4096 pending connections; no named event outputs leave this
 host, so its external event buffer has zero capacity.
 
 Shared-core allocation tests cover reset, observation, cues, delayed events,
-capacity rollback, cloning and snapshot continuation. Enge's full native callback
-still needs allocation qualification across onset, observation, addressed commands,
-scheduled child events and release. Low-level native sample sources now attach
+capacity rollback, cloning and snapshot continuation. Enge's successful-callback
+measurement is recorded below; failed callbacks remain outside that guarantee.
+Low-level native sample sources now attach
 the same prepared bank and execute its lifecycle and commands. Their delayed
 voices reset generators at the first audible frame, and snapshots retain the
 prepared storage. The Python sampler adapter now prepares common/slot banks and
 admits shared generator actions before native processing. Shared-core results alone do not
 qualify the complete sample-source path or establish hardware deadlines.
+
+### Native heap measurement
+
+The opt-in `allocation-audit` Cargo feature counts Rust allocations,
+reallocations and deallocations on the processing thread while
+`LiveRuntime::process` drains queues, renders sources, mixes and applies effects.
+It excludes preparation, Python action admission, GIL transitions, output copying
+and snapshot creation/restoration. A Rust positive-control test verifies that all
+three counters detect heap operations. Successful and failed callback totals are
+kept separately; the pytest check requires zero heap operations for successful
+calls and records both rows in JUnit properties.
+
+On 2026-11-04 the full instrumented suite passed 1,994 tests, with 21 skipped.
+382 tests exercised the callback: 7,271 successful calls performed zero Rust
+allocations, reallocations or frees. Five failed calls each allocated one Python
+error. The user approved moving those errors to fixed-size native values and
+creating Python exceptions after the callback; that migration remains work.
+The audit exposed allocating decimal formatting in LFO numeric commands. The
+conversion now uses a stack buffer and checked integer arithmetic, preserving
+the existing rational result. Regressions include fractional rates, seeks and
+negative shifts, plus sampler threshold events, stage cues and latch captures.
+
+Reproduce the measurement with the locked environment already installed:
+
+```sh
+uv pip install --no-deps --reinstall --editable . --config-settings 'build-args=--features allocation-audit'
+cargo test --locked --features allocation-audit
+uv run --no-sync pytest --require-callback-no-allocations --junitxml=/private/tmp/enge-callback-heap.xml
+uv sync --frozen --reinstall-package enge
+```
+
+The last command restores the ordinary extension. Instrumentation is absent from
+default builds. This measures the tested Rust paths, not arbitrary future inputs,
+foreign-library allocators, device deadlines or scheduling/lock behavior. Optional
+Rubber Band processing is not qualified by this run.
 
 `LiveRuntime` owns processing for generated and sampled sources. It owns
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal

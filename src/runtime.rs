@@ -11,6 +11,7 @@ use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntype
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::{PI, TAU};
+use std::io::{Cursor, Write};
 
 use generators::GeneratorBank;
 use patch_host::PatchHost;
@@ -1724,15 +1725,35 @@ fn lfo_command(
 
 fn control_time(value: f64) -> PyResult<Time> {
     // Public numeric commands use the same decimal value as Python Fraction(str(value)).
-    let text = value.to_string();
-    let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
+    let mut bytes = [0; 512];
+    let mut output = Cursor::new(bytes.as_mut_slice());
+    write!(&mut output, "{value}").map_err(|_| core_error(envelfo_core::Error::Overflow))?;
+    let length = output.position() as usize;
+    let text = std::str::from_utf8(&bytes[..length]).expect("ASCII numeric formatting");
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
     let denominator = 10_i64
         .checked_pow(fraction.len() as u32)
         .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
-    let digits = format!("{whole}{fraction}");
-    let numerator = digits
+    let whole = whole
         .parse::<i64>()
         .map_err(|_| core_error(envelfo_core::Error::Overflow))?;
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<i64>()
+            .map_err(|_| core_error(envelfo_core::Error::Overflow))?
+    };
+    let numerator = whole
+        .checked_mul(denominator)
+        .and_then(|n| {
+            if text.starts_with('-') {
+                n.checked_sub(fraction)
+            } else {
+                n.checked_add(fraction)
+            }
+        })
+        .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
     Time::new(numerator, denominator).map_err(core_error)
 }
 

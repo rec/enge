@@ -569,7 +569,14 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Invalid live runtime output"));
         }
         let frames = output.shape()[0];
-        let result = py.detach(|| self.process(frames));
+        let result = py.detach(|| {
+            #[cfg(feature = "allocation-audit")]
+            let audit = crate::heap_audit::Scope::new();
+            let result = self.process(frames);
+            #[cfg(feature = "allocation-audit")]
+            audit.finish(result.is_ok());
+            result
+        });
         if let Err(error) = result {
             output.as_array_mut().fill(0.0);
             self.failed = true;

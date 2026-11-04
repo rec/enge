@@ -4,7 +4,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_dynamic_synth import onset
+from test_envelfo_latch import latch_score
 from test_envelfo_sample_hold import sample_hold_score
+from test_envelfo_threshold import threshold_score
 from test_lfo_instrument import lfo_settings
 from test_sample_instrument import sample_score
 from test_synth import check_audio
@@ -25,13 +27,30 @@ from enge import live, sample_instrument
         "filters",
         "patch_lfo",
         "patch_stages",
+        "threshold_sample",
+        "threshold_cue",
+        "latch_lfo",
+        "latch_stages",
+        "latch_threshold",
     ],
 )
 def test_common_and_slot_generators_preserve_commands_seeds_and_continuation(
     tmp_path: Path, profile: str
 ) -> None:
     raw = sample_score().model_dump(mode="json")
-    if profile.startswith("patch_"):
+    if profile.startswith("threshold_"):
+        settings = (
+            threshold_score(profile.removeprefix("threshold_"), 0.5)
+            .body.voices[0]
+            .model_dump(mode="json")
+        )
+    elif profile.startswith("latch_"):
+        settings = (
+            latch_score(profile.removeprefix("latch_"), 0.5)
+            .body.voices[0]
+            .model_dump(mode="json")
+        )
+    elif profile.startswith("patch_"):
         settings = (
             sample_hold_score(profile.removeprefix("patch_"), 0.5)
             .body.voices[0]
@@ -133,6 +152,38 @@ def test_common_and_slot_generators_preserve_commands_seeds_and_continuation(
             [
                 LFOChange(tick=9000, ordinal=0, name="envelfo", action="pause"),
                 LFOChange(tick=11000, ordinal=0, name="envelfo", action="resume"),
+                LFOChange(
+                    tick=14000, ordinal=0, name="envelfo", action="rate", rate=7.125
+                ),
+                LFOChange(
+                    tick=16000, ordinal=0, name="envelfo", action="seek", position=0.3
+                ),
+                LFOChange(
+                    tick=17000, ordinal=0, name="envelfo", action="shift", offset=-0.125
+                ),
+            ]
+        )
+    if profile == "voice":
+        events.extend(
+            [
+                EnvelfoChange(
+                    tick=14000,
+                    ordinal=0,
+                    name="envelfo",
+                    part="main",
+                    trigger_id="note",
+                    action="seek",
+                    position=0.3,
+                ),
+                EnvelfoChange(
+                    tick=16000,
+                    ordinal=0,
+                    name="envelfo",
+                    part="main",
+                    trigger_id="note",
+                    action="shift",
+                    offset=-0.125,
+                ),
             ]
         )
     actions = trace.prepare(document.body, events, seed=81).actions

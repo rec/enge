@@ -10,6 +10,7 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [features]
+allocation-audit = []
 rubberband = ["dep:rubberband-sys"]
 
 [dependencies]
