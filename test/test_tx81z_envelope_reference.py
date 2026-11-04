@@ -8,7 +8,7 @@ from ufor import tx81z
 from enge.yamaha import TX81ZEnvelope, TX81ZEnvelopeBank
 
 
-@pytest.mark.parametrize("case", range(8))
+@pytest.mark.parametrize("case", range(116))
 def test_tx81z_envelope_matches_pinned_ymfm_through_release(
     tmp_path: Path, case: int
 ) -> None:

@@ -320,11 +320,19 @@ as `counter << 2` to ymfm's operator clock, whose counter uses two fractional
 bits. This tests envelope arithmetic and the chosen host clock conversion; it
 does not independently qualify physical chip key-on timing.
 
-All 48,000 four-operator rows in each case match exactly: 1,536,000 attenuation
+The 2026-11-04 rate sweep extends these eight profiles to 116 distinct cases.
+Starting with `31 0 0 0 15 0 0 0`, vary AR through 0–31, then D1R through
+0–31 with D1L set to zero, then D2R through 0–31, then RR through 0–15.
+Each sweep starts from that base independently; retain the original eight
+profiles first and omit duplicate parameter rows. This tests every authored
+rate value independently, with immediate attack for the non-attack sweeps,
+zero sustain attenuation for the D2R sweep, and held full level for the RR sweep.
+
+All 48,000 four-operator rows in each case match exactly: 22,272,000 attenuation
 values, maximum absolute error zero. The
-[compressed reference](../../test/data/tx81z-envelope.npz) stores eight signed
-16-bit arrays, `case0` through `case7`, and the eight-column `parameters` table
-above. Regressions also check partitioned JSON continuation after release and
+[compressed reference](../../test/data/tx81z-envelope.npz) stores 116 signed
+16-bit arrays, `case0` through `case115`, and their eight-column `parameters`
+table. Regressions also check partitioned JSON continuation after release and
 write paired one-second 48 kHz WAVs using these attenuations on a 440 Hz carrier.
 No production renderer changes were needed for these profiles.
 
@@ -335,8 +343,12 @@ by an output filename; case 2 is `12 9 5 4 7 0 0 0 output.i32`. Output is
 48,000 rows of four native-endian signed 32-bit attenuation values, which can
 be converted losslessly to the fixture's signed 16-bit arrays.
 
-This qualifies these envelope profiles against the provisional software model.
-It does not qualify every rate/key combination, full TX81Z synthesis, WT11
+The pinned source files were verified against their upstream Git blob hashes
+before rebuilding the unchanged harness for the sweep. This qualifies these
+envelope profiles against the provisional software model. Slow stages need not
+complete within the half-second held or released interval, and this is not the
+Cartesian product of rates, levels and keys. It does not qualify every rate/key
+combination, full TX81Z synthesis, WT11
 behavior, controller interaction, integer audio output or physical hardware.
 
 ## TX81Z waveform-table comparison

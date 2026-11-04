@@ -367,6 +367,12 @@ sustain extremes, release and reverb. All 1,536,000 shifted attenuation values
 match exactly across four shifts and 48,000 frames per profile. The reference
 harness and compressed oracle are retained in
 [the comparison report](../doc/yamaha-reference/README.md#tx81z-envelope-comparison).
+The expanded independent rate sweeps now cover every authored AR/D1R/D2R/RR
+value in 116 distinct profiles, including the original eight. All 22,272,000
+attenuation values match the pinned reference exactly, including all four shifts.
+Every profile also exercises release, partitioned JSON continuation and a paired
+one-second 48 kHz WAV regression. This is not the Cartesian product of all rates,
+keys and levels, and slow stages may outlast the observation interval.
 This qualifies those profiles against the provisional software model, including
 fractional-clock and JSON continuation; exhaustive rates, hardware timing,
 output-level scaling and complete voice integration remain unqualified.
@@ -598,8 +604,12 @@ Source inspection on 2026-11-04 pins MAME at
   It still declares imperfect sound.
 
 These are source-level findings, not an executed firmware qualification. No ROM
-was acquired and no emulator was run. A local firmware dump and permission to
-execute this reference have been requested. Before using its results, verify
+was acquired and no emulator was run. The user has no dump available and asked
+us to work around this on 2026-11-04. Firmware tracing is therefore an optional
+qualification route, not a prerequisite for further implementation. Continue
+with published measurements and approved provisional software models; unresolved
+behavior still needs an explicit model decision. If tracing becomes available,
+before using its results, verify
 that the IRQ handlers execute and periodic register writes occur. Then capture
 timestamped writes for isolated delayed AMD, foot volume and breath pitch bias,
 including parameter endpoints, intermediate settings and fixed/ratio operators.
