@@ -45,8 +45,10 @@ class VoiceSnapshot(VoiceState):
 
 
 class OscillatorSlot(BaseModel):
-    phases: list[float] = Field(min_length=6, max_length=6)
-    phase_steps: list[float] = Field(min_length=6, max_length=6)
+    """Retained DX7 Q24 phase and increment state for sync-off allocation."""
+
+    phases: list[int] = Field(min_length=6, max_length=6)
+    phase_steps: list[int] = Field(min_length=6, max_length=6)
     idle_since: int | None = None
 
 
@@ -243,7 +245,7 @@ class OfflineYamaha:
                 slot = slots[slot_index]
                 elapsed = action.tick - idle_since
                 phases = [
-                    (p + elapsed * s) % 1
+                    ((p + elapsed * s) % 2**24) / 2**24
                     for p, s in zip(slot.phases, slot.phase_steps, strict=True)
                 ]
             else:

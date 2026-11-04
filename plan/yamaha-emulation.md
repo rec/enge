@@ -72,9 +72,18 @@ that quantization explains all discrepancies. A subsequent shared-integer-kernel
 control executes all 32 exported topologies with equal and asymmetric operator
 settings: all 24,576,000 samples across 512 cases match Mk I exactly. This isolates
 the graph/feedback scheduling under fixed gains; it does not independently
-qualify the kernel or dynamic envelope behavior. Replacing the floating core
-with the provisional integer model awaits approval. A complete reference patch
-comparison and hardware qualification remain work.
+qualify the kernel or dynamic envelope behavior. The user subsequently approved
+replacing the floating core with the provisional integer model. The renderer
+now uses Q24 phase/increments and signed Q24 feedback, a 4096-position logarithmic
+sine, and 1/1024-octave attenuation. Independent mathematical tables reproduce
+the pinned Mk I table precision. The reference's near-silence threshold is
+applied per frame; the existing per-frame envelopes and provisional controller
+calibrations remain, rather than adopting Dexed's block gain ramps.
+Initial phases remain caller-supplied cycles and truncate onto the Q24 grid;
+frequency increments round to the nearest Q24 unit and wrap modulo one cycle.
+Note and idle-slot snapshots store integers consistently, and idle slots advance
+using the retained quantized increments. The old floating core is removed.
+A complete reference patch comparison and hardware qualification remain work.
 
 The renderer rejects uFor's diagnosed algorithm, feedback and operator parameter
 errors before preparing DSP state. It also rejects envelope rates/levels above
@@ -177,8 +186,8 @@ Fixed-frequency operators now use the low two coarse bits and key-independent,
 positive-only logarithmic detune, following the frequency equations in
 [MSFA's DX7 note implementation](https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/dx7note.cc).
 One-second 48 kHz regressions cover repeated decades, different played keys and
-negative/neutral/positive detune. The renderer still uses floating-point
-oscillators; these checks do not establish bit-exact hardware equivalence.
+negative/neutral/positive detune. Frequencies now feed the approved integer
+oscillator core; these checks do not establish bit-exact hardware equivalence.
 Ratio-mode detune now applies the existing Dexed measured-fit coefficients to
 log-frequency, as approved on 2026-11-04. The former implementation incorrectly
 used the fitted value as a linear frequency multiplier. The
@@ -186,8 +195,9 @@ used the fitted value as a linear frequency multiplier. The
 records the discrepancy and the difference from MSFA's constant-cents model.
 One-second 48 kHz WAV regressions use independently calculated frequency anchors
 at low, middle and high keys, negative/neutral/positive detune, coarse/fine ratio
-scaling and JSON snapshot replay. This is the continuous Dexed fit; Q24 pitch
-rounding, frequency-table quantization and hardware qualification remain work.
+scaling and JSON snapshot replay. The continuous Dexed fit now rounds at the Q24
+phase-increment boundary; frequency-table quantization and hardware qualification
+remain work.
 
 Implement a dedicated Yamaha renderer for the DX7 and TX81Z instead of
 projecting their patches into the general FM voice profile. The general graph
@@ -431,11 +441,12 @@ This does not qualify hardware or complete the full-renderer requirement.
 
 The user approved explicit caller-owned phase initialization on 2026-11-04.
 `DX7Renderer` now accepts six `initial_phases` in cycles, ordered OP1 through
-OP6. Sync-on resets them to zero; sync-off copies the supplied phases. Omitting
+OP6. Sync-on resets them to zero; sync-off quantizes the supplied phases onto the
+Q24 grid. Omitting
 phases starts a standalone note at zero. Invalid lengths, nonfinite values and
 values outside `[0, 1)` are rejected. Caller mutation cannot affect a live note.
-Existing JSON note snapshots preserve running phases and the last per-frame
-phase increments across continuation.
+JSON note snapshots now preserve integer running phases and the last per-frame
+phase increments across continuation, replacing the former floating fields.
 One-second WAV regressions cover both sync states, input ownership and restored
 continuation. The approved offline adapter owns reusable slots per template for sync-off
 patches. Overlapping notes receive distinct slots. Retired slots advance at their
@@ -581,9 +592,9 @@ assignments or portamento.
   unfinished.
 - TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
   the measured attenuation table covers positive velocities only.
-- DX7 integer oscillator/feedback replacement remains awaiting approval.
-  The existing fixed-gain graph comparison does not qualify dynamic envelopes,
-  complete patches or hardware output.
+- The approved DX7 integer oscillator/feedback replacement is implemented.
+  Constant-gain reference comparisons and scoped-control continuation cover the
+  new core; complete dynamic patches and hardware output remain unqualified.
 - TX81Z delayed AMD, software/multitimbral LFO routing and complete-renderer
   reference qualification remain incomplete. No passing component test closes
   those requirements.

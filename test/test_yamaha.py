@@ -17,6 +17,7 @@ from enge.yamaha import (
     TX81ZRenderer,
     TX81ZSnapshot,
     TX81ZState,
+    dx7_operator_sample,
     tx81z_base_frequency,
     tx81z_detune_step,
     tx81z_operator_samples,
@@ -664,37 +665,37 @@ def test_tx81z_rejects_unknown_waveforms(waveform: int) -> None:
 @pytest.mark.parametrize("amplitude_modulation", [False, True])
 def test_dx7_feedback_uses_two_delayed_cycle_samples(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     feedback: int,
     algorithm: int,
     amplitude_modulation: bool,
 ) -> None:
-    def gain(self: DX7Envelope) -> float:
-        return 0.01
-
-    monkeypatch.setattr(DX7Envelope, "sample", gain)
     data = bytearray(voice().data)
     data[135] = feedback
     data[134] = algorithm - 1
     data[14], data[140] = 3, 99 if amplitude_modulation else 0
     renderer = DX7Renderer(DX7Voice(data=bytes(data)), note=69, velocity=100)
+    saved = renderer.snapshot()
+    for envelope in saved.envelopes:
+        envelope.level, envelope.stage, envelope.held = 9 * 2**24, 3, True
+    renderer.restore(saved)
     expected = np.empty((48000, 1))
-    sine = np.sin(2 * np.pi * np.arange(48000) * 440 / 48000) * 0.01
-    previous = older = 0.0
+    previous = older = 0
     rows = np.column_stack([np.linspace(0, 1, 48000), np.ones(48000)])
     for i in range(48000):
         offset = (
-            (older + previous) / 2 ** (9 - feedback + (2 if algorithm == 32 else 0))
+            (older + previous) >> (9 - feedback + (2 if algorithm == 32 else 0))
             if feedback
-            else 0.0
+            else 0
         )
-        attenuation = 2 ** (-52.75 * rows[i, 0] / 8) if amplitude_modulation else 1
-        value = 0.01 * attenuation * np.sin(2 * np.pi * (i * 440 / 48000 + offset))
+        attenuation = int(52.75 * rows[i, 0] / 8 * 1024) if amplitude_modulation else 0
+        phase = i * round(440 * 2**24 / 48000)
+        sine = dx7_operator_sample(phase, 7168)
+        value = dx7_operator_sample(phase + offset, 7168 + attenuation)
         expected[i, 0] = (
-            5 * sine[i] + value
+            5 * sine + value
             if algorithm == 32
-            else 4 * sine[i] + 0.01 * np.sin(2 * np.pi * (i * 440 / 48000 + value))
-        )
+            else 4 * sine + dx7_operator_sample(phase + value, 7168)
+        ) / 2**24
         older, previous = previous, value
     actual = renderer.render(48000, rows if amplitude_modulation else None)
     check_audio(tmp_path / "feedback.wav", actual, expected)
@@ -831,11 +832,16 @@ def test_ratio_detune_uses_key_dependent_log_frequency_fit(
     saved = DX7Snapshot.model_validate_json(renderer.snapshot().model_dump_json())
     tail = renderer.render(46999)
     envelope = DX7Envelope.start(patch.operator(1), note, 100, 48000)
-    amplitude = np.array([6 * envelope.sample() for _ in range(48000)])
-    phases = np.zeros(48000)
-    for i in range(1, len(phases)):
-        phases[i] = (phases[i - 1] + frequency / 48000) % 1
-    expected = amplitude * np.sin(2 * np.pi * phases)
+    expected = np.empty(48000)
+    for i in range(48000):
+        envelope.sample()
+        expected[i] = (
+            6
+            * dx7_operator_sample(
+                i * round(frequency * 2**24 / 48000), 16384 - (envelope.level >> 14)
+            )
+            / 2**24
+        )
     check_audio(
         tmp_path / "ratio-detune.wav", np.concatenate([first, tail]), expected[:, None]
     )
@@ -992,7 +998,9 @@ def test_dx7_initial_phases_obey_sync_and_remain_owned(
     reference = DX7Renderer(patch, 69, 100)
     if not synchronize:
         reference.restore(
-            reference.snapshot().model_copy(update={"phases": phases.copy()})
+            reference.snapshot().model_copy(
+                update={"phases": [int(p * 2**24) for p in phases]}
+            )
         )
     phases[:] = [0.0] * 6
     head = renderer.render(12001)
@@ -1021,31 +1029,31 @@ def test_dx7_rejects_invalid_initial_phases(phases: list[float]) -> None:
 @pytest.mark.parametrize("algorithm", [4, 6])
 @pytest.mark.parametrize("feedback", [1, 7])
 def test_dx7_feedback_returns_from_end_of_operator_chain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, algorithm: int, feedback: int
+    tmp_path: Path, algorithm: int, feedback: int
 ) -> None:
-    def gain(self: DX7Envelope) -> float:
-        return 0.02
-
-    monkeypatch.setattr(DX7Envelope, "sample", gain)
     data = bytearray(voice().data)
     data[134], data[135] = algorithm - 1, feedback
     renderer = DX7Renderer(DX7Voice(data=bytes(data)), 69, 100)
+    saved = renderer.snapshot()
+    for envelope in saved.envelopes:
+        envelope.level, envelope.stage, envelope.held = 9 * 2**24, 3, True
+    renderer.restore(saved)
     expected = np.empty((48000, 1))
-    older = previous = 0.0
+    older = previous = 0
     for i in range(48000):
-        phase = i * 440 / 48000
-        unmodulated = 0.02 * np.sin(2 * np.pi * phase)
-        pair = 0.02 * np.sin(2 * np.pi * (phase + unmodulated))
-        returned = 0.02 * np.sin(
-            2 * np.pi * (phase + (older + previous) / 2 ** (11 - feedback))
+        phase = i * round(440 * 2**24 / 48000)
+        unmodulated = dx7_operator_sample(phase, 7168)
+        pair = dx7_operator_sample(phase + unmodulated, 7168)
+        returned = dx7_operator_sample(
+            phase + ((older + previous) >> (11 - feedback)), 7168
         )
-        returned = 0.02 * np.sin(2 * np.pi * (phase + returned))
+        returned = dx7_operator_sample(phase + returned, 7168)
         if algorithm == 4:
-            returned = 0.02 * np.sin(2 * np.pi * (phase + returned))
-            other = 0.02 * np.sin(2 * np.pi * (phase + pair))
+            returned = dx7_operator_sample(phase + returned, 7168)
+            other = dx7_operator_sample(phase + pair, 7168)
         else:
             other = 2 * pair
-        expected[i, 0] = returned + other
+        expected[i, 0] = (returned + other) / 2**24
         older, previous = previous, returned
     head = renderer.render(12001)
     renderer.restore(

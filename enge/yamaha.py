@@ -529,6 +529,8 @@ class DX7PitchEnvelope(BaseModel):
 
 
 class DX7Snapshot(BaseModel, frozen=True):
+    """Continuation with Q24 phase/increments and signed Q24 feedback."""
+
     voice: DX7Voice
     note: int
     velocity: int
@@ -536,9 +538,9 @@ class DX7Snapshot(BaseModel, frozen=True):
     pitch_hz: float | None = None
     envelopes: list[DX7Envelope] = Field(min_length=6, max_length=6)
     pitch_envelope: DX7PitchEnvelope
-    phases: list[float] = Field(min_length=6, max_length=6)
-    phase_steps: list[float] = Field(min_length=6, max_length=6)
-    feedback: list[float] = Field(min_length=2, max_length=2)
+    phases: list[int] = Field(min_length=6, max_length=6)
+    phase_steps: list[int] = Field(min_length=6, max_length=6)
+    feedback: list[int] = Field(min_length=2, max_length=2)
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -633,13 +635,19 @@ class DX7Renderer:
         ):
             raise EngineError("DX7 initial phases must be six finite values in [0, 1)")
         self.phases = (
-            np.array(initial_phases, dtype=float, copy=True)
+            np.array([int(p * 2**24) for p in initial_phases], dtype=np.int64)
             if initial_phases is not None and not parameters[0]
-            else np.zeros(6)
+            else np.zeros(6, dtype=np.int64)
         )
-        self.feedback = [0.0, 0.0]
+        self.feedback = [0, 0]
         self.order = _operator_order(voice)
-        self.phase_steps = self.frequencies / self.sample_rate
+        self.phase_steps = np.array(
+            [
+                round(float(f) * 2**24 / self.sample_rate) % 2**24
+                for f in self.frequencies
+            ],
+            dtype=np.int64,
+        )
 
     def snapshot(self) -> DX7Snapshot:
         return DX7Snapshot(
@@ -715,7 +723,7 @@ class DX7Renderer:
         feedback_source = topology.feedback.source - 1
         feedback_destination = topology.feedback.destination - 1
         # Provisional Dexed Mk I scaling for the two long loops and algorithm 32.
-        feedback_divisor = 2 ** (
+        feedback_shift = (
             9 - self.voice.feedback + (2 if self.voice.algorithm in (4, 6, 32) else 0)
         )
         for frame in range(frames):
@@ -739,7 +747,7 @@ class DX7Renderer:
                 pitch_ratio *= 2 ** (
                     pitch_depth * self.pitch_modulation_sensitivity * (value - 0.5)
                 )
-            values = np.zeros(6)
+            values = [0] * 6
             for operator in self.order:
                 phase_modulation = sum(
                     values[edge.source - 1]
@@ -747,28 +755,51 @@ class DX7Renderer:
                     if edge.destination - 1 == operator
                 )
                 if operator == feedback_destination and self.voice.feedback:
-                    phase_modulation += sum(self.feedback) / feedback_divisor
-                gain = self.envelopes[operator].sample()
+                    phase_modulation += sum(self.feedback) >> feedback_shift
+                envelope = self.envelopes[operator]
+                envelope.sample()
+                attenuation = 16384 - (envelope.level >> 14)
                 if amplitude_reduction and (
                     sensitivity := self.amplitude_modulation_sensitivities[operator]
                 ):
-                    gain *= 2 ** (-amplitude_reduction * sensitivity)
-                values[operator] = gain * sin(
-                    2 * pi * (self.phases[operator] + phase_modulation)
+                    attenuation += int(amplitude_reduction * sensitivity * 1024)
+                values[operator] = dx7_operator_sample(
+                    int(self.phases[operator]) + phase_modulation, attenuation
                 )
-            output[frame, 0] = sum(values[carrier] for carrier in carriers)
+            output[frame, 0] = sum(values[carrier] for carrier in carriers) / 2**24
             self.feedback[0] = self.feedback[1]
-            self.feedback[1] = float(values[feedback_source])
-            self.phase_steps = self.frequencies * pitch_ratio / self.sample_rate
+            self.feedback[1] = values[feedback_source]
+            steps = self.frequencies * pitch_ratio / self.sample_rate
             for i, operator in enumerate(self.voice.operators):
                 if operator.frequency_mode.value == "fixed":
-                    self.phase_steps[i] = self.frequencies[i] / self.sample_rate
+                    steps[i] = self.frequencies[i] / self.sample_rate
                 elif tuning is not None:
-                    self.phase_steps[i] *= tuning[frame]
+                    steps[i] *= tuning[frame]
             if bend is not None:
-                self.phase_steps *= bend[frame]
-            self.phases = np.remainder(self.phases + self.phase_steps, 1)
+                steps *= bend[frame]
+            self.phase_steps = np.array(
+                [round(float(s) * 2**24) % 2**24 for s in steps], dtype=np.int64
+            )
+            self.phases = (self.phases + self.phase_steps) % 2**24
         return output
+
+
+def dx7_operator_sample(phase: int, attenuation: int) -> int:
+    """Evaluate the provisional Mk I logarithmic sine in Q24 cycles/output.
+
+    Attenuation is in 1/1024-octave steps. The quarter-wave lookup observes
+    half-bin centers; negative output uses the chip model's one's complement.
+    The reference's near-silence threshold is applied per frame.
+    """
+    if attenuation > 16284:
+        return 0
+    position = (phase >> 12) & 4095
+    index = position & 1023
+    if position & 1024:
+        index = 1023 - index
+    level = _DX7_LOG_SINE[index] + max(0, attenuation)
+    magnitude = (4096 + _DX7_EXP[1023 - (level & 1023)]) >> (level >> 10)
+    return (-magnitude - 1 if position & 2048 else magnitude) * 8192
 
 
 def dx7_global_parameters(voice: DX7Voice) -> list[int]:
@@ -1836,3 +1867,13 @@ _TX_LFO_REGISTERS = [
 _TX_BREATH_ATTENUATION = np.load(
     Path(__file__).with_name("yamaha_breath.npy"), allow_pickle=False
 )
+
+# Mathematical tables for the approved provisional Mk I model. Round the
+# intermediate values to float32, matching the reference table precision.
+_DX7_LOG_SINE = [
+    int(-1024 * log2(float(np.float32(sin((i + 0.5) * pi / 2048)))) + 0.5)
+    for i in range(1024)
+]
+_DX7_EXP = [
+    int(float(np.float32((2 ** (i / 1024) - 1) * 4096)) + 0.5) for i in range(1024)
+]

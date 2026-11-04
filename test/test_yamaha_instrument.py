@@ -366,13 +366,17 @@ def test_dx7_reuses_oldest_idle_slots_across_overlaps_and_snapshots(
         patch,
         65,
         127,
-        initial_phases=((first.phases + 300 * first.phase_steps) % 1).tolist(),
+        initial_phases=(
+            ((first.phases + 300 * first.phase_steps) % 2**24) / 2**24
+        ).tolist(),
     )
     fourth = yamaha.DX7Renderer(
         patch,
         67,
         127,
-        initial_phases=((second.phases + 300 * second.phase_steps) % 1).tolist(),
+        initial_phases=(
+            ((second.phases + 300 * second.phase_steps) % 2**24) / 2**24
+        ).tolist(),
     )
     for start, audio in [
         (0, first_audio),
@@ -873,7 +877,6 @@ def test_dx7_controller_amplitude_uses_strongest_attenuation(
     raw = bytearray(voice().data)
     for i in range(6):
         raw[i * 21 + 14] = 3
-    plain = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100).render(48000)
     raw[140] = patch_depth
     rows = np.tile([0.75, 0.5], (48000, 1))
     reduction = (
@@ -881,7 +884,19 @@ def test_dx7_controller_amplitude_uses_strongest_attenuation(
     )
     note = yamaha.DX7Renderer(DX7Voice(data=bytes(raw)), 69, 100)
     audio = note.render(48000, rows, controllers=np.tile(depths, (48000, 1)))
-    check_audio(tmp_path / "controller-attenuation.wav", audio, plain * 2**-reduction)
+    envelope = yamaha.DX7Envelope.start(note.voice.operator(1), 69, 100, 48000)
+    expected = np.empty((48000, 1))
+    for i in range(48000):
+        envelope.sample()
+        expected[i, 0] = (
+            6
+            * yamaha.dx7_operator_sample(
+                i * round(440 * 2**24 / 48000),
+                16384 - (envelope.level >> 14) + int(reduction * 1024),
+            )
+            / 2**24
+        )
+    check_audio(tmp_path / "controller-attenuation.wav", audio, expected)
     for invalid in (np.full((1, 3), np.nan), np.full((1, 3), 1.01), np.zeros((1, 2))):
         before = note.snapshot()
         with pytest.raises(EngineError, match="controller rows"):

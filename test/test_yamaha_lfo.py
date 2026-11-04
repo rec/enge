@@ -7,7 +7,7 @@ from test_yamaha import voice
 from ufor.dx7 import DX7Voice
 
 from enge.synth import EngineError
-from enge.yamaha import DX7Renderer, DX7Snapshot
+from enge.yamaha import DX7Envelope, DX7Renderer, DX7Snapshot, dx7_operator_sample
 from enge.yamaha_lfo import DX7LFOContext, DX7LFOSnapshot
 
 
@@ -204,7 +204,18 @@ def test_operator_amplitude_follows_the_provisional_hexter_calibration(
         data[i + 14] = sensitivity
     rows = np.ones((48000, 2))
     actual = DX7Renderer(DX7Voice(data=bytes(data)), 69, 100).render(48000, rows)
-    expected = DX7Renderer(voice(), 69, 100).render(48000) * 2 ** (-level * ratio / 8)
+    envelope = DX7Envelope.start(voice().operator(1), 69, 100, 48000)
+    expected = np.empty((48000, 1))
+    for i in range(48000):
+        envelope.sample()
+        expected[i, 0] = (
+            6
+            * dx7_operator_sample(
+                i * round(440 * 2**24 / 48000),
+                16384 - (envelope.level >> 14) + int(level * ratio / 8 * 1024),
+            )
+            / 2**24
+        )
     check_audio(tmp_path / "dx7-amplitude-calibration.wav", actual, expected)
 
 

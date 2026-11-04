@@ -1,5 +1,10 @@
 # Dexed Mk I constant-gain core comparison
 
+The initial measurements below describe the historical floating core. The
+approved integer replacement and its current regression oracle are described
+at the end of this report; do not treat the old mismatch figures as results for
+the current implementation.
+
 Measured on 2026-11-04 against Dexed revision
 [`fea2f0f0f2c397799f59b27eb11c038cd34b22c5`](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/engine/EngineMkI.cpp).
 The enge renderer includes the approved explicit feedback endpoints and
@@ -169,3 +174,38 @@ c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" compare-dexed-mki-graph.cc \
 The output directory must exist. The harness also writes `graph-4.i32`,
 `graph-6.i32` and `graph-32.i32` there; convert them to WAV using the matching
 `wav_divisor` values in `dexed-mki-core.csv`, as in the original comparison.
+
+## Production integer-core comparison
+
+The approved replacement uses independently calculated logarithmic sine and
+exponential tables with the reference's float32 intermediate table precision.
+Phases and feedback now use Q24 integers. Phase observations select one of 4096
+half-bin-centered positions, folding a 1024-entry quarter-wave table. Attenuation
+uses 1/1024-octave units and negative samples use one's-complement magnitude.
+The near-silence cutoff of 16,284 attenuation units runs per frame. Frequency
+increments round to the nearest Q24 unit, while caller-supplied initial phases
+truncate onto that grid. Snapshot and idle-slot state use the same integer units.
+
+The [new oracle](../../test/data/dx7-mki-core.npz) contains 176 one-second signed
+Q24 reference recordings. Its first 72 cases reproduce the constant-gain matrix
+above. Append algorithms 1 through 32, feedback 0 and 7, and log levels 9 and 14,
+omitting triples already present. The `parameters` array records those triples
+and `case0` through `case175` retain all 48,000 samples per case. Regenerate each
+case with the unchanged `render-dexed-mki.cc` harness and phase perturbation zero,
+then save the native signed 32-bit samples in a compressed NumPy archive.
+
+`test/test_dx7_integer.py` compares the production note renderer directly with
+these independent samples and checks JSON restoration at frame 17,003. Each
+case writes paired 48 kHz WAVs and also requires exact numerical equality.
+All 176 cases pass: 8,448,000 samples match exactly, including algorithms 4 and 6
+at unit gain and maximum feedback. The full suite passed 2,365 tests with 21
+skipped after this replacement.
+The upstream `EngineMkI.cpp` Git blob was reverified as
+`75b0d33720ca10fcb875e443adf2724523187908` at the pinned revision.
+
+The existing amplitude envelopes and Hexter-scaled controller model still
+advance per frame. Their attenuation is quantized before oscillator evaluation;
+the implementation does not reproduce Dexed's 64-frame gain interpolation or its
+block-wise silence admission. Dynamic controller regressions therefore check
+the approved per-frame model, not complete Dexed patch equivalence. Integer-core
+agreement does not qualify the DAC, native callbacks or physical hardware.
