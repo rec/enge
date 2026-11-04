@@ -85,6 +85,58 @@ def test_legato_keeps_a_developing_envelope_when_microtuning_holds_pitch(
     )
 
 
+@pytest.mark.parametrize("mono", [False, True])
+def test_explicit_zero_velocity_triggers_render_and_restore_with_velocity_sensitivity(
+    tmp_path: Path, mono: bool
+) -> None:
+    raw = mono_score().model_dump(mode="json")
+    template = raw["body"]["voices"][0]
+    patch = bytearray.fromhex(template["patch"])
+    patch[63] = int(mono)
+    for i in range(4):
+        patch[13 * i + 9] = i + 1
+    template["patch"] = bytes(patch).hex()
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            Trigger(tick=0, ordinal=0, part="main", trigger_id="a", key=69, velocity=0),
+            Trigger(
+                tick=12001, ordinal=0, part="main", trigger_id="b", key=81, velocity=0
+            ),
+        ],
+        seed=0,
+    ).actions
+    engine = yamaha_instrument.OfflineYamaha(yamaha_instrument.prepare(document))
+    first = engine.advance(actions, 0, 17003)
+    saved = engine.snapshot()
+    assert all(v.note.velocity == 0 for v in saved.voices)
+    assert len(saved.voices) == (1 if mono else 2)
+    tail = engine.advance([], 17003, 48000)
+    engine.restore(
+        yamaha_instrument.YamahaSnapshot.model_validate_json(saved.model_dump_json())
+    )
+    check_audio(
+        tmp_path / "zero-velocity-replay.wav",
+        np.concatenate([first, tail]),
+        np.concatenate([first, engine.advance([], 17003, 48000)]),
+    )
+    # Algorithm 8 sums four identical sine carriers, each with TL 16 plus KVS.
+    gain = sum(2 ** (-(16 + a) / 8) for a in [22, 37, 52, 67])
+    if mono:
+        frequencies = np.concatenate([np.full(12001, 440), np.full(35999, 880)])
+        phase = np.concatenate([[0], np.cumsum(frequencies[:-1])]) / 48000
+        expected = np.sin(2 * np.pi * phase)
+    else:
+        expected = np.sin(2 * np.pi * 440 * np.arange(48000) / 48000)
+        expected[12001:] += np.sin(2 * np.pi * 880 * np.arange(35999) / 48000)
+    check_audio(
+        tmp_path / "zero-velocity.wav",
+        np.concatenate([first, tail]),
+        expected[:, None] * gain * [[0.3, 0.15]],
+    )
+
+
 @pytest.mark.parametrize("sustain", [False, True])
 def test_mono_last_held_key_returns_without_retriggering_under_sustain(
     tmp_path: Path, sustain: bool

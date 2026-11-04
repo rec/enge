@@ -310,6 +310,15 @@ def test_tx81z_output_level_curve_and_carrier_headroom(
         (99, 121, 0, 127, 99, 1, 79),
         (99, 127, 0, 127, 99, 1, 111),
         (0, 69, 0, 1, 99, 1, 0),
+        (0, 69, 0, 0, 99, 1, 0),
+        (0, 69, 1, 0, 99, 1, 22),
+        (0, 69, 2, 0, 99, 1, 37),
+        (0, 69, 3, 0, 99, 1, 52),
+        (0, 69, 4, 0, 99, 1, 67),
+        (0, 69, 5, 0, 99, 1, 81),
+        (0, 69, 6, 0, 99, 1, 96),
+        (0, 69, 7, 0, 99, 1, 111),
+        (99, 108, 7, 0, 0, 8, 127),
         (0, 69, 1, 1, 99, 1, 18),
         (0, 69, 7, 1, 99, 1, 84),
         (0, 69, 4, 2, 99, 1, 48),
@@ -341,8 +350,8 @@ def test_tx81z_total_level_combines_measured_key_and_velocity_attenuation(
     check_audio(tmp_path / "tx81z-key-level.wav", carrier * gain, carrier * expected)
 
 
-@pytest.mark.parametrize("velocity", [0, -1, 128])
-def test_tx81z_velocity_scaling_rejects_unmeasured_velocities(velocity: int) -> None:
+@pytest.mark.parametrize("velocity", [-1, 128])
+def test_tx81z_velocity_scaling_rejects_out_of_range_velocities(velocity: int) -> None:
     raw = bytearray(93)
     raw[48] = 7
     operator = tx81z.TX81ZVoice(data=bytes(raw)).operator(1)

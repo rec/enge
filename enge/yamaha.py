@@ -976,23 +976,18 @@ def tx81z_output_gain(
     """Prepare total level from VCED, a MIDI key and note-on velocity.
 
     Sum output, carrier, key-level and velocity attenuation before TL saturation.
-    Register attenuation follows androuet's measured TX81Z tables. Envelope
-    attenuation is separate; the renderer adds breath EG bias before TL saturation.
+    Positive velocities follow androuet's measured tables; zero uses the
+    provisional ROM-table extension. Envelope attenuation is separate; the
+    renderer adds breath EG bias before TL saturation.
     """
-    if (
-        not 1 <= algorithm <= 8
-        or not 0 <= note <= 127
-        or not 0 <= velocity <= 127
-        or velocity == 0
-        and operator.key_velocity_sensitivity != 0
-    ):
+    if not 1 <= algorithm <= 8 or not 0 <= note <= 127 or not 0 <= velocity <= 127:
         raise EngineError("Invalid TX81Z algorithm, key or note-on velocity")
     scaling_note = note if note <= 108 else 97 + (note - 109) % 12
     column = max(0, (scaling_note - 28) // 3)
     attenuation = _TX_OUTPUT_ATTENUATION[operator.output_level]
     attenuation += _TX_LEVEL_SCALING[operator.level_scaling][column]
     if sensitivity := operator.key_velocity_sensitivity:
-        attenuation += _TX_VELOCITY_ATTENUATION[velocity - 1][sensitivity - 1]
+        attenuation += _TX_VELOCITY_ATTENUATION[velocity][sensitivity - 1]
     if operator.number in _TX_ALGORITHMS[algorithm - 1][1]:
         attenuation += _TX_CARRIER_ATTENUATION[algorithm - 1]
     return 2 ** (-min(127, attenuation) / 8)
@@ -1832,8 +1827,11 @@ _TX_LEVEL_SCALING = [
     bytes.fromhex("0001010202030304050607090b0d1013171c21272f38424f5e6f7f"),
 ]
 
-# Rows: velocities 1..127; columns: KVS 1..7 (KVS 0 adds no TL).
+# Rows: velocities 0..127; columns: KVS 1..7 (KVS 0 adds no TL).
+# Zero provisionally applies the published KVS formula to ROM table entry FE.
+# See plan/yamaha-emulation.md for the source audit and qualification boundary.
 _TX_VELOCITY_ATTENUATION = [
+    [22, 37, 52, 67, 81, 96, 111],
     [18, 29, 40, 51, 62, 73, 84],
     [17, 28, 38, 48, 58, 69, 79],
     [17, 27, 37, 47, 56, 66, 76],

@@ -16,6 +16,7 @@ from enge.yamaha import TX81ZRenderer
     [
         (69, 0, 1, 127, 6),
         (69, 0, 7, 1, 84),
+        (69, 0, 7, 0, 111),
         (69, 0, 7, 100, 7),
         (69, 50, 7, 1, 91),
         (108, 99, 7, 1, 211),
@@ -47,18 +48,6 @@ def test_tx81z_note_applies_key_and_velocity_attenuation_before_saturation(
     expected = gain * np.sin(2 * np.pi * frequency * np.arange(48000) / 48000)
     check_audio(tmp_path / "tx81z-note-scaling.wav", actual, expected[:, None])
     assert voice.data == bytes(raw)
-
-
-def test_tx81z_velocity_scaling_requires_positive_note_on_velocity() -> None:
-    raw = bytearray(93)
-    raw[48], raw[62] = 7, 24
-    with pytest.raises(EngineError, match="note-on velocity"):
-        TX81ZRenderer(
-            tx81z.TX81ZVoice(data=bytes(raw)),
-            tx81z.TX81ZAdditional(data=bytes(23)),
-            69,
-            0,
-        )
 
 
 @pytest.mark.parametrize("sensitivity,output", [(7, 99), (0, 99), (7, 0)])

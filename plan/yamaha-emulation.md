@@ -243,8 +243,8 @@ The initial supported pitch span after transpose is MIDI 13–108 (chip key code
 KVS curves to positive note-on velocities. Key-level scaling now applies the
 measured three-key groups at the transposed key. Zero-delay LFO modulation uses explicit
 shared OPZ rows as described below. Velocity has no gain effect
-when KVS is zero; its existing zero-velocity metadata behavior remains unchanged
-pending the note-on contract decision. This is an incomplete
+when KVS is zero; explicit zero-velocity triggers use the provisional attenuation
+model described below when KVS is nonzero. This is an incomplete
 profile, not completion of the full TX81Z/WT11 requirement. Controller integration,
 DAC/integer quantization and hardware/reference
 qualification remain work.
@@ -430,15 +430,29 @@ The same gain preparer now accepts a decoded operator, MIDI key and velocity
 and sums key-level/velocity attenuation before the TL clamp. The discrete tables
 come from [androuet's TX81Z register analysis](https://nornand.hatenablog.com/entry/2020/11/21/201911),
 including three-key level-scaling groups, the documented high-key wrap and
-all seven nonzero KVS curves. KVS zero adds no attenuation. Velocity zero with
-nonzero KVS is rejected because the measurement table covers only 1–127.
+all seven nonzero KVS curves. KVS zero adds no attenuation.
 Focused WAV regressions cover boundaries and combined saturation. The note
 renderer now connects both terms for the unambiguous inputs above. Analytic
 one-second WAV regressions cover velocity curves, transposed-key scaling,
 their sum and TL saturation. All eight algorithm continuation tests now use
-distinct nonzero key/velocity sensitivities. The velocity-zero note-creation
-contract still awaits a decision. These model-level
-checks do not establish hardware qualification.
+distinct nonzero key/velocity sensitivities. These model-level checks do not
+establish hardware qualification.
+
+Explicit zero-velocity synth triggers now render with every KVS setting rather
+than being rejected. The recommended provisional extension combines the
+[published KVS calculation](https://nornand.hatenablog.com/entry/2021/01/01/153911)
+with the leading `FE` value in the
+[reported firmware table at $DF94](https://nornand.hatenablog.com/entry/2023/06/26/115707).
+For nonzero sensitivity `s` and table value `v`, integer TL attenuation is
+`((((s * v + (7 - s) * 16) >> 3) + 1) >> 1)`.
+The 127 trailing firmware values reproduce all 889 existing positive-velocity
+entries exactly; those measured rows are unchanged. Using `v = 254` yields
+`[22, 37, 52, 67, 81, 96, 111]` for zero velocity at KVS 1..7. This is an
+explicit-trigger model choice, not proof that hardware creates notes from MIDI
+velocity zero: MIDI Note On with velocity zero retains its existing Note Off
+interpretation. Output, carrier and key attenuation still sum before TL
+saturation. WAV regressions cover all sensitivities, saturation, polyphonic
+onsets, mono legato, analytic output and JSON continuation.
 
 The numeric `tx81z_operator_samples` kernel now renders all eight four-operator
 graphs in visible OP1–OP4 order, with OP4 two-sample feedback, independent
@@ -571,8 +585,8 @@ one-second audio continuation against an untouched snapshot reference.
 Explicit trigger pitch microtunes ratio operators while the transposed MIDI key continues
 to drive key scaling. Fixed operators retain their authored frequencies. Velocity
 uses nearest-integer rounding with ties upward, preserves exact zero and maps
-any positive value to at least 1. Existing TX81Z rejection of velocity zero with
-nonzero velocity sensitivity remains in force.
+any positive value to at least 1. TX81Z explicit zero-velocity triggers use the
+provisional KVS extension above.
 
 The adapter admits transpose for both models and TX81Z delayed pitch and
 amplitude modulation using the provisional models above.
@@ -727,8 +741,9 @@ assignments or portamento.
   Preserve the imported bytes, but do not add a chorus renderer to emulate a
   feature absent from this hardware. This corrects the earlier backlog wording
   and does not select the separate optional effects catalogue.
-- TX81Z velocity-zero note creation with nonzero KVS still needs a contract;
-  the measured attenuation table covers positive velocities only.
+- TX81Z explicit zero-velocity note creation with nonzero KVS is implemented
+  using the provisional ROM-table extension above; positive-velocity measured
+  attenuation remains unchanged. MIDI zero-velocity Note On remains Note Off.
 - The approved DX7 integer oscillator/feedback replacement is implemented.
   Constant-gain reference comparisons and scoped-control continuation cover the
   new core; complete dynamic patches and hardware output remain unqualified.
