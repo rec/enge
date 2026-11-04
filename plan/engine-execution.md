@@ -107,8 +107,15 @@ and control-context inputs. Python preparation now configures the bank directly,
 including named envelopes, stages, ownership, clocks and Patch connections.
 Synth, FM and noise constructors take independent copies of that configured
 bank, with matching sample rate, voice capacity and parameter count. No oscillator
-runtime is needed to prepare generators. Sampler setup and action admission still
-need to connect to that shared bank; route mappings remain source-owned.
+runtime is needed to prepare generators. The low-level native sample source can
+now attach a prepared bank, compose its routes with controls, and execute shared
+generator commands. Delayed voices activate the bank at their first audible
+frame. Release, retirement, slot reuse and snapshots preserve shared execution
+semantics. A native audio regression compares LFO, envelope and sample-and-hold
+composition with the generated-source reference, including commands, delayed
+starts, seeded slot reuse and partitioned snapshot replay. The Python sampler
+adapter still rejects generators until its common/slot setup and action admission
+are connected; full callback allocation qualification also remains outstanding.
 
 Finite loop `repeat_count` now counts additional traversals in both offline
 backends and the native live sampler, including mirrored and crossfaded loops.

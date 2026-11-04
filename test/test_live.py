@@ -618,6 +618,133 @@ def test_native_live_runtime_owns_sample_asset_and_traversal(tmp_path: Path) -> 
     np.testing.assert_allclose(replay, actual[23928:], atol=0)
 
 
+@pytest.mark.parametrize("cancel", [1, 5])
+def test_native_sample_generators_follow_audible_start_and_snapshot(
+    tmp_path: Path, cancel: int
+) -> None:
+    audio = np.sin(2 * np.pi * np.arange(96000) * 220 / 48000)[:, None]
+    buffer = _native.SampleBuffer(audio)
+    generators = _native.GeneratorBank(
+        48000,
+        1,
+        4,
+        np.array([[3, 0, 0, 1, 0.5, 0.5, 0]], dtype=np.float64),
+        [(1, 2), (3, 1), (0, 1), (0, 1), (0, 1)],
+    )
+    generators.set_named_envelopes(
+        [0, 1],
+        [[((12000, 1), 1.0, 0.0)], []],
+        [[((6000, 1), 0.0, 0.0)], []],
+        [(0, 1, False, 0, (0, 1), (1, 1), None, False, (True, 0, False))] * 2,
+    )
+    generators.set_sample_hold_envelfos([(1, 123, 0.5, 1.0)])
+    identity = (0, [(0.0, 0.0), (1.0, 1.0)])
+    maps = [[identity], [identity, identity], [], []]
+    controls = np.array([[0.25, 0, 0, 0, 0, 1]], dtype=np.float64)
+    parameters = [1, 0, 1e300, 0, -120000, 120000] * 2
+
+    def make_runtime() -> tuple[_native.LiveRuntime, int]:
+        runtime = _native.LiveRuntime.empty(48000, 1, 997, 64)
+        source = runtime.add_sample(
+            buffer,
+            (0, 96000, False, None),
+            (0, 0, 0, 1, False, False, False, None, None, 0, None),
+            48000,
+            np.ones((1, 1)),
+            1,
+            [((0, 1), 1.0, 0.0)],
+            [((6000, 1), 0.0, 0.0)],
+            0,
+            1,
+            4,
+            ([], np.empty((0, 1, 2)), np.empty((1, 0, 2))),
+            False,
+        )
+        runtime.set_sample_controls(
+            source, controls, [(0, 1)], parameters, [identity], 1, [], []
+        )
+        runtime.set_sample_generators(source, generators, maps)
+        return runtime, source
+
+    reference = _native.SynthRuntime(
+        48000,
+        0,
+        0.5,
+        np.ones((1, 1)),
+        1,
+        [((0, 1), 1.0, 0.0)],
+        [((6000, 1), 0.0, 0.0)],
+        (0, 1),
+        controls,
+        [(0, 1)],
+        generators,
+        np.empty((0, 7)),
+        parameters,
+        1,
+    )
+    reference.set_route_maps(0, [identity])
+    for kind, mappings in enumerate(maps, 1):
+        reference.set_route_maps(kind, mappings)
+    actions = np.array(
+        [
+            [23, 16, 0, 111, 0, 0],
+            [23, 0, 0, 48000, 0.5, 0],
+            [23, 6, 0, 257, 0, 0],
+            [100, cancel, 0, 100, 0, 0],
+            [400, 16, 0, 456, 0, 0],
+            [400, 0, 0, 48000, 0.5, 0],
+            [400, 6, 0, 257, 0, 0],
+            [5000, 13, 0, 0, 0, 0],
+            [6000, 13, 0, 0, 1, 0],
+            [9000, 15, 0, 0, 4, 0],
+            [24000, 1, 0, 0, 0, 0],
+            [32000, 16, 0, 789, 0, 0],
+            [32000, 0, 0, 48000, 0.5, 0],
+            [32000, 6, 0, 500, 0, 0],
+        ],
+        dtype=np.float64,
+    )
+    reference_actions = actions[(actions[:, 1] != 6) & (actions[:, 0] >= 400)].copy()
+    for row in reference_actions:
+        if row[1] >= 12:
+            row[1] -= 4
+        elif row[1] == 0:
+            row[0] += 257 if row[0] == 400 else 500
+            row[3] = 220
+    expected = reference.process_actions(48000, 0, 1, 0, reference_actions)
+
+    def render(
+        runtime: _native.LiveRuntime, source: int, start: int, end: int, block: int
+    ) -> np.ndarray:
+        output = np.empty((end - start, 1))
+        for frame in range(start, end, block):
+            stop = min(frame + block, end)
+            rows = actions[(actions[:, 0] >= frame) & (actions[:, 0] < stop)].copy()
+            rows[:, 0] -= frame
+            if len(rows):
+                runtime.submit(source, rows)
+            runtime.process_into(output[frame - start : stop - start])
+        return output
+
+    runtime, source = make_runtime()
+    first = render(runtime, source, 0, 64, 997)
+    pending = runtime.snapshot()
+    middle = render(runtime, source, 64, 12000, 997)
+    sounding = runtime.snapshot()
+    last = render(runtime, source, 12000, 48000, 997)
+    actual = np.concatenate([first, middle, last])
+    check_audio(tmp_path / "native-sample-generators.wav", actual, expected)
+    for frame, snapshot in ((64, pending), (12000, sounding)):
+        restored, source = make_runtime()
+        restored.restore(snapshot)
+        replay = render(restored, source, frame, 48000, 257)
+        np.testing.assert_array_equal(replay, actual[frame:])
+    generators.set_sample_hold_envelfos([(1, 123, 0.25, 0.75)])
+    incompatible, _ = make_runtime()
+    with pytest.raises(ValueError, match="different live sample source"):
+        incompatible.restore(sounding)
+
+
 def test_live_engine_mixes_heterogeneous_sources_and_restores(tmp_path: Path) -> None:
     synth_document = synth_score()
     noise_document = noise_score()

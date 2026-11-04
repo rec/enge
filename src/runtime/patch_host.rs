@@ -352,7 +352,7 @@ impl GeneratorBank {
         Ok(())
     }
 
-    pub(super) fn start_patch(&mut self, voice: usize, frame: usize) -> PyResult<()> {
+    pub(crate) fn start_patch(&mut self, voice: usize, frame: usize) -> PyResult<()> {
         let Some(host) = &self.patch_host else {
             return Ok(());
         };
@@ -445,7 +445,7 @@ impl GeneratorBank {
         Ok(())
     }
 
-    pub(super) fn settle_patches(
+    pub(crate) fn settle_patches(
         &mut self,
         active: &[bool],
         frame: usize,
@@ -498,7 +498,7 @@ impl GeneratorBank {
         Ok(())
     }
 
-    pub(super) fn observe_patch(
+    pub(crate) fn observe_patch(
         &mut self,
         voice: usize,
         frame: usize,

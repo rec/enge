@@ -4,6 +4,7 @@ use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time}
 use crate::filters::{FilterBank, Inputs};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::{ControlBank, control_definitions};
+use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{RouteMap, SynthRuntime, SynthRuntimeSnapshot, sum_partials};
 use crate::sampler::{Cursor, SampleBuffer, Selection, State};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
@@ -30,7 +31,9 @@ enum SourceRuntime {
 #[derive(Clone)]
 struct SampleRuntime {
     controls: ControlBank,
-    control_maps: Vec<RouteMap>,
+    route_maps: Vec<Vec<RouteMap>>,
+    generators: Option<GeneratorBank>,
+    generator_active: Vec<bool>,
     crossfades: Vec<(bool, bool)>,
     filter_routes: Vec<SampleFilter>,
     // Common and slot amplitude/tuning, filter cutoff/Q, then crossfade positions.
@@ -360,7 +363,9 @@ impl LiveRuntime {
             .collect::<PyResult<_>>()?;
         let runtime = SampleRuntime {
             controls: ControlBank::new(Vec::new(), Vec::new(), voices, 0),
-            control_maps: Vec::new(),
+            route_maps: vec![Vec::new(); 5],
+            generators: None,
+            generator_active: vec![false; voices],
             crossfades: Vec::new(),
             filter_routes: Vec::new(),
             parameters: vec![
@@ -476,10 +481,15 @@ impl LiveRuntime {
             .into_iter()
             .map(|(kind, points)| RouteMap::new(kind, points))
             .collect::<PyResult<Vec<_>>>()?;
+        if runtime.generators.is_some() {
+            return Err(PyValueError::new_err(
+                "Sample controls must be configured before generators",
+            ));
+        }
         runtime.parameter_partials = vec![0.0; definitions.len()];
         runtime.controls =
             ControlBank::new(definitions, states, runtime.active.len(), context_capacity);
-        runtime.control_maps = maps;
+        runtime.route_maps[0] = maps;
         runtime.parameters = parameters;
         runtime.crossfades = crossfades;
         runtime.filter_routes = filters
@@ -495,6 +505,47 @@ impl LiveRuntime {
                 },
             )
             .collect();
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn set_sample_generators(
+        &mut self,
+        source: usize,
+        generators: &GeneratorBank,
+        maps: Vec<Vec<(usize, Vec<(f64, f64)>)>>,
+    ) -> PyResult<()> {
+        let Some(Source {
+            runtime: SourceRuntime::Sample(runtime),
+            ..
+        }) = self.sources.get_mut(source)
+        else {
+            return Err(PyValueError::new_err("Invalid live sample source"));
+        };
+        if self.frame != 0
+            || generators.rate != self.rate
+            || generators.patch_states.len() != runtime.active.len()
+            || generators.parameter_count != runtime.parameters.len() / 3
+            || maps.len() != 4
+        {
+            return Err(PyValueError::new_err(
+                "Invalid live sample generator layout or state",
+            ));
+        }
+        let maps = maps
+            .into_iter()
+            .enumerate()
+            .map(|(kind, maps)| generators.prepare_route_maps(kind + 1, maps))
+            .collect::<PyResult<Vec<_>>>()?;
+        let mut generators = generators.clone();
+        generators.prepare_patch(0)?;
+        for (target, maps) in runtime.route_maps[1..].iter_mut().zip(maps) {
+            *target = maps;
+        }
+        runtime
+            .parameter_partials
+            .resize(runtime.route_maps.iter().map(Vec::len).sum(), 0.0);
+        runtime.generators = Some(generators);
         Ok(())
     }
 
@@ -1519,7 +1570,12 @@ impl SourceRuntime {
                         != state.initial_cursor.plays_remaining
                     || runtime.controls.control_definitions != state.controls.control_definitions
                     || runtime.controls.context_kinds.len() != state.controls.context_kinds.len()
-                    || runtime.control_maps != state.control_maps
+                    || runtime.route_maps != state.route_maps
+                    || match (&runtime.generators, &state.generators) {
+                        (Some(a), Some(b)) => !a.same_definition(b),
+                        (None, None) => false,
+                        _ => true,
+                    }
                     || runtime.crossfades != state.crossfades
                     || runtime.filter_routes != state.filter_routes
                     || runtime.parameters != state.parameters
@@ -1560,15 +1616,39 @@ impl SourceRuntime {
 }
 
 impl SampleRuntime {
-    fn parameter(&mut self, voice: usize, parameter: usize) -> PyResult<f64> {
+    fn start_generators(&mut self, voice: usize, frame: usize) -> PyResult<()> {
+        if !self.generator_active[voice] {
+            if let Some(generators) = &mut self.generators {
+                generators.start_patch(voice, frame)?;
+            }
+            self.generator_active[voice] = true;
+        }
+        Ok(())
+    }
+
+    fn parameter(&mut self, voice: usize, parameter: usize, frame: usize) -> PyResult<f64> {
         let mut count = 0;
         let product = self.controls.contributions(
             voice,
             parameter,
-            &self.control_maps,
+            &self.route_maps[0],
             &mut self.parameter_partials,
             &mut count,
         )?;
+        let product = if let Some(generators) = &self.generators {
+            generators.contributions(
+                voice,
+                parameter,
+                product,
+                frame,
+                &self.controls,
+                &self.route_maps,
+                &mut self.parameter_partials,
+                &mut count,
+            )?
+        } else {
+            product
+        };
         let domain = &self.parameters[parameter * 3..parameter * 3 + 3];
         let value = (domain[0] + sum_partials(&self.parameter_partials[..count])) * product;
         if !value.is_finite() || value < domain[1] || value > domain[2] {
@@ -1598,9 +1678,26 @@ impl SampleRuntime {
         let mut action = 0;
         let channels = output.ncols();
         for offset in 0..frames {
+            let frame = self
+                .frame
+                .checked_add(offset)
+                .ok_or_else(|| PyValueError::new_err("Live sample frame overflow"))?;
+            if action < actions.len() && actions[action] as usize == offset {
+                if let Some(generators) = &mut self.generators {
+                    generators.settle_patches(&self.generator_active, frame, false)?;
+                }
+            }
             while action < actions.len() && actions[action] as usize == offset {
-                self.apply_action(&actions[action..action + 6])?;
+                self.apply_action(&actions[action..action + 6], frame)?;
                 action += 6;
+            }
+            for voice in 0..self.active.len() {
+                if self.active[voice] && self.delays[voice] == 0 {
+                    self.start_generators(voice, frame)?;
+                }
+            }
+            if let Some(generators) = &mut self.generators {
+                generators.settle_patches(&self.generator_active, frame, true)?;
             }
             for voice in 0..self.active.len() {
                 if !self.active[voice] {
@@ -1609,6 +1706,9 @@ impl SampleRuntime {
                 if self.delays[voice] > 0 {
                     self.delays[voice] -= 1;
                     continue;
+                }
+                if let Some(generators) = &mut self.generators {
+                    generators.observe_patch(voice, frame, &self.controls)?;
                 }
                 let age = self.ages[voice] as f64;
                 let fade = self.fade_starts[voice].map_or(1.0, |start| {
@@ -1640,11 +1740,12 @@ impl SampleRuntime {
                     self.active[voice] = false;
                     continue;
                 }
-                let mut level =
-                    value.value * self.parameter(voice, 0)? * self.parameter(voice, 2)?;
+                let mut level = value.value
+                    * self.parameter(voice, 0, frame)?
+                    * self.parameter(voice, 2, frame)?;
                 for index in 0..self.crossfades.len() {
                     let position = self
-                        .parameter(voice, 4 + 2 * self.filter_routes.len() + index)?
+                        .parameter(voice, 4 + 2 * self.filter_routes.len() + index, frame)?
                         .clamp(0.0, 1.0);
                     let (inward, equal_power) = self.crossfades[index];
                     let weight = if equal_power && position > 0.0 && position < 1.0 {
@@ -1661,16 +1762,18 @@ impl SampleRuntime {
                     level *= weight;
                 }
                 let step = self.steps[voice]
-                    * ((self.parameter(voice, 1)? + self.parameter(voice, 3)?) / 1200.0).exp2();
-                let frame = i64::try_from(self.frame + offset)
+                    * ((self.parameter(voice, 1, frame)? + self.parameter(voice, 3, frame)?)
+                        / 1200.0)
+                        .exp2();
+                let source_frame = i64::try_from(frame)
                     .map_err(|_| PyValueError::new_err("Live sample frame overflow"))?;
                 let cursor = &mut self.cursors[voice];
-                cursor.settle(frame);
+                cursor.settle(source_frame);
                 if cursor.exhausted.is_some() {
                     self.active[voice] = false;
                     continue;
                 }
-                let end_gain = cursor.end_gain(frame, step);
+                let end_gain = cursor.end_gain(source_frame, step);
                 if cursor.exhausted.is_some() {
                     self.active[voice] = false;
                     continue;
@@ -1679,7 +1782,7 @@ impl SampleRuntime {
                 if cursor.position != 0.0 {
                     following.index += following.direction;
                     following.position = 0.0;
-                    following.settle(frame);
+                    following.settle(source_frame);
                 }
                 for (channel, value) in self.source_values.iter_mut().enumerate() {
                     let first = cursor.read(&self.buffer.audio, channel);
@@ -1706,8 +1809,8 @@ impl SampleRuntime {
                     let mut stage = 0;
                     for index in 0..self.filter_routes.len() {
                         let route = self.filter_routes[index].clone();
-                        let mut cutoff = self.parameter(voice, route.cutoff)?;
-                        let q = self.parameter(voice, route.q)?;
+                        let mut cutoff = self.parameter(voice, route.cutoff, frame)?;
+                        let q = self.parameter(voice, route.q, frame)?;
                         if q <= 0.0
                             || (!route.clamp && (cutoff < route.minimum || cutoff > route.maximum))
                         {
@@ -1744,8 +1847,11 @@ impl SampleRuntime {
                         .sum::<f64>();
                     output[[offset, channel]] += mixed * output_gain;
                 }
-                self.cursors[voice].advance(step, frame + 1);
+                self.cursors[voice].advance(step, source_frame + 1);
                 self.ages[voice] += 1;
+            }
+            for (running, active) in self.generator_active.iter_mut().zip(&self.active) {
+                *running &= *active;
             }
             self.controls.advance();
         }
@@ -1757,13 +1863,36 @@ impl SampleRuntime {
         Ok(())
     }
 
-    fn apply_action(&mut self, action: &[f64]) -> PyResult<()> {
+    fn apply_action(&mut self, action: &[f64], frame: usize) -> PyResult<()> {
         let kind = action[1] as usize;
         if (7..=11).contains(&kind) {
             let mut control_action = [0.0; 6];
             control_action.copy_from_slice(action);
             control_action[1] -= 3.0;
             return self.controls.apply(&control_action);
+        }
+        if (12..=16).contains(&kind) {
+            let mut generator_action = [0.0; 6];
+            generator_action.copy_from_slice(action);
+            generator_action[1] -= 4.0;
+            let voice = action[2] as usize;
+            if (13..=15).contains(&kind)
+                && action[2] == voice as f64
+                && voice < self.active.len()
+                && self.active[voice]
+                && self.delays[voice] == 0
+            {
+                self.start_generators(voice, frame)?;
+            }
+            let Some(generators) = &mut self.generators else {
+                return Err(PyValueError::new_err("Sample source has no generators"));
+            };
+            return generators.apply_action(
+                &generator_action,
+                &self.generator_active,
+                frame,
+                generators.rate,
+            );
         }
         let voice = action[2] as usize;
         if action[1] != kind as f64 || action[2] != voice as f64 || voice >= self.active.len() {
@@ -1780,6 +1909,7 @@ impl SampleRuntime {
                     return Err(PyValueError::new_err("Invalid live sample start"));
                 }
                 self.active[voice] = true;
+                self.generator_active[voice] = false;
                 self.cursors[voice] = self.initial_cursor;
                 let offset = action[5];
                 if !offset.is_finite() || offset.fract() != 0.0 || offset.abs() > 9007199254740992.0
@@ -1792,7 +1922,7 @@ impl SampleRuntime {
                     .checked_add(offset as i64)
                     .ok_or_else(|| PyValueError::new_err("Live sample offset overflow"))?;
                 if !(cursor.selection.0..cursor.selection.1).contains(&cursor.index) {
-                    cursor.exhausted = Some(self.frame as i64);
+                    cursor.exhausted = Some(frame as i64);
                     self.active[voice] = false;
                 }
                 self.steps[voice] = action[3];
@@ -1808,11 +1938,28 @@ impl SampleRuntime {
             }
             1 => {
                 if self.active[voice] && self.release_frames[voice].is_none() {
+                    if self.delays[voice] > 0 {
+                        self.active[voice] = false;
+                        self.generator_active[voice] = false;
+                        return Ok(());
+                    }
+                    self.start_generators(voice, frame)?;
+                    if let Some(generators) = &mut self.generators {
+                        generators.release_voice(
+                            voice,
+                            frame,
+                            self.ages[voice],
+                            frame_time(self.minimum_hold_frames)?,
+                        )?;
+                    }
                     let release_frame = (self.ages[voice] as f64).max(self.minimum_hold_frames);
                     self.release_frames[voice] = Some(release_frame);
                 }
             }
-            2 => self.active[voice] = false,
+            2 => {
+                self.active[voice] = false;
+                self.generator_active[voice] = false;
+            }
             3 => {
                 if !self.active[voice] || action[3] <= 0.0 || action[4] < 0.0 || action[5] != 0.0 {
                     return Err(PyValueError::new_err("Invalid live sample control"));
@@ -1853,6 +2000,11 @@ impl SampleRuntime {
                     return Err(PyValueError::new_err("Invalid live sample fade"));
                 }
                 if self.active[voice] {
+                    if self.delays[voice] > 0 {
+                        self.active[voice] = false;
+                        self.generator_active[voice] = false;
+                        return Ok(());
+                    }
                     if let Some(start) = self.fade_starts[voice] {
                         self.fade_gains[voice] *= (1.0
                             - (self.ages[voice] - start) as f64 / self.fade_frames[voice])

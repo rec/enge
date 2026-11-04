@@ -25,10 +25,10 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub(crate) struct GeneratorBank {
-    pub(super) rate: f64,
-    pub(super) parameter_count: usize,
+    pub(crate) rate: f64,
+    pub(crate) parameter_count: usize,
     pub(super) patch_host: Option<PatchHost>,
-    pub(super) patch_states: Vec<Option<PatchState>>,
+    pub(crate) patch_states: Vec<Option<PatchState>>,
     pub(super) patch_storage: Vec<Option<PatchStorage>>,
     pub(super) pending_releases: Vec<Vec<Option<Time>>>,
     pub(super) envelfo_transforms: Vec<EnvelfoTransformInput>,
@@ -49,7 +49,45 @@ pub(crate) struct GeneratorBank {
 }
 
 impl GeneratorBank {
-    pub(super) fn release_voice(
+    pub(crate) fn prepare_route_maps(
+        &self,
+        kind: usize,
+        maps: Vec<(usize, Vec<(f64, f64)>)>,
+    ) -> PyResult<Vec<RouteMap>> {
+        let count = match kind {
+            1 => self.lfo_definitions.len(),
+            2 => self.named_envelopes.len(),
+            3 => self.staged_envelfos.len(),
+            4 => self.envelfo_transform_routes.len(),
+            _ => return Err(PyValueError::new_err("Invalid generator mapping kind")),
+        };
+        if maps.len() != count {
+            return Err(PyValueError::new_err("Invalid generator mapping count"));
+        }
+        maps.into_iter()
+            .map(|(kind, points)| RouteMap::new(kind, points))
+            .collect()
+    }
+
+    pub(crate) fn same_definition(&self, other: &Self) -> bool {
+        self.rate == other.rate
+            && self.parameter_count == other.parameter_count
+            && self.patch_states.len() == other.patch_states.len()
+            && self.lfo_definitions == other.lfo_definitions
+            && self.lfo_owners == other.lfo_owners
+            && self.named_envelopes == other.named_envelopes
+            && self.named_owners == other.named_owners
+            && self.envelfo_transforms == other.envelfo_transforms
+            && self.envelfo_transform_routes == other.envelfo_transform_routes
+            && self.patch_events == other.patch_events
+            && self.patch_stage_starts == other.patch_stage_starts
+            && self.beat_points == other.beat_points
+            && self.staged_envelfos == other.staged_envelfos
+            && self.staged_owners == other.staged_owners
+            && self.staged_connections == other.staged_connections
+    }
+
+    pub(crate) fn release_voice(
         &mut self,
         voice: usize,
         frame: usize,
@@ -89,7 +127,7 @@ impl GeneratorBank {
         Ok(release_frame)
     }
 
-    pub(super) fn apply_action(
+    pub(crate) fn apply_action(
         &mut self,
         action: &[f64],
         active: &[bool],
@@ -285,7 +323,7 @@ impl GeneratorBank {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn contributions(
+    pub(crate) fn contributions(
         &self,
         voice: usize,
         parameter: usize,

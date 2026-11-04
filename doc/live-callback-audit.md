@@ -35,9 +35,12 @@ host, so its external event buffer has zero capacity.
 Shared-core allocation tests cover reset, observation, cues, delayed events,
 capacity rollback, cloning and snapshot continuation. Enge's full native callback
 still needs allocation qualification across onset, observation, addressed commands,
-scheduled child events and release. Native sampler generators remain rejected
-until their integration is implemented; these shared-core results alone do not
-qualify that profile or establish hardware deadlines.
+scheduled child events and release. Low-level native sample sources now attach
+the same prepared bank and execute its lifecycle and commands. Their delayed
+voices reset generators at the first audible frame, and snapshots retain the
+prepared storage. The Python sampler adapter still rejects generator definitions
+until setup and action admission are connected. Shared-core results alone do not
+qualify the complete sample-source path or establish hardware deadlines.
 
 `LiveRuntime` owns processing for generated and sampled sources. It owns
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal
@@ -79,7 +82,8 @@ This removes Python DSP, mixing, and effect-array construction from its callback
 body. Python still performs admission and submission synchronously before that
 call. Native sampler key/velocity event bindings use preallocated per-voice
 values, initialized during onset admission and retained in snapshots. The native
-sampler profile currently excludes generators.
+sampler adapter currently excludes generators, although the low-level native
+sample-source API now supports the shared generator bank.
 Generated synth, FM and noise velocity bindings use the same native per-voice
 storage. Their Python onset metadata shares bounded trigger-context ownership
 and is included in source snapshots.

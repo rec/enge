@@ -76,6 +76,12 @@ class LiveRuntime:
         crossfades: list[tuple[bool, bool]],
         filters: list[tuple[int, int, int, bool, float, float]],
     ) -> None: ...
+    def set_sample_generators(
+        self,
+        source: int,
+        generators: GeneratorBank,
+        maps: list[list[tuple[int, list[tuple[float, float]]]]],
+    ) -> None: ...
     def add_sample(
         self,
         buffer: SampleBuffer,

@@ -370,23 +370,21 @@ pub struct SynthRuntime {
 #[pymethods]
 impl SynthRuntime {
     fn set_route_maps(&mut self, kind: usize, maps: Vec<(usize, Vec<(f64, f64)>)>) -> PyResult<()> {
-        let count = match kind {
-            0 => self.controls.control_definitions.len(),
-            1 => self.generators.lfo_definitions.len(),
-            2 => self.generators.named_envelopes.len(),
-            3 => self.generators.staged_envelfos.len(),
-            4 => self.generators.envelfo_transform_routes.len(),
-            _ => return Err(PyValueError::new_err("Invalid modulation mapping kind")),
-        };
-        if self.frame != 0 || self.active.iter().any(|v| *v) || maps.len() != count {
+        if self.frame != 0 || self.active.iter().any(|v| *v) {
             return Err(PyValueError::new_err(
                 "Invalid modulation mapping count or state",
             ));
         }
-        let maps = maps
-            .into_iter()
-            .map(|(interpolation, points)| RouteMap::new(interpolation, points))
-            .collect::<PyResult<Vec<_>>>()?;
+        let maps = if kind == 0 {
+            if maps.len() != self.controls.control_definitions.len() {
+                return Err(PyValueError::new_err("Invalid control mapping count"));
+            }
+            maps.into_iter()
+                .map(|(kind, points)| RouteMap::new(kind, points))
+                .collect::<PyResult<Vec<_>>>()?
+        } else {
+            self.generators.prepare_route_maps(kind, maps)?
+        };
         self.route_maps[kind] = maps;
         self.parameter_partials
             .resize(self.route_maps.iter().map(Vec::len).sum(), 0.0);
