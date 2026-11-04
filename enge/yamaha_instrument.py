@@ -714,8 +714,8 @@ def _dx7_controller_row(
 def _tx81z_controller_row(
     template: YamahaTX81ZVoice, values: dict[tuple[str, str], np.ndarray]
 ) -> np.ndarray:
-    """Combine authored controller depths before measured register conversion."""
-    row = np.zeros((1, 2))
+    """Sum firmware byte-depth contributions before patch addition/conversion."""
+    row = np.zeros((1, 2), dtype=np.int64)
     data, extra = template.patch.data, template.additional.data
     for name, pitch, amplitude in (
         ("modulation_wheel", data[71], data[72]),
@@ -723,9 +723,10 @@ def _tx81z_controller_row(
         ("foot", extra[21], extra[22]),
     ):
         if (position := values.get(("yamaha", name))) is not None:
-            row[0, 0] = max(row[0, 0], position[0] * pitch)
-            row[0, 1] = max(row[0, 1], position[0] * amplitude)
-    return row
+            cc = floor(position[0] * 127)
+            row[0, 0] += ((pitch * 165 >> 6) * cc * 2) >> 8
+            row[0, 1] += ((amplitude * 165 >> 6) * cc * 2) >> 8
+    return np.minimum(row, 255)
 
 
 def _note(

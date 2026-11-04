@@ -405,14 +405,14 @@ shared sample-and-hold table. This implements the shared hardware-clock
 primitive, not allocation routing, software vibrato or complete performance
 rendering. See the [paired comparison](../doc/yamaha-reference/README.md#tx81z-paired-hardware-lfo-comparison).
 
-New evidence for the next depth-integration slice:
+Firmware-derived depth integration:
 [ax81z Math.md at 5848832](https://github.com/iflyhigh/ax81z/blob/5848832989c7864092a277e9428d44f817c6173f/Math.md)
 describes firmware-derived additive wheel/breath/foot contributions, saturated
 before PMD/AMD register conversion, with delay applied only to the patch depth.
 Its exponential conversion and LFO table reproduce all 100 existing measured
 rate/PMD/AMD rows exactly with zero controllers and completed delay. This is
-stronger evidence than the provisional strongest-depth model, which remains in
-the renderer pending a focused correction and controller regressions. The
+stronger evidence than the provisional strongest-depth model, which is now
+replaced by additive byte-depth contributions and controller regressions. The
 source is a partial reverse engineering, not an independent hardware trace;
 its controller arithmetic still needs that qualification. It does not document
 the software vibrato or breath pitch-bias implementation.
@@ -423,31 +423,31 @@ unit. Both depths remain zero until half that time; PMD then rises linearly,
 whereas AMD follows a curve that the report does not quantify. Delay 1 completes
 at 15/48 second and delay 99 at 1022/48 seconds. Implementing a linear AMD ramp
 would therefore invent behavior inconsistent with the stated observation.
-The initial pitch-only implementation uses the measured completion table.
+The delay clock uses the measured completion table.
 The clock latches exact rational delay progress at each OPZ observation; each
-note floors its delayed PMD register depth before multiplying the raw waveform.
+note applies the byte-depth conversion below before multiplying the raw waveform.
 Frames without a chip tick retain the previous observation.
-This preserves the earlier integer ramp without float rounding. Key-down
-restarts the delay even with sync off, while preserving the
-noise and secondary clocks. Snapshot identity includes authored delay; elapsed
+Progress and byte conversion use integer arithmetic without float rounding.
+Key-down restarts the delay even with sync off, while preserving noise state
+and unsynchronized phases. Snapshot identity includes authored delay; elapsed
 delay time survives partitioned JSON continuation. Rounding and update cadence
 are explicit model choices, not qualified firmware behavior. Regression WAVs
 cover the silent half, ramp, final depth, key-down restart, fractional chip ticks
 and continuation, including maximum delay. Offline integration covers shared
 clock restart by overlapping notes.
 
-Under the user's standing instruction to follow recommendations, delayed AMD
-now provisionally ramps the authored 0..99 depth through the existing measured
-AMD register table: `index = authored_depth * progress_numerator // denominator`.
-This produces a curved register rise with the measured completion time and
-static endpoint. It reuses the measured nonlinear depth mapping rather than
-inventing an independent exponent. This interpolation is a model choice, not a
-measured delay curve. PMD retains its linear register ramp; controller depths
-remain undelayed and take the stronger contribution. No snapshot or row-layout
-change is needed. One-second WAV regressions cover quarter-progress values at
-two patch depths, large rational denominators, controller override, shared noise
-and note snapshots during the ramp, release, partitioned continuation and
-offline admission. Exact delayed AMD firmware behavior remains unqualified.
+The firmware-derived byte-depth model now replaces the provisional authored
+AMD interpolation and linear PMD register interpolation. Rational delay progress
+is floored to a byte in 0..255, multiplied by `authored_depth * 165 >> 6`,
+then shifted right by eight. Undelayed controller byte contributions are added
+and saturated to 255. PMD is half that value, truncated; AMD uses the full
+firmware lookup curve indexed by 255 minus that value, then halves it.
+This retains all measured static endpoints and gives nonlinear AMD progression.
+The conversion is firmware-derived; the measured completion times and the
+linear progression of the delay byte remain provisional timing choices.
+One-second WAV regressions cover quarter progress, large rational denominators,
+additive controllers, saturation, delay bypass, shared noise and snapshots.
+Exact delayed AMD firmware timing remains unqualified.
 
 Polyphonic full-time portamento now uses the
 [published register-step model](https://nornand.hatenablog.com/entry/2020/12/14/185801).
@@ -811,15 +811,16 @@ assignments or portamento.
   This remains a provisional model, not hardware qualification.
 - The [TX81Z owner's manual, page 22](https://usa.yamaha.com/files/download/other_assets/9/316769/TX81ZE.pdf)
   routes controller-driven modulation separately from delayed patch PMD/AMD.
-  The approved provisional model takes the strongest controller-position times
-  assignment amount for each destination, truncates to authored 0..99 depth,
-  then applies the measured register table. The stronger of this undelayed
-  contribution and the patch register depth wins. Patch PMD retains its measured
-  timing and linear ramp; patch AMD uses the provisional curved rise above.
-  Controller PMD/AMD bypass delay. Depths are applied per note
+  The firmware-derived additive model supersedes the earlier strongest-depth
+  approximation. Each position is floored to MIDI CC 0..127; its assignment
+  becomes `assignment * 165 >> 6`, and the contribution is
+  `(assignment_byte * cc * 2) >> 8`. Contributions sum and saturate with the
+  delayed patch byte before PMD/AMD conversion. Controller PMD/AMD bypass delay.
+  Direct `controller_depths` rows now carry summed integer byte contributions
+  in 0..255, not authored 0..99 values. Depths are applied per note
   to shared raw observations, so scoped controls do not advance extra clocks.
-  Regressions cover all waveforms, stronger patch depths, fractional controller
-  depths, controller modulation during patch delay, scoped smoothing, overlapping
+  Regressions cover all waveforms, patch addition and saturation, quantized
+  controller positions, modulation during patch delay, scoped smoothing, overlapping
   notes and snapshot restoration. This is provisional, not firmware qualification.
   Breath pitch bias remains unresolved. The provisional
   bend model leaves fixed operators unchanged; firmware qualification remains

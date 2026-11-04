@@ -159,10 +159,10 @@ class TX81ZRenderer:
     """Offline provisional four-operator note renderer with explicit edit buffers.
 
     LFO modulation uses caller-owned raw OPZ rows: signed PM, unsigned AM,
-    delay numerator and delay denominator. Integer delay scaling precedes PM
-    multiplication. Optional controller-depth rows contain authored PMD/AMD in
-    0..99, truncated before the measured register lookup and combined by maximum
-    with patch depths. Controller modulation bypasses patch delay.
+    delay numerator and delay denominator. Optional controller-depth rows hold
+    summed integer PMD/AMD byte contributions in 0..255. These add to delayed
+    patch bytes and saturate before register conversion. Controller modulation
+    bypasses patch delay; conversion follows the provisional firmware model.
     Intrinsic key scaling
     uses the transposed key; snapshots retain the original trigger key.
     Nominal frequencies feed the integer Q20 phase and logarithmic OPZ core.
@@ -298,6 +298,11 @@ class TX81ZRenderer:
         foot: np.ndarray | None = None,
         portamento_enabled: np.ndarray | None = None,
     ) -> np.ndarray:
+        """Render raw audio; controller_depths are summed byte contributions.
+
+        The two columns carry integer pitch/amplitude contributions in 0..255,
+        before adding delayed patch depth and converting to OPZ registers.
+        """
         tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
@@ -324,10 +329,12 @@ class TX81ZRenderer:
         if controller_depths is not None and (
             controller_depths.shape != (frames, 2)
             or not np.all(np.isfinite(controller_depths))
-            or np.any((controller_depths < 0) | (controller_depths > 99))
+            or np.any(controller_depths != np.floor(controller_depths))
+            or np.any((controller_depths < 0) | (controller_depths > 255))
         ):
             raise EngineError(
-                "TX81Z controller depths must have shape (frames, 2) in 0..99"
+                "TX81Z controller depths must be integer contributions "
+                "(frames, 2) in 0..255"
             )
         if modulation is None:
             if (
@@ -356,17 +363,20 @@ class TX81ZRenderer:
             raise EngineError("Invalid TX81Z shared LFO rows")
         if modulation is not None:
             raw = modulation.astype(np.int64)
-            pitch_depth = self.lfo_pitch_depth * raw[:, 2] // raw[:, 3]
-            registers = np.asarray(_TX_LFO_REGISTERS)
-            # Provisional curved AMD rise through measured authored-depth values.
-            amplitude_index = self.voice.data[57] * raw[:, 2] // raw[:, 3]
-            amplitude_depth = registers[amplitude_index, 2]
+            # uint64 keeps the maximum permitted rational denominator exact.
+            delay = (
+                raw[:, 2].astype(np.uint64) * 255 // raw[:, 3].astype(np.uint64)
+            ).astype(np.int64)
+            pitch_depth = ((self.voice.data[56] * 165 >> 6) * delay) >> 8
+            amplitude_depth = ((self.voice.data[57] * 165 >> 6) * delay) >> 8
             if controller_depths is not None:
-                indices = controller_depths.astype(np.int64)
-                pitch_depth = np.maximum(pitch_depth, registers[indices[:, 0], 1])
-                amplitude_depth = np.maximum(
-                    amplitude_depth, registers[indices[:, 1], 2]
-                )
+                contributions = controller_depths.astype(np.int64)
+                pitch_depth += contributions[:, 0]
+                amplitude_depth += contributions[:, 1]
+            pitch_depth = np.minimum(pitch_depth, 255) >> 1
+            amplitude_depth = (
+                np.asarray(_TX_LFO_CURVE)[255 - np.minimum(amplitude_depth, 255)] >> 1
+            )
             pm = raw[:, 0] * pitch_depth >> 7
             am = raw[:, 1] * amplitude_depth >> 7
         if self.portamento is not None:
@@ -2039,6 +2049,266 @@ _DX7_AMPLITUDE_SENSITIVITIES = [0.0, 0.238058, 0.460510, 1.0]
 
 # Measured VCED 0..99 mappings: LFS (waves 0..2), PMD, AMD.
 # https://nornand.hatenablog.com/entry/2020/11/25/171659
+# Firmware-derived lookup, ax81z 5848832989c7864092a277e9428d44f817c6173f Math.md.
+_TX_LFO_CURVE = [
+    255,
+    255,
+    224,
+    205,
+    192,
+    181,
+    173,
+    166,
+    160,
+    154,
+    149,
+    145,
+    141,
+    137,
+    134,
+    130,
+    128,
+    125,
+    122,
+    120,
+    117,
+    115,
+    113,
+    111,
+    109,
+    107,
+    105,
+    103,
+    102,
+    100,
+    98,
+    97,
+    96,
+    94,
+    93,
+    91,
+    90,
+    89,
+    88,
+    86,
+    85,
+    84,
+    83,
+    82,
+    81,
+    80,
+    79,
+    78,
+    77,
+    76,
+    75,
+    74,
+    73,
+    72,
+    71,
+    70,
+    70,
+    69,
+    68,
+    67,
+    66,
+    66,
+    65,
+    64,
+    64,
+    63,
+    62,
+    61,
+    61,
+    60,
+    59,
+    59,
+    58,
+    57,
+    57,
+    56,
+    56,
+    55,
+    54,
+    54,
+    53,
+    53,
+    52,
+    51,
+    51,
+    50,
+    50,
+    49,
+    49,
+    48,
+    48,
+    47,
+    47,
+    46,
+    46,
+    45,
+    45,
+    44,
+    44,
+    43,
+    43,
+    42,
+    42,
+    42,
+    41,
+    41,
+    40,
+    40,
+    39,
+    39,
+    38,
+    38,
+    38,
+    37,
+    37,
+    36,
+    36,
+    36,
+    35,
+    35,
+    34,
+    34,
+    34,
+    33,
+    33,
+    33,
+    32,
+    32,
+    32,
+    31,
+    31,
+    30,
+    30,
+    30,
+    29,
+    29,
+    29,
+    28,
+    28,
+    28,
+    27,
+    27,
+    27,
+    26,
+    26,
+    26,
+    25,
+    25,
+    25,
+    24,
+    24,
+    24,
+    24,
+    23,
+    23,
+    23,
+    22,
+    22,
+    22,
+    21,
+    21,
+    21,
+    21,
+    20,
+    20,
+    20,
+    19,
+    19,
+    19,
+    19,
+    18,
+    18,
+    18,
+    18,
+    17,
+    17,
+    17,
+    17,
+    16,
+    16,
+    16,
+    16,
+    15,
+    15,
+    15,
+    15,
+    14,
+    14,
+    14,
+    14,
+    13,
+    13,
+    13,
+    13,
+    12,
+    12,
+    12,
+    12,
+    11,
+    11,
+    11,
+    11,
+    10,
+    10,
+    10,
+    10,
+    9,
+    9,
+    9,
+    9,
+    8,
+    8,
+    8,
+    8,
+    8,
+    7,
+    7,
+    7,
+    7,
+    6,
+    6,
+    6,
+    6,
+    6,
+    5,
+    5,
+    5,
+    5,
+    5,
+    4,
+    4,
+    4,
+    4,
+    4,
+    3,
+    3,
+    3,
+    3,
+    3,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+]
+
 _TX_LFO_REGISTERS = [
     (0, 0, 0),
     (31, 0, 0),

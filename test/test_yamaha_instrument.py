@@ -462,14 +462,10 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
         patch[76] = 99
         for i in range(0, 52, 13):
             patch[i + 7] = 7
-        if scope == "instrument":
-            patch[71:73] = bytes([99, 99])
-        elif scope == "part":
-            patch[73:75] = bytes([99, 99])
-        else:
-            extra = bytearray.fromhex(voice["additional"])
-            extra[21:23] = bytes([99, 99])
-            voice["additional"] = bytes(extra).hex()
+        patch[71:75] = bytes([50, 60, 30, 40])
+        extra = bytearray.fromhex(voice["additional"])
+        extra[21:23] = bytes([20, 10])
+        voice["additional"] = bytes(extra).hex()
         voice["patch"] = bytes(patch).hex()
     targets.extend(
         (n, "yamaha", n, "ratio", 0, a)
@@ -574,12 +570,24 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 controllers=controllers,
             )
         else:
-            depth = signal * 99 * {"instrument": 1, "part": 0.5, "trigger": 0.75}[scope]
+            wheel = np.floor(signal * 127).astype(np.int64)
+            breath = np.floor(signal * 0.5 * 127).astype(np.int64)
+            foot = np.floor(signal * 0.75 * 127).astype(np.int64)
+            pitch = (
+                ((128 * wheel * 2) >> 8)
+                + ((77 * breath * 2) >> 8)
+                + ((51 * foot * 2) >> 8)
+            )
+            amplitude_depth = (
+                ((154 * wheel * 2) >> 8)
+                + ((103 * breath * 2) >> 8)
+                + ((25 * foot * 2) >> 8)
+            )
             audio = note.render(
                 48000 - start,
                 modulation,
                 tuning_cents=(1200 + 100 * bend_range * bend_direction) * signal,
-                controller_depths=np.column_stack([depth, depth]),
+                controller_depths=np.column_stack([pitch, amplitude_depth]),
                 breath=signal * 0.5,
                 foot=signal * 0.75,
             )

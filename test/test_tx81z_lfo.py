@@ -234,9 +234,14 @@ def test_tx81z_keydown_only_resets_synchronized_lfo_counter(sync: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    "depth,registers", [(50, [0, 2, 6, 10, 16]), (99, [0, 6, 15, 31, 127])]
+    "depth,controller,registers",
+    [
+        (50, 0, [0, 2, 6, 10, 16]),
+        (99, 0, [0, 6, 15, 31, 127]),
+        (50, 127, [16, 22, 31, 47, 127]),
+        (99, 127, [16, 31, 112, 127, 127]),
+    ],
 )
-@pytest.mark.parametrize("controller", [0, 50])
 def test_tx81z_delayed_amplitude_uses_curved_depth_and_undelayed_controllers(
     tmp_path: Path, depth: int, registers: list[int], controller: int
 ) -> None:
@@ -255,8 +260,8 @@ def test_tx81z_delayed_amplitude_uses_curved_depth_and_undelayed_controllers(
     actual = np.concatenate(
         [first, note.render(30997, rows[17003:], controller_depths=controls[17003:])]
     )
-    # Measured AMD register values for authored depths 0/12/25/37/50 or 0/24/49/74/99.
-    depths = np.maximum(np.repeat(registers, 9600), 16 if controller else 0)
+    # Firmware curve after patch-delay multiplication and controller addition.
+    depths = np.repeat(registers, 9600)
     attenuation = (255 * depths >> 7) << 2
     expected = 4 * opz_carrier(440, 0.25 * 2 ** (-attenuation / 64))
     check_audio(tmp_path / "delayed-amplitude.wav", actual, expected[:, None])
@@ -325,7 +330,7 @@ def test_tx81z_rejects_invalid_shared_rows_before_advancing(invalid: str) -> Non
     "delay,ticks,clock_hz",
     [(1, 15, 3579545), (50, 121, 3579545), (99, 1022, 3579545), (1, 15, 1536000)],
 )
-def test_tx81z_delayed_pitch_uses_measured_half_wait_and_linear_register_ramp(
+def test_tx81z_delayed_pitch_uses_measured_half_wait_and_byte_depth_ramp(
     tmp_path: Path, delay: int, ticks: int, clock_hz: int
 ) -> None:
     raw = bytearray(lfo_voice(1).data)
@@ -338,16 +343,16 @@ def test_tx81z_delayed_pitch_uses_measured_half_wait_and_linear_register_ramp(
     elapsed = np.arange(frames)
     if clock_hz == 1536000:
         elapsed = np.maximum(0, (elapsed - 1) // 2 * 2 + 1)
-    depth = np.floor(127 * np.clip(2 * elapsed / (ticks * 1000) - 1, 0, 1))
+    delay_byte = np.clip(255 * (2 * elapsed - ticks * 1000) // (ticks * 1000), 0, 255)
+    depth = np.floor(np.floor(255 * delay_byte / 256) / 2)
     expected[:, 0] = np.floor(127 * depth / 128)
     first = context.advance(12345)
     saved = TX81ZLFOSnapshot.model_validate_json(context.snapshot().model_dump_json())
     restored = TX81ZLFOContext(voice, clock_hz=clock_hz)
     restored.restore(saved)
     actual = np.concatenate([first, restored.advance(frames - len(first))])
-    scaled = np.column_stack(
-        [actual[:, 0] * (127 * actual[:, 2] // actual[:, 3]) >> 7, np.zeros(frames)]
-    )
+    delayed_depth = (255 * (255 * actual[:, 2] // actual[:, 3]) >> 8) >> 1
+    scaled = np.column_stack([actual[:, 0] * delayed_depth >> 7, np.zeros(frames)])
     check_audio(tmp_path / "delayed-pitch.wav", scaled, expected)
     restored.keydown()
     assert restored.snapshot().delay_elapsed == 0
@@ -358,7 +363,7 @@ def test_tx81z_delayed_pitch_uses_measured_half_wait_and_linear_register_ramp(
 
 @pytest.mark.parametrize("patch_depth", [0, 99])
 @pytest.mark.parametrize("waveform", range(4))
-def test_tx81z_controller_depths_match_strongest_static_patch(
+def test_tx81z_controller_depths_add_to_patch_and_saturate(
     tmp_path: Path, patch_depth: int, waveform: int
 ) -> None:
     raw = bytearray(lfo_voice(waveform).data)
@@ -366,7 +371,7 @@ def test_tx81z_controller_depths_match_strongest_static_patch(
     voice = tx81z.TX81ZVoice(data=bytes(raw))
     extra = tx81z.TX81ZAdditional(data=bytes(23))
     rows = TX81ZLFOContext(voice).advance(48000)
-    controls = np.tile([50.75, 80.25], (48000, 1))
+    controls = np.tile([127, 204], (48000, 1))
     note = TX81ZRenderer(voice, extra, 69, 100)
     first = note.render(12345, rows[:12345], controller_depths=controls[:12345])
     saved = TX81ZSnapshot.model_validate_json(note.snapshot().model_dump_json())
@@ -374,12 +379,19 @@ def test_tx81z_controller_depths_match_strongest_static_patch(
     actual = np.concatenate(
         [first, note.render(35655, rows[12345:], controller_depths=controls[12345:])]
     )
-    raw[56], raw[57] = max(patch_depth, 50), max(patch_depth, 80)
-    expected = TX81ZRenderer(tx81z.TX81ZVoice(data=bytes(raw)), extra, 69, 100).render(
-        48000, rows
-    )
+    pitch, amplitude = (127, 127) if patch_depth else (63, 37)
+    pm = rows[:, 0] * pitch >> 7
+    attenuation = (rows[:, 1] * amplitude >> 7) << 2
+    expected = (
+        4 * opz_carrier(440 * 2 ** (pm / 192), 0.25 * 2 ** (-attenuation / 64))
+    )[:, None]
     check_audio(tmp_path / "tx81z-controller-depths.wav", actual, expected)
-    for invalid in (np.full((1, 2), np.nan), np.full((1, 2), 100), np.zeros((1, 3))):
+    for invalid in (
+        np.full((1, 2), np.nan),
+        np.full((1, 2), 256),
+        np.full((1, 2), 0.5),
+        np.zeros((1, 3)),
+    ):
         before = note.snapshot()
         with pytest.raises(EngineError, match="controller depths"):
             note.render(1, rows[:1], controller_depths=invalid)
@@ -398,6 +410,6 @@ def test_tx81z_controller_modulation_bypasses_patch_delay(tmp_path: Path) -> Non
     actual = TX81ZRenderer(delayed, extra, 69, 100).render(
         48000,
         TX81ZLFOContext(delayed).advance(48000),
-        controller_depths=np.full((48000, 2), 99.0),
+        controller_depths=np.full((48000, 2), 255),
     )
     check_audio(tmp_path / "tx81z-controller-delay.wav", actual, expected)
