@@ -229,3 +229,34 @@ enge divides by `2**(9-feedback)`. MSFA additionally quantizes the history,
 sine, gain and frequency and interpolates block gains. Their individual effects
 remain unisolated. Qualification still fails; resolving the execution/reference
 target remains necessary before changing arithmetic to chase sample equality.
+
+## Ratio-mode detune audit
+
+Source inspection on 2026-11-04 found that enge's ratio-mode detune equation
+uses the coefficients from
+[Dexed's measured fit](https://github.com/asb2m10/dexed/blob/fea2f0f0f2c397799f59b27eb11c038cd34b22c5/source/msfa/dx7note.cc)
+but applies them in a different numerical domain. Write `f` for the played
+key's frequency, `L=log2(f)`, and
+`d=0.0209*exp(-0.396*L)*(detune-7)/7`. enge currently multiplies frequency by
+`1+d`. Dexed instead adds `d*L` to log-frequency, equivalent to multiplying
+frequency by `2**(d*L)` before coarse/fine ratio scaling. The following values
+use continuous equations, not Dexed's Q24 rounding or frequency lookup:
+
+| MIDI key | Neutral Hz | Current enge Hz | Dexed-fit Hz | MSFA-model Hz |
+| --- | ---: | ---: | ---: | ---: |
+| 21 | 27.500000 | 27.586532 | 27.788284 | 27.600440 |
+| 69 | 440.000000 | 440.284037 | 441.732272 | 441.607036 |
+| 108 | 4186.009045 | 4186.755126 | 4192.235613 | 4201.297829 |
+
+All rows use coarse 1, fine 0 and detune 14, with neutral transpose and no
+pitch modulation. The last column instead multiplies `f` by
+`2**(12606*7/2**24)`, following the pinned MSFA approximation. Its detune is
+constant in cents; Dexed's fit is key-dependent. At key 69, the current enge
+shift is 1.117219 cents versus 6.802455 cents for the Dexed fit. Neutral detune
+is unchanged in all three models, so the previous neutral-detune sweeps do not
+exercise this discrepancy.
+
+The source-domain mismatch is established; selecting the intended detune model
+still requires a decision. These calculations are neither hardware measurements
+nor waveform qualification. Fixed-mode detune uses a separate equation and is
+not implicated by this finding.
