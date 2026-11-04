@@ -270,6 +270,16 @@ profile, not completion of the full TX81Z/WT11 requirement. Controller integrati
 DAC/integer quantization and hardware/reference
 qualification remain work.
 
+A [fixed-gain OPZ core comparison](../doc/yamaha-reference/opz-core.md) now
+covers all eight algorithms and feedback levels with uniform and asymmetric
+profiles: 128 one-second cases, or 6,144,000 samples. It bypasses patch decoding,
+envelope movement, LFO and DAC processing. Unmodulated carriers differ by about
+0.34%, while the worst modulated case reaches 141.1251% relative RMS. These are
+failing qualification results. The report retains the pinned-source harness,
+complete metrics and paired WAVs. Next isolate graph/feedback scheduling with
+a shared integer kernel before attributing all differences to quantization or
+replacing the floating TX81Z core.
+
 Renderer admission checks the raw per-operator VCED amplitude-modulation-enable
 and ACED fixed-frequency flags before using their decoded booleans. Values above
 one are rejected rather than silently treated as true. Regressions cover all
