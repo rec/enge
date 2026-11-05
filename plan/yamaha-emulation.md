@@ -1,6 +1,6 @@
 # Yamaha-compatible FM
 
-## Status as of 2026-11-04
+## Status as of 2026-11-05
 
 `enge/yamaha.py` already contains a Python DX7 note renderer, operator envelopes,
 frequency and level scaling, algorithm routing and feedback. This is partial
@@ -259,6 +259,94 @@ or feedback arithmetic.
   remain inspectable and never become a playable voice.
 
 ## TX81Z / WT11
+
+### WT11 scope and import requirements
+
+WT11 rendering remains unimplemented. Sharing the TX81Z operator chip does not
+make the existing TX81Z edit-buffer pair a complete WT11 voice definition.
+The [WT11 owner's manual, printed Add-2 through Add-7](https://data.yamaha.com/files/download/other_assets/2/333982/WT11E.PDF)
+defines these additional requirements, verified against the scanned tables on
+2026-11-05:
+
+| Buffer | Payload bytes, excluding format identifier | WT11-specific requirements |
+| --- | --- | --- |
+| VCED | 93 | Bytes 87–89 are three pitch-envelope rates; bytes 90–92 are three pitch-envelope levels, centered at 50. All six fields range from 0 through 99. Breath pitch bias at byte 75 ranges from 0 through 100, centered at 50. |
+| ACED | 23 | Retain the additional operator parameters and foot-controller assignments. |
+| ACED2 | 10 | `LM  8023AE`: bytes 0–3 are aftertouch pitch, amplitude, pitch bias and EG bias. Pitch bias ranges from 0 through 100, centered at 50; the other three range from 0 through 99. Preserve reserved bytes 4–9. |
+| PCED | 110 | Retain eight instrument allocations and the performance name; interpret WT11-specific ignored fields according to chart 5. |
+| PCED2 | 33 | `LM  8073PE`: eight two-byte instrument records occupy bytes 0–15; byte 16 selects DSP, 17 is balance, 20 is time and 23 selects breath/lip/off LFO control. Preserve all reserved bytes. |
+
+The ACED2 and PCED2 bulk messages contain 28 and 51 bytes respectively,
+including framing, identifier and checksum. The manual's chart 6 marks each
+instrument record's first byte reserved and its second byte as DSP enable,
+fixed to one. Do not infer unpacked PCED2 offsets from the separately packed
+25-byte PMEM2 layout. Likewise, do not infer voice offsets from packed VMEM:
+chart 4 stores the aftertouch fields at bytes 84–87 and uses a different signed
+pitch-bias encoding. Preserve raw messages before interpreting parameters.
+
+The WT11 charts label the operator blocks OP4, OP2, OP3, OP1. Visual inspection
+of the TX81Z manual's printed page 72 confirms its distinct OP4, OP3, OP2, OP1
+ACED order; its existing decoder is unchanged. Component comparisons
+constructed with that decoder cannot establish correct WT11 wire ordering.
+
+uFor commit `462b6b2` adds `ufor.wt11.parse_wt11` and separate WT11 VCED, ACED
+and ACED2 objects. It reuses TX81Z message partitioning and operator parameter
+models while applying the documented WT11 block order. Pitch-envelope and
+aftertouch views validate their own ranges; malformed messages, invalid
+parameters and reserved bytes remain inspectable. WT11 voice objects are not
+TX81Z voice subclasses. Twenty-five new cases cover asymmetric operator values,
+bias endpoints, complete ACED2 messages, opaque/malformed data and raw-byte
+preservation; all 1,409 uFor tests pass. This implementation is in the shared
+library, not yet consumed by enge's pinned dependency or renderer.
+
+uFor commit `d8698f3` extends that parser to PCED and PCED2. PCED decodes eight
+allocations with the full eight-bit WT11 voice-number field and preserves the
+ignored micro-tuning/effect fields. PCED2 exposes DSP selection, balance, time
+and breath/lip/off LFO control at the documented unpacked offsets. Its reserved
+bytes remain raw, and non-one instrument DSP enables produce a parameter
+diagnostic without losing the buffer. Forty-three additional cases cover paired
+messages, allocation values beyond TX81Z's voice-number range, reserved bytes,
+invalid parameters and malformed framing/length/identifier/checksum/header data.
+All 1,452 uFor tests pass. This completes inspection of the five edit-buffer
+formats above; performance execution remains unimplemented.
+
+uFor commit `33be553` adds VMEM, PMEM and PMEM2 bank inspection, each with
+32 records. Raw records retain reserved bits and unused bytes; VMEM unpacks
+VCED/ACED/ACED2 views, and PMEM unpacks PCED allocation bitfields. PMEM2 exposes
+its own DSP enables and settings, preserving off values rather than forcing
+PCED2's fixed-on rule. VMEM aftertouch bias converts packed 0–50 into edit
+50–100 and packed 51–100 into edit 0–49, following the manual's MIDI column;
+packed zero is the neutral value. Invalid bias remains raw and cannot be
+converted into a valid ACED2 view. One format/byte-count table now validates
+all eight supported message types; accessor dispatch uses the declared header
+so VMEM payload bytes cannot masquerade as another format identifier. Forty-one
+new cases cover fields, bias endpoints, distinct record boundaries, malformed
+banks, invalid shapes and accessor separation. All 1,493 uFor tests pass.
+This is packed-bank inspection, not bank export, program-change resolution,
+performance allocation or rendering. enge has not yet updated its dependency
+pin to consume these WT11 APIs.
+
+uFor commit `30c7ef6` adds `YamahaWT11Voice` with explicit VCED, ACED and ACED2
+fields, hexadecimal JSON/TOML serialization and a portable conformance example.
+It admits normalized aftertouch and portamento targets alongside the shared
+Yamaha controller targets. Shared prepared-action validation and preparation
+now recognize `YamahaVoiceTemplate`, so WT11 trigger and release-trigger starts
+retain velocity without adding another lifecycle path. Ordinary channel routes
+are required; TX81Z-specific LFO/DAC groups reject WT11 templates. Portable
+round trips, required buffers, bounded control domains, group separation and
+the regenerated published schema are covered; all 1,508 uFor tests pass.
+This is the shared schema contract, not enge admission or a WT11 renderer.
+
+Connect the explicit WT11 instrument definition to pitch-envelope and
+aftertouch rendering. Keep TX81Z admission
+and its compatibility bytes distinct: WT11 field meanings must not silently
+change an existing TX81Z patch. Rendering then needs pitch-envelope timing,
+aftertouch assignment behavior, performance allocation and snapshot continuation
+with 48 kHz WAV regressions. Existing TX81Z/ymfm comparisons do not qualify those
+behaviors. The presence of DSP fields documents an import requirement; it does
+not select additional effects from the deferred effects catalogue.
+
+### Current TX81Z renderer
 
 `TX81ZRenderer(voice, additional, note, velocity, sample_rate=48000)` now accepts
 explicit VCED/ACED objects and connects native ratio/nominal fixed frequency,
@@ -812,7 +900,9 @@ provisional KVS extension above.
 
 The adapter admits transpose for both models and TX81Z delayed pitch and
 amplitude modulation using the provisional models above.
-External envelopes and unsupported portable processing remain rejected.
+External generators now use the shared control runtime, including beat clocks
+with a caller-owned tempo map, as described below. Unsupported portable
+processing remains rejected.
 DX7 hardware controller assignments, TX81Z wheel/breath/foot LFO assignments
 and TX81Z breath EG bias
 now use the scoped-control path described below. Other TX81Z hardware-specific

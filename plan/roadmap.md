@@ -1,6 +1,6 @@
 # Roadmap
 
-Reconciled with local implementation on 2026-11-04. Current code and tests take
+Reconciled with local implementation on 2026-11-05. Current code and tests take
 precedence over historical proposals in the other plans.
 
 ## Completed foundations
@@ -59,6 +59,15 @@ roadmap and Yamaha requirements, while optional catalogues remain deferred.
   The Yamaha adapter integrates seconds- and beat-clock enveLFO generators,
   generator snapshots and minimum-hold release timing. Beat-clock sources use
   the existing caller-owned tempo map, with tempo identity checked on restore.
+  WT11 remains a separate unfinished requirement: Yamaha's manual specifies
+  pitch-envelope and aftertouch fields, ACED2 and PCED2 buffers, and distinct
+  packed-memory layouts. uFor now inspects all five WT11 edit buffers and the
+  VMEM/PMEM/PMEM2 banks, including the documented operator order, bias encoding
+  and distinct packed DSP enables. Its explicit `YamahaWT11Voice` schema now
+  preserves all three voice buffers, aftertouch routes and prepared trigger
+  velocity. Performance execution, enge admission and WT11 rendering remain
+  open. The Yamaha plan records the exact
+  import boundaries and verification evidence.
 
 ## Deferred choices
 
