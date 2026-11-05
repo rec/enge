@@ -864,8 +864,13 @@ when those keys are released or dropped from the held-key history.
 
 Regressions exercise shared instrument/part Patch sources, overlapping notes,
 monophonic return to a held key, addressed envelope pause/resume, release under
-minimum hold and JSON restoration while paused. Beat-clock generators still
-require a host tempo-map integration and remain rejected by shared validation.
+minimum hold and JSON restoration while paused. Beat-clock generators now
+accept a caller-owned `TempoMap` through `OfflineYamaha`. Admission requires
+that map when the expanded templates contain beat-clock generators. Snapshots
+retain its definition and restoration rejects a different map before mutating
+instrument state. Regressions cover tempo changes, transport pause and seek,
+elapsed-beat envelopes, transport-position LFOs and JSON continuation for DX7
+and TX81Z.
 Prepared LFO marker connections also cue staged generators across a snapshot
 taken at the event boundary, with one-second audio checks for both Yamaha engines.
 

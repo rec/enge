@@ -8,6 +8,7 @@ import numpy as np
 from envelfo import patch
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from ufor import instrument_trace, synth_trace, tx81z
+from ufor.control import TempoMap
 from ufor.dx7 import DX7Performance
 from ufor.samples.processing import FilterOrder, Processing
 from ufor.streams import AudioType
@@ -84,6 +85,7 @@ class YamahaSnapshot(BaseModel, frozen=True):
     graphs: dict[str, patch.PatchState]
     output_filters: dict[str, list[filters.FilterState]]
     held_dac: dict[str, FiniteFloat]
+    tempo_map: TempoMap | None = None
 
 
 class OfflineYamaha:
@@ -93,7 +95,9 @@ class OfflineYamaha:
     external processing chain; filter_order controls placement of outer gain.
     """
 
-    def __init__(self, definition: PreparedYamaha) -> None:
+    def __init__(
+        self, definition: PreparedYamaha, tempo_map: TempoMap | None = None
+    ) -> None:
         self.definition = definition.model_copy(deep=True)
         self.frame = 0
         self.templates = {
@@ -105,6 +109,12 @@ class OfflineYamaha:
         self.templates = {
             n: synth.expand_patch_outputs(v) for n, v in self.templates.items()
         }
+        if tempo_map is None and any(
+            e.clock == "beats"
+            for v in self.templates.values()
+            for e in v.envelfos.values()
+        ):
+            raise synth.EngineError("Beat-clock Envelfo requires a host tempo map")
         self.lfo_groups = {
             n: g for g in self.definition.score.body.tx81z_lfos for n in g.routes
         }
@@ -160,6 +170,7 @@ class OfflineYamaha:
             definition.sample_rate,
             self.definition.score.body.controls,
             list(self.templates.values()),
+            tempo_map=tempo_map,
         )
         self.oscillator_slots: dict[str, list[OscillatorSlot]] = {
             n: []
@@ -208,9 +219,12 @@ class OfflineYamaha:
             graphs=self.controls.graphs,
             output_filters=self.output_filters,
             held_dac=self.held_dac,
+            tempo_map=self.controls.tempo_map,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: YamahaSnapshot) -> None:
+        if snapshot.tempo_map != self.controls.tempo_map:
+            raise synth.EngineError("Snapshot belongs to a different host tempo map")
         if (
             snapshot.definition != self.definition
             or snapshot.clocks.keys() != self.clocks.keys()
@@ -770,7 +784,10 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
                 "Untracked Yamaha pitch requires reference_pitch_hz"
             )
         synth.validate_generators(
-            voice, allow_velocity_bindings=True, allow_key_bindings=True
+            voice,
+            allow_beat_envelfos=True,
+            allow_velocity_bindings=True,
+            allow_key_bindings=True,
         )
         synth.validate_modulation(
             voice,
