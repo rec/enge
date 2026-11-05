@@ -1195,14 +1195,10 @@ class ControlRenderer:
         settings: SoundSettings,
         sources: dict[str, int],
         action: instrument_trace.VoiceRetirement,
-        renderer: VoiceEnvelopeRenderer,
+        voice_release_at: Fraction,
     ) -> None:
+        """Release generator bindings at their event or absolute voice instant."""
         self.clear_cache()
-        assert renderer.release_frame is not None
-        voice_release_at = (
-            Fraction(action.tick, self.sample_rate)
-            + (renderer.release_frame - renderer.frame_count) / self.sample_rate
-        )
         released: set[int] = set()
         for binding in settings.bindings:
             if not isinstance(binding, processing.GeneratorBinding) or not isinstance(
@@ -1709,11 +1705,14 @@ class OfflineSynth:
                 self.controls.stop(action.voice_id)
             elif voice := self.voices.get(action.voice_id):
                 if voice.renderer.release():
+                    assert voice.renderer.release_frame is not None
                     self.controls.release(
                         self.templates[voice.template],
                         voice.sources,
                         action,
-                        voice.renderer,
+                        Fraction(action.tick, self.definition.sample_rate)
+                        + (voice.renderer.release_frame - voice.renderer.frame_count)
+                        / self.definition.sample_rate,
                     )
         else:
             raise EngineError(

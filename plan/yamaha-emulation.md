@@ -849,34 +849,25 @@ assignments or portamento.
 
 ### Remaining integration gates
 
-The portable generator path is still incomplete for Yamaha instruments.
-`enge/yamaha_instrument.py:prepare` explicitly rejects `envelfos` and
-`event_connections`. Its `ControlRenderer` already owns the shared graph
-executor, initializes sources and clears them when voices stop, but the Yamaha
-snapshot currently saves only control contexts. Generator graphs, LFOs,
-envelopes and patches therefore need the same owned snapshot coverage already
-used by `OfflineSynth`; removing the admission check alone would lose state.
+The Yamaha adapter now admits seconds-clock external generators and event
+connections through shared validation. It expands Patch outputs before creating
+the existing `ControlRenderer` and snapshots its LFOs, envelopes, Patch sources
+and graph states alongside control contexts. Restoration clears cached arrays
+and restores owned generator state after instrument validation.
 
-Complete this integration through the existing shared renderer:
+`ControlRenderer.release` now accepts the absolute voice release instant.
+Synth, FM, noise and sampler callers pass their existing calculated time.
+Yamaha passes `Voice.release_at`, including minimum hold, so event-timed and
+voice-timed external envelopes use the existing scheduling rules. Monophonic
+Yamaha voices retain generator state for physically held keys and discard it
+when those keys are released or dropped from the held-key history.
 
-1. Express the generator release instant independently of
-   `VoiceEnvelopeRenderer`. The current `ControlRenderer.release` takes that
-   general-synth renderer to calculate the absolute voice release time. Yamaha
-   already calculates `Voice.release_at`, including minimum hold. Pass the
-   equivalent absolute instant through the shared contract and update existing
-   synth and sampler callers together.
-2. Save and restore the shared generator state alongside Yamaha control
-   contexts, validating before mutating the live instrument. Connect prepared
-   release actions to the existing trigger/voice release-timing rules, then
-   admit supported generators and their event connections through existing
-   validation.
-3. Verify normal prepared-instrument entry points with scoped LFOs, envelope
-   release under minimum hold, staged/Patch events, overlapping notes and JSON
-   restoration. Reuse the shared modulation executor and its event machinery.
-
-This is a remaining portable control/runtime integration requirement. The
-complete native-note comparison above covers intrinsic Yamaha modulation and
-does not establish the external generator path.
+Regressions exercise shared instrument/part Patch sources, overlapping notes,
+monophonic return to a held key, addressed envelope pause/resume, release under
+minimum hold and JSON restoration while paused. Beat-clock generators still
+require a host tempo-map integration and remain rejected by shared validation.
+Prepared LFO marker connections also cue staged generators across a snapshot
+taken at the event boundary, with one-second audio checks for both Yamaha engines.
 
 - The approved shared controller schema is available in uFor `047c741`:
   `yamaha.pitch_bend` uses a normalized -1..1 domain; `modulation_wheel`,

@@ -1,9 +1,11 @@
 """Offline Yamaha instruments consuming uFor's shared lifecycle actions."""
 
 from copy import deepcopy
+from fractions import Fraction
 from math import ceil, floor
 
 import numpy as np
+from envelfo import patch
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from ufor import instrument_trace, synth_trace, tx81z
 from ufor.dx7 import DX7Performance
@@ -76,6 +78,10 @@ class YamahaSnapshot(BaseModel, frozen=True):
     pitch_history: dict[str, dict[str, PitchHistory]]
     mono_notes: list[MonoNote]
     contexts: list[synth.ControlContext]
+    lfos: list[synth.LFOSource]
+    envelopes: list[synth.EnvelopeSource]
+    patches: list[synth.PatchState]
+    graphs: dict[str, patch.PatchState]
     output_filters: dict[str, list[filters.FilterState]]
     held_dac: dict[str, FiniteFloat]
 
@@ -96,6 +102,9 @@ class OfflineYamaha:
             if isinstance(v, (YamahaDX7Voice, YamahaTX81ZVoice))
         }
         self.authored_templates = self.templates.copy()
+        self.templates = {
+            n: synth.expand_patch_outputs(v) for n, v in self.templates.items()
+        }
         self.lfo_groups = {
             n: g for g in self.definition.score.body.tx81z_lfos for n in g.routes
         }
@@ -193,6 +202,10 @@ class OfflineYamaha:
             pitch_history=self.pitch_history,
             mono_notes=self.mono_notes,
             contexts=self.controls.contexts,
+            lfos=self.controls.lfos,
+            envelopes=self.controls.envelopes,
+            patches=self.controls.patches,
+            graphs=self.controls.graphs,
             output_filters=self.output_filters,
             held_dac=self.held_dac,
         ).model_copy(deep=True)
@@ -276,6 +289,10 @@ class OfflineYamaha:
         self.held_dac = snapshot.held_dac
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
+        self.controls.lfos = snapshot.lfos
+        self.controls.envelopes = snapshot.envelopes
+        self.controls.patches = snapshot.patches
+        self.controls.graphs = snapshot.graphs
         self.frame = snapshot.frame
 
     def _apply(self, action: instrument_trace.TraceAction) -> None:
@@ -299,6 +316,8 @@ class OfflineYamaha:
                     ]
                     if previous and voice.release_at is None and voice.fade_at is None:
                         self._legato(voice, previous[-1])
+                else:
+                    self.controls.stop(note.action.voice_id)
             return
         if self.controls.apply(action, self.voices):
             return
@@ -326,6 +345,12 @@ class OfflineYamaha:
                         self.templates[voice.template].minimum_hold_seconds
                         * self.definition.sample_rate
                     ),
+                )
+                self.controls.release(
+                    self.templates[voice.template],
+                    voice.sources,
+                    action,
+                    Fraction(voice.release_at, self.definition.sample_rate),
                 )
             return
         if not isinstance(action, synth_trace.VoiceStart):
@@ -471,6 +496,8 @@ class OfflineYamaha:
         ]
         if len(held) == 9:
             self.mono_notes.remove(held[0])
+            if held[0].action.voice_id not in self.voices:
+                self.controls.stop(held[0].action.voice_id)
         self.mono_notes.append(note)
 
     def _legato(self, voice: Voice, note: MonoNote) -> None:
@@ -482,7 +509,8 @@ class OfflineYamaha:
         )
         voice.renderer.retarget(action.key, velocity, note.pitch_hz)
         del self.voices[voice.voice_id]
-        self.controls.stop(voice.voice_id)
+        if not any(n.action.voice_id == voice.voice_id for n in self.mono_notes):
+            self.controls.stop(voice.voice_id)
         voice.voice_id = action.voice_id
         voice.sources = note.sources
         voice.release_at = None
@@ -741,8 +769,6 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             raise synth.EngineError(
                 "Untracked Yamaha pitch requires reference_pitch_hz"
             )
-        if voice.envelfos or voice.event_connections:
-            raise synth.EngineError("Yamaha external generators are not implemented")
         synth.validate_generators(
             voice, allow_velocity_bindings=True, allow_key_bindings=True
         )

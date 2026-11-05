@@ -1,5 +1,6 @@
 """Graph phase modulation with independent NumPy and Rust numerical kernels."""
 
+from fractions import Fraction
 from math import isfinite
 from typing import Literal, Self, cast
 
@@ -333,11 +334,14 @@ class OfflineFM:
                 self.controls.stop(action.voice_id)
             elif voice := self.voices.get(action.voice_id):
                 if voice.renderer.release():
+                    assert voice.renderer.release_frame is not None
                     self.controls.release(
                         self.templates[voice.template],
                         voice.sources,
                         action,
-                        voice.renderer,
+                        Fraction(action.tick, self.definition.sample_rate)
+                        + (voice.renderer.release_frame - voice.renderer.frame_count)
+                        / self.definition.sample_rate,
                     )
             return
         if not isinstance(action, VoiceStart):

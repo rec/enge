@@ -325,17 +325,23 @@ class OfflineSampler:
                 self.controls.stop(action.voice_id)
             elif voice := self.voices.get(action.voice_id):
                 if voice.renderer.release():
+                    assert voice.renderer.release_frame is not None
+                    release_at = (
+                        Fraction(action.tick, self.definition.sample_rate)
+                        + (voice.renderer.release_frame - voice.renderer.frame_count)
+                        / self.definition.sample_rate
+                    )
                     self.controls.release(
                         self.definition.document.body.settings,
                         voice.instrument_sources,
                         action,
-                        voice.renderer,
+                        release_at,
                     )
                     self.controls.release(
                         self.definition.settings[voice.template],
                         voice.slot_sources,
                         action,
-                        voice.renderer,
+                        release_at,
                     )
         else:
             raise synth.EngineError(
