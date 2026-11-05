@@ -710,6 +710,16 @@ fine rounding, upper/lower PM saturation and restored continuation. This
 qualifies the covered frequency arithmetic against the provisional model,
 not hardware equivalence or native-rate complete-patch rendering.
 
+The [complete ratio-note comparison](../doc/yamaha-reference/opz-note.md)
+now programs the pinned YM2414 through register writes and clocks the full
+channel and DAC through release. Across eight algorithms, all eight feedback
+levels and two distinct patches, production host-clock error ranges from 2.94% to 137.79% relative
+RMS. A control drives enge's current operator, envelope and DAC components on
+native ticks and matches all 6,144,000 host observations. The next implementation
+gate is a common native tick origin, tick-aligned events and LFOs, per-tick
+voice summation/DAC and partition-independent host observation. Native timing
+and held output must survive snapshot restoration.
+
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
   and ACED waveform selections into the same Yamaha renderer family.

@@ -1,5 +1,9 @@
 # Yamaha reference comparisons
 
+The [complete ratio-note comparison](opz-note.md) clocks a programmed YM2414
+through key-on and release. Native-clock enge components match all 6,144,000
+observations. The production host-clock path differs across all 128 cases.
+
 The [OPZ native frequency audit](opz-frequency.md) records the pinned reference's
 ratio-table differences and fixed-frequency phase-scale inconsistency.
 
