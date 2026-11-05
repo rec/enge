@@ -261,8 +261,9 @@ or feedback arithmetic.
 ## TX81Z / WT11
 
 `TX81ZRenderer(voice, additional, note, velocity, sample_rate=48000)` now accepts
-explicit VCED/ACED objects and connects nominal frequency, chip detune, output
-level, the shared envelope clock, eight waveforms/algorithms and OP4 feedback.
+explicit VCED/ACED objects and connects native ratio/nominal fixed frequency,
+chip detune, output level, the shared envelope clock, eight waveforms/algorithms
+and OP4 feedback.
 `render`, `release`, `snapshot` and `restore` provide offline note lifetime and
 owned JSON continuation. Snapshot identity includes both edit buffers, key,
 velocity and output rate. Tests cover all algorithms, mixed waveforms, fixed
@@ -276,7 +277,7 @@ portable key bindings retain the original trigger key. Explicit pitch remains
 a ratio relative to the original key's equal-tempered frequency, applied to
 ratio operators only. Regression renders cover both boundaries, extreme
 transpose, microtuning, mixed fixed/ratio operators and snapshot continuation.
-Portamento now stores sounding Hz after transpose and wrapping, so a new or
+Portamento stores nominal sounding Hz after transpose and wrapping, so a new or
 legato note starts from the preceding sounding fundamental rather than applying
 the destination's octave shift to the previous trigger pitch. The direct
 renderer's `start_pitch_hz` argument uses these sounding-Hz coordinates.
@@ -676,31 +677,38 @@ One-second 48 kHz regressions verify exact and fractional clock ratios, all four
 shifts and partitioned JSON continuation. This establishes clock conversion,
 not measured hardware phase alignment or the complete patch renderer.
 
-`tx81z_base_frequency` now prepares nominal frequency from matching VCED/ACED
-operators. Ratio mode orders the 64 multiplier/coarse-detune combinations and
-adds fine steps before coarse detune. Both modes reject unavailable fine values
+`tx81z_base_frequency` now prepares native ratio frequency or nominal fixed
+frequency from matching VCED/ACED operators, before chip detune. Ratio mode
+uses the pinned 768-entry phase table, octave saturation and integer multiplier
+rounding. Both modes reject unavailable fine values
 above seven when VCED coarse is below four. Fixed mode uses the coarse index
 shifted by two, plus fine and the ACED range, reproducing the manual's
-8–32,640 Hz span and its
-range-dependent steps. The nominal equations are cross-checked against
+8–32,640 Hz span and its range-dependent steps. The fixed equations are
+cross-checked against
 [DXconvert's `fix_4op`](https://github.com/richotero/dxconvert/blob/27a3c6dbfa97d57dfee0b2bcdbe32ed7bc98d8fa/DXconvert/fourop.py);
 the [Yamaha manual](https://www.polynominal.com/site/studio/gear/sold/yamaha_tx81z/yamaha-tx81z-manual.pdf)
 and [TX81Z Programmer ratio displays](https://github.com/mgregory22/tx81z-programmer/blob/master/src/freqratios.c)
 corroborate the control mapping. Audio regressions cover ratio,
 fine, fixed-frequency boundaries and different played keys. The note renderer
-now applies the chip detune primitive. The operator core quantizes the resulting
+adds chip detune before multiplier rounding, and PM enters the table position
+before saturation. Host microtuning, scoped tuning and portamento retain their
+approved continuous ratio overlay, leaving the resulting detune difference
+unscaled. The operator core quantizes the resulting
 frequency to Q20 increments; full voice-profile qualification remains work.
 The [native frequency audit](../doc/yamaha-reference/opz-frequency.md) records
 96 ratio and 1,984 fixed register cases. The pinned ymfm fixed path produces
 increments about ten octaves below its stated frequencies, so it is not used
-as a fixed-frequency oracle. Native ratio-table qualification remains open.
+as a fixed-frequency oracle. Native output-rate and full-voice qualification
+remain open.
 The expanded ratio sweep covers all 95,232 legal coarse/fine/key combinations
 with zero chip detune and modulation. It finds 5,456 native top-octave clamps,
 up to 853.530 cents difference from continuous nominal frequency, and up to
-10.037 cents difference even outside saturation. Native ratio implementation
-must preserve table lookup, octave saturation, detune addition and final
-multiplier rounding together; a constant pitch correction cannot close this
-gate. Cached and dynamic reference steps agree in every swept case.
+10.037 cents difference even outside saturation. This motivated the native
+ratio replacement above. All 95,232 neutral-detune base frequencies now match
+the pinned register export exactly. Audio regressions cover signed detune,
+fine rounding, upper/lower PM saturation and restored continuation. This
+qualifies the covered frequency arithmetic against the provisional model,
+not hardware equivalence or native-rate complete-patch rendering.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,

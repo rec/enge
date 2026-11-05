@@ -165,6 +165,10 @@ observes output at 48 kHz and advances envelopes with the same rational
 are separated from envelope ticks through the public operator cache and clock
 APIs. Key-up occurs before frame 24000. This deliberately qualifies enge's
 output-frame model, not native chip-rate resampling.
+After the native ratio-frequency replacement, the Python test adjusts its host
+pitch ratio by `440 / native_A4` to retain that exact injected phase increment.
+The captured reference audio remains unchanged. This controlled stimulus keeps
+the envelope/core comparison independent of the separate frequency audit.
 
 The 32 cases cover eight algorithms, feedback 0/7 and two profiles. Both use
 MIDI key 69, velocity 127, ratio 1, neutral detune, output level 99 and rate

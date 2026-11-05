@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from test_tx81z_frequency import opz_frequency
 from test_tx81z_integer import opz_carrier
 from test_tx81z_lfo import lfo_voice
 from test_yamaha_instrument import instrument
@@ -45,7 +46,9 @@ def test_legato_retarget_keeps_envelope_progress_and_validates_before_mutating(
     assert changed.operators == saved.operators
     assert changed.envelopes == saved.envelopes
     tail = note.render(46999)
-    frequencies = np.concatenate([np.full(1001, 440), np.full(46999, 880)])
+    frequencies = np.concatenate(
+        [np.full(1001, opz_frequency(69)), np.full(46999, opz_frequency(81))]
+    )
     check_audio(
         tmp_path / "legato-phase.wav",
         np.concatenate([first, tail]),
@@ -124,11 +127,15 @@ def test_explicit_zero_velocity_triggers_render_and_restore_with_velocity_sensit
     # Algorithm 8 sums four identical sine carriers, each with TL 16 plus KVS.
     gains = [2 ** (-(16 + a) / 8) for a in [22, 37, 52, 67]]
     if mono:
-        frequencies = np.concatenate([np.full(12001, 440), np.full(35999, 880)])
+        frequencies = np.concatenate(
+            [np.full(12001, opz_frequency(69)), np.full(35999, opz_frequency(81))]
+        )
         expected = sum(opz_carrier(frequencies, g) for g in gains)
     else:
-        expected = sum(opz_carrier(440, g) for g in gains)
-        expected[12001:] += sum(opz_carrier(880, g, frames=35999) for g in gains)
+        expected = sum(opz_carrier(opz_frequency(69), g) for g in gains)
+        expected[12001:] += sum(
+            opz_carrier(opz_frequency(81), g, frames=35999) for g in gains
+        )
     check_audio(
         tmp_path / "zero-velocity.wav",
         np.concatenate([first, tail]),

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from meedee import messages
 from test_synth import check_audio
+from test_tx81z_frequency import opz_frequency
 from test_tx81z_integer import opz_carrier
 from test_tx81z_lfo import lfo_voice
 from test_yamaha_instrument import instrument
@@ -41,7 +42,10 @@ def test_legato_glide_starts_at_previous_sounding_pitch_across_wrap(
     assert note.portamento.current_hz == pytest.approx(start_hz)
     glide = TX81ZPortamento.start(18, 48000, start_hz, target_hz)
     frequencies = np.concatenate(
-        [np.full(1001, start_hz), target_hz * glide.ratios(46999)]
+        [
+            np.full(1001, opz_frequency(source) * 1.01),
+            opz_frequency(target) * 1.01 * glide.ratios(46999),
+        ]
     )
     expected = (4 * opz_carrier(frequencies))[:, None]
     saved = note.snapshot()
@@ -184,7 +188,9 @@ def test_note_portamento_preserves_fixed_operators_detune_and_snapshot(
         if time
         else np.ones(48000)
     )
-    ratio_frequency = 442 * glide * 2 ** (tuning / 1200) + 9 * 3579545 / (64 * 2**20)
+    ratio_frequency = opz_frequency() * (442 / 440) * glide * 2 ** (
+        tuning / 1200
+    ) + 9 * 3579545 / (64 * 2**20)
     fixed_frequency = yamaha.tx81z_base_frequency(
         voice.operator(4), additional.operator(4), 69
     )

@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from test_tx81z_frequency import opz_frequency
 from test_tx81z_integer import opz_carrier
 from test_tx81z_lfo import lfo_voice
 from ufor import tx81z
@@ -33,7 +34,7 @@ def test_quiet_gate_uses_raw_attenuation_before_envelope_shift(
     check_audio(
         tmp_path / "raw-quiet-gate.wav",
         note.render(48000),
-        opz_carrier(440, gain)[:, None],
+        opz_carrier(opz_frequency(), gain)[:, None],
     )
 
 
@@ -58,7 +59,9 @@ def test_note_envelope_and_integer_core_match_pinned_opz(
         tx81z.TX81ZAdditional(data=bytes(extra)),
         69,
         127,
-        pitch_hz=9600 * 48000 / 2**20,
+        # This isolates envelopes/core at the reference's injected 9600 step.
+        # pitch_hz is a host ratio relative to equal temperament, not exact Hz.
+        pitch_hz=(9600 * 48000 / 2**20) * (440 / opz_frequency()),
     )
     first = note.render(17003)
     saved = TX81ZSnapshot.model_validate_json(note.snapshot().model_dump_json())

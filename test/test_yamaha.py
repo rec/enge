@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
+from test_tx81z_frequency import opz_frequency
 from test_tx81z_integer import opz_carrier, reference_tables
 from ufor import tx81z
 from ufor.dx7 import DX7Voice
@@ -401,7 +402,7 @@ def test_tx81z_prepared_patch_components_render_and_release(tmp_path: Path) -> N
     )
     ticks = np.arange(48000, dtype=np.int64) * bank.clock_hz // (192 * 48000)
     attenuation = np.minimum(np.maximum(ticks - ticks[24000], 0) * 8, 1023)
-    expected = 4 * opz_carrier(440, 0.25 * 2 ** (-attenuation / 64))
+    expected = 4 * opz_carrier(opz_frequency(), 0.25 * 2 ** (-attenuation / 64))
     check_audio(
         tmp_path / "tx81z-paired-components.wav",
         np.concatenate([first, tail]),
@@ -497,12 +498,12 @@ def test_tx81z_bank_uses_each_operators_selected_waveform(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     "fixed,coarse,fine,frequency_range,note,hz",
     [
-        (False, 4, 8, 0, 69, 660),
-        (False, 0, 7, 0, 69, 412.5),
-        (False, 1, 0, 0, 69, 220 * np.sqrt(2)),
-        (False, 13, 0, 0, 69, 1760),
-        (False, 43, 0, 0, 69, 4400 * np.sqrt(2)),
-        (False, 44, 0, 0, 69, 3960 * 2 ** (781 / 1200)),
+        (False, 4, 8, 0, 69, 659.9147728085518),
+        (False, 0, 7, 0, 69, 412.42006331682205),
+        (False, 1, 0, 0, 69, 311.0752469301224),
+        (False, 13, 0, 0, 69, 1759.7727274894714),
+        (False, 43, 0, 0, 69, 6221.5049386024475),
+        (False, 44, 0, 0, 69, 6213.824068307877),
         (True, 0, 0, 0, 69, 8),
         (True, 3, 7, 0, 69, 15),
         (True, 3, 7, 7, 127, 1920),
@@ -512,7 +513,7 @@ def test_tx81z_bank_uses_each_operators_selected_waveform(tmp_path: Path) -> Non
         (True, 32, 5, 3, 0, 1064),
     ],
 )
-def test_tx81z_nominal_frequency_preserves_ratio_and_fixed_controls(
+def test_tx81z_base_frequency_preserves_ratio_and_fixed_controls(
     tmp_path: Path,
     fixed: bool,
     coarse: int,

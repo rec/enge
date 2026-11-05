@@ -214,6 +214,7 @@ class TX81ZRenderer:
             sounding_note = 13 + (sounding_note - 13) % 12
         elif sounding_note > 108:
             sounding_note = 97 + (sounding_note - 97) % 12
+        self.sounding_note = sounding_note
         key_code = (sounding_note - 13) // 3
         self.voice = voice.model_copy(deep=True)
         self.additional = additional.model_copy(deep=True)
@@ -261,15 +262,12 @@ class TX81ZRenderer:
             frequency = tx81z_base_frequency(operator, extension, sounding_note)
             offset = 0.0
             if not extension.fixed_frequency:
+                native = _tx81z_ratio_steps(
+                    operator, extension, sounding_note, np.zeros(1, dtype=np.int64)
+                )[0] * (self.envelopes.clock_hz / (64 * 2**20))
+                offset = native - frequency
                 if pitch_hz is not None:
                     frequency *= pitch_hz / (440 * 2 ** ((note - 69) / 12))
-                multiple = _TX_RATIO_COARSE[operator.coarse][1] + extension.fine / 16
-                offset = (
-                    tx81z_detune_step(operator.detune, key_code)
-                    * multiple
-                    * self.envelopes.clock_hz
-                    / (64 * 2**20)
-                )
             frequencies.append(frequency + offset)
             detune_offsets.append(offset)
         self.frequencies = np.array(frequencies)
@@ -395,6 +393,7 @@ class TX81ZRenderer:
                 glide = self.portamento.ratios(frames)
             tuning = glide if tuning is None else tuning * glide
         frequencies = np.broadcast_to(self.frequencies, (frames, 4))
+        detune_offsets = np.broadcast_to(self.detune_offsets, (frames, 4))
         attenuation = self.envelopes.attenuation_samples(frames)
         quiet = attenuation > 896
         attenuation >>= np.array([e.shift for e in self.envelopes.envelopes])
@@ -406,13 +405,22 @@ class TX81ZRenderer:
                     if sensitivity < 6
                     else pm << (sensitivity - 5)
                 )
-                ratio = 2 ** (delta / 768)
                 frequencies = frequencies.copy()
+                detune_offsets = detune_offsets.copy()
                 for i in range(4):
                     if self.ratio_operators[i]:
-                        frequencies[:, i] = (
-                            self.frequencies[i] - self.detune_offsets[i]
-                        ) * ratio + self.detune_offsets[i]
+                        operator = self.voice.operator(i + 1)
+                        extension = self.additional.operator(i + 1)
+                        base = _tx81z_ratio_steps(
+                            operator, extension, self.sounding_note, delta, detune=False
+                        ) * (self.envelopes.clock_hz / (64 * 2**20))
+                        native = _tx81z_ratio_steps(
+                            operator, extension, self.sounding_note, delta
+                        ) * (self.envelopes.clock_hz / (64 * 2**20))
+                        detune_offsets[:, i] = native - base
+                        if self.pitch_hz is not None:
+                            base *= self.pitch_hz / (440 * 2 ** ((self.note - 69) / 12))
+                        frequencies[:, i] = base + detune_offsets[:, i]
             if self.amplitude_modulation_sensitivity:
                 am = am << (self.amplitude_modulation_sensitivity - 1)
                 attenuation += am[:, None] * self.amplitude_modulation_enabled
@@ -421,8 +429,8 @@ class TX81ZRenderer:
             for i in range(4):
                 if self.ratio_operators[i]:
                     frequencies[:, i] = (
-                        frequencies[:, i] - self.detune_offsets[i]
-                    ) * tuning + self.detune_offsets[i]
+                        frequencies[:, i] - detune_offsets[:, i]
+                    ) * tuning + detune_offsets[:, i]
         levels = self.levels
         if self.voice.data[76]:
             cc = (
@@ -490,6 +498,7 @@ class TX81ZRenderer:
             start,
         )
         self.note = target.note
+        self.sounding_note = target.sounding_note
         self.velocity = target.velocity
         self.pitch_hz = target.pitch_hz
         self.sounding_pitch_hz = target.sounding_pitch_hz
@@ -1098,7 +1107,7 @@ def tx81z_operator_output(waveform: int, phase: int, attenuation: int) -> int:
 def tx81z_base_frequency(
     operator: tx81z.TX81ZOperator, additional: tx81z.TX81ZAdditionalOperator, note: int
 ) -> float:
-    """Prepare nominal Hz before chip detune, LFO modulation and phase quantization."""
+    """Prepare Hz before chip detune: native ratio steps or nominal fixed Hz."""
     if operator.number != additional.number:
         raise EngineError("TX81Z frequency requires matching VCED/ACED operators")
     if not 0 <= note <= 127:
@@ -1111,9 +1120,11 @@ def tx81z_base_frequency(
         return (
             max(0.5, operator.coarse >> 2) * 16 + additional.fine
         ) * 2**additional.fixed_frequency_range
-    _, multiple, cents = _TX_RATIO_COARSE[operator.coarse]
-    ratio = (multiple + additional.fine / 16) * 2 ** (cents / 1200)
-    return 440 * 2 ** ((note - 69) / 12) * ratio
+    return float(
+        _tx81z_ratio_steps(
+            operator, additional, note, np.zeros(1, dtype=np.int64), detune=False
+        )[0]
+    ) * (3579545 / (64 * 2**20))
 
 
 def tx81z_wave_samples(waveform: int, phases: np.ndarray) -> np.ndarray:
@@ -1125,6 +1136,26 @@ def tx81z_wave_samples(waveform: int, phases: np.ndarray) -> np.ndarray:
         [tx81z_operator_output(waveform, i, 0) / 8192 for i in range(1024)]
     )
     return table[indices]
+
+
+def _tx81z_ratio_steps(
+    operator: tx81z.TX81ZOperator,
+    additional: tx81z.TX81ZAdditionalOperator,
+    note: int,
+    delta: np.ndarray,
+    *,
+    detune: bool = True,
+) -> np.ndarray:
+    if note < 13:
+        note = 13 + (note - 13) % 12
+    elif note > 108:
+        note = 97 + (note - 97) % 12
+    _, multiple, cents = _TX_RATIO_COARSE[operator.coarse]
+    position = np.clip((note - 13) * 64 + (cents * 64 + 50) // 100 + delta, 0, 6143)
+    steps = _TX_PHASE_STEPS[position % 768] >> (7 - position // 768)
+    if detune:
+        steps = steps + tx81z_detune_step(operator.detune, (note - 13) // 3)
+    return (steps * (int(multiple * 16) + additional.fine)) >> 4
 
 
 def _operator_order(voice: DX7Voice) -> list[int]:
@@ -1531,7 +1562,7 @@ _TX_ALGORITHMS = [
     ([], [1, 2, 3, 4]),
 ]
 # VCED coarse indices follow the displayed ratios, including 14.10 before 14.13.
-# Nominal synthesis uses OPZ's cent offsets rather than the rounded display.
+# Register synthesis quantizes these cent offsets to 1/64-semitone units.
 _TX_RATIO_COARSE = sorted(
     (m * r, m, d)
     for m in [0.5, *range(1, 16)]
@@ -2414,6 +2445,10 @@ _TX_LFO_REGISTERS = [
     (255, 127, 127),
 ]
 
+# Native phase table from pinned ymfm_fm.ipp; provenance in opz-frequency.md.
+_TX_PHASE_STEPS = np.load(
+    Path(__file__).with_name("yamaha_phase.npy"), allow_pickle=False
+)
 # Measured TL attenuation, indexed by BC EG Bias, operator sensitivity, CC2.
 # https://nornand.hatenablog.com/entry/2020/11/24/224423
 _TX_BREATH_ATTENUATION = np.load(

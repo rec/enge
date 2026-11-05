@@ -91,3 +91,57 @@ factor or a clamp on the final multiplied frequency would not implement those
 rules. This sweep does not yet cover nonzero chip detune, key fractions,
 modulation, tuning, portamento or output-rate conversion. It does not establish
 hardware equivalence or resolve the independent fixed-mode reference defect.
+
+## Production ratio replacement
+
+Enge now uses the pinned 768-entry native phase table, in
+`enge/yamaha_phase.npy`, for ratio operators. Coarse detune and integer PM
+adjust the table position before octave saturation. Chip detune is added to
+that phase step before the multiplier/fine product is shifted right four bits.
+The helper `tx81z_base_frequency` returns native ratio Hz before chip detune;
+fixed-mode values retain their nominal equations. Keys outside 13–108 wrap
+by octaves into the supported span, as in the note renderer.
+
+Microtuning, scoped tuning and portamento keep the approved continuous host
+overlay. They scale the neutral-detune frequency; the difference between
+detuned and neutral native steps remains unscaled. PM recomputes both steps
+through the native table, including saturation and rounding. This also keeps
+PM correct after legato retargeting and snapshot restoration. It does not
+claim firmware-quantized tuning or portamento.
+
+The [fixture exporter](export-ymfm-frequency.cc) builds unmodified register
+caches for all keys, coarse/fine pairs and seven signed detune settings. Invalid
+fine settings occupy zero placeholders. A second array uses the pinned native
+key-code helper for multiplier-one PM deltas −512 through 511, with signed
+detune. Reproduce the raw little-endian uint32 exports with:
+
+```sh
+c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/export-ymfm-frequency.cc \
+  "$YMFM/ymfm_opz.cpp" -o /tmp/enge-export-ymfm-frequency
+/tmp/enge-export-ymfm-frequency /tmp/base.u32 /tmp/pm.u32
+```
+
+Pack these arrays with NumPy, preserving the loop order:
+
+```python
+import numpy as np
+
+base = np.fromfile("/tmp/base.u32", dtype="<u4").reshape(96, 64, 16, 7)
+pm = np.fromfile("/tmp/pm.u32", dtype="<u4").reshape(96, 7, 1024)
+np.savez_compressed("tx81z-frequency.npz", base=base, pm=pm)
+```
+
+The committed `test/data/tx81z-frequency.npz` SHA-256 is
+`1e4f1f77c6c67534ffd76bfb24a097b8b66950fe0589bff9f56c238ca4cd8fd1`.
+The production table is the pinned `s_phase_step[12*64]` values saved as a
+one-dimensional little-endian int64 NumPy array; its `.npy` SHA-256 is
+`db421ae93bb06c307dfe59edab9eb8d9c6d37b1e4289a18b2683afc1b4859e89`.
+The upstream BSD notice is retained in the repository license.
+
+All 95,232 legal neutral-detune base frequencies compare exactly against the
+register export. One-second 48 kHz WAV tests additionally cover signed detune
+before fine-multiplier rounding, low-key quantization, top-octave saturation,
+PM at both key boundaries, and partitioned snapshot continuation. Existing
+amplitude/controller tests now use exported native frequencies rather than
+ideal equal-tempered frequencies in their audio expectations. Fixed-frequency
+reference qualification, native-rate output and complete patches remain open.
