@@ -11,14 +11,14 @@ from ufor.synth import SynthInstrumentScore
 from enge import yamaha_instrument
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z", "tx81z-mono"])
+@pytest.mark.parametrize("kind", ["dx7", "tx81z", "tx81z-mono", "wt11", "wt11-mono"])
 @pytest.mark.parametrize("scope", ["instrument", "part"])
 def test_yamaha_patch_sources_follow_shared_time_and_restore(
     tmp_path: Path, kind: str, scope: str
 ) -> None:
-    raw = instrument("tx81z" if kind == "tx81z-mono" else kind).model_dump(mode="json")
+    raw = instrument(kind.removesuffix("-mono")).model_dump(mode="json")
     template = raw["body"]["voices"][0]
-    if kind == "tx81z-mono":
+    if kind.endswith("-mono"):
         patch = bytearray.fromhex(template["patch"])
         patch[63] = 1
         template["patch"] = bytes(patch).hex()
@@ -75,7 +75,7 @@ def test_yamaha_patch_sources_follow_shared_time_and_restore(
     )
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("kind", ["dx7", "tx81z", "wt11"])
 @pytest.mark.parametrize("timing", ["event", "voice"])
 def test_yamaha_envelope_release_obeys_minimum_hold_and_restores(
     tmp_path: Path, kind: str, timing: str
@@ -177,7 +177,7 @@ def render(
     )
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("kind", ["dx7", "tx81z", "wt11"])
 def test_yamaha_generator_events_cue_stages_across_restore(
     tmp_path: Path, kind: str
 ) -> None:

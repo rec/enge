@@ -43,7 +43,7 @@ from typing import Annotated
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
-from ufor import tx81z
+from ufor import tx81z, wt11
 from ufor.dx7 import DX7Voice
 
 from .synth import EngineError
@@ -208,7 +208,7 @@ class TX81ZLFOContext:
 
     def __init__(
         self,
-        voice: tx81z.TX81ZVoice,
+        voice: tx81z.TX81ZVoice | wt11.WT11Voice,
         sample_rate: int = 48000,
         clock_hz: int = 3579545,
         *,

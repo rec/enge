@@ -1158,12 +1158,17 @@ def dx7_global_parameters(voice: DX7Voice) -> list[int]:
     return parameters
 
 
-def tx81z_lfo_registers(voice: tx81z.TX81ZVoice) -> tuple[int, int, int]:
+def tx81z_lfo_registers(
+    voice: tx81z.TX81ZVoice | wt11.WT11Voice,
+) -> tuple[int, int, int]:
     """Validate globals and prepare native LFS, PMD and AMD register values."""
     for index, maximum in enumerate(_TX_GLOBAL_LIMITS, start=54):
+        if isinstance(voice, wt11.WT11Voice) and index == 75:
+            maximum = 100
         if voice.data[index] > maximum:
+            model = "WT11" if isinstance(voice, wt11.WT11Voice) else "TX81Z"
             raise EngineError(
-                f"TX81Z VCED parameter {index} must be from 0 through {maximum}"
+                f"{model} VCED parameter {index} must be from 0 through {maximum}"
             )
     speed = voice.data[54]
     rate = (660 * speed) >> 8 if voice.data[59] == 3 else _TX_LFO_REGISTERS[speed][0]

@@ -9,7 +9,12 @@ from ufor import synth_trace, tx81z
 from ufor.dx7 import DX7Voice
 from ufor.events import ControlChange, Release, Trigger
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
-from ufor.synth import SynthInstrumentScore, YamahaDX7Voice, YamahaTX81ZVoice
+from ufor.synth import (
+    SynthInstrumentScore,
+    YamahaDX7Voice,
+    YamahaTX81ZVoice,
+    YamahaWT11Voice,
+)
 
 from enge import filters, yamaha, yamaha_instrument, yamaha_lfo
 from enge.midi import MidiPerformance
@@ -51,11 +56,18 @@ def instrument(kind: str, transpose: int = 0, delay: int = 0) -> SynthInstrument
             data[55] = delay
         template["patch"] = bytes(data).hex()
         template["additional"] = bytes(23).hex()
+        if kind == "wt11":
+            data[75] = 50
+            data[87:93] = bytes([50, 99, 50, 60, 45, 50])
+            template["patch"] = bytes(data).hex()
+            template["additional2"] = bytes([0, 0, 50, 0, 1, 2, 3, 4, 5, 6]).hex()
     raw["body"] = {"voices": [template]}
     return SynthInstrumentScore.model_validate(raw)
 
 
-@pytest.mark.parametrize("kind,delay", [("dx7", 0), ("tx81z", 0), ("tx81z", 1)])
+@pytest.mark.parametrize(
+    "kind,delay", [("dx7", 0), ("tx81z", 0), ("tx81z", 1), ("wt11", 0), ("wt11", 1)]
+)
 @pytest.mark.parametrize("transpose", [0, 12])
 def test_yamaha_instrument_shares_clock_and_restores_overlapping_microtuned_notes(
     tmp_path: Path, kind: str, transpose: int, delay: int
@@ -103,6 +115,25 @@ def test_yamaha_instrument_shares_clock_and_restores_overlapping_microtuned_note
         clock = yamaha_lfo.DX7LFOContext(template.patch)
         first = yamaha.DX7Renderer(template.patch, 69, 32, pitch_hz=442)
         second = yamaha.DX7Renderer(template.patch, 69, 1, pitch_hz=444)
+    elif isinstance(template, YamahaWT11Voice):
+        clock = yamaha_lfo.TX81ZLFOContext(template.patch)
+        first = yamaha.WT11Renderer(
+            template.patch,
+            template.additional,
+            template.additional2,
+            69,
+            32,
+            pitch_hz=442,
+        )
+        second = yamaha.WT11Renderer(
+            template.patch,
+            template.additional,
+            template.additional2,
+            69,
+            1,
+            pitch_hz=444,
+            start_frame=1001,
+        )
     else:
         assert isinstance(template, YamahaTX81ZVoice)
         clock = yamaha_lfo.TX81ZLFOContext(template.patch)
@@ -241,7 +272,7 @@ def test_trigger_velocity_rounds_ties_up_and_preserves_positive_notes(
     assert renderer.snapshot().voices[0].note.velocity == expected
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("kind", ["dx7", "tx81z", "wt11"])
 def test_minimum_hold_and_retimed_fade_survive_snapshot(
     tmp_path: Path, kind: str
 ) -> None:
@@ -298,6 +329,7 @@ def test_minimum_hold_and_retimed_fade_survive_snapshot(
         ("dx7", False, 32),
         ("dx7", True, 32),
         ("tx81z", True, 0),
+        ("wt11", True, 0),
         ("dx7", True, 4),
         ("dx7", True, 6),
     ],
@@ -339,6 +371,59 @@ def test_midi_render_dispatches_yamaha_instruments(
         decode(path),
         np.rint(expected * (2**23 - 1)) / (2**23 - 1),
     )
+
+
+def test_wt11_admits_full_stored_bias_domain_without_an_active_breath_route(
+    tmp_path: Path,
+) -> None:
+    document = instrument("wt11")
+    actions = synth_trace.prepare(
+        document.body,
+        [
+            Trigger(tick=0, ordinal=0, part="main", trigger_id="note", key=69),
+            Release(tick=1001, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    baseline = yamaha_instrument.OfflineYamaha(yamaha_instrument.prepare(document))
+    expected = baseline.advance(actions, 0, 48000)
+    raw = document.model_dump(mode="json")
+    patch = bytearray.fromhex(raw["body"]["voices"][0]["patch"])
+    patch[75] = 100
+    raw["body"]["voices"][0]["patch"] = bytes(patch).hex()
+    other = SynthInstrumentScore.model_validate(raw)
+    engine = yamaha_instrument.OfflineYamaha(yamaha_instrument.prepare(other))
+    # Prepared starts belong to their exact instrument definition.
+    actions = synth_trace.prepare(
+        other.body,
+        [
+            Trigger(tick=0, ordinal=0, part="main", trigger_id="note", key=69),
+            Release(tick=1001, ordinal=0, part="main", trigger_id="note"),
+        ],
+        seed=0,
+    ).actions
+    check_audio(tmp_path / "wt11-bias.wav", engine.advance(actions, 0, 48000), expected)
+
+
+@pytest.mark.parametrize("index,value", [(0, 1), (1, 1), (2, 0), (3, 1)])
+def test_wt11_rejects_active_aftertouch_assignments_during_instrument_admission(
+    index: int, value: int
+) -> None:
+    raw = instrument("wt11").model_dump(mode="json")
+    data = bytearray.fromhex(raw["body"]["voices"][0]["additional2"])
+    data[index] = value
+    raw["body"]["voices"][0]["additional2"] = bytes(data).hex()
+    with pytest.raises(EngineError, match="aftertouch assignments"):
+        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
+
+
+def test_wt11_lfo_admission_reports_its_own_bias_domain() -> None:
+    raw = instrument("wt11").model_dump(mode="json")
+    patch = bytearray.fromhex(raw["body"]["voices"][0]["patch"])
+    patch[75] = 101
+    raw["body"]["voices"][0]["patch"] = bytes(patch).hex()
+    with pytest.raises(EngineError, match="WT11 VCED parameter 75.*100"):
+        yamaha_instrument.prepare(SynthInstrumentScore.model_validate(raw))
 
 
 @pytest.mark.parametrize("retirement", ["stop", "fade"])
@@ -420,7 +505,7 @@ def test_dx7_reuses_oldest_idle_slots_across_overlaps_and_snapshots(
     assert [s.idle_since for s in saved.oscillator_slots["yamaha"]] == [1000, 1100]
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("kind", ["dx7", "tx81z", "wt11"])
 @pytest.mark.parametrize("scope", ["instrument", "part", "trigger"])
 @pytest.mark.parametrize("order", ["before_amplitude", "after_amplitude"])
 def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
@@ -537,6 +622,16 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
         if isinstance(template, YamahaDX7Voice):
             note = yamaha.DX7Renderer(
                 template.patch, 69, 127, pitch_hz=440 * 2 ** (100 / 1200)
+            )
+        elif isinstance(template, YamahaWT11Voice):
+            note = yamaha.WT11Renderer(
+                template.patch,
+                template.additional,
+                template.additional2,
+                69,
+                127,
+                pitch_hz=440 * 2 ** (100 / 1200),
+                start_frame=start,
             )
         else:
             assert isinstance(template, YamahaTX81ZVoice)

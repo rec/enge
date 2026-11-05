@@ -12,7 +12,12 @@ from ufor.control import TempoMap
 from ufor.dx7 import DX7Performance
 from ufor.samples.processing import FilterOrder, Processing
 from ufor.streams import AudioType
-from ufor.synth import SynthInstrumentScore, YamahaDX7Voice, YamahaTX81ZVoice
+from ufor.synth import (
+    SynthInstrumentScore,
+    YamahaDX7Voice,
+    YamahaTX81ZVoice,
+    YamahaWT11Voice,
+)
 
 from . import filters, synth, yamaha, yamaha_lfo
 
@@ -45,7 +50,7 @@ class Voice(VoiceState):
 
 
 class VoiceSnapshot(VoiceState):
-    note: yamaha.DX7Snapshot | yamaha.TX81ZSnapshot
+    note: yamaha.DX7Snapshot | yamaha.WT11Snapshot | yamaha.TX81ZSnapshot
 
 
 class OscillatorSlot(BaseModel):
@@ -103,7 +108,7 @@ class OfflineYamaha:
         self.templates = {
             v.name: v
             for v in self.definition.score.body.voices
-            if isinstance(v, (YamahaDX7Voice, YamahaTX81ZVoice))
+            if isinstance(v, (YamahaDX7Voice, YamahaTX81ZVoice, YamahaWT11Voice))
         }
         self.authored_templates = self.templates.copy()
         self.templates = {
@@ -181,7 +186,7 @@ class OfflineYamaha:
         self.pitch_history: dict[str, dict[str, PitchHistory]] = {
             n: {}
             for n, v in self.templates.items()
-            if isinstance(v, YamahaTX81ZVoice) and v.patch.data[66]
+            if isinstance(v, (YamahaTX81ZVoice, YamahaWT11Voice)) and v.patch.data[66]
         }
 
     def advance(
@@ -395,7 +400,9 @@ class OfflineYamaha:
         elif pitch is None:
             pitch = 440 * 2 ** ((action.key - 69) / 12) + template.frequency_offset_hz
         pitch *= 2 ** (template.processing.tuning_cents / 1200)
-        mono = isinstance(template, YamahaTX81ZVoice) and bool(template.patch.data[63])
+        mono = isinstance(template, (YamahaTX81ZVoice, YamahaWT11Voice)) and bool(
+            template.patch.data[63]
+        )
         sources = self.controls.sources(template, action, action.velocity)
         mono_voice = None
         note = None
@@ -585,7 +592,7 @@ class OfflineYamaha:
                     template.performance.foot,
                 )
             )
-            if isinstance(template, YamahaTX81ZVoice):
+            if isinstance(template, (YamahaTX81ZVoice, YamahaWT11Voice)):
                 assignments = any(
                     template.patch.data[71:75] + template.additional.data[21:23]
                 ) or bool(template.patch.data[67] or template.patch.data[76])
@@ -635,7 +642,7 @@ class OfflineYamaha:
                             if isinstance(template, YamahaDX7Voice)
                             else _tx81z_controller_row(template, values)
                         )
-                        if isinstance(template, YamahaTX81ZVoice):
+                        if isinstance(template, (YamahaTX81ZVoice, YamahaWT11Voice)):
                             breath = values.get(("yamaha", "breath"))
                             foot = values.get(("yamaha", "foot"))
                 if isinstance(voice.renderer, yamaha.DX7Renderer):
@@ -772,7 +779,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
     if timebase.rate.denominator != 1:
         raise synth.EngineError("Yamaha output rate must be an integer")
     for voice in score.body.voices:
-        if not isinstance(voice, (YamahaDX7Voice, YamahaTX81ZVoice)):
+        if not isinstance(voice, (YamahaDX7Voice, YamahaTX81ZVoice, YamahaWT11Voice)):
             raise synth.EngineError(
                 "Yamaha instruments require dedicated Yamaha templates"
             )
@@ -799,6 +806,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
                     "breath",
                     "foot",
                     "portamento",
+                    "aftertouch",
                 )
             ),
         )
@@ -819,7 +827,8 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
                 if p.target.name == "yamaha"
             }
             if "breath" in targets and voice.patch.data[75] != 50:
-                raise synth.EngineError("TX81Z breath pitch bias is not implemented")
+                model = "WT11" if isinstance(voice, YamahaWT11Voice) else "TX81Z"
+                raise synth.EngineError(f"{model} breath pitch bias is not implemented")
             yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)
         _note(voice, 69, 127, timebase.rate.numerator, None)
         filters.parameters(voice.processing.filters, timebase.rate.numerator, 1)
@@ -856,7 +865,8 @@ def _dx7_controller_row(
 
 
 def _tx81z_controller_row(
-    template: YamahaTX81ZVoice, values: dict[tuple[str, str], np.ndarray]
+    template: YamahaTX81ZVoice | YamahaWT11Voice,
+    values: dict[tuple[str, str], np.ndarray],
 ) -> np.ndarray:
     """Sum firmware byte-depth contributions before patch addition/conversion."""
     row = np.zeros((1, 2), dtype=np.int64)
@@ -874,7 +884,7 @@ def _tx81z_controller_row(
 
 
 def _note(
-    template: YamahaDX7Voice | YamahaTX81ZVoice,
+    template: YamahaDX7Voice | YamahaTX81ZVoice | YamahaWT11Voice,
     key: int,
     velocity: int,
     rate: int,
@@ -886,6 +896,18 @@ def _note(
 ) -> yamaha.DX7Renderer | yamaha.TX81ZRenderer:
     if isinstance(template, YamahaDX7Voice):
         return yamaha.DX7Renderer(template.patch, key, velocity, rate, pitch, phases)
+    if isinstance(template, YamahaWT11Voice):
+        return yamaha.WT11Renderer(
+            template.patch,
+            template.additional,
+            template.additional2,
+            key,
+            velocity,
+            rate,
+            pitch,
+            start_pitch,
+            start_frame=start_frame,
+        )
     return yamaha.TX81ZRenderer(
         template.patch,
         template.additional,

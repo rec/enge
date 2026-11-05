@@ -14,7 +14,7 @@ from enge import yamaha_instrument
 from enge.synth import EngineError
 
 
-@pytest.mark.parametrize("kind", ["dx7", "tx81z"])
+@pytest.mark.parametrize("kind", ["dx7", "tx81z", "wt11"])
 @pytest.mark.parametrize("generator", ["envelope", "lfo"])
 def test_yamaha_beat_sources_follow_host_tempo_and_restore(
     tmp_path: Path, kind: str, generator: str

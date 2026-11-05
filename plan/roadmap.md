@@ -67,8 +67,10 @@ roadmap and Yamaha requirements, while optional catalogues remain deferred.
   preserves all three voice buffers, aftertouch routes and prepared trigger
   velocity. A direct WT11 note renderer now projects the pitch envelope onto
   the shared OPZ core and snapshots all original buffers and pitch state.
-  Aftertouch, shared WT11 clocks, performance execution, offline instrument
-  admission and rendering qualification remain open. The Yamaha plan records the exact
+  The offline Yamaha adapter now admits that WT11 profile with one shared OPZ
+  clock per template, controls, mono/glide history, generators, snapshots and
+  MIDI-file dispatch. Aftertouch, WT11 performance execution and rendering
+  qualification remain open. The Yamaha plan records the exact
   import boundaries and verification evidence.
 
 ## Deferred choices

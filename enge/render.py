@@ -20,8 +20,7 @@ from ufor.synth import (
     FMVoice,
     NoiseVoice,
     SynthInstrumentScore,
-    YamahaDX7Voice,
-    YamahaTX81ZVoice,
+    YamahaVoiceTemplate,
 )
 
 from . import fm, noise, sample_instrument, synth, yamaha_instrument
@@ -87,7 +86,7 @@ def render_midi(
             )
             actions = trace.prepare(score.body, events, seed=0).actions
         else:
-            if isinstance(score.body.voices[0], (YamahaDX7Voice, YamahaTX81ZVoice)):
+            if isinstance(score.body.voices[0], YamahaVoiceTemplate):
                 if backend != "numpy":
                     raise synth.EngineError(
                         "Yamaha instruments support only offline NumPy rendering"

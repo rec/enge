@@ -78,9 +78,8 @@ missing pitch state. Invalid render controls do not advance the pitch envelope.
 
 Active aftertouch assignments are explicitly rejected at note construction.
 The admitted ACED2 assignment tuple is pitch 0, amplitude 0, pitch bias 50 and
-EG bias 0; reserved bytes remain unrestricted seven-bit data. This slice adds
-the direct note pitch path, not aftertouch rendering, WT11 shared-LFO ownership,
-offline instrument admission, performance execution or hardware qualification.
+EG bias 0; reserved bytes remain unrestricted seven-bit data. Aftertouch
+rendering, performance execution and hardware qualification remain incomplete.
 
 Thirty-four focused tests cover all eight algorithms with asymmetric operators,
 neutral-pitch audio equivalence to the reused core, nonzero absolute start,
@@ -93,6 +92,41 @@ WT11 timing or complete-note hardware equivalence.
 
 The full enge suite passes with this implementation: 3,082 tests passed and
 21 skipped. Ruff, formatting, type checking and pyupgrade checks also pass.
+
+## Offline instrument integration
+
+`enge.yamaha_instrument.prepare` now admits `YamahaWT11Voice` through the same
+generator, processing and control validation as the other Yamaha profiles.
+`OfflineYamaha` creates a `WT11Renderer` for each prepared start and a shared
+OPZ LFO context per WT11 template. Simultaneous notes observe the same native
+rows; the context advances once per render interval. The clock uses the
+existing provisional TX81Z/ymfm model with WT11's documented global-byte layout,
+not a separately measured WT11 firmware mapping. WT11's stored breath-bias
+domain includes 100; declaring a breath route with a nonneutral bias remains
+an explicit admission error. Active aftertouch assignments also fail admission.
+
+The existing scoped wheel/breath/foot, pitch-bend, tuning, filter and gain paths
+now accept WT11 templates. Mono held-note retention, glide history, minimum
+hold, fades, seconds/beat generators and caller-owned tempo maps reuse their
+existing execution paths. TX81Z-specific LFO/DAC groups remain restricted by
+the shared schema; WT11 uses its ordinary channel routes.
+
+`YamahaSnapshot` now includes the distinct WT11 note snapshot type, retaining
+its original buffers and pitch state through instrument JSON round trips.
+Clock restore keeps the existing prepare-before-mutation behavior. MIDI-file
+rendering dispatches WT11 to this offline NumPy adapter; native live rendering
+is not implemented by this integration.
+
+Twenty-seven additional focused cases exercise overlapping shared-clock notes,
+delay and transpose, scoped hardware and portable controls, filter order,
+minimum hold/fade, mono generator retention, staged generator events, host tempo
+changes, MIDI rendering, full stored-bias range and unsupported-assignment
+admission. The audio comparisons write at least one second of paired 48 kHz WAVs.
+This integrates the current note profile; performance allocation and PCED2
+LFO-control/DSP behavior are not thereby implemented or qualified.
+
+The full suite with offline WT11 integration passes: 3,109 tests passed and
+21 skipped. Ruff, formatting, type checking and pyupgrade checks are clean.
 
 ## Additional work beyond the prompt
 

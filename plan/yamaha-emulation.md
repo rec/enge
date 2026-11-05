@@ -262,7 +262,8 @@ or feedback arithmetic.
 
 ### WT11 scope and import requirements
 
-WT11 instrument rendering remains unimplemented. Sharing the TX81Z operator chip does not
+WT11 offline instrument rendering now admits the provisional pitch profile.
+Aftertouch and performance execution remain unfinished. Sharing the TX81Z operator chip does not
 make the existing TX81Z edit-buffer pair a complete WT11 voice definition.
 The [WT11 owner's manual, printed Add-2 through Add-7](https://data.yamaha.com/files/download/other_assets/2/333982/WT11E.PDF)
 defines these additional requirements, verified against the scanned tables on
@@ -334,7 +335,7 @@ retain velocity without adding another lifecycle path. Ordinary channel routes
 are required; TX81Z-specific LFO/DAC groups reject WT11 templates. Portable
 round trips, required buffers, bounded control domains, group separation and
 the regenerated published schema are covered; all 1,508 uFor tests pass.
-This is the shared schema contract, not enge admission or a WT11 renderer.
+This shared schema contract feeds the offline admission path described below.
 
 enge commit `ab5dccb` pins uFor `30c7ef62beffbd3137797511828fc01b4f7688ff`,
 bringing these WT11 definitions and imports into the engine environment.
@@ -360,15 +361,28 @@ are rejected before state changes. Thirty-four focused tests cover asymmetric
 algorithms, absolute start, mixed fixed/ratio modes, hold/release, sample rates,
 JSON replay, partitioning and rejected controls. Their audio comparisons are
 48 kHz WAV regressions. Aftertouch assignments remain explicitly rejected;
-shared WT11 LFO ownership, offline instrument admission, performance execution
-and hardware/reference qualification remain open.
+performance execution and hardware/reference qualification remain open.
 
 The full suite with the direct WT11 pitch profile passes: 3,082 tests passed,
 21 skipped; Ruff, formatting, typing and pyupgrade checks are clean. This does
 not qualify the provisional envelope against WT11 hardware.
 
-Connect the explicit WT11 instrument definition to pitch-envelope and
-aftertouch rendering. Keep TX81Z admission
+`OfflineYamaha` now admits WT11 templates, creates their dedicated note renderer
+and owns one provisional OPZ LFO context per template. Simultaneous notes share
+one native clock advance. Scoped controls, filters, minimum hold, mono/glide
+history, fades, external generators and caller-owned tempo maps reuse existing
+execution. Instrument JSON snapshots preserve the distinct WT11 note state and
+all original buffers. MIDI-file dispatch selects the offline NumPy Yamaha path.
+Twenty-seven additional focused cases cover these boundaries, stored bias 100,
+and explicit rejection of active aftertouch assignments. WT11-specific
+performance allocation, PCED2 LFO-control/DSP execution, aftertouch rendering
+and hardware qualification remain open; the reused clock/controller models
+remain provisional for WT11.
+
+The full offline-integration suite passes with 3,109 tests passed and 21 skipped;
+Ruff, formatting, type checking and pyupgrade checks are clean.
+
+Complete aftertouch and performance rendering. Keep TX81Z admission
 and its compatibility bytes distinct: WT11 field meanings must not silently
 change an existing TX81Z patch. Rendering then needs pitch-envelope timing,
 aftertouch assignment behavior, performance allocation and snapshot continuation
