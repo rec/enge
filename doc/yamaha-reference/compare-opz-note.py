@@ -12,10 +12,12 @@ from tyro import cli
 from ufor import tx81z
 
 from enge.yamaha import TX81ZRenderer, TX81ZState, tx81z_dac, tx81z_operator_ticks
+from enge.yamaha_lfo import TX81ZLFOContext
 
 
 class Comparison(BaseModel, frozen=True):
     source: Path
+    modulation: bool = False
 
     def run(self) -> None:
         table = csv.writer(sys.stdout, lineterminator="\n")
@@ -34,7 +36,9 @@ class Comparison(BaseModel, frozen=True):
         )
         ticks = np.arange(1, 48001) * 3579545 // (64 * 48000)
         mismatches = 0
-        for algorithm, feedback, profile in product(range(1, 9), range(8), range(2)):
+        profiles = range(2, 6) if self.modulation else range(2)
+        feedbacks = (0, 7) if self.modulation else range(8)
+        for algorithm, feedback, profile in product(range(1, 9), feedbacks, profiles):
             stem = self.source / f"note-{algorithm}-{feedback}-{profile}"
             expected = np.fromfile(stem.with_suffix(".i32"), dtype="=i4")
             if (
@@ -44,14 +48,28 @@ class Comparison(BaseModel, frozen=True):
             ):
                 raise ValueError(f"Invalid one-second note capture in {stem}")
             note = prepare_note(algorithm, feedback, profile)
-            head = note.render(24000)
+            clock = TX81ZLFOContext(note.voice) if self.modulation else None
+            if clock is not None:
+                clock.keydown()
+            head = note.render(24000, clock.advance_ticks(24000) if clock else None)
             note.release()
-            raw = np.concatenate([head, note.render(24000)])
+            raw = np.concatenate(
+                [
+                    head,
+                    note.render(24000, clock.advance_ticks(24000) if clock else None),
+                ]
+            )
             public = tx81z_dac(raw[:, 0]) * 32768
-            native = native_control(prepare_note(algorithm, feedback, profile), ticks)
+            native = (
+                None
+                if self.modulation
+                else native_control(prepare_note(algorithm, feedback, profile), ticks)
+            )
             relative_rms = np.linalg.norm(public - expected) / np.linalg.norm(expected)
             public_errors = int(np.count_nonzero(public != expected))
-            native_errors = int(np.count_nonzero(native != expected))
+            native_errors = (
+                int(np.count_nonzero(native != expected)) if native is not None else 0
+            )
             mismatches += public_errors + native_errors
             table.writerow(
                 [
@@ -62,8 +80,10 @@ class Comparison(BaseModel, frozen=True):
                     f"{relative_rms:.12f}",
                     int(np.max(np.abs(public - expected))),
                     public_errors,
-                    native_errors,
-                    int(np.max(np.abs(native - expected))),
+                    native_errors if native is not None else "",
+                    int(np.max(np.abs(native - expected)))
+                    if native is not None
+                    else "",
                 ]
             )
             if profile == 0 and (algorithm, feedback) in ((8, 0), (1, 7)):
@@ -92,6 +112,23 @@ def prepare_note(algorithm: int, feedback: int, profile: int) -> TX81ZRenderer:
                 [[0, 3, 8, 15][i], [0, 1, 4, 7][i], [0, 2, 1, 0][i]]
             )
     raw[52], raw[53], raw[62] = algorithm - 1, feedback, 24
+    if profile >= 2:
+        waveform = profile - 2
+        full = waveform >= 2
+        raw[54:62] = bytes(
+            [
+                75,
+                0,
+                99 if full else 50,
+                99 if full else 50,
+                1,
+                waveform,
+                7 if full else 4,
+                3 if full else 2,
+            ]
+        )
+        for i in range(4):
+            raw[i * 13 + 8] = int(i % 2 == 0)
     return TX81ZRenderer(
         tx81z.TX81ZVoice(data=bytes(raw)),
         tx81z.TX81ZAdditional(data=bytes(extra)),

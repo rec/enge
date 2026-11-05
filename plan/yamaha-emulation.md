@@ -735,7 +735,15 @@ The public note and instrument use the same production components. Snapshots
 retain each note's frame and held sample, group DAC hold and filter state.
 Regressions cover 96 kHz note hold, rejection of mismatched native grids and
 192 kHz group output through retirement and restoration. Further qualification
-includes modulated reference patches, fixed operators and physical hardware.
+includes delayed modulation, controller firmware behavior, fixed operators and
+physical hardware.
+The subsequent modulation sweep closes the covered zero-delay reference cases:
+all four LFO waveforms, eight algorithms, feedback zero/seven, two depth and
+sensitivity combinations and alternating operator AM enables match 3,072,000
+additional samples exactly. Note/LFO snapshot replay crosses release with
+different partitions. The complete-note corpus now covers 192 cases and
+9,216,000 samples. Delayed modulation, controller firmware behavior, fixed
+operators and physical hardware still require qualification.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,

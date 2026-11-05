@@ -10,6 +10,7 @@ from ufor import tx81z
 
 from enge.synth import EngineError
 from enge.yamaha import TX81ZRenderer, TX81ZSnapshot, tx81z_dac
+from enge.yamaha_lfo import TX81ZLFOContext
 
 
 @pytest.mark.parametrize("attenuation", [896, 897, 1023])
@@ -39,9 +40,16 @@ def test_quiet_gate_uses_raw_attenuation_before_envelope_shift(
     )
 
 
-@pytest.mark.parametrize("algorithm", range(1, 9))
-@pytest.mark.parametrize("feedback", range(8))
-@pytest.mark.parametrize("profile", range(2))
+@pytest.mark.parametrize(
+    "algorithm,feedback,profile",
+    [
+        (a, f, p)
+        for a in range(1, 9)
+        for f in range(8)
+        for p in range(6)
+        if p < 2 or f in (0, 7)
+    ],
+)
 def test_note_envelope_and_integer_core_match_pinned_opz(
     tmp_path: Path, algorithm: int, feedback: int, profile: int
 ) -> None:
@@ -63,24 +71,52 @@ def test_note_envelope_and_integer_core_match_pinned_opz(
                 [[0, 3, 8, 15][i], [0, 1, 4, 7][i], [0, 2, 1, 0][i]]
             )
     raw[52], raw[53], raw[62] = algorithm - 1, feedback, 24
+    if profile >= 2:
+        waveform = profile - 2
+        full = waveform >= 2
+        raw[54:62] = bytes(
+            [
+                75,
+                0,
+                99 if full else 50,
+                99 if full else 50,
+                1,
+                waveform,
+                7 if full else 4,
+                3 if full else 2,
+            ]
+        )
+        for i in range(4):
+            raw[i * 13 + 8] = int(i % 2 == 0)
     note = TX81ZRenderer(
         tx81z.TX81ZVoice(data=bytes(raw)),
         tx81z.TX81ZAdditional(data=bytes(extra)),
         69,
         127,
     )
-    first = note.render(17003)
+    clock = TX81ZLFOContext(note.voice) if profile >= 2 else None
+    if clock:
+        clock.keydown()
+    first = note.render(17003, clock.advance_ticks(17003) if clock else None)
+    saved_clock = clock.snapshot() if clock else None
     saved = TX81ZSnapshot.model_validate_json(note.snapshot().model_dump_json())
-    middle = note.render(6997)
+    middle = note.render(6997, clock.advance_ticks(6997) if clock else None)
     note.release()
-    tail = note.render(24000)
+    tail = note.render(24000, clock.advance_ticks(24000) if clock else None)
     actual = tx81z_dac(np.concatenate([first, middle, tail]))
     check_audio(tmp_path / "dynamic-opz.wav", actual, expected)
     np.testing.assert_array_equal(actual, expected)
     note.restore(saved)
-    replay = [first, note.render(6997)]
+    if clock and saved_clock:
+        clock.restore(saved_clock)
+    replay = [first, note.render(6997, clock.advance_ticks(6997) if clock else None)]
     note.release()
-    replay.extend([note.render(137), note.render(23863)])
+    replay.extend(
+        [
+            note.render(n, clock.advance_ticks(n) if clock else None)
+            for n in (137, 23863)
+        ]
+    )
     np.testing.assert_array_equal(tx81z_dac(np.concatenate(replay)), expected)
 
 

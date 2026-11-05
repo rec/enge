@@ -115,9 +115,39 @@ in all 128 cases. The automated comparison uses the native signed PCM captures
 in `test/data/tx81z-ym2414-notes.npz` and checks partitioned attack/release and
 JSON replay. The archive stores one little-endian int16 array per case under
 `a{algorithm}f{feedback}p{profile}`. Its SHA-256 is
-`712558eb3283cfd46314c2362386823418990eb7e6f4b1db46baecd2d286d522`.
+`f6d68d03f2c714e94c6dd4b8db8578322ca1801e045076fba837145b0bd73098`.
 Separate regressions exercise held output at 96 kHz and grouped DAC hold after
 retirement at 192 kHz.
+
+## Pitch and amplitude modulation sweep
+
+Profiles 2–5 extend the asymmetric profile with the four LFO waveforms in
+numeric order. Operators 4 and 2 enable amplitude modulation. Saw and square
+use authored PMD/AMD 50, which map to registers 63/16, with PMS 4 and AMS 2.
+Triangle and noise use PMD/AMD 99, registers 127/127, PMS 7 and AMS 3.
+Authored speed 75 maps to register 242 for periodic waves and 193 for noise.
+Sync is enabled, delay is zero, and the shared clock continues through release.
+
+All eight algorithms at feedback zero and seven match exactly across these
+64 cases, or 3,072,000 additional samples. The public renderer consumes the
+shared context's native observations. Both note and LFO snapshots are restored
+after frame 17,003, and replay crosses key-off with a different partition.
+Results are recorded in [the modulation CSV](opz-note-modulation.csv).
+The component-control columns are blank for these cases. The same archive
+now contains 192 cases, covering 9,216,000 public-renderer observations.
+
+Generate profiles 2–5 with the register harness using the command pattern
+above, selecting feedback zero and seven. Then run:
+
+```sh
+uv run python doc/yamaha-reference/compare-opz-note.py \
+  --source /tmp/enge-chip-notes --modulation > /tmp/opz-note-modulation.csv
+diff doc/yamaha-reference/opz-note-modulation.csv /tmp/opz-note-modulation.csv
+```
+
+The archive uses the same case keys for profiles 2–5. Each value is the harness
+output loaded as native int32 and converted to little-endian int16. Every
+captured value fits in that range.
 
 This qualification covers the pinned software model and the stated sampling
 convention. Mixed operator modes, modulation and controller assignments,
