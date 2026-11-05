@@ -1,5 +1,8 @@
 # Yamaha reference comparisons
 
+The [WT11 pitch-envelope audit](wt11-pitch.md) records a pinned provisional
+conversion model and its timing/level limits before renderer integration.
+
 The [complete ratio-note comparison](opz-note.md) clocks a programmed YM2414
 through key-on and release. Native-clock enge components match all 6,144,000
 observations. The public note renderer now matches the same 128 captures.

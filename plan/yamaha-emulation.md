@@ -297,7 +297,7 @@ parameters and reserved bytes remain inspectable. WT11 voice objects are not
 TX81Z voice subclasses. Twenty-five new cases cover asymmetric operator values,
 bias endpoints, complete ACED2 messages, opaque/malformed data and raw-byte
 preservation; all 1,409 uFor tests pass. This implementation is in the shared
-library, not yet consumed by enge's pinned dependency or renderer.
+library; enge's WT11 renderer integration remains open.
 
 uFor commit `d8698f3` extends that parser to PCED and PCED2. PCED decodes eight
 allocations with the full eight-bit WT11 voice-number field and preserves the
@@ -323,8 +323,7 @@ so VMEM payload bytes cannot masquerade as another format identifier. Forty-one
 new cases cover fields, bias endpoints, distinct record boundaries, malformed
 banks, invalid shapes and accessor separation. All 1,493 uFor tests pass.
 This is packed-bank inspection, not bank export, program-change resolution,
-performance allocation or rendering. enge has not yet updated its dependency
-pin to consume these WT11 APIs.
+performance allocation or rendering.
 
 uFor commit `30c7ef6` adds `YamahaWT11Voice` with explicit VCED, ACED and ACED2
 fields, hexadecimal JSON/TOML serialization and a portable conformance example.
@@ -336,6 +335,21 @@ are required; TX81Z-specific LFO/DAC groups reject WT11 templates. Portable
 round trips, required buffers, bounded control domains, group separation and
 the regenerated published schema are covered; all 1,508 uFor tests pass.
 This is the shared schema contract, not enge admission or a WT11 renderer.
+
+enge commit `ab5dccb` pins uFor `30c7ef62beffbd3137797511828fc01b4f7688ff`,
+bringing these WT11 definitions and imports into the engine environment.
+The full enge suite passes (3,048 tests, 21 skipped), with Ruff, formatting,
+type checking and lockfile validation clean. This verifies the dependency
+integration against existing behavior, not WT11 audio support.
+
+The [WT11 pitch-envelope audit](../doc/yamaha-reference/wt11-pitch.md) pins
+DXconvert's three-stage-to-DX7 projection as a provisional implementation
+starting point. The related DX21 manual confirms PL3 onset/release, PL2 sustain
+and three rates, but its stated +4-octave endpoint differs from enge's DX7
+level-99 value by 37.5 cents. Its instantaneous-rate statement also differs from
+the existing DX7 executor's finite increments. Preserve these qualification
+limits when reusing the shared envelope state; neither source establishes
+measured WT11 timing or its fixed-frequency interaction.
 
 Connect the explicit WT11 instrument definition to pitch-envelope and
 aftertouch rendering. Keep TX81Z admission
