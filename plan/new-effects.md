@@ -363,3 +363,33 @@ For each chosen effect:
 ## Additional work beyond the prompt
 
 None.
+
+## Spectral processing choices for a later selection
+
+These six ideas were discussed on 2026-11-05 as candidates for priority item 7.
+They remain a selection catalogue while the first six priority entries are
+completed. Selecting one does not select all of them.
+
+| Candidate | Audible result | Useful first profile |
+| --- | --- | --- |
+| Spectral freeze | Capture a sound's frequency content and sustain it as a drone or pad. | Fixed FFT/window/hop sizes, bounded captured state, an explicit phase-evolution rule, declared latency and smooth freeze/release transitions. Distinct from the existing frozen granulator. |
+| Spectral blur | Smear attacks and frequency detail into softer, cloudy textures. | Bounded temporal and/or frequency smoothing with explicit energy, phase and tail behavior. It could reuse freeze's analysis/resynthesis infrastructure. |
+| Vocoder / cross-synthesis | Give a synth the articulation of speech, or transfer rhythmic/timbral motion between sounds. | Explicit carrier/modulator ports, a prepared band count or FFT profile, channel mapping, attack/release response, latency and independent input-end behavior. A filter-bank implementation need not use an FFT. |
+| Spectral delay | Give different frequency regions different echo times, creating scattered or shimmering textures. | A fixed spectral layout and bounded per-band/bin delay storage, explicit feedback, phase reconstruction, latency and finite tail retirement. This is an additional catalogue candidate, beyond ordinary time-domain delay. |
+| Tuned resonator bank | Make drums, noise or other material ring at selected pitches, producing metallic or string-like coloration. | A bounded set of tuned modes with declared excitation, damping, decay and gain conventions. It could reuse filter machinery; a spectral implementation is another possible profile. |
+| Frequency shifter | Produce clangorous, inharmonic or slowly rotating sounds by moving components by a fixed number of hertz. | A specified quadrature/analytic-signal path with explicit shift range, latency and channel policy. This differs from pitch transposition and need not require an FFT. |
+
+The recommendation is spectral freeze first, with blur as a later extension:
+it adds a distinct creative effect and establishes reusable spectral processing.
+For recognizable talking-synth or vocal effects, vocoding is the stronger first
+choice. enveLFO can animate exposed mix and spectral-shaping parameters through
+the shared effects modulation path.
+
+These are sound-design references, not implementation dependencies:
+[Ableton Spectral Time](https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#spectral-time)
+illustrates freeze and spectral delay;
+[Vocoder](https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#vocoder)
+illustrates carrier/modulator processing; and
+[Spectral Resonator](https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#spectral-resonator)
+illustrates tuned spectral resonance. Their controls and algorithms are not
+implicitly part of an enge profile.
