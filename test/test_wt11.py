@@ -206,7 +206,7 @@ def test_wt11_failed_control_rows_do_not_advance_pitch_or_chip_state(
     assert renderer.snapshot() == saved
 
 
-@pytest.mark.parametrize("index,value", [(2, 0), (3, 1)])
+@pytest.mark.parametrize("index,value", [(2, 0)])
 def test_wt11_rejects_unimplemented_aftertouch_assignments(
     index: int, value: int
 ) -> None:

@@ -45,42 +45,21 @@ Track verified details and remaining restrictions in
 [engine-execution.md](engine-execution.md). Changes to portable schemas or
 ambiguous musical behavior require a decision before implementation.
 
-## Remaining committed work
+## Completed Yamaha delivery boundary
 
-The user confirmed on 2026-11-03 that the completion goal covers the concrete
-roadmap and Yamaha requirements, while optional catalogues remain deferred.
+The user's 2026-11-05 closeout decision supersedes the expanded Yamaha backlog.
+DX7, TX81Z and WT11 are delivered as tested provisional offline profiles. See
+the [supported profile and known limits](../doc/yamaha-profile.md) and
+[closeout record](yamaha-completion.md). The general engine/control/sampler
+roadmap above is complete. No further Yamaha feature slice is part of this goal.
 
-- Complete and qualify [Yamaha emulation](yamaha-emulation.md); dedicated
-  offline DX7 and provisional TX81Z renderers are already started.
-  Outstanding work includes remaining controller behavior, integer/DAC
-  behavior, full reference comparison and hardware qualification. Firmware
-  tracing is optional: the user has no dump available and asked us to proceed
-  without making it a prerequisite.
-  The Yamaha adapter integrates seconds- and beat-clock enveLFO generators,
-  generator snapshots and minimum-hold release timing. Beat-clock sources use
-  the existing caller-owned tempo map, with tempo identity checked on restore.
-  WT11 remains a separate unfinished requirement: Yamaha's manual specifies
-  pitch-envelope and aftertouch fields, ACED2 and PCED2 buffers, and distinct
-  packed-memory layouts. uFor now inspects all five WT11 edit buffers and the
-  VMEM/PMEM/PMEM2 banks, including the documented operator order, bias encoding
-  and distinct packed DSP enables. Its explicit `YamahaWT11Voice` schema now
-  preserves all three voice buffers, aftertouch routes and prepared trigger
-  velocity. A direct WT11 note renderer now projects the pitch envelope onto
-  the shared OPZ core and snapshots all original buffers and pitch state.
-  The offline Yamaha adapter now admits that WT11 profile with one shared OPZ
-  clock per template, controls, mono/glide history, generators, snapshots and
-  MIDI-file dispatch. Aftertouch pitch/amplitude LFO assignments now use the
-  shared scoped-control path and provisional byte-depth model. Aftertouch bias,
-  WT11 performance execution and rendering
-  qualification remain open. The Yamaha plan records the exact
-  import boundaries and verification evidence.
-
-Use [yamaha-completion.md](yamaha-completion.md) as the remaining-work index:
-nine open packages covering controller biases, performance execution, software
-reference comparisons and final field/requirement disposition. Its delivery
-contract retains offline-first scope and the approved provisional models;
-native/live and hardware evidence limits are distinct from required software
-completion. Package count is not a percentage or time estimate.
+The adapter includes shared clocks, scoped controls, generators, tempo maps,
+minimum hold, fades, snapshots and MIDI-file dispatch. WT11 adds its distinct
+buffers, pitch-envelope projection and aftertouch LFO/EG assignments.
+Remaining pitch biases, performance execution, further reference convergence and the expanded field
+audit are deferred explicitly in the closeout record. They are not claimed as
+implemented or hardware-qualified. Historical requirements in the Yamaha plan
+remain reference material for a separately requested future task.
 
 ## Deferred choices
 

@@ -597,7 +597,11 @@ class OfflineYamaha:
                     template.patch.data[71:75] + template.additional.data[21:23]
                 ) or bool(template.patch.data[67] or template.patch.data[76])
             if isinstance(template, YamahaWT11Voice):
-                assignments = assignments or any(template.additional2.data[:2])
+                assignments = (
+                    assignments
+                    or any(template.additional2.data[:2])
+                    or bool(template.additional2.data[3])
+                )
             for i in range(frames):
                 at = start + i
                 if (
@@ -662,27 +666,16 @@ class OfflineYamaha:
                         ends[i : i + 1] - begin,
                         rows[voice.template][begin : end + 1],
                     )
-                    if isinstance(voice.renderer, yamaha.WT11Renderer):
-                        audio[i] = voice.renderer.render(
-                            1,
-                            modulation,
-                            tuning,
-                            controllers,
-                            breath,
-                            foot,
-                            portamento_enabled,
-                            aftertouch=aftertouch,
-                        )[0]
-                    else:
-                        audio[i] = voice.renderer.render(
-                            1,
-                            modulation,
-                            tuning,
-                            controllers,
-                            breath,
-                            foot,
-                            portamento_enabled,
-                        )[0]
+                    audio[i] = voice.renderer.render(
+                        1,
+                        modulation,
+                        tuning,
+                        controllers,
+                        breath,
+                        foot,
+                        portamento_enabled,
+                        aftertouch=aftertouch,
+                    )[0]
                 count += 1
             gain = 10 ** (template.processing.volume_db / 20)
             if template.processing.invert_polarity:

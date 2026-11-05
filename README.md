@@ -285,6 +285,11 @@ outside it; feedback requires a sequential recurrence.
 See the [FM plan and implementation status](plan/fm-synthesis.md) and
 [uFor FM semantics](../ufor/doc/fm-synthesis.md).
 
+Dedicated DX7, TX81Z and WT11 voices use the offline NumPy Yamaha adapter,
+with their own operator/envelope models, shared clocks, scoped controls and
+snapshots. See the [supported Yamaha profile and known limits](doc/yamaha-profile.md).
+Further Yamaha fidelity and performance-mode expansion are deferred.
+
 The white-noise engine in [noise.py](enge/noise.py) accepts uFor `NoiseVoice`
 definitions (`noise: "white"`, mapping `pitch_tracking: false`). Prepare the score
 with `noise.prepare(score)`, construct `noise.OfflineNoise(prepared,

@@ -318,6 +318,8 @@ class TX81ZRenderer:
         breath: np.ndarray | None = None,
         foot: np.ndarray | None = None,
         portamento_enabled: np.ndarray | None = None,
+        *,
+        aftertouch: np.ndarray | None = None,
     ) -> np.ndarray:
         """Render raw audio; controller_depths are summed byte contributions.
 
@@ -358,6 +360,7 @@ class TX81ZRenderer:
         ):
             raise EngineError("TX81Z foot rows must have shape (frames,) in 0..1")
         _validate_tx81z_depths(controller_depths, frames)
+        bias = self._eg_bias_rows(frames, breath, aftertouch)
         if modulation is None:
             if (
                 (
@@ -447,20 +450,7 @@ class TX81ZRenderer:
                         frequencies[:, i] - detune_offsets[:, i]
                     ) * tuning + detune_offsets[:, i]
         levels = self.levels
-        if self.voice.data[76]:
-            cc = (
-                np.zeros(frames, dtype=np.int64)
-                if breath is None
-                else (127 * breath).astype(np.int64)
-            )
-            bias = np.column_stack(
-                [
-                    _TX_BREATH_ATTENUATION[
-                        self.voice.data[76], o.eg_bias_sensitivity, cc
-                    ]
-                    for o in self.voice.operators
-                ]
-            )
+        if bias is not None:
             levels = np.maximum(
                 2 ** (-127 / 8), self.levels * 2 ** (-bias.astype(float) / 8)
             )
@@ -584,6 +574,19 @@ class TX81ZRenderer:
         self.portamento = (
             snapshot.portamento.model_copy(deep=True)
             if snapshot.portamento is not None
+            else None
+        )
+
+    def _eg_bias_rows(
+        self, frames: int, breath: np.ndarray | None, aftertouch: np.ndarray | None
+    ) -> np.ndarray | None:
+        if aftertouch is not None:
+            raise EngineError(
+                "TX81Z aftertouch must be routed through its breath control"
+            )
+        return (
+            _tx81z_bias_rows(self.voice, self.voice.data[76], breath, frames)
+            if self.voice.data[76]
             else None
         )
 
@@ -724,7 +727,8 @@ class WT11Renderer(TX81ZRenderer):
     host frame rate. It affects ratio operators through the existing tuning
     path. Timing, fixed-mode interaction and level endpoints are unqualified.
     Aftertouch LFO assignments use the provisional OPZ byte-depth model.
-    Aftertouch pitch bias and EG bias remain explicitly unsupported.
+    EG bias reuses measured TX81Z curves with strongest controller relief.
+    Aftertouch pitch bias remains explicitly unsupported.
     """
 
     def __init__(
@@ -748,10 +752,9 @@ class WT11Renderer(TX81ZRenderer):
             if diagnostic is not None:
                 raise EngineError(diagnostic)
         assignment = additional2.aftertouch
-        if assignment.eg_bias or assignment.pitch_bias != 50:
+        if assignment.pitch_bias != 50:
             raise EngineError(
-                "WT11 aftertouch assignments for pitch bias and EG bias "
-                "are not implemented"
+                "WT11 aftertouch assignments for pitch bias are not implemented"
             )
         data = bytearray(voice.data)
         extra = bytearray(additional.data)
@@ -778,6 +781,12 @@ class WT11Renderer(TX81ZRenderer):
         self.wt11_voice = voice.model_copy(deep=True)
         self.wt11_additional = additional.model_copy(deep=True)
         self.wt11_additional2 = additional2.model_copy(deep=True)
+        self.eg_bias_zero = np.stack(
+            [
+                _tx81z_bias_rows(self.voice, a, None, 1)[0]
+                for a in (self.voice.data[76], assignment.eg_bias)
+            ]
+        )
         pitch = voice.pitch_envelope
         self.pitch_envelope = DX7PitchEnvelope(
             rates=[
@@ -842,6 +851,7 @@ class WT11Renderer(TX81ZRenderer):
             breath,
             foot,
             portamento_enabled,
+            aftertouch=aftertouch,
         )
         self.pitch_envelope = pitch
         return output
@@ -872,6 +882,19 @@ class WT11Renderer(TX81ZRenderer):
             raise EngineError("WT11 snapshot belongs to a different note definition")
         super().restore(snapshot)
         self.pitch_envelope = snapshot.pitch_envelope.model_copy(deep=True)
+
+    def _eg_bias_rows(
+        self, frames: int, breath: np.ndarray | None, aftertouch: np.ndarray | None
+    ) -> np.ndarray | None:
+        amount = self.wt11_additional2.aftertouch.eg_bias
+        if not amount:
+            return super()._eg_bias_rows(frames, breath, None)
+        bc = _tx81z_bias_rows(self.voice, self.voice.data[76], breath, frames)
+        at = _tx81z_bias_rows(self.voice, amount, aftertouch, frames)
+        # Both controllers lift one operator attenuation baseline.
+        baseline = np.maximum(self.eg_bias_zero[0], self.eg_bias_zero[1])
+        relief = np.maximum(self.eg_bias_zero[0] - bc, self.eg_bias_zero[1] - at)
+        return baseline - relief
 
 
 class DX7Snapshot(BaseModel, frozen=True):
@@ -1456,6 +1479,22 @@ def _operator_order(voice: DX7Voice) -> list[int]:
     if len(result) != 6:
         raise EngineError("DX7 algorithm contains a current-sample cycle")
     return result
+
+
+def _tx81z_bias_rows(
+    voice: tx81z.TX81ZVoice, amount: int, positions: np.ndarray | None, frames: int
+) -> np.ndarray:
+    cc = (
+        np.zeros(frames, dtype=np.int64)
+        if positions is None
+        else (127 * positions).astype(np.int64)
+    )
+    return np.column_stack(
+        [
+            _TX_BREATH_ATTENUATION[amount, o.eg_bias_sensitivity, cc]
+            for o in voice.operators
+        ]
+    ).astype(np.int64)
 
 
 def _validate_tx81z_depths(depths: np.ndarray | None, frames: int) -> None:

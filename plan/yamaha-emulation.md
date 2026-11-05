@@ -2,16 +2,19 @@
 
 ## Status as of 2026-11-05
 
-The remaining-work index and closure evidence are tracked in
-[yamaha-completion.md](yamaha-completion.md). It separates required offline
-software work from hardware/native-live evidence limits and retains the
-original delivery boundaries.
+The user's 2026-11-05 closeout decision supersedes the expanded requirements
+below. The delivered boundary is the tested provisional
+[offline compatibility profile](../doc/yamaha-profile.md), with dispositions in
+[yamaha-completion.md](yamaha-completion.md). Remaining feature, performance and
+fidelity investigations are deferred and require a separate explicit task.
+Historical requirements and imperative language below are retained as reference,
+not continuing completion gates. No hardware equivalence is claimed.
 
 `enge/yamaha.py` already contains a Python DX7 note renderer, operator envelopes,
 frequency and level scaling, algorithm routing and feedback. This is partial
-implementation, not verified hardware equivalence. The requirements below remain
-the target contract; hardware/reference qualification, completion of TX81Z/WT11
-rendering and full engine integration require further work. Do not restart the existing DX7 implementation.
+implementation, not verified hardware equivalence. TX81Z and WT11 also have
+integrated offline profiles. Further reference convergence and performance-mode
+expansion are deferred. Do not restart the existing implementation.
 
 An initial [pinned MSFA comparison](../doc/yamaha-reference/README.md) now includes
 constructed named patches, the reference harness and paired 48 kHz WAV files.
@@ -366,8 +369,9 @@ the projected pitch state. Definition/parameter mismatch and legacy snapshots
 are rejected before state changes. Thirty-four focused tests cover asymmetric
 algorithms, absolute start, mixed fixed/ratio modes, hold/release, sample rates,
 JSON replay, partitioning and rejected controls. Their audio comparisons are
-48 kHz WAV regressions. Aftertouch bias assignments remain explicitly rejected;
-performance execution and hardware/reference qualification remain open.
+48 kHz WAV regressions. Aftertouch pitch bias remains explicitly rejected;
+EG bias is supported as described below. Performance execution and further
+hardware/reference qualification are deferred.
 
 The full suite with the direct WT11 pitch profile passes: 3,082 tests passed,
 21 skipped; Ruff, formatting, typing and pyupgrade checks are clean. This does
@@ -381,8 +385,8 @@ execution. Instrument JSON snapshots preserve the distinct WT11 note state and
 all original buffers. MIDI-file dispatch selects the offline NumPy Yamaha path.
 Twenty-seven additional focused cases cover these boundaries, stored bias 100,
 and admission boundaries. WT11-specific
-performance allocation, PCED2 LFO-control/DSP execution, aftertouch bias rendering
-and hardware qualification remain open; the reused clock/controller models
+performance allocation, PCED2 LFO-control/DSP execution, aftertouch pitch bias
+and hardware qualification remain deferred; the reused clock/controller models
 remain provisional for WT11.
 
 The full offline-integration suite passes with 3,109 tests passed and 21 skipped;
@@ -395,20 +399,25 @@ controller depths and saturate before register conversion. The offline adapter
 feeds these rows through the scoped `yamaha.aftertouch` target; shared controls
 retain smoothing and snapshot ownership. Thirty-six focused cases cover direct
 byte math, delay bypass, saturation, invalid rows and scoped/filter continuation.
-Pitch bias and EG bias remain rejected; neither is implemented as LFO modulation.
+Pitch bias remains rejected. EG bias uses a separate operator attenuation path.
 The [model report](../doc/yamaha-reference/wt11-pitch.md#aftertouch-lfo-assignments)
 records the precise provisional arithmetic and remaining qualification limits.
 
 The full suite with aftertouch LFO assignments passes: 3,119 tests passed and
 21 skipped; Ruff, formatting, type checking and pyupgrade checks are clean.
 
-Complete aftertouch bias and performance rendering. Keep TX81Z admission
-and its compatibility bytes distinct: WT11 field meanings must not silently
-change an existing TX81Z patch. Rendering then needs pitch-envelope timing,
-aftertouch assignment behavior, performance allocation and snapshot continuation
-with 48 kHz WAV regressions. Existing TX81Z/ymfm comparisons do not qualify those
-behaviors. The presence of DSP fields documents an import requirement; it does
-not select additional effects from the deferred effects catalogue.
+WT11 aftertouch EG bias now reuses the measured TX81Z per-operator table.
+Combined breath/aftertouch uses one baseline attenuation and the strongest
+controller relief, explicitly provisionally. The related DX11 manual identifies
+the shared EBS path but does not establish WT11 combination arithmetic. Eighteen
+focused regressions cover measured anchors, operator identity, saturation,
+invalid-input atomicity, scoped EG-only routes and JSON replay. See the
+[model report](../doc/yamaha-reference/wt11-pitch.md#aftertouch-eg-bias).
+Remaining pitch bias and performance features are deferred under the closeout
+decision. Existing TX81Z admission and compatibility meanings remain distinct.
+
+Final closeout verification: **3,135 passed, 21 skipped**, with Ruff, formatting,
+typing and pyupgrade checks clean.
 
 ### Current TX81Z renderer
 

@@ -77,8 +77,8 @@ parameters before changing state; a plain TX81Z snapshot cannot supply the
 missing pitch state. Invalid render controls do not advance the pitch envelope.
 
 Aftertouch LFO pitch and amplitude assignments are supported as described below.
-Pitch bias must remain 50 and EG bias zero; those two assignment paths remain
-explicitly rejected at note construction. Reserved bytes remain unrestricted
+Pitch bias must remain 50 and is explicitly rejected otherwise at note
+construction. EG bias is supported as described below. Reserved bytes remain unrestricted
 seven-bit data. Performance execution and hardware qualification remain incomplete.
 
 Direct-note regressions cover all eight algorithms with asymmetric operators,
@@ -103,8 +103,7 @@ rows; the context advances once per render interval. The clock uses the
 existing provisional TX81Z/ymfm model with WT11's documented global-byte layout,
 not a separately measured WT11 firmware mapping. WT11's stored breath-bias
 domain includes 100; declaring a breath route with a nonneutral bias remains
-an explicit admission error. Nonneutral aftertouch pitch bias and nonzero EG
-bias also fail admission.
+an explicit admission error. Nonneutral aftertouch pitch bias also fails admission.
 
 The existing scoped wheel/breath/foot, pitch-bend, tuning, filter and gain paths
 now accept WT11 templates. Mono held-note retention, glide history, minimum
@@ -151,7 +150,7 @@ apply. This is an explicit software model, not a measured WT11 firmware result.
 
 The note renderer owns this calculation so direct callers and the offline
 instrument use one path. `OfflineYamaha` reads the existing scoped
-`yamaha.aftertouch` target whenever a WT11 template assigns LFO aftertouch.
+`yamaha.aftertouch` target whenever a WT11 template assigns LFO or EG aftertouch.
 Control ramps, part/trigger isolation and snapshot continuation retain their
 existing shared ownership. Aftertouch rows remain caller inputs for direct
 note replay, like other controller rows; instrument snapshots retain their
@@ -160,8 +159,8 @@ scoped controlling state.
 Existing controller-depth rows are validated before adding pressure, so
 saturation cannot hide invalid negative/fractional values. Caller arrays are
 not mutated, including unsigned byte arrays. Invalid pressure rejects before
-pitch or native chip state advances. Pitch-bias and EG-bias assignments remain
-unsupported and rejected; this work does not substitute an LFO effect for them.
+pitch or native chip state advances. Pitch-bias assignments remain unsupported
+and rejected; EG bias uses the separate attenuation path below.
 
 Thirty-six focused cases pass: direct quantization/addition/saturation with
 pitch-only, amplitude-only and combined assignments; delay bypass; omitted
@@ -172,6 +171,41 @@ mapping and complete hardware behavior remain provisional.
 
 The full suite with aftertouch LFO integration passes: 3,119 tests passed and
 21 skipped. Ruff, formatting, type checking and pyupgrade checks are clean.
+
+## Aftertouch EG bias
+
+ACED2 byte 3 now drives operator attenuation independently of the LFO. The
+related [DX11 manual](https://synthmania.com/wp-content/uploads/2020/05/DX11E.pdf),
+printed pages 9 and 13, describes breath and aftertouch EG bias through each
+operator's EBS. It does not specify WT11 combination arithmetic. We provisionally
+reuse the measured TX81Z table in `enge/yamaha_breath.npy` for each source.
+
+For source `s`, let `E_s(q)` be that operator's measured attenuation at integer
+pressure `q = floor(127 * position)`, and `z_s = E_s(0)`. Combined attenuation is
+`max(z_breath, z_aftertouch) - max(z_breath - E_breath(q_breath), z_aftertouch - E_aftertouch(q_aftertouch))`.
+This uses one baseline and the stronger relief, preserving each single-source
+curve. Disabled assignments and zero EBS contribute zero. Omitted rows mean
+zero pressure. Both the WT11 curve reuse and combination rule are provisional,
+not WT11 firmware measurements.
+
+The existing OPZ operator path applies this before the TL-127 floor and foot
+volume. WT11 owns its combination hook; TX81Z still requires raw aftertouch to
+be routed through breath. Derived zero-pressure baselines are reconstructed
+from original patch buffers, so snapshots need no additional serialized state.
+Instrument snapshots retain scoped controls; direct callers resupply input rows.
+
+Eighteen focused regressions cover measured anchors, disabled and muted
+operators, mixed/reordered sensitivities, combined sources, foot saturation,
+omitted pressure, invalid-input atomicity, held/released replay and EG-only
+instrument/part/trigger routes with interrupted smoothing and overlapping notes.
+Audio comparisons use paired 48 kHz WAVs of at least one second.
+
+The final full suite passes: **3,135 passed, 21 skipped**. Ruff, formatting,
+type checking and pyupgrade checks are clean.
+
+The [accepted offline profile](../yamaha-profile.md) closes the current Yamaha
+milestone. Remaining pitch biases, performance features and fidelity work are
+deferred; existing failing reference comparisons remain documented.
 
 ## Additional work beyond the prompt
 

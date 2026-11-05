@@ -405,7 +405,7 @@ def test_wt11_admits_full_stored_bias_domain_without_an_active_breath_route(
     check_audio(tmp_path / "wt11-bias.wav", engine.advance(actions, 0, 48000), expected)
 
 
-@pytest.mark.parametrize("index,value", [(2, 0), (3, 1)])
+@pytest.mark.parametrize("index,value", [(2, 0)])
 def test_wt11_rejects_active_aftertouch_assignments_during_instrument_admission(
     index: int, value: int
 ) -> None:
@@ -569,7 +569,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
     )
     if kind == "wt11":
         targets.append(("aftertouch", "yamaha", "aftertouch", "ratio", 0, 0.6))
-        voice["additional2"] = bytes([43, 75, 50, 0, 1, 2, 3, 4, 5, 6]).hex()
+        voice["additional2"] = bytes([43, 75, 50, 50, 1, 2, 3, 4, 5, 6]).hex()
     for name, target_name, parameter, unit, default, amount in targets:
         target = {"name": target_name, "parameter": parameter}
         parameters.append(
@@ -700,10 +700,6 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 + ((103 * breath * 2) >> 8)
                 + ((25 * foot * 2) >> 8)
             )
-            if isinstance(note, yamaha.WT11Renderer):
-                pressure = np.floor(signal * 0.6 * 127).astype(np.int64)
-                pitch += (110 * pressure * 2) >> 8
-                amplitude_depth += (193 * pressure * 2) >> 8
             audio = note.render(
                 48000 - start,
                 modulation,
@@ -713,6 +709,9 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 ),
                 breath=signal * 0.5,
                 foot=signal * 0.75,
+                aftertouch=signal * 0.6
+                if isinstance(note, yamaha.WT11Renderer)
+                else None,
             )
         amplitude = 1 - 0.8 * signal
         values = np.column_stack([500 + 1500 * signal, 0.5 + signal])[:, None, :]
