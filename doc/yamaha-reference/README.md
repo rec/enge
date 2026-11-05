@@ -180,6 +180,26 @@ state on keydown, and rejection of a mismatched secondary definition before
 restore. The compressed oracle's SHA-256 is
 `f9684e8a0a38ae8c282d65b8851a9affda81c1d760fbecaacb2d17af963c926d`.
 
+`TX81ZLFOContext.advance_ticks(frames)` exposes every native observation.
+It returns an array of final tick indices for the host frames and an array
+of observations. Observation zero holds the preceding value. A frame with
+zero completed ticks reuses that value, and a frame with multiple ticks can
+access the intervening rows. `advance(frames)` projects these observations
+onto the host frame indices and stores one row per frame. Both calls advance
+the same clock. A caller can advance once and share the resulting rows across
+all voices rendering that interval.
+
+The reference harness accepts `--ticks` before its register arguments to
+capture every completed chip tick. The paired capture used
+`--ticks 193 127 127 3 output.i32 223 2`. Its 55,930 four-column rows are
+stored as the `rows` array in `test/data/tx81z-lfo-ticks.npz`, compressed as
+little-endian signed 16-bit integers. The archive's SHA-256 is
+`0267752f7816c998eb02e56a765d846095088c1e246e8b779a8a7e6077d09ef1`.
+The primary noise and secondary triangle observations match the capture at
+both 24 kHz and 96 kHz host rates. Tests verify frame indices, zero-length
+advances and JSON continuation after 17 frames. Delay progress retains the
+existing host-frame timing model.
+
 This qualifies paired clock arithmetic against ymfm. It does not qualify
 hardware, firmware delay-reset policy, multitimbral allocation/routing, software
 vibrato, or the full performance renderer. Restarting both configured delay

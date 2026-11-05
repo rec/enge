@@ -249,6 +249,8 @@ class TX81ZLFOContext:
             raise EngineError(
                 "TX81Z LFO snapshot belongs to a different clock definition"
             )
+        if not 0 <= snapshot.clock_remainder < 64 * snapshot.sample_rate:
+            raise EngineError("Invalid TX81Z LFO snapshot clock remainder")
         self.state = snapshot.model_copy(deep=True)
 
     def keydown(self) -> None:
@@ -266,6 +268,17 @@ class TX81ZLFOContext:
         self.state = self.state.model_copy(update=updates)
 
     def advance(self, frames: int) -> np.ndarray:
+        return self._advance(frames, native=False)[1]
+
+    def advance_ticks(self, frames: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return the last tick index per host frame and all shared observations.
+
+        Row zero holds the preceding observation, including when a host frame
+        contains no tick. Each subsequent row follows one complete chip clock.
+        """
+        return self._advance(frames, native=True)
+
+    def _advance(self, frames: int, *, native: bool) -> tuple[np.ndarray, np.ndarray]:
         if frames < 0:
             raise EngineError("TX81Z LFO frame count must be nonnegative")
         state = self.state
@@ -281,16 +294,32 @@ class TX81ZLFOContext:
         increment = (16 | (state.rate & 15)) << (state.rate >> 4)
         secondary_rate = state.secondary_rate or 0
         secondary_increment = (16 | (secondary_rate & 15)) << (secondary_rate >> 4)
-        output = np.empty((frames, count, 4), dtype=np.int64)
+        divisor = 64 * state.sample_rate
+        ends = np.empty(frames if native else 0, dtype=np.int64)
+        length = (
+            (remainder + frames * state.clock_hz) // divisor + 1 if native else frames
+        )
+        output = np.empty((length, count, 4), dtype=np.int64)
         durations = [
             _TX_DELAY_TICKS[x] * state.sample_rate
             for x in (state.delay, state.secondary_delay)
         ]
+        held = np.array(
+            [
+                pitch[:count],
+                amplitude[:count],
+                progress[:count],
+                [max(1, d) for d in durations[:count]],
+            ],
+            dtype=np.int64,
+        ).T
+        if native:
+            output[0] = held
+        tick = 0
         for frame in range(frames):
-            ticks, remainder = divmod(
-                remainder + state.clock_hz, 64 * state.sample_rate
-            )
+            ticks, remainder = divmod(remainder + state.clock_hz, divisor)
             for _ in range(ticks):
+                tick += 1
                 for _ in range(2):
                     noise = (noise << 1) & (2**32 - 1)
                     noise |= ((noise >> 17) ^ (noise >> 14) ^ 1) & 1
@@ -323,13 +352,13 @@ class TX81ZLFOContext:
                         if duration
                         else 1
                     )
-            for lfo in range(count):
-                output[frame, lfo] = (
-                    pitch[lfo],
-                    amplitude[lfo],
-                    progress[lfo],
-                    max(1, durations[lfo]),
-                )
+                    held[lfo, :3] = pitch[lfo], amplitude[lfo], progress[lfo]
+                if native:
+                    output[tick] = held
+            if native:
+                ends[frame] = tick
+            else:
+                output[frame] = held
         self.state = state.model_copy(
             update={
                 "frame": state.frame + frames,
@@ -348,7 +377,7 @@ class TX81ZLFOContext:
                 "secondary_delay_elapsed": elapsed[1] + frames if count == 2 else 0,
             }
         )
-        return output[:, 0] if count == 1 else output
+        return ends, output[:, 0] if count == 1 else output
 
 
 # Measured completion times in 1/48 second, with reported uncertainty of one tick.

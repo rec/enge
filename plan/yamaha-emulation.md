@@ -720,6 +720,13 @@ gate is a common native tick origin, tick-aligned events and LFOs, per-tick
 voice summation/DAC and partition-independent host observation. Native timing
 and held output must survive snapshot restoration.
 
+Shared LFO clocks now expose every native tick, the preceding held observation
+and the last completed tick index of each host frame. All 55,930 paired
+noise/triangle observations match the pinned ymfm tick capture at 24 kHz and
+96 kHz, including continuation after a partition with a nonzero clock remainder.
+The note renderer and instrument still need to consume these tick rows on the
+common grid and retain held audio across frames without a chip tick.
+
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
   and ACED waveform selections into the same Yamaha renderer family.

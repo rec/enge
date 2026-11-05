@@ -48,6 +48,39 @@ def test_tx81z_dual_lfos_match_pinned_shared_noise_and_snapshot(
     assert context.snapshot() == restored.snapshot()
 
 
+@pytest.mark.parametrize("rate", [24000, 96000])
+def test_shared_tick_rows_match_native_capture_across_host_partitions(
+    tmp_path: Path, rate: int
+) -> None:
+    primary = lfo_voice(3)
+    raw = bytearray(lfo_voice(2).data)
+    raw[54] = 50
+    secondary = tx81z.TX81ZVoice(data=bytes(raw))
+    context = TX81ZLFOContext(primary, rate, secondary=secondary)
+    first_ends, first = context.advance_ticks(17)
+    saved = TX81ZLFOSnapshot.model_validate_json(context.snapshot().model_dump_json())
+    replay = TX81ZLFOContext(primary, rate, secondary=secondary)
+    replay.restore(saved)
+    empty, held = replay.advance_ticks(0)
+    assert not len(empty) and replay.snapshot() == saved
+    np.testing.assert_array_equal(held, first[-1:])
+    ends, rows = replay.advance_ticks(rate - 17)
+    np.testing.assert_array_equal(rows[0], first[-1])
+    all_rows = np.concatenate([first, rows[1:]])
+    all_ends = np.concatenate([first_ends, ends + first_ends[-1]])
+    expected_ends = np.arange(1, rate + 1) * 3579545 // (64 * rate)
+    np.testing.assert_array_equal(all_ends, expected_ends)
+    with np.load(Path(__file__).with_name("data") / "tx81z-lfo-ticks.npz") as reference:
+        expected = reference["rows"]
+    scaled = ((all_rows[1:, :, :2] * 127) >> 7).reshape(-1, 4)
+    check_audio(
+        tmp_path / "native-lfo-ticks.wav", scaled.astype(float), expected.astype(float)
+    )
+    host = TX81ZLFOContext(primary, rate, secondary=secondary)
+    np.testing.assert_array_equal(host.advance(rate), all_rows[all_ends])
+    assert host.snapshot() == replay.snapshot()
+
+
 @pytest.mark.parametrize("sync", [False, True])
 def test_tx81z_dual_lfos_reset_delays_and_only_synced_phases(sync: bool) -> None:
     first = bytearray(lfo_voice().data)
@@ -79,6 +112,17 @@ def test_tx81z_dual_lfo_rejects_foreign_secondary_before_restore() -> None:
     with pytest.raises(EngineError, match="different clock definition"):
         context.restore(other.snapshot())
     assert context.snapshot() == snapshot
+
+
+def test_shared_lfo_restore_rejects_a_remainder_containing_a_whole_tick() -> None:
+    context = TX81ZLFOContext(lfo_voice())
+    context.advance_ticks(17)
+    saved = context.snapshot()
+    with pytest.raises(EngineError, match="clock remainder"):
+        context.restore(
+            saved.model_copy(update={"clock_remainder": 64 * saved.sample_rate})
+        )
+    assert context.snapshot() == saved
 
 
 @pytest.mark.parametrize("waveform", range(4))

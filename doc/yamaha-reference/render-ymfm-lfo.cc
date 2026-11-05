@@ -1,9 +1,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include "ymfm_opz.h"
 
 int main(int argc, char **argv) {
+    const bool ticks = argc > 1 && std::strcmp(argv[1], "--ticks") == 0;
+    if (ticks) { --argc; ++argv; }
     if (argc != 6 && argc != 8) return 2;
     ymfm::opz_registers regs;
     regs.reset();
@@ -23,16 +26,20 @@ int main(int argc, char **argv) {
     if (!output) return 3;
     uint32_t remainder = 0;
     int32_t pm = 0;
+    const auto write_row = [&]() {
+        int32_t row[4] = {int8_t(pm), int32_t(regs.lfo_am_offset(0)),
+            int8_t(pm >> 8), int32_t(regs.lfo_am_offset(1))};
+        size_t count = argc == 8 ? 4 : 2;
+        return std::fwrite(row, sizeof(int32_t), count, output) == count;
+    };
     for (int frame = 0; frame < 48000; ++frame) {
         remainder += 3579545;
         while (remainder >= 64 * 48000) {
             remainder -= 64 * 48000;
             pm = regs.clock_noise_and_lfo();
+            if (ticks && !write_row()) return 4;
         }
-        int32_t row[4] = {int8_t(pm), int32_t(regs.lfo_am_offset(0)),
-            int8_t(pm >> 8), int32_t(regs.lfo_am_offset(1))};
-        size_t count = argc == 8 ? 4 : 2;
-        if (std::fwrite(row, sizeof(int32_t), count, output) != count) return 4;
+        if (!ticks && !write_row()) return 4;
     }
     return std::fclose(output) != 0;
 }
