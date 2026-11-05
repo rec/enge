@@ -5,7 +5,7 @@ from ufor import envelfo, envelfo_random
 from ufor.samples import processing
 
 
-def prepare_graph(settings: processing.SoundSettings) -> patch.PreparedPatch:
+def prepare_graph(settings: processing.ModulationSettings) -> patch.PreparedPatch:
     children: dict[str, object] = {}
     outputs: dict[str, str] = {}
     inputs: list[str] = []

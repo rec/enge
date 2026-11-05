@@ -9,6 +9,12 @@ realtime adapters also exist. Check `enge/effects.py`, `enge/rubberband.py` and
 their tests before selecting a new slice. The descriptions below retain design
 requirements, including requirements beyond the implemented profiles.
 
+As of 2026-11-05, the existing graph processors also accept shared enveLFO
+bindings and Patch outputs, including delay-time motion. See
+[effect modulation](../doc/effect-modulation.md) for the implemented control,
+clock, snapshot and native callback boundaries. This does not select another
+effect category from the catalogue.
+
 ## Purpose
 
 This is a catalogue for choosing the next effect after gain, resonant filtering,

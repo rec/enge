@@ -16,6 +16,9 @@ precedence over historical proposals in the other plans.
   gate; device deadlines and native host integration are separate boundaries.
 - Effects include gain, filters, multiplication, granulation, soft clip,
   tap/modulated delay and optional Rubber Band adapters.
+  Graph processors use shared enveLFO bindings/routes in NumPy and native live
+  execution, with generator snapshots and caller-owned beat clocks; see
+  [effect modulation](../doc/effect-modulation.md).
 
 ## Completed control/runtime parity and sampler coverage
 

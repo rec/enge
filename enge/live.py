@@ -93,6 +93,7 @@ class NativeLiveEngine:
             self.runtime.set_effect_graph(
                 *effects.native_live_graph(effect_chain), batch_capacity
             )
+            effects.configure_native_generators(self.runtime, effect_chain)
         self.frame = 0
 
     def advance_into(

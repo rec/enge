@@ -435,6 +435,11 @@ verifies lossless encoding before publishing
 `.pytest_cache/d/audio/fm-demo-numpy.flac` and
 `.pytest_cache/d/audio/fm-demo-native.flac`.
 
+Existing effect processors accept named enveLFO generators and Patch outputs
+through the same modulation routes as synth voices, including direct delay-time
+motion for chorus/flanger. See [effect modulation](doc/effect-modulation.md) for
+bindings, automation composition, clocks and snapshot ownership.
+
 Run `uv run python scripts/live-effects.py` to render a six-second effects demo:
 dry, individually granulated, then shared frozen-granulated oscillator, sampler,
 FM, and noise voices. It writes `live-effects.flac` at 48 kHz; `--backend numpy`

@@ -1,16 +1,19 @@
 """Independent NumPy realization of uFor's prepared audio-effect graphs."""
 
 from collections.abc import Callable
+from fractions import Fraction
 from math import pow
 from typing import Literal
 
 import numpy as np
+from envelfo import patch
 from pydantic import BaseModel, ConfigDict, Field
-from ufor import audio_effects
+from ufor import audio_effects, instrument_trace, modulation
+from ufor.control import TempoMap
 from ufor.oscillator import Waveform
 from ufor.samples.processing import FilterResponse
 
-from . import filters
+from . import _native, filters, synth
 from .synth import EngineError
 
 
@@ -81,6 +84,11 @@ class EffectSnapshot(BaseModel, frozen=True):
     processors: dict[str, ProcessorState]
     ended_inputs: dict[str, int]
     stopped_at: int | None
+    tempo_map: TempoMap | None = None
+    lfos: list[synth.LFOSource] = Field(default_factory=list)
+    envelopes: list[synth.EnvelopeSource] = Field(default_factory=list)
+    patches: list[synth.PatchState] = Field(default_factory=list)
+    graphs: dict[str, patch.PatchState] = Field(default_factory=dict)
 
 
 class PreparedEffects(BaseModel, frozen=True):
@@ -88,6 +96,7 @@ class PreparedEffects(BaseModel, frozen=True):
     sample_rate: int = Field(gt=0)
     order: list[str]
     channels: list[str]
+    tempo_map: TempoMap | None = None
 
 
 class OfflineEffects:
@@ -110,6 +119,25 @@ class OfflineEffects:
             p.name: _initial_state(p, len(layouts[p.name]), self.definition.sample_rate)
             for p in definition.definition.processors
         }
+        self.controls = synth.ControlRenderer(
+            definition.sample_rate,
+            {},
+            [self.definition.definition],
+            tempo_map=definition.tempo_map,
+        )
+        self.sources = self.controls.sources(
+            self.definition.definition,
+            instrument_trace.VoiceStart(
+                tick=0,
+                ordinal=0,
+                voice_id="effects",
+                part="effects",
+                trigger_id=None,
+                template="effects",
+                key=None,
+            ),
+        )
+        self.modulated: dict[tuple[str, str], float] = {}
 
     def advance(
         self,
@@ -171,6 +199,7 @@ class OfflineEffects:
                     action_index += 1
                 if self.stopped_at is not None:
                     continue
+                self._modulate(frame)
                 audio, ended = self._process_frame(source_audio, i, frame)
                 if ended:
                     self.stopped_at = frame
@@ -249,15 +278,16 @@ class OfflineEffects:
             while action_index < len(actions) and actions[action_index].tick == frame:
                 self._apply(actions[action_index])
                 action_index += 1
+            self._modulate(frame)
             for j, processor in enumerate(ordered):
                 state = self.processors[processor.name]
-                values[i, j, 1] = state.parameters["mix"].value(
-                    frame
+                values[i, j, 1] = self._value(
+                    processor, "mix", frame
                 ) * state.bypass.value(frame)
                 if isinstance(processor, audio_effects.Gain):
-                    values[i, j, 0] = state.parameters["gain_db"].value(frame)
+                    values[i, j, 0] = self._value(processor, "gain_db", frame)
                 elif isinstance(processor, audio_effects.SoftClip):
-                    values[i, j, 0] = state.parameters["drive"].value(frame)
+                    values[i, j, 0] = self._value(processor, "drive", frame)
                 elif isinstance(processor, audio_effects.Filter):
                     if (node_filter_values := filter_values[j]) is None:
                         node_filter_values = np.zeros(
@@ -266,8 +296,8 @@ class OfflineEffects:
                         filter_values[j] = node_filter_values
                     node_filter_values[i] = [
                         [
-                            state.parameters[f"{f.name}-cutoff_hz"].value(frame),
-                            state.parameters[f"{f.name}-q"].value(frame),
+                            self._value(processor, f"{f.name}-cutoff_hz", frame),
+                            self._value(processor, f"{f.name}-q", frame),
                         ]
                         for f in processor.filters
                     ]
@@ -340,8 +370,9 @@ class OfflineEffects:
             while action_index < len(actions) and actions[action_index].tick == frame:
                 self._apply(actions[action_index])
                 action_index += 1
-            values[i, :5] = [state.parameters[n].value(frame) for n in names]
-            values[i, 5] = state.parameters["mix"].value(frame) * state.bypass.value(
+            self._modulate(frame)
+            values[i, :5] = [self._value(processor, n, frame) for n in names]
+            values[i, 5] = self._value(processor, "mix", frame) * state.bypass.value(
                 frame
             )
             values[i, 6] = granular.frozen
@@ -391,12 +422,18 @@ class OfflineEffects:
             processors=self.processors,
             ended_inputs=self.ended_inputs,
             stopped_at=self.stopped_at,
+            tempo_map=self.controls.tempo_map,
+            lfos=self.controls.lfos,
+            envelopes=self.controls.envelopes,
+            patches=self.controls.patches,
+            graphs=self.controls.graphs,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: EffectSnapshot) -> None:
         if (
             snapshot.definition != self.definition.definition
             or snapshot.sample_rate != self.definition.sample_rate
+            or snapshot.tempo_map != self.controls.tempo_map
         ):
             raise EngineError("Snapshot belongs to different prepared effects")
         snapshot = snapshot.model_copy(deep=True)
@@ -404,6 +441,12 @@ class OfflineEffects:
         self.processors = snapshot.processors
         self.ended_inputs = snapshot.ended_inputs
         self.stopped_at = snapshot.stopped_at
+        self.controls.clear_cache()
+        self.controls.lfos = snapshot.lfos
+        self.controls.envelopes = snapshot.envelopes
+        self.controls.patches = snapshot.patches
+        self.controls.graphs = snapshot.graphs
+        self.modulated = {}
 
     @property
     def drained(self) -> bool:
@@ -416,6 +459,22 @@ class OfflineEffects:
             if action.input in self.ended_inputs:
                 raise ValueError(f"Effect input {action.input} already ended")
             self.ended_inputs[action.input] = action.tick
+            if isinstance(
+                next(i.source for i in graph.inputs if i.name == action.input),
+                audio_effects.MainStream,
+            ):
+                self.controls.release(
+                    graph,
+                    self.sources,
+                    instrument_trace.VoiceRetirement(
+                        tick=action.tick,
+                        ordinal=action.ordinal + 1,
+                        voice_id="effects",
+                        cause=instrument_trace.RetirementCause.logical_release,
+                        action="release",
+                    ),
+                    Fraction(action.tick, self.definition.sample_rate),
+                )
         elif isinstance(action, audio_effects.StopAction):
             self.stopped_at = action.tick
         elif isinstance(action, audio_effects.ParameterAction):
@@ -449,6 +508,36 @@ class OfflineEffects:
             granular.frozen = action.frozen
         else:
             raise ValueError("Unknown effect action")
+
+    def _modulate(self, frame: int) -> None:
+        graph = self.definition.definition
+        if not graph.modulation.parameters:
+            return
+        values = self.controls.values(
+            graph,
+            self.sources,
+            frame,
+            1,
+            {
+                (p.target.name, p.target.parameter): np.array(
+                    [
+                        self.processors[p.target.name]
+                        .parameters[p.target.parameter]
+                        .value(frame)
+                    ]
+                )
+                for p in graph.modulation.parameters
+            },
+        )
+        self.modulated = {n: float(v[0]) for n, v in values.items()}
+
+    def _value(
+        self, processor: audio_effects.Processor, name: str, frame: int
+    ) -> float:
+        return self.modulated.get(
+            (processor.name, name),
+            self.processors[processor.name].parameters[name].value(frame),
+        )
 
     def _process_frame(
         self, input_audio: dict[str, np.ndarray], index: int, frame: int
@@ -497,15 +586,15 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
-        authored_mix = state.parameters["mix"].value(frame)
+        authored_mix = self._value(processor, "mix", frame)
         mix = authored_mix * state.bypass.value(frame)
         if isinstance(processor, audio_effects.Gain):
             dry = ports["input"]
-            wet = dry * pow(10, state.parameters["gain_db"].value(frame) / 20)
+            wet = dry * pow(10, self._value(processor, "gain_db", frame) / 20)
             return _mix(dry, wet, mix), ended["input"]
         if isinstance(processor, audio_effects.SoftClip):
             dry = ports["input"]
-            drive = state.parameters["drive"].value(frame)
+            drive = self._value(processor, "drive", frame)
             wet = np.tanh(drive * dry) / np.tanh(drive)
             return _mix(dry, wet, mix), ended["input"]
         if isinstance(processor, audio_effects.Multiply):
@@ -517,8 +606,8 @@ class OfflineEffects:
             values = np.array(
                 [
                     [
-                        state.parameters[f"{f.name}-cutoff_hz"].value(frame),
-                        state.parameters[f"{f.name}-q"].value(frame),
+                        self._value(processor, f"{f.name}-cutoff_hz", frame),
+                        self._value(processor, f"{f.name}-q", frame),
                     ]
                     for f in processor.filters
                 ]
@@ -572,12 +661,12 @@ class OfflineEffects:
             delay_frames = max(
                 1,
                 round(
-                    state.parameters["delay_seconds"].value(frame)
+                    self._value(processor, "delay_seconds", frame)
                     * self.definition.sample_rate
                 ),
             )
             wet = np.asarray(delay.history[(delay.write - delay_frames) % frames])
-            feedback = state.parameters["feedback"].value(frame)
+            feedback = self._value(processor, "feedback", frame)
             value = dry if not ended["input"] else np.zeros_like(dry)
             history = value + feedback * wet
             history[np.abs(history) < processor.state_floor] = 0
@@ -599,8 +688,8 @@ class OfflineEffects:
                 1,
                 np.rint(
                     (
-                        state.parameters["base_delay_seconds"].value(frame)
-                        + state.parameters["depth_seconds"].value(frame) * lfo
+                        self._value(processor, "base_delay_seconds", frame)
+                        + self._value(processor, "depth_seconds", frame) * lfo
                     )
                     * self.definition.sample_rate
                 ).astype(np.int64),
@@ -611,7 +700,7 @@ class OfflineEffects:
                     for channel, value in enumerate(delays)
                 ]
             )
-            feedback = state.parameters["feedback"].value(frame)
+            feedback = self._value(processor, "feedback", frame)
             value = dry if not ended["input"] else np.zeros_like(dry)
             history = value + feedback * wet
             history[np.abs(history) < processor.state_floor] = 0
@@ -619,7 +708,7 @@ class OfflineEffects:
             delay.write = (delay.write + 1) % frames
             delay.phase = (
                 delay.phase
-                + state.parameters["rate_hz"].value(frame) / self.definition.sample_rate
+                + self._value(processor, "rate_hz", frame) / self.definition.sample_rate
             ) % 1
             drained = ended["input"] and all(
                 abs(v) < processor.tail_threshold for row in delay.history for v in row
@@ -644,7 +733,7 @@ class OfflineEffects:
             if len(granular.history) > maximum:
                 granular.history.pop(0)
                 granular.history_start += 1
-        density = state.parameters["density_hz"].value(frame)
+        density = self._value(processor, "density_hz", frame)
         launch, granular.phase = audio_effects.grain_launches(
             granular.phase, density, rate
         )
@@ -661,12 +750,12 @@ class OfflineEffects:
                     granular.frozen_start if granular.frozen else granular.history_start
                 )
                 duration = max(
-                    2, round(state.parameters["duration_seconds"].value(frame) * rate)
+                    2, round(self._value(processor, "duration_seconds", frame) * rate)
                 )
-                ratio = state.parameters["playback_ratio"].value(frame)
-                lookback = state.parameters["lookback_seconds"].value(frame) * rate
+                ratio = self._value(processor, "playback_ratio", frame)
+                lookback = self._value(processor, "lookback_seconds", frame) * rate
                 jitter = (
-                    state.parameters["position_jitter_seconds"].value(frame)
+                    self._value(processor, "position_jitter_seconds", frame)
                     * rate
                     * audio_effects.grain_jitter(counter)
                 )
@@ -686,7 +775,7 @@ class OfflineEffects:
                             samples=captured,
                             gain=audio_effects.grain_gain(
                                 density,
-                                state.parameters["duration_seconds"].value(frame),
+                                self._value(processor, "duration_seconds", frame),
                             ),
                         )
                     )
@@ -770,9 +859,18 @@ def process_audio(
     return output
 
 
-def prepare(definition: audio_effects.EffectGraph, sample_rate: int) -> PreparedEffects:
+def prepare(
+    definition: audio_effects.EffectGraph,
+    sample_rate: int,
+    tempo_map: TempoMap | None = None,
+) -> PreparedEffects:
     if sample_rate <= 0:
         raise EngineError("Effect sample rate must be positive")
+    definition = synth.expand_patch_outputs(definition)
+    if tempo_map is None and any(
+        g.clock == "beats" for g in definition.envelfos.values()
+    ):
+        raise EngineError("Beat-clock Envelfo requires a host tempo map")
     for processor in definition.processors:
         if isinstance(processor, audio_effects.Filter):
             filters.parameters(processor.filters, sample_rate, 1)
@@ -783,6 +881,7 @@ def prepare(definition: audio_effects.EffectGraph, sample_rate: int) -> Prepared
         sample_rate=sample_rate,
         order=definition.order(),
         channels=definition.output_channels(),
+        tempo_map=tempo_map,
     )
 
 
@@ -932,6 +1031,72 @@ def native_live_graph(
     )
 
 
+def configure_native_generators(
+    runtime: _native.LiveRuntime, definition: PreparedEffects
+) -> None:
+    """Prepare the shared Rust generator executor for one effect instance."""
+    graph = definition.definition
+    if not graph.bindings:
+        return
+    parameters = graph.modulation.parameters
+    for processor in graph.processors:
+        if isinstance(processor, audio_effects.Filter):
+            for body in processor.filters:
+                for parameter in parameters:
+                    if (parameter.target.name, parameter.target.parameter) == (
+                        processor.name,
+                        f"{body.name}-cutoff_hz",
+                    ) and not (
+                        body.minimum_hz <= parameter.minimum
+                        and parameter.maximum
+                        <= definition.sample_rate / 2 * body.nyquist_ratio
+                    ):
+                        raise EngineError(
+                            "Native effect cutoff modulation must remain "
+                            "within filter limits"
+                        )
+    indices = {(p.target.name, p.target.parameter): i for i, p in enumerate(parameters)}
+    prepared = synth._persistent_modulation(
+        definition.sample_rate,
+        {},
+        graph,
+        [
+            (
+                (p.target.name, p.target.parameter),
+                i,
+                modulation.Operation.add,
+                p.default,
+                p.minimum,
+                p.maximum,
+            )
+            for i, p in enumerate(parameters)
+        ],
+    )
+    bank, _, transforms = synth._prepare_native_generators(
+        definition.sample_rate,
+        1,
+        graph,
+        prepared,
+        definition.tempo_map,
+        indices,
+    )
+    processors = {p.name: p for p in graph.processors}
+    nodes = {n: i for i, n in enumerate(definition.order)}
+    runtime.set_effect_generators(
+        bank,
+        [*prepared[20][1:], transforms],
+        [
+            (
+                nodes[p.target.name],
+                _native_parameter(processors[p.target.name], p.target.parameter),
+                p.minimum,
+                p.maximum,
+            )
+            for p in parameters
+        ],
+    )
+
+
 def native_live_actions(
     definition: PreparedEffects,
     actions: list[audio_effects.EffectAction],
@@ -952,45 +1117,7 @@ def native_live_actions(
         audio_effects.validate_action(graph, action)
         if isinstance(action, audio_effects.ParameterAction):
             processor = processors[action.processor]
-            if action.parameter == "mix":
-                parameter = 1
-            elif (
-                isinstance(processor, audio_effects.Gain)
-                and action.parameter == "gain_db"
-            ):
-                parameter = 0
-            elif (
-                isinstance(processor, audio_effects.SoftClip)
-                and action.parameter == "drive"
-            ):
-                parameter = 0
-            elif isinstance(processor, audio_effects.Filter):
-                names = [
-                    name
-                    for f in processor.filters
-                    for name in (f"{f.name}-cutoff_hz", f"{f.name}-q")
-                ]
-                parameter = 3 + names.index(action.parameter)
-            elif isinstance(processor, audio_effects.Granulator):
-                names = [
-                    "duration_seconds",
-                    "density_hz",
-                    "lookback_seconds",
-                    "playback_ratio",
-                    "position_jitter_seconds",
-                ]
-                parameter = 3 + names.index(action.parameter)
-            elif isinstance(processor, audio_effects.TapDelay):
-                parameter = {"delay_seconds": 0, "feedback": 3}[action.parameter]
-            elif isinstance(processor, audio_effects.ModulatedDelay):
-                parameter = {
-                    "base_delay_seconds": 0,
-                    "depth_seconds": 3,
-                    "rate_hz": 4,
-                    "feedback": 5,
-                }[action.parameter]
-            else:
-                raise EngineError("Unsupported native live effect parameter")
+            parameter = _native_parameter(processor, action.parameter)
             target = action.value
             duration = action.duration_frames
         elif isinstance(action, audio_effects.BypassAction):
@@ -1210,6 +1337,35 @@ def _channel_phase_offsets(
     if len(processor.channel_phase_offsets) != channels:
         raise EngineError("Modulated delay phase offsets must match output channels")
     return np.asarray(processor.channel_phase_offsets)
+
+
+def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
+    if name == "mix":
+        return 1
+    if isinstance(processor, (audio_effects.Gain, audio_effects.SoftClip)):
+        return 0
+    if isinstance(processor, audio_effects.Filter):
+        return 3 + [
+            n for f in processor.filters for n in (f"{f.name}-cutoff_hz", f"{f.name}-q")
+        ].index(name)
+    if isinstance(processor, audio_effects.Granulator):
+        return 3 + [
+            "duration_seconds",
+            "density_hz",
+            "lookback_seconds",
+            "playback_ratio",
+            "position_jitter_seconds",
+        ].index(name)
+    if isinstance(processor, audio_effects.TapDelay):
+        return {"delay_seconds": 0, "feedback": 3}[name]
+    if isinstance(processor, audio_effects.ModulatedDelay):
+        return {
+            "base_delay_seconds": 0,
+            "depth_seconds": 3,
+            "rate_hz": 4,
+            "feedback": 5,
+        }[name]
+    raise EngineError("Unsupported native live effect parameter")
 
 
 def _delay_waveform(waveform: Waveform, phase: np.ndarray) -> np.ndarray:

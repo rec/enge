@@ -29,7 +29,10 @@ def control_samples(
 
 
 def modulation_samples(
-    definition: modulation.Modulation, signals: dict[str, np.ndarray], frames: int
+    definition: modulation.Modulation,
+    signals: dict[str, np.ndarray],
+    frames: int,
+    defaults: dict[tuple[str, str], np.ndarray] | None = None,
 ) -> dict[tuple[str, str], np.ndarray]:
     """Evaluate blocks in arrays and single observations with uFor's scalar math."""
     sources = {s.name: s for s in definition.sources}
@@ -43,7 +46,7 @@ def modulation_samples(
             raise ValueError(f"source {name} value is outside its domain")
         if np.any((signal[:, 1] < 0) | (signal[:, 1] > 1)):
             raise ValueError(f"Invalid modulation weight {name}")
-    if frames == 1:
+    if frames == 1 and defaults is None:
         values = modulation.evaluate(
             definition,
             {
@@ -91,7 +94,12 @@ def modulation_samples(
     output = {}
     for parameter in definition.parameters:
         value = (
-            parameter.default + _sum(additions[parameter.target], frames)
+            (
+                parameter.default
+                if defaults is None
+                else defaults[parameter.target.name, parameter.target.parameter]
+            )
+            + _sum(additions[parameter.target], frames)
         ) * products[parameter.target]
         if np.any(
             ~np.isfinite(value)

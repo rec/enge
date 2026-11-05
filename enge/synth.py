@@ -547,7 +547,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
     )
 
 
-def expand_patch_outputs[T: SoundSettings](voice: T) -> T:
+def expand_patch_outputs[T: processing.ModulationSettings](voice: T) -> T:
     envelfos = dict(voice.envelfos)
     bindings = list(voice.bindings)
     sources = list(voice.modulation.sources)
@@ -737,7 +737,7 @@ def expand_patch_outputs[T: SoundSettings](voice: T) -> T:
     )
 
 
-def _patch_child_names(settings: SoundSettings) -> set[str]:
+def _patch_child_names(settings: processing.ModulationSettings) -> set[str]:
     return {
         f"patch-{name}-{child}"
         for name, envelfo in settings.envelfos.items()
@@ -753,7 +753,7 @@ class ControlRenderer:
         self,
         sample_rate: int,
         declarations: dict[str, controls.ControlDeclaration],
-        settings: list[SoundSettings],
+        settings: list[processing.ModulationSettings],
         backend: Literal["numpy", "native"] = "numpy",
         control_interval: int = 1,
         tempo_map: TempoMap | None = None,
@@ -1032,7 +1032,7 @@ class ControlRenderer:
 
     def sources(
         self,
-        settings: SoundSettings,
+        settings: processing.ModulationSettings,
         action: instrument_trace.VoiceStart,
         velocity: float | None = None,
     ) -> dict[str, int]:
@@ -1192,7 +1192,7 @@ class ControlRenderer:
 
     def release(
         self,
-        settings: SoundSettings,
+        settings: processing.ModulationSettings,
         sources: dict[str, int],
         action: instrument_trace.VoiceRetirement,
         voice_release_at: Fraction,
@@ -1241,7 +1241,12 @@ class ControlRenderer:
         ]
 
     def values(
-        self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
+        self,
+        settings: processing.ModulationSettings,
+        sources: dict[str, int],
+        start: int,
+        frames: int,
+        defaults: dict[tuple[str, str], np.ndarray] | None = None,
     ) -> dict[tuple[str, str], np.ndarray]:
         """Resolve every declared target once, independently of its DSP consumer."""
         if frames == 0:
@@ -1254,7 +1259,7 @@ class ControlRenderer:
             self.clear_cache()
             self.cached_span = span
         key = (id(settings), tuple(sorted(sources.items())))
-        if key in self.cached_values:
+        if defaults is None and key in self.cached_values:
             return {n: v.copy() for n, v in self.cached_values[key].items()}
         signals = self._graph_values(settings, sources, start, frames)
         for binding in settings.bindings:
@@ -1285,12 +1290,19 @@ class ControlRenderer:
                     )
                 )
             signals[binding.name] = self.cached_controls[source_key]
-        output = control.modulation_samples(settings.modulation, signals, frames)
-        self.cached_values[key] = output
+        output = control.modulation_samples(
+            settings.modulation, signals, frames, defaults
+        )
+        if defaults is None:
+            self.cached_values[key] = output
         return {n: v.copy() for n, v in output.items()}
 
     def _graph_values(
-        self, settings: SoundSettings, sources: dict[str, int], start: int, frames: int
+        self,
+        settings: processing.ModulationSettings,
+        sources: dict[str, int],
+        start: int,
+        frames: int,
     ) -> dict[str, np.ndarray]:
         bindings = [
             b for b in settings.bindings if isinstance(b, processing.GeneratorBinding)
@@ -2673,7 +2685,7 @@ def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> tuple[int, int]
 
 def _configure_sample_hold_envelfos(
     runtime: _native.GeneratorBank,
-    settings: SoundSettings,
+    settings: processing.ModulationSettings,
     sources: dict[str, list[int]],
 ) -> None:
     definitions = [
@@ -2692,11 +2704,12 @@ def _configure_sample_hold_envelfos(
 
 def _configure_patch_transforms(
     runtime: _native.GeneratorBank,
-    template: SoundSettings,
+    template: processing.ModulationSettings,
     lfos: dict[str, list[int]],
     envelopes: dict[str, list[int]],
     stages: dict[str, list[int]],
     rate: int,
+    parameter_indices: dict[tuple[str, str], int] | None = None,
 ) -> tuple[dict[tuple[str, str], int], list[tuple[int, list[tuple[float, float]]]]]:
     nodes: list[
         tuple[int, list[tuple[int, int, float, float]], float, float, float | None]
@@ -2780,7 +2793,11 @@ def _configure_patch_transforms(
             if name in children and children[name][0] == 3:
                 outputs[parent_name, output] = children[name][1]
     parameters = {("processing", "amplitude"): 0, ("processing", "tuning_cents"): 1}
-    for i, body in enumerate(template.processing.filters):
+    if parameter_indices is not None:
+        parameters = parameter_indices.copy()
+    for i, body in enumerate(
+        template.processing.filters if isinstance(template, SoundSettings) else []
+    ):
         parameters[f"filter-{body.name}", "cutoff_hz"] = 2 + 2 * i
         parameters[f"filter-{body.name}", "q"] = 3 + 2 * i
     routes: list[tuple[int, int, int]] = []
@@ -2815,7 +2832,7 @@ def _configure_patch_transforms(
 
 
 def _threshold_runtime_connections(
-    template: SoundSettings,
+    template: processing.ModulationSettings,
     envelopes: dict[str, list[int]],
     stages: dict[str, list[int]],
     nodes: dict[tuple[str, str], int],
@@ -2971,9 +2988,10 @@ def _configure_generator_owners(
 def _prepare_native_generators(
     rate: int,
     voices: int,
-    template: SoundSettings,
+    template: processing.ModulationSettings,
     prepared: PersistentModulation,
     tempo_map: TempoMap | None = None,
+    parameter_indices: dict[tuple[str, str], int] | None = None,
 ) -> tuple[
     _native.GeneratorBank,
     dict[tuple[str, str], int],
@@ -3057,6 +3075,7 @@ def _prepare_native_generators(
         named_envelfo_sources,
         staged_envelfo_sources,
         rate,
+        parameter_indices,
     )
     patch_stage_starts: list[
         tuple[int, str, int, int, int, int, int, int, tuple[int, int], bool]
@@ -3173,7 +3192,7 @@ def _prepare_native_generators(
 def _persistent_modulation(
     sample_rate: int,
     declarations: dict[str, controls.ControlDeclaration],
-    template: SoundSettings,
+    template: processing.ModulationSettings,
     source_parameters: list[
         tuple[tuple[str, str], int, modulation.Operation, float, float, float]
     ]
@@ -3193,24 +3212,29 @@ def _persistent_modulation(
     parameters = {
         (p.target.name, p.target.parameter): p for p in template.modulation.parameters
     }
-    source_parameters = source_parameters or [
-        (
-            ("processing", "amplitude"),
-            0,
-            modulation.Operation.multiply,
-            1,
-            -1e300,
-            1e300,
-        ),
-        (
-            ("processing", "tuning_cents"),
-            1,
-            modulation.Operation.add,
-            template.processing.tuning_cents,
-            -120000,
-            120000,
-        ),
-    ]
+    if source_parameters is None:
+        if not isinstance(template, SoundSettings):
+            raise EngineError(
+                "Effect modulation requires explicit parameter definitions"
+            )
+        source_parameters = [
+            (
+                ("processing", "amplitude"),
+                0,
+                modulation.Operation.multiply,
+                1,
+                -1e300,
+                1e300,
+            ),
+            (
+                ("processing", "tuning_cents"),
+                1,
+                modulation.Operation.add,
+                template.processing.tuning_cents,
+                -120000,
+                120000,
+            ),
+        ]
     supported = {
         target: (index, operation)
         for target, index, operation, _, _, _ in source_parameters
@@ -3219,7 +3243,9 @@ def _persistent_modulation(
     for _, index, _, default, minimum, maximum in source_parameters:
         parameter_values[index * 3 : index * 3 + 3] = [default, minimum, maximum]
     runtime_filters: list[list[float]] = []
-    for filter_definition in template.processing.filters:
+    for filter_definition in (
+        template.processing.filters if isinstance(template, SoundSettings) else []
+    ):
         cutoff_maximum = sample_rate / 2 * filter_definition.nyquist_ratio
         cutoff_default = min(
             max(filter_definition.cutoff_hz, filter_definition.minimum_hz),

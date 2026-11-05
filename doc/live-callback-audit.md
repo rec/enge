@@ -71,6 +71,14 @@ The latest run also exercises onset-key bindings for generated synth, FM and
 noise sources through `NativeLiveEngine`, including reused trigger names with
 overlapping release tails. These use the existing per-voice event storage.
 
+On 2026-11-05, the effect-generator integration passed the full instrumented
+suite: **3,150 passed, 21 skipped**. Across the suite, **8,062 successful and
+eight failed callbacks** performed zero Rust allocations, reallocations or
+frees. The new cases cover all seven graph processor types, shared enveLFO
+routes, retained Patch/Slew state, beat clocks, automation composition, native
+snapshot replay and a deliberately rejected modulation range. See
+[effect modulation](effect-modulation.md) for the supported profile.
+
 Reproduce the measurement with the locked environment already installed:
 
 ```sh

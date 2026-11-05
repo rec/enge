@@ -83,6 +83,8 @@ struct EffectRuntime {
     sources: Array2<i64>,
     output_source: usize,
     parameters: Array2<f64>,
+    resolved: Array2<f64>,
+    generators: Option<EffectGenerators>,
     targets: Array2<f64>,
     steps: Array2<f64>,
     remaining: Array2<usize>,
@@ -113,6 +115,7 @@ struct EffectSnapshot {
     sources: Array2<i64>,
     output_source: usize,
     parameters: Array2<f64>,
+    generators: Option<EffectGenerators>,
     targets: Array2<f64>,
     steps: Array2<f64>,
     remaining: Array2<usize>,
@@ -121,6 +124,15 @@ struct EffectSnapshot {
     granulators: Vec<Option<LiveGranulator>>,
     tap_delays: Vec<Option<LiveTapDelay>>,
     modulated_delays: Vec<Option<LiveModulatedDelay>>,
+}
+
+#[derive(Clone)]
+struct EffectGenerators {
+    bank: GeneratorBank,
+    controls: ControlBank,
+    maps: Vec<Vec<RouteMap>>,
+    targets: Vec<(usize, usize, f64, f64)>,
+    partials: Vec<f64>,
 }
 
 #[derive(Clone)]
@@ -306,6 +318,52 @@ impl LiveRuntime {
             self.action_capacity,
             batch_capacity,
         )?);
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn set_effect_generators(
+        &mut self,
+        generators: &GeneratorBank,
+        maps: Vec<Vec<(usize, Vec<(f64, f64)>)>>,
+        targets: Vec<(usize, usize, f64, f64)>,
+    ) -> PyResult<()> {
+        let effects = self
+            .effects
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("Effect graph is not prepared"))?;
+        if self.frame != 0
+            || effects.generators.is_some()
+            || generators.rate != self.rate
+            || generators.patch_states.len() != 1
+            || generators.parameter_count != targets.len()
+            || maps.len() != 4
+            || targets.iter().any(|(node, parameter, minimum, maximum)| {
+                *node >= effects.parameters.nrows()
+                    || *parameter >= effects.parameters.ncols()
+                    || !minimum.is_finite()
+                    || !maximum.is_finite()
+                    || minimum > maximum
+            })
+        {
+            return Err(PyValueError::new_err("Invalid live effect generator setup"));
+        }
+        let mut maps = maps
+            .into_iter()
+            .enumerate()
+            .map(|(kind, maps)| generators.prepare_route_maps(kind + 1, maps))
+            .collect::<PyResult<Vec<_>>>()?;
+        maps.insert(0, Vec::new());
+        let mut bank = generators.clone();
+        bank.prepare_patch(0)?;
+        bank.start_patch(0, 0)?;
+        effects.generators = Some(EffectGenerators {
+            bank,
+            controls: ControlBank::new(Vec::new(), Vec::new(), 1, 0),
+            partials: vec![0.0; maps.iter().map(Vec::len).sum()],
+            maps,
+            targets,
+        });
         Ok(())
     }
 
@@ -706,7 +764,13 @@ impl LiveRuntime {
             }
         }
         if let Some(effects) = &mut self.effects {
-            effects.process(&mut self.output_scratch, frames, self.channels, self.rate)?;
+            effects.process(
+                &mut self.output_scratch,
+                frames,
+                self.channels,
+                self.rate,
+                self.frame,
+            )?;
         }
         if self
             .output_scratch
@@ -900,6 +964,8 @@ impl EffectRuntime {
             sources,
             output_source,
             targets: parameters.clone(),
+            resolved: parameters.clone(),
+            generators: None,
             steps: Array2::zeros(parameters.raw_dim()),
             remaining: Array2::zeros(parameters.raw_dim()),
             parameters,
@@ -923,6 +989,7 @@ impl EffectRuntime {
         frames: usize,
         channels: usize,
         rate: f64,
+        start: usize,
     ) -> NativeResult<()> {
         let count = self.action_count;
         {
@@ -947,13 +1014,45 @@ impl EffectRuntime {
                 self.apply_action(&values)?;
                 action += 6;
             }
+            self.resolved.assign(&self.parameters);
+            if let Some(generators) = &mut self.generators {
+                let at = start
+                    .checked_add(frame)
+                    .ok_or(NativeError::Message("Effect frame overflow"))?;
+                generators.bank.settle_patches(&[true], at, true)?;
+                generators.bank.observe_patch(0, at, &generators.controls)?;
+                for (index, (node, parameter, minimum, maximum)) in
+                    generators.targets.iter().enumerate()
+                {
+                    let mut count = 0;
+                    let product = generators.bank.contributions(
+                        0,
+                        index,
+                        1.0,
+                        at,
+                        &generators.controls,
+                        &generators.maps,
+                        &mut generators.partials,
+                        &mut count,
+                    )?;
+                    let value = (self.parameters[[*node, *parameter]]
+                        + sum_partials(&generators.partials[..count]))
+                        * product;
+                    if !value.is_finite() || value < *minimum || value > *maximum {
+                        return Err(NativeError::Message(
+                            "Modulated effect parameter is outside its domain",
+                        ));
+                    }
+                    self.resolved[[*node, *parameter]] = value;
+                }
+            }
             for channel in 0..channels {
                 self.values[[0, channel]] = output[[frame, channel]];
             }
             for node in 0..self.kinds.len() {
                 let first = self.sources[[node, 0]] as usize;
-                let authored_mix = self.parameters[[node, 1]];
-                let bypass = self.parameters[[node, 2]];
+                let authored_mix = self.resolved[[node, 1]];
+                let bypass = self.resolved[[node, 2]];
                 if !(0.0..=1.0).contains(&authored_mix) || !(0.0..=1.0).contains(&bypass) {
                     return Err(NativeError::Message("Invalid live effect mix"));
                 }
@@ -963,7 +1062,7 @@ impl EffectRuntime {
                 }
                 match self.kinds[node] {
                     0 => {
-                        let gain = 10_f64.powf(self.parameters[[node, 0]] / 20.0);
+                        let gain = 10_f64.powf(self.resolved[[node, 0]] / 20.0);
                         for value in &mut self.wet {
                             *value *= gain;
                         }
@@ -977,11 +1076,11 @@ impl EffectRuntime {
                     2 => self.process_filters(node, rate)?,
                     3 => {
                         let parameters = [
-                            self.parameters[[node, 3]],
-                            self.parameters[[node, 4]],
-                            self.parameters[[node, 5]],
-                            self.parameters[[node, 6]],
-                            self.parameters[[node, 7]],
+                            self.resolved[[node, 3]],
+                            self.resolved[[node, 4]],
+                            self.resolved[[node, 5]],
+                            self.resolved[[node, 6]],
+                            self.resolved[[node, 7]],
                         ];
                         self.granulators[node]
                             .as_mut()
@@ -989,7 +1088,7 @@ impl EffectRuntime {
                             .process(&mut self.wet, parameters, rate)?;
                     }
                     4 => {
-                        let drive = self.parameters[[node, 0]];
+                        let drive = self.resolved[[node, 0]];
                         if drive <= 0.0 {
                             return Err(NativeError::Message("Invalid live soft clip drive"));
                         }
@@ -1078,8 +1177,8 @@ impl EffectRuntime {
             if filter.node != node {
                 continue;
             }
-            let cutoff = self.parameters[[node, filter.parameter]];
-            let q = self.parameters[[node, filter.parameter + 1]];
+            let cutoff = self.resolved[[node, filter.parameter]];
+            let q = self.resolved[[node, filter.parameter + 1]];
             if !cutoff.is_finite() || cutoff <= 0.0 || cutoff >= rate / 2.0 || q <= 0.0 {
                 return Err(NativeError::Message("Invalid live filter cutoff/Q"));
             }
@@ -1132,8 +1231,8 @@ impl EffectRuntime {
     }
 
     fn process_tap_delay(&mut self, node: usize, channels: usize, rate: f64) -> NativeResult<()> {
-        let delay_seconds = self.parameters[[node, 0]];
-        let feedback = self.parameters[[node, 3]];
+        let delay_seconds = self.resolved[[node, 0]];
+        let feedback = self.resolved[[node, 3]];
         let delay = self.tap_delays[node]
             .as_mut()
             .expect("validated live tap delay");
@@ -1165,10 +1264,10 @@ impl EffectRuntime {
         channels: usize,
         rate: f64,
     ) -> NativeResult<()> {
-        let base = self.parameters[[node, 0]];
-        let depth = self.parameters[[node, 3]];
-        let rate_hz = self.parameters[[node, 4]];
-        let feedback = self.parameters[[node, 5]];
+        let base = self.resolved[[node, 0]];
+        let depth = self.resolved[[node, 3]];
+        let rate_hz = self.resolved[[node, 4]];
+        let feedback = self.resolved[[node, 5]];
         let delay = self.modulated_delays[node]
             .as_mut()
             .expect("validated live modulated delay");
@@ -1225,6 +1324,7 @@ impl EffectRuntime {
             sources: self.sources.clone(),
             output_source: self.output_source,
             parameters: self.parameters.clone(),
+            generators: self.generators.clone(),
             targets: self.targets.clone(),
             steps: self.steps.clone(),
             remaining: self.remaining.clone(),
@@ -1238,6 +1338,13 @@ impl EffectRuntime {
 
     fn validate_snapshot(&self, snapshot: &EffectSnapshot) -> PyResult<()> {
         if self.kinds != snapshot.kinds
+            || match (&self.generators, &snapshot.generators) {
+                (Some(a), Some(b)) => {
+                    a.targets != b.targets || a.maps != b.maps || !a.bank.same_definition(&b.bank)
+                }
+                (None, None) => false,
+                _ => true,
+            }
             || self.sources != snapshot.sources
             || self.output_source != snapshot.output_source
             || self.filter_rows != snapshot.filter_rows
@@ -1288,6 +1395,7 @@ impl EffectRuntime {
     fn restore(&mut self, snapshot: &EffectSnapshot) -> PyResult<()> {
         self.validate_snapshot(snapshot)?;
         self.parameters.assign(&snapshot.parameters);
+        self.generators.clone_from(&snapshot.generators);
         self.targets.assign(&snapshot.targets);
         self.steps.assign(&snapshot.steps);
         self.remaining.assign(&snapshot.remaining);
