@@ -65,8 +65,10 @@ roadmap and Yamaha requirements, while optional catalogues remain deferred.
   VMEM/PMEM/PMEM2 banks, including the documented operator order, bias encoding
   and distinct packed DSP enables. Its explicit `YamahaWT11Voice` schema now
   preserves all three voice buffers, aftertouch routes and prepared trigger
-  velocity. Performance execution, enge admission and WT11 rendering remain
-  open. The Yamaha plan records the exact
+  velocity. A direct WT11 note renderer now projects the pitch envelope onto
+  the shared OPZ core and snapshots all original buffers and pitch state.
+  Aftertouch, shared WT11 clocks, performance execution, offline instrument
+  admission and rendering qualification remain open. The Yamaha plan records the exact
   import boundaries and verification evidence.
 
 ## Deferred choices

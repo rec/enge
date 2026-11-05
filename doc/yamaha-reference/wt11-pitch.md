@@ -1,8 +1,9 @@
 # WT11 pitch-envelope model audit
 
 Audited on 2026-11-05 before connecting the WT11 schema to audio rendering.
-WT11 SysEx inspection and portable voice preparation exist in uFor; this audit
-does not establish a working WT11 renderer or measured WT11 envelope timing.
+WT11 SysEx inspection and portable voice preparation exist in uFor. The direct
+note renderer now implements the provisional pitch path below; this audit does
+not establish measured WT11 envelope timing or complete instrument support.
 
 ## Sources and stage semantics
 
@@ -52,12 +53,46 @@ model and must not be presented as passing hardware qualification. In particular
   intermediate level curve, rate curve, firmware update cadence, equal-level
   transitions or interaction with fixed-frequency operators.
 
-Use the pinned conversion as an explicitly provisional starting point when
-implementing the WT11 pitch path, preserving all original WT11 bytes in note
-and instrument snapshots. Keep its timing and level qualification open.
-Tests must exercise onset at PL3, arrival/hold at PL2, early and held release,
-partitioned renders, snapshot continuation and sample-rate behavior. Component
-projection tests alone cannot qualify a complete WT11 note or performance.
+## Direct note implementation
+
+`enge.yamaha.WT11Renderer` now accepts explicit WT11 VCED, ACED and ACED2 objects,
+note, velocity, sample rate, optional pitch/glide origin and absolute start frame.
+It translates the WT11 operator order into the existing TX81Z/OPZ core and adds
+the projected pitch envelope through that core's tuning path. The projection
+advances once per host frame, reusing `DX7PitchEnvelope`; original rates and
+levels remain in the WT11 patch. All 100 legal entries in the new conversion
+table were checked against the pinned source table.
+
+Caller tuning cents add to the pitch-envelope cents. Both affect ratio operators
+only, preserving the existing fixed-frequency and chip-detune behavior. That
+choice is provisional for intrinsic WT11 pitch envelopes. Shared modulation
+rows, controller depths, breath, foot and portamento rows use the existing OPZ
+processing path. A nonneutral WT11 breath pitch bias rejects positive breath
+input; neutral input is allowed, including patches whose stored bias is 100.
+The original bias is retained rather than clamped into the TX81Z domain.
+
+`WT11Snapshot` retains the mapped OPZ state, all three original WT11 buffers and
+the projected pitch state. Restore checks the original definitions and projected
+parameters before changing state; a plain TX81Z snapshot cannot supply the
+missing pitch state. Invalid render controls do not advance the pitch envelope.
+
+Active aftertouch assignments are explicitly rejected at note construction.
+The admitted ACED2 assignment tuple is pitch 0, amplitude 0, pitch bias 50 and
+EG bias 0; reserved bytes remain unrestricted seven-bit data. This slice adds
+the direct note pitch path, not aftertouch rendering, WT11 shared-LFO ownership,
+offline instrument admission, performance execution or hardware qualification.
+
+Thirty-four focused tests cover all eight algorithms with asymmetric operators,
+neutral-pitch audio equivalence to the reused core, nonzero absolute start,
+mixed fixed/ratio operators, projected early/held release, hold and final pitch,
+JSON snapshot replay, partitioned continuation, rejected controls and foreign
+snapshots. Sample-rate cases use 24, 48 and 96 kHz with equal release times in
+seconds; their paired WAV regressions are written at 48 kHz for at least one
+second. The tests establish the projection and state contract, not measured
+WT11 timing or complete-note hardware equivalence.
+
+The full enge suite passes with this implementation: 3,082 tests passed and
+21 skipped. Ruff, formatting, type checking and pyupgrade checks also pass.
 
 ## Additional work beyond the prompt
 

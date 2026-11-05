@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
-from ufor import tx81z
+from ufor import tx81z, wt11
 from ufor.dx7 import DX7Operator, DX7Voice
 
 from .synth import EngineError
@@ -717,6 +717,147 @@ class DX7PitchEnvelope(BaseModel):
         return 2 ** (self.level / 2**24)
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class WT11Snapshot(TX81ZSnapshot, frozen=True):
+    wt11_voice: wt11.WT11Voice
+    wt11_additional: wt11.WT11Additional
+    wt11_additional2: wt11.WT11Additional2
+    pitch_envelope: DX7PitchEnvelope
+
+
+class WT11Renderer(TX81ZRenderer):
+    """WT11 pitch projection onto the shared OPZ core, provisionally.
+
+    The envelope uses DXconvert's pinned three-stage-to-DX7 projection at the
+    host frame rate. It affects ratio operators through the existing tuning
+    path. Timing, fixed-mode interaction and level endpoints are unqualified.
+    Active aftertouch assignments are explicitly unsupported in this slice.
+    """
+
+    def __init__(
+        self,
+        voice: wt11.WT11Voice,
+        additional: wt11.WT11Additional,
+        additional2: wt11.WT11Additional2,
+        note: int,
+        velocity: int,
+        sample_rate: int = 48000,
+        pitch_hz: float | None = None,
+        start_pitch_hz: float | None = None,
+        *,
+        start_frame: int = 0,
+    ) -> None:
+        for diagnostic in (
+            voice.parameter_diagnostic,
+            additional.parameter_diagnostic,
+            additional2.parameter_diagnostic,
+        ):
+            if diagnostic is not None:
+                raise EngineError(diagnostic)
+        assignment = additional2.aftertouch
+        if (
+            assignment.pitch
+            or assignment.amplitude
+            or assignment.eg_bias
+            or assignment.pitch_bias != 50
+        ):
+            raise EngineError("WT11 aftertouch assignments are not implemented")
+        data = bytearray(voice.data)
+        extra = bytearray(additional.data)
+        for index, source in enumerate((0, 2, 1, 3)):
+            data[index * 13 : index * 13 + 13] = voice.data[
+                source * 13 : source * 13 + 13
+            ]
+            extra[index * 5 : index * 5 + 5] = additional.data[
+                source * 5 : source * 5 + 5
+            ]
+        # WT11 permits bias 100; the TX81Z core cannot interpret that domain.
+        # Bias is guarded below, so the core receives only the neutral value.
+        data[75] = 50
+        super().__init__(
+            tx81z.TX81ZVoice(data=bytes(data)),
+            tx81z.TX81ZAdditional(data=bytes(extra)),
+            note,
+            velocity,
+            sample_rate,
+            pitch_hz,
+            start_pitch_hz,
+            start_frame=start_frame,
+        )
+        self.wt11_voice = voice.model_copy(deep=True)
+        self.wt11_additional = additional.model_copy(deep=True)
+        self.wt11_additional2 = additional2.model_copy(deep=True)
+        pitch = voice.pitch_envelope
+        self.pitch_envelope = DX7PitchEnvelope(
+            rates=[
+                _WT11_PITCH_RATES[pitch.rates[0]],
+                min(98, _WT11_PITCH_RATES[pitch.rates[1]]),
+                99,
+                _WT11_PITCH_RATES[pitch.rates[2]],
+            ],
+            levels=[pitch.levels[0], pitch.levels[1], pitch.levels[1], pitch.levels[2]],
+            sample_rate=sample_rate,
+            level=_PITCH_LEVELS[pitch.levels[2]] * 2**19,
+        )
+
+    def render(
+        self,
+        frames: int,
+        modulation: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
+        tuning_cents: np.ndarray | None = None,
+        controller_depths: np.ndarray | None = None,
+        breath: np.ndarray | None = None,
+        foot: np.ndarray | None = None,
+        portamento_enabled: np.ndarray | None = None,
+    ) -> np.ndarray:
+        if frames < 0:
+            raise EngineError("WT11 frame count must be nonnegative")
+        _tuning_ratios(tuning_cents, frames)
+        if breath is not None and self.wt11_voice.data[75] != 50 and np.any(breath):
+            raise EngineError("WT11 breath pitch bias is not implemented")
+        pitch = self.pitch_envelope.model_copy(deep=True)
+        cents = np.array([1200 * log2(pitch.sample()) for _ in range(frames)])
+        if tuning_cents is not None:
+            cents += tuning_cents
+        output = super().render(
+            frames,
+            modulation,
+            cents,
+            controller_depths,
+            breath,
+            foot,
+            portamento_enabled,
+        )
+        self.pitch_envelope = pitch
+        return output
+
+    def release(self) -> None:
+        super().release()
+        self.pitch_envelope.release()
+
+    def snapshot(self) -> WT11Snapshot:
+        return WT11Snapshot(
+            **super().snapshot().model_dump(),
+            wt11_voice=self.wt11_voice.model_copy(deep=True),
+            wt11_additional=self.wt11_additional.model_copy(deep=True),
+            wt11_additional2=self.wt11_additional2.model_copy(deep=True),
+            pitch_envelope=self.pitch_envelope.model_copy(deep=True),
+        )
+
+    def restore(self, snapshot: TX81ZSnapshot) -> None:
+        if (
+            not isinstance(snapshot, WT11Snapshot)
+            or snapshot.wt11_voice != self.wt11_voice
+            or snapshot.wt11_additional != self.wt11_additional
+            or snapshot.wt11_additional2 != self.wt11_additional2
+            or snapshot.pitch_envelope.rates != self.pitch_envelope.rates
+            or snapshot.pitch_envelope.levels != self.pitch_envelope.levels
+            or snapshot.pitch_envelope.sample_rate != self.sample_rate
+        ):
+            raise EngineError("WT11 snapshot belongs to a different note definition")
+        super().restore(snapshot)
+        self.pitch_envelope = snapshot.pitch_envelope.model_copy(deep=True)
 
 
 class DX7Snapshot(BaseModel, frozen=True):
@@ -1709,6 +1850,111 @@ _TX_INCREMENTS = (
 )
 # Measured DX7 rate/level data reported by MSFA, pitchenv.cc:
 # https://github.com/google/music-synthesizer-for-android/blob/master/app/src/main/jni/pitchenv.cc
+# DXconvert fourop.py at 89aaf6cf48ff2eec7e11e82bb92e315b2e6e6621.
+# Provisional conversion data, not measured WT11 timing.
+_WT11_PITCH_RATES = [
+    1,
+    2,
+    4,
+    5,
+    6,
+    7,
+    8,
+    10,
+    12,
+    13,
+    14,
+    16,
+    18,
+    19,
+    20,
+    22,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    52,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    68,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    98,
+    99,
+]
+
 _PITCH_RATES = [
     1,
     2,

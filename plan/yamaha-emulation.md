@@ -262,7 +262,7 @@ or feedback arithmetic.
 
 ### WT11 scope and import requirements
 
-WT11 rendering remains unimplemented. Sharing the TX81Z operator chip does not
+WT11 instrument rendering remains unimplemented. Sharing the TX81Z operator chip does not
 make the existing TX81Z edit-buffer pair a complete WT11 voice definition.
 The [WT11 owner's manual, printed Add-2 through Add-7](https://data.yamaha.com/files/download/other_assets/2/333982/WT11E.PDF)
 defines these additional requirements, verified against the scanned tables on
@@ -350,6 +350,22 @@ level-99 value by 37.5 cents. Its instantaneous-rate statement also differs from
 the existing DX7 executor's finite increments. Preserve these qualification
 limits when reusing the shared envelope state; neither source establishes
 measured WT11 timing or its fixed-frequency interaction.
+
+The direct `WT11Renderer` now reuses the OPZ core with explicit WT11 operator
+reordering and the pinned pitch projection. Its host-frame envelope affects
+ratio operators through the existing tuning path, alongside caller tuning.
+`WT11Snapshot` retains all three original buffers, native OPZ continuation and
+the projected pitch state. Definition/parameter mismatch and legacy snapshots
+are rejected before state changes. Thirty-four focused tests cover asymmetric
+algorithms, absolute start, mixed fixed/ratio modes, hold/release, sample rates,
+JSON replay, partitioning and rejected controls. Their audio comparisons are
+48 kHz WAV regressions. Aftertouch assignments remain explicitly rejected;
+shared WT11 LFO ownership, offline instrument admission, performance execution
+and hardware/reference qualification remain open.
+
+The full suite with the direct WT11 pitch profile passes: 3,082 tests passed,
+21 skipped; Ruff, formatting, typing and pyupgrade checks are clean. This does
+not qualify the provisional envelope against WT11 hardware.
 
 Connect the explicit WT11 instrument definition to pitch-envelope and
 aftertouch rendering. Keep TX81Z admission
