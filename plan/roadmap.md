@@ -75,6 +75,13 @@ roadmap and Yamaha requirements, while optional catalogues remain deferred.
   qualification remain open. The Yamaha plan records the exact
   import boundaries and verification evidence.
 
+Use [yamaha-completion.md](yamaha-completion.md) as the remaining-work index:
+nine open packages covering controller biases, performance execution, software
+reference comparisons and final field/requirement disposition. Its delivery
+contract retains offline-first scope and the approved provisional models;
+native/live and hardware evidence limits are distinct from required software
+completion. Package count is not a percentage or time estimate.
+
 ## Deferred choices
 
 - Select further effects from [new-effects.md](new-effects.md).

@@ -2,6 +2,11 @@
 
 ## Status as of 2026-11-05
 
+The remaining-work index and closure evidence are tracked in
+[yamaha-completion.md](yamaha-completion.md). It separates required offline
+software work from hardware/native-live evidence limits and retains the
+original delivery boundaries.
+
 `enge/yamaha.py` already contains a Python DX7 note renderer, operator envelopes,
 frequency and level scaling, algorithm routing and feedback. This is partial
 implementation, not verified hardware equivalence. The requirements below remain
@@ -185,8 +190,9 @@ DX7 notes now apply their own PMD/PMS calibration to shared LFO rows in octave
 units before phase advancement. Effective pitch modulation requires explicit
 rows; missing/invalid rows are rejected before note state advances. Zero
 sensitivities leave their corresponding modulation depths inaudible.
-The offline adapter now owns these clocks per template; native engine ownership
-remains work. TX81Z LFO status is recorded below.
+The offline adapter now owns these clocks per template. A native/live Yamaha
+backend is outside the current offline-first delivery contract and must not be
+claimed callback-safe without measured bounds. TX81Z LFO status is recorded below.
 One-second 48 kHz WAV regressions cover all waveform shapes, known random values,
 rate/delay calibration, sync, fractional continuation, pitch calibration and two
 simultaneous notes restoring their clock and note snapshots together.
