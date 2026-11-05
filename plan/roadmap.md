@@ -69,7 +69,9 @@ roadmap and Yamaha requirements, while optional catalogues remain deferred.
   the shared OPZ core and snapshots all original buffers and pitch state.
   The offline Yamaha adapter now admits that WT11 profile with one shared OPZ
   clock per template, controls, mono/glide history, generators, snapshots and
-  MIDI-file dispatch. Aftertouch, WT11 performance execution and rendering
+  MIDI-file dispatch. Aftertouch pitch/amplitude LFO assignments now use the
+  shared scoped-control path and provisional byte-depth model. Aftertouch bias,
+  WT11 performance execution and rendering
   qualification remain open. The Yamaha plan records the exact
   import boundaries and verification evidence.
 

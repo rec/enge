@@ -76,12 +76,12 @@ the projected pitch state. Restore checks the original definitions and projected
 parameters before changing state; a plain TX81Z snapshot cannot supply the
 missing pitch state. Invalid render controls do not advance the pitch envelope.
 
-Active aftertouch assignments are explicitly rejected at note construction.
-The admitted ACED2 assignment tuple is pitch 0, amplitude 0, pitch bias 50 and
-EG bias 0; reserved bytes remain unrestricted seven-bit data. Aftertouch
-rendering, performance execution and hardware qualification remain incomplete.
+Aftertouch LFO pitch and amplitude assignments are supported as described below.
+Pitch bias must remain 50 and EG bias zero; those two assignment paths remain
+explicitly rejected at note construction. Reserved bytes remain unrestricted
+seven-bit data. Performance execution and hardware qualification remain incomplete.
 
-Thirty-four focused tests cover all eight algorithms with asymmetric operators,
+Direct-note regressions cover all eight algorithms with asymmetric operators,
 neutral-pitch audio equivalence to the reused core, nonzero absolute start,
 mixed fixed/ratio operators, projected early/held release, hold and final pitch,
 JSON snapshot replay, partitioned continuation, rejected controls and foreign
@@ -103,7 +103,8 @@ rows; the context advances once per render interval. The clock uses the
 existing provisional TX81Z/ymfm model with WT11's documented global-byte layout,
 not a separately measured WT11 firmware mapping. WT11's stored breath-bias
 domain includes 100; declaring a breath route with a nonneutral bias remains
-an explicit admission error. Active aftertouch assignments also fail admission.
+an explicit admission error. Nonneutral aftertouch pitch bias and nonzero EG
+bias also fail admission.
 
 The existing scoped wheel/breath/foot, pitch-bend, tuning, filter and gain paths
 now accept WT11 templates. Mono held-note retention, glide history, minimum
@@ -126,6 +127,50 @@ This integrates the current note profile; performance allocation and PCED2
 LFO-control/DSP behavior are not thereby implemented or qualified.
 
 The full suite with offline WT11 integration passes: 3,109 tests passed and
+21 skipped. Ruff, formatting, type checking and pyupgrade checks are clean.
+
+## Aftertouch LFO assignments
+
+`WT11Renderer.render` now accepts keyword-only `aftertouch` rows with shape
+`(frames,)`, finite normalized positions in 0 through 1. Omission means zero
+pressure. ACED2 bytes 0/1 supply the pitch/amplitude assignment amounts.
+The related [Yamaha DX11 manual, controller parameters](https://synthmania.com/wp-content/uploads/2020/05/DX11E.pdf)
+identifies these as LFO pitch and amplitude paths, separately from pitch and
+EG bias. It does not establish WT11 controller-combination arithmetic.
+
+The provisional WT11 model reuses the existing four-operator byte-depth rule:
+truncate normalized pressure to integer `q = floor(127 * pressure)`; for each
+assignment amount `a`, form `d = floor(165 * a / 64)`, then add
+`floor(2 * d * q / 256)` to that modulation channel's existing controller
+contribution. Saturate the sum at 255 before adding delayed patch depth and
+converting through the existing PMD/AMD tables. The baseline controller rule is
+documented in the pinned [TX81Z controller analysis](https://github.com/iflyhigh/ax81z/blob/5848832989c7864092a277e9428d44f817c6173f/Math.md#pmd);
+applying that rule to WT11 aftertouch remains an extrapolation. Thus pressure modulation
+bypasses patch delay, while operator sensitivity and AM-enable flags still
+apply. This is an explicit software model, not a measured WT11 firmware result.
+
+The note renderer owns this calculation so direct callers and the offline
+instrument use one path. `OfflineYamaha` reads the existing scoped
+`yamaha.aftertouch` target whenever a WT11 template assigns LFO aftertouch.
+Control ramps, part/trigger isolation and snapshot continuation retain their
+existing shared ownership. Aftertouch rows remain caller inputs for direct
+note replay, like other controller rows; instrument snapshots retain their
+scoped controlling state.
+
+Existing controller-depth rows are validated before adding pressure, so
+saturation cannot hide invalid negative/fractional values. Caller arrays are
+not mutated, including unsigned byte arrays. Invalid pressure rejects before
+pitch or native chip state advances. Pitch-bias and EG-bias assignments remain
+unsupported and rejected; this work does not substitute an LFO effect for them.
+
+Thirty-six focused cases pass: direct quantization/addition/saturation with
+pitch-only, amplitude-only and combined assignments; delay bypass; omitted
+pressure; invalid inputs; bias admission; and scoped controller/filter tests
+with interrupted smoothing and restored overlapping notes. Audio comparisons
+use at least one second of paired 48 kHz WAVs. The WT11 clock, controller-depth
+mapping and complete hardware behavior remain provisional.
+
+The full suite with aftertouch LFO integration passes: 3,119 tests passed and
 21 skipped. Ruff, formatting, type checking and pyupgrade checks are clean.
 
 ## Additional work beyond the prompt

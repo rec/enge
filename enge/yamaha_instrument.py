@@ -596,6 +596,8 @@ class OfflineYamaha:
                 assignments = any(
                     template.patch.data[71:75] + template.additional.data[21:23]
                 ) or bool(template.patch.data[67] or template.patch.data[76])
+            if isinstance(template, YamahaWT11Voice):
+                assignments = assignments or any(template.additional2.data[:2])
             for i in range(frames):
                 at = start + i
                 if (
@@ -618,6 +620,7 @@ class OfflineYamaha:
                 breath = None
                 foot = None
                 portamento_enabled = None
+                aftertouch = None
                 if dynamic_tuning or pitch_bend or assignments or portamento_switch:
                     values = self.controls.values(template, voice.sources, at, 1)
                     if portamento_switch:
@@ -645,6 +648,8 @@ class OfflineYamaha:
                         if isinstance(template, (YamahaTX81ZVoice, YamahaWT11Voice)):
                             breath = values.get(("yamaha", "breath"))
                             foot = values.get(("yamaha", "foot"))
+                        if isinstance(template, YamahaWT11Voice):
+                            aftertouch = values.get(("yamaha", "aftertouch"))
                 if isinstance(voice.renderer, yamaha.DX7Renderer):
                     audio[i] = voice.renderer.render(
                         1, rows[voice.template][i : i + 1], tuning, bend, controllers
@@ -653,18 +658,31 @@ class OfflineYamaha:
                     ends = tick_ends[voice.template]
                     begin = int(ends[i - 1]) if i else 0
                     end = int(ends[i])
-                    audio[i] = voice.renderer.render(
-                        1,
-                        (
-                            ends[i : i + 1] - begin,
-                            rows[voice.template][begin : end + 1],
-                        ),
-                        tuning,
-                        controllers,
-                        breath,
-                        foot,
-                        portamento_enabled,
-                    )[0]
+                    modulation = (
+                        ends[i : i + 1] - begin,
+                        rows[voice.template][begin : end + 1],
+                    )
+                    if isinstance(voice.renderer, yamaha.WT11Renderer):
+                        audio[i] = voice.renderer.render(
+                            1,
+                            modulation,
+                            tuning,
+                            controllers,
+                            breath,
+                            foot,
+                            portamento_enabled,
+                            aftertouch=aftertouch,
+                        )[0]
+                    else:
+                        audio[i] = voice.renderer.render(
+                            1,
+                            modulation,
+                            tuning,
+                            controllers,
+                            breath,
+                            foot,
+                            portamento_enabled,
+                        )[0]
                 count += 1
             gain = 10 ** (template.processing.volume_db / 20)
             if template.processing.invert_polarity:

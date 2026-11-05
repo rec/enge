@@ -9,7 +9,7 @@ from ufor import tx81z, wt11
 from ufor.dx7 import DX7Voice
 from ufor.synth import YamahaTX81ZVoice
 
-from enge import yamaha
+from enge import yamaha, yamaha_lfo
 from enge.synth import EngineError
 
 
@@ -206,7 +206,7 @@ def test_wt11_failed_control_rows_do_not_advance_pitch_or_chip_state(
     assert renderer.snapshot() == saved
 
 
-@pytest.mark.parametrize("index,value", [(0, 1), (1, 1), (2, 0), (3, 1)])
+@pytest.mark.parametrize("index,value", [(2, 0), (3, 1)])
 def test_wt11_rejects_unimplemented_aftertouch_assignments(
     index: int, value: int
 ) -> None:
@@ -217,3 +217,88 @@ def test_wt11_rejects_unimplemented_aftertouch_assignments(
         yamaha.WT11Renderer(
             patch, additional, wt11.WT11Additional2(data=bytes(data)), 69, 100
         )
+
+
+@pytest.mark.parametrize("pitch,amplitude", [(99, 0), (0, 99), (60, 75)])
+@pytest.mark.parametrize("delay", [0, 99])
+def test_wt11_aftertouch_modulation_adds_quantized_depths_before_saturation(
+    tmp_path: Path,
+    pitch: int,
+    amplitude: int,
+    delay: int,
+) -> None:
+    patch, extra, additional2, reference_patch, reference_extra = definition()
+    data = bytearray(patch.data)
+    reference_data = bytearray(reference_patch.data)
+    for value in (data, reference_data):
+        value[54:58] = bytes([80, delay, 30, 40])
+        value[60:62] = bytes([7, 3])
+    patch = wt11.WT11Voice(data=bytes(data))
+    reference_patch = tx81z.TX81ZVoice(data=bytes(reference_data))
+    assignments = bytearray(additional2.data)
+    assignments[:2] = bytes([pitch, amplitude])
+    renderer = yamaha.WT11Renderer(
+        patch, extra, wt11.WT11Additional2(data=bytes(assignments)), 69, 100
+    )
+    reference = yamaha.TX81ZRenderer(reference_patch, reference_extra, 69, 100)
+    pressure = np.linspace(0, 1, 48000)
+    external = np.full((48000, 2), 250, dtype=np.uint8)
+    saved = external.copy()
+    cc = np.floor(127 * pressure).astype(np.int64)
+    depths = np.minimum(
+        external.astype(np.int64)
+        + np.column_stack(
+            [
+                (((pitch * 165) // 64) * cc * 2) // 256,
+                (((amplitude * 165) // 64) * cc * 2) // 256,
+            ]
+        ),
+        255,
+    )
+    rows = yamaha_lfo.TX81ZLFOContext(patch).advance_ticks(48000)
+    actual = renderer.render(
+        48000, rows, controller_depths=external, aftertouch=pressure
+    )
+    expected = reference.render(48000, rows, controller_depths=depths)
+    np.testing.assert_array_equal(external, saved)
+    check_audio(tmp_path / "aftertouch-depths.wav", actual, expected)
+
+
+def test_wt11_omitted_aftertouch_is_zero_without_requiring_lfo_rows(
+    tmp_path: Path,
+) -> None:
+    patch, extra, _, _, _ = definition()
+    assignment = wt11.WT11Additional2(data=bytes([99, 99, 50, 0, 0, 0, 0, 0, 0, 0]))
+    renderer = yamaha.WT11Renderer(patch, extra, assignment, 69, 100)
+    reference = yamaha.WT11Renderer(patch, extra, assignment, 69, 100)
+    check_audio(
+        tmp_path / "aftertouch-zero.wav",
+        renderer.render(48000),
+        reference.render(48000, aftertouch=np.zeros(48000)),
+    )
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1, float("nan"), float("inf"), None])
+def test_wt11_invalid_aftertouch_does_not_advance_state(value: float | None) -> None:
+    patch, extra, assignment, _, _ = definition()
+    renderer = yamaha.WT11Renderer(patch, extra, assignment, 69, 100)
+    saved = renderer.snapshot()
+    pressure = np.zeros(99) if value is None else np.full(100, value)
+    with pytest.raises(EngineError, match="aftertouch rows"):
+        renderer.render(100, aftertouch=pressure)
+    assert renderer.snapshot() == saved
+
+
+@pytest.mark.parametrize("value", [-1.0, 255.5])
+def test_wt11_aftertouch_does_not_hide_invalid_existing_controller_depths(
+    value: float,
+) -> None:
+    patch, extra, _, _, _ = definition()
+    assignment = wt11.WT11Additional2(data=bytes([99, 99, 50, 0, 0, 0, 0, 0, 0, 0]))
+    renderer = yamaha.WT11Renderer(patch, extra, assignment, 69, 100)
+    saved = renderer.snapshot()
+    with pytest.raises(EngineError, match="controller depths"):
+        renderer.render(
+            100, controller_depths=np.full((100, 2), value), aftertouch=np.ones(100)
+        )
+    assert renderer.snapshot() == saved

@@ -357,16 +357,7 @@ class TX81ZRenderer:
             or np.any((foot < 0) | (foot > 1))
         ):
             raise EngineError("TX81Z foot rows must have shape (frames,) in 0..1")
-        if controller_depths is not None and (
-            controller_depths.shape != (frames, 2)
-            or not np.all(np.isfinite(controller_depths))
-            or np.any(controller_depths != np.floor(controller_depths))
-            or np.any((controller_depths < 0) | (controller_depths > 255))
-        ):
-            raise EngineError(
-                "TX81Z controller depths must be integer contributions "
-                "(frames, 2) in 0..255"
-            )
+        _validate_tx81z_depths(controller_depths, frames)
         if modulation is None:
             if (
                 (
@@ -732,7 +723,8 @@ class WT11Renderer(TX81ZRenderer):
     The envelope uses DXconvert's pinned three-stage-to-DX7 projection at the
     host frame rate. It affects ratio operators through the existing tuning
     path. Timing, fixed-mode interaction and level endpoints are unqualified.
-    Active aftertouch assignments are explicitly unsupported in this slice.
+    Aftertouch LFO assignments use the provisional OPZ byte-depth model.
+    Aftertouch pitch bias and EG bias remain explicitly unsupported.
     """
 
     def __init__(
@@ -756,13 +748,11 @@ class WT11Renderer(TX81ZRenderer):
             if diagnostic is not None:
                 raise EngineError(diagnostic)
         assignment = additional2.aftertouch
-        if (
-            assignment.pitch
-            or assignment.amplitude
-            or assignment.eg_bias
-            or assignment.pitch_bias != 50
-        ):
-            raise EngineError("WT11 aftertouch assignments are not implemented")
+        if assignment.eg_bias or assignment.pitch_bias != 50:
+            raise EngineError(
+                "WT11 aftertouch assignments for pitch bias and EG bias "
+                "are not implemented"
+            )
         data = bytearray(voice.data)
         extra = bytearray(additional.data)
         for index, source in enumerate((0, 2, 1, 3)):
@@ -810,10 +800,34 @@ class WT11Renderer(TX81ZRenderer):
         breath: np.ndarray | None = None,
         foot: np.ndarray | None = None,
         portamento_enabled: np.ndarray | None = None,
+        *,
+        aftertouch: np.ndarray | None = None,
     ) -> np.ndarray:
         if frames < 0:
             raise EngineError("WT11 frame count must be nonnegative")
         _tuning_ratios(tuning_cents, frames)
+        if aftertouch is not None:
+            if (
+                aftertouch.shape != (frames,)
+                or not np.all(np.isfinite(aftertouch))
+                or np.any((aftertouch < 0) | (aftertouch > 1))
+            ):
+                raise EngineError(
+                    "WT11 aftertouch rows must have shape (frames,) in 0..1"
+                )
+            _validate_tx81z_depths(controller_depths, frames)
+            cc = (127 * aftertouch).astype(np.int64)
+            assignment = self.wt11_additional2.aftertouch
+            contributions = np.column_stack(
+                [
+                    ((a * 165 >> 6) * cc * 2) >> 8
+                    for a in (assignment.pitch, assignment.amplitude)
+                ]
+            )
+            controller_depths = np.minimum(
+                contributions + (0 if controller_depths is None else controller_depths),
+                255,
+            )
         if breath is not None and self.wt11_voice.data[75] != 50 and np.any(breath):
             raise EngineError("WT11 breath pitch bias is not implemented")
         pitch = self.pitch_envelope.model_copy(deep=True)
@@ -1442,6 +1456,19 @@ def _operator_order(voice: DX7Voice) -> list[int]:
     if len(result) != 6:
         raise EngineError("DX7 algorithm contains a current-sample cycle")
     return result
+
+
+def _validate_tx81z_depths(depths: np.ndarray | None, frames: int) -> None:
+    if depths is not None and (
+        depths.shape != (frames, 2)
+        or not np.all(np.isfinite(depths))
+        or np.any(depths != np.floor(depths))
+        or np.any((depths < 0) | (depths > 255))
+    ):
+        raise EngineError(
+            "TX81Z controller depths must be integer contributions "
+            "(frames, 2) in 0..255"
+        )
 
 
 def _tuning_ratios(cents: np.ndarray | None, frames: int) -> np.ndarray | None:
