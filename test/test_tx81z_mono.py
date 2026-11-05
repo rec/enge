@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from test_synth import check_audio
 from test_tx81z_frequency import opz_frequency
-from test_tx81z_integer import opz_carrier
+from test_tx81z_integer import native_carrier
 from test_tx81z_lfo import lfo_voice
 from test_yamaha_instrument import instrument
 from ufor import synth_trace, tx81z
@@ -52,7 +52,7 @@ def test_legato_retarget_keeps_envelope_progress_and_validates_before_mutating(
     check_audio(
         tmp_path / "legato-phase.wav",
         np.concatenate([first, tail]),
-        (4 * opz_carrier(frequencies))[:, None],
+        (4 * native_carrier(frequencies))[:, None],
     )
     restored = yamaha.TX81ZRenderer(
         template.patch, template.additional, 81, 127, pitch_hz=880, start_pitch_hz=440
@@ -130,11 +130,12 @@ def test_explicit_zero_velocity_triggers_render_and_restore_with_velocity_sensit
         frequencies = np.concatenate(
             [np.full(12001, opz_frequency(69)), np.full(35999, opz_frequency(81))]
         )
-        expected = sum(opz_carrier(frequencies, g) for g in gains)
+        expected = sum(native_carrier(frequencies, g) for g in gains)
     else:
-        expected = sum(opz_carrier(opz_frequency(69), g) for g in gains)
+        expected = sum(native_carrier(opz_frequency(69), g) for g in gains)
         expected[12001:] += sum(
-            opz_carrier(opz_frequency(81), g, frames=35999) for g in gains
+            native_carrier(opz_frequency(81), g, frames=35999, start_frame=12001)
+            for g in gains
         )
     check_audio(
         tmp_path / "zero-velocity.wav",
@@ -265,12 +266,16 @@ def test_fingered_glides_only_between_held_keys_and_ignores_switch(
     assert (glide.current_hz < 880) is (fingered or bool(switch))
     tail = engine.advance([a for a in actions if a.tick >= 2002], 2002, 48000)
     # Sustain keeps the old voice sounding, but released keys are not legato.
-    np.testing.assert_array_equal(
-        tail[4004 - 2002], 4 * opz_carrier(220, frames=1)[0] * np.array([0.3, 0.15])
-    )
     assert len(engine.voices) == 1
     current = next(iter(engine.voices.values())).renderer
     assert isinstance(current, yamaha.TX81ZRenderer)
+    hz = opz_frequency(57)
+    if not fingered and switch and current.start_pitch_hz is not None:
+        hz *= current.start_pitch_hz / 220
+    np.testing.assert_array_equal(
+        tail[4004 - 2002],
+        4 * native_carrier(hz, frames=1, start_frame=4004)[0] * np.array([0.3, 0.15]),
+    )
     if fingered:
         assert current.portamento is None
     else:

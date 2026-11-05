@@ -31,6 +31,28 @@ def opz_carrier(
         np.rint(np.asarray(frequency) * 2**20 / 48000), (frames,)
     ).astype(np.int64)
     phases = (phase + np.concatenate([[0], np.cumsum(steps[:-1])])) >> 10
+    return carrier_at_phases(phases, gain, waveform)
+
+
+def native_carrier(
+    frequency: float | np.ndarray,
+    gain: float | np.ndarray = 0.25,
+    frames: int = 48000,
+    *,
+    start_frame: int = 0,
+) -> np.ndarray:
+    edges = np.arange(start_frame, start_frame + frames + 1) * 3579545 // (64 * 48000)
+    owners = np.repeat(np.arange(frames), np.diff(edges))
+    hz = np.broadcast_to(frequency, (frames,))[owners]
+    levels = np.broadcast_to(gain, (frames,))[owners]
+    phases = np.cumsum(np.rint(hz * (64 * 2**20 / 3579545)).astype(np.int64)) >> 10
+    values = carrier_at_phases(phases, levels, 0)
+    return np.concatenate([[0], values])[edges[1:] - edges[0]]
+
+
+def carrier_at_phases(
+    phases: np.ndarray, gain: float | np.ndarray, waveform: int
+) -> np.ndarray:
     attenuation = np.rint(-64 * np.log2(np.maximum(gain, 2.0**-64))).astype(np.int64)
     waves, power = reference_tables()
     entries = waves[waveform, phases & 1023]

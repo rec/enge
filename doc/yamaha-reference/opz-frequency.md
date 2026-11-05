@@ -144,4 +144,6 @@ before fine-multiplier rounding, low-key quantization, top-octave saturation,
 PM at both key boundaries, and partitioned snapshot continuation. Existing
 amplitude/controller tests now use exported native frequencies rather than
 ideal equal-tempered frequencies in their audio expectations. Fixed-frequency
-reference qualification, native-rate output and complete patches remain open.
+reference qualification remains open. The subsequent [native note comparison](opz-note.md)
+qualifies the public clock and DAC path for two ratio-mode patches across all
+algorithms and feedback levels.

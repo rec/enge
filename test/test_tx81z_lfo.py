@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from test_synth import check_audio
 from test_tx81z_frequency import opz_frequency, opz_pm_frequency
-from test_tx81z_integer import opz_carrier
+from test_tx81z_integer import native_carrier
 from ufor import tx81z
 
 from enge.synth import EngineError
@@ -200,7 +200,7 @@ def test_tx81z_pitch_modulation_keeps_fine_detune_outside_the_ratio(
         voice, tx81z.TX81ZAdditional(data=bytes(23)), 69, 100
     ).render(48000, rows)
     frequency = opz_pm_frequency(np.array([384]), detune=6)[0]
-    expected = (4 * opz_carrier(frequency))[:, None]
+    expected = (4 * native_carrier(frequency))[:, None]
     check_audio(tmp_path / "tx81z-lfo-detune.wav", actual, expected)
 
 
@@ -221,7 +221,7 @@ def test_tx81z_amplitude_modulation_obeys_channel_sensitivity_and_operator_enabl
     check_audio(
         tmp_path / "tx81z-lfo-ame.wav",
         actual,
-        (4 * opz_carrier(opz_frequency(), 0.25 * 2 ** (-attenuation / 64)))[:, None],
+        (4 * native_carrier(opz_frequency(), 0.25 * 2 ** (-attenuation / 64)))[:, None],
     )
 
 
@@ -308,7 +308,7 @@ def test_tx81z_delayed_amplitude_uses_curved_depth_and_undelayed_controllers(
     # Firmware curve after patch-delay multiplication and controller addition.
     depths = np.repeat(registers, 9600)
     attenuation = (255 * depths >> 7) << 2
-    expected = 4 * opz_carrier(opz_frequency(), 0.25 * 2 ** (-attenuation / 64))
+    expected = 4 * native_carrier(opz_frequency(), 0.25 * 2 ** (-attenuation / 64))
     check_audio(tmp_path / "delayed-amplitude.wav", actual, expected[:, None])
 
 
@@ -428,7 +428,7 @@ def test_tx81z_controller_depths_add_to_patch_and_saturate(
     pm = rows[:, 0] * pitch >> 7
     attenuation = (rows[:, 1] * amplitude >> 7) << 2
     expected = (
-        4 * opz_carrier(opz_pm_frequency(pm * 4), 0.25 * 2 ** (-attenuation / 64))
+        4 * native_carrier(opz_pm_frequency(pm * 4), 0.25 * 2 ** (-attenuation / 64))
     )[:, None]
     check_audio(tmp_path / "tx81z-controller-depths.wav", actual, expected)
     for invalid in (

@@ -63,9 +63,10 @@ def test_performance_routes_silent_owners_and_restores_shared_clocks(
         first.patch, secondary=second.patch if paired else None
     )
     clock.keydown()
-    head = clock.advance(1001)
+    _, head = clock.advance_ticks(1001)
     clock.keydown()
-    rows = np.concatenate([head, clock.advance(46999)])
+    rows = np.concatenate([head, clock.advance_ticks(46999)[1][1:]])
+    edges = np.arange(48001) * 3579545 // (64 * 48000)
     if not paired:
         rows = rows[:, None, :]
     expected = np.zeros((48000, 2))
@@ -83,9 +84,16 @@ def test_performance_routes_silent_owners_and_restores_shared_clocks(
             modulation[:, :2] = 0
         for start in (0, 1001):
             note = yamaha.TX81ZRenderer(
-                tx81z.TX81ZVoice(data=bytes(patch)), template.additional, 69, 127
+                tx81z.TX81ZVoice(data=bytes(patch)),
+                template.additional,
+                69,
+                127,
+                start_frame=start,
             )
-            expected[start:] += note.render(48000 - start, modulation[start:]) * [
+            expected[start:] += note.render(
+                48000 - start,
+                (edges[start + 1 :] - edges[start], modulation[edges[start] :]),
+            ) * [
                 0.3,
                 0.15,
             ]
@@ -183,9 +191,10 @@ def test_vibrato_uses_own_pitch_clock_without_amplitude_or_foreign_resets(
     for start, end, name in [(0, 1001, "a"), (1001, 2003, "b"), (2003, 48000, "a")]:
         hardware.keydown()
         clocks[name].keydown()
-        segments["first"].append(hardware.advance(end - start)[:, 0])
+        first_row = 1 if start else 0
+        segments["first"].append(hardware.advance_ticks(end - start)[1][first_row:, 0])
         for owner, clock in clocks.items():
-            rows = clock.advance(end - start)
+            rows = clock.advance_ticks(end - start)[1][first_row:]
             rows[:, 1] = 0
             segments[owner].append(rows)
     expected = np.zeros((48000, 2))
@@ -202,11 +211,18 @@ def test_vibrato_uses_own_pitch_clock_without_amplitude_or_foreign_resets(
         rows = np.concatenate(segments[name])
         for start in starts:
             note = yamaha.TX81ZRenderer(
-                tx81z.TX81ZVoice(data=bytes(patch)), template.additional, key, 127
+                tx81z.TX81ZVoice(data=bytes(patch)),
+                template.additional,
+                key,
+                127,
+                start_frame=start,
             )
             controllers = np.full((48000 - start, 2), 253) if name == "a" else None
+            edges = np.arange(start, 48001) * 3579545 // (64 * 48000)
             expected[start:] += note.render(
-                48000 - start, rows[start:], controller_depths=controllers
+                48000 - start,
+                (edges[1:] - edges[0], rows[edges[0] :]),
+                controller_depths=controllers,
             ) * [0.3, 0.15]
     actions = synth_trace.prepare(
         document.body,

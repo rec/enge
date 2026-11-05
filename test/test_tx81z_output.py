@@ -69,6 +69,44 @@ def output_document(grouped: bool, split_groups: bool = False) -> SynthInstrumen
     return SynthInstrumentScore.model_validate(raw)
 
 
+def test_dac_holds_the_last_chip_output_after_voice_retirement(tmp_path: Path) -> None:
+    raw = output_document(True).model_dump(mode="json")
+    raw["timebases"][0]["rate"]["numerator"] = 192000
+    raw["body"]["tx81z_outputs"][0]["processing"] = {}
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(
+        document.body,
+        [Trigger(tick=0, ordinal=0, part="main", trigger_id="note", key=69)],
+        seed=0,
+    ).actions
+    renderer = yamaha_instrument.OfflineYamaha(yamaha_instrument.prepare(document))
+    head = renderer.advance(actions, 0, 4)
+    stops = [
+        VoiceRetirement(
+            tick=4,
+            ordinal=i,
+            voice_id=a.voice_id,
+            cause=RetirementCause.transport_stop,
+            action="stop",
+        )
+        for i, a in enumerate(actions)
+        if isinstance(a, synth_trace.VoiceStart)
+    ]
+    middle = renderer.advance(stops, 4, 5)
+    saved = yamaha_instrument.YamahaSnapshot.model_validate_json(
+        renderer.snapshot().model_dump_json()
+    )
+    assert not saved.voices and head[3, 0] != 0
+    tail = renderer.advance([], 5, 192000)
+    expected = np.zeros((192000, 2))
+    expected[3:6] = head[3]
+    actual = np.concatenate([head, middle, tail])
+    np.testing.assert_array_equal(actual, expected)
+    check_audio(tmp_path / "held-chip-dac.wav", actual[3::4], expected[3::4])
+    renderer.restore(saved)
+    np.testing.assert_array_equal(renderer.advance([], 5, 192000), tail)
+
+
 @pytest.mark.parametrize(
     "split_groups,fade", [(False, False), (True, False), (False, True)]
 )

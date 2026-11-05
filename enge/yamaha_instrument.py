@@ -4,7 +4,7 @@ from copy import deepcopy
 from math import ceil, floor
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from ufor import instrument_trace, synth_trace, tx81z
 from ufor.dx7 import DX7Performance
 from ufor.samples.processing import FilterOrder, Processing
@@ -77,6 +77,7 @@ class YamahaSnapshot(BaseModel, frozen=True):
     mono_notes: list[MonoNote]
     contexts: list[synth.ControlContext]
     output_filters: dict[str, list[filters.FilterState]]
+    held_dac: dict[str, FiniteFloat]
 
 
 class OfflineYamaha:
@@ -144,6 +145,7 @@ class OfflineYamaha:
             o.name: filters.initial_states(o.processing.filters, 1)
             for o in self.definition.score.body.tx81z_outputs
         }
+        self.held_dac = dict.fromkeys(self.output_filters, 0.0)
         self.mono_notes: list[MonoNote] = []
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
@@ -192,6 +194,7 @@ class OfflineYamaha:
             mono_notes=self.mono_notes,
             contexts=self.controls.contexts,
             output_filters=self.output_filters,
+            held_dac=self.held_dac,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: YamahaSnapshot) -> None:
@@ -202,6 +205,7 @@ class OfflineYamaha:
             or snapshot.oscillator_slots.keys() != self.oscillator_slots.keys()
             or snapshot.pitch_history.keys() != self.pitch_history.keys()
             or snapshot.output_filters.keys() != self.output_filters.keys()
+            or snapshot.held_dac.keys() != self.held_dac.keys()
         ):
             raise synth.EngineError("Snapshot belongs to a different Yamaha instrument")
         snapshot = snapshot.model_copy(deep=True)
@@ -224,6 +228,10 @@ class OfflineYamaha:
             elif isinstance(renderer, yamaha.TX81ZRenderer) and isinstance(
                 saved.note, yamaha.TX81ZSnapshot
             ):
+                if saved.note.frame != snapshot.frame:
+                    raise synth.EngineError(
+                        "TX81Z voice clock disagrees with instrument frame"
+                    )
                 renderer.restore(saved.note)
             else:
                 raise synth.EngineError(
@@ -242,6 +250,10 @@ class OfflineYamaha:
             elif isinstance(clock, yamaha_lfo.TX81ZLFOContext) and isinstance(
                 saved_clock, yamaha_lfo.TX81ZLFOSnapshot
             ):
+                if saved_clock.frame != snapshot.frame:
+                    raise synth.EngineError(
+                        "TX81Z LFO clock disagrees with instrument frame"
+                    )
                 clock.restore(saved_clock)
             else:
                 raise synth.EngineError(
@@ -249,6 +261,10 @@ class OfflineYamaha:
                 )
         vibrato_clocks = deepcopy(self.vibrato_clocks)
         for name, clock in vibrato_clocks.items():
+            if snapshot.vibrato_clocks[name].frame != snapshot.frame:
+                raise synth.EngineError(
+                    "TX81Z vibrato clock disagrees with instrument frame"
+                )
             clock.restore(snapshot.vibrato_clocks[name])
         self.voices = voices
         self.clocks = clocks
@@ -257,6 +273,7 @@ class OfflineYamaha:
         self.pitch_history = snapshot.pitch_history
         self.mono_notes = snapshot.mono_notes
         self.output_filters = snapshot.output_filters
+        self.held_dac = snapshot.held_dac
         self.controls.clear_cache()
         self.controls.contexts = snapshot.contexts
         self.frame = snapshot.frame
@@ -404,6 +421,7 @@ class OfflineYamaha:
             pitch,
             phases,
             start_pitch,
+            start_frame=action.tick,
         )
         if mono_voice is not None:
             self._retire(mono_voice, action.tick)
@@ -477,13 +495,22 @@ class OfflineYamaha:
     def _render(self, start: int, frames: int) -> np.ndarray:
         output = np.zeros((frames, len(self.definition.channels)))
         groups = {n: np.zeros((frames, 1)) for n in self.output_filters}
-        rows = {n: c.advance(frames) for n, c in self.clocks.items()}
-        vibrato_rows = {n: c.advance(frames) for n, c in self.vibrato_clocks.items()}
+        rows = {}
+        tick_ends = {}
+        for name, clock in self.clocks.items():
+            if isinstance(clock, yamaha_lfo.TX81ZLFOContext):
+                tick_ends[name], rows[name] = clock.advance_ticks(frames)
+            else:
+                rows[name] = clock.advance(frames)
+        vibrato_rows = {
+            n: c.advance_ticks(frames)[1] for n, c in self.vibrato_clocks.items()
+        }
         for group in self.definition.score.body.tx81z_lfos:
             shared = rows[group.first]
             for name, selector in group.routes.items():
+                tick_ends[name] = tick_ends[group.first]
                 if selector == "off":
-                    rows[name] = np.zeros((frames, 4), dtype=np.int64)
+                    rows[name] = np.zeros((len(shared), 4), dtype=np.int64)
                     rows[name][:, 3] = 1
                 elif selector == "vibrato":
                     rows[name] = vibrato_rows[name]
@@ -569,15 +596,20 @@ class OfflineYamaha:
                         if isinstance(template, YamahaTX81ZVoice):
                             breath = values.get(("yamaha", "breath"))
                             foot = values.get(("yamaha", "foot"))
-                modulation = rows[voice.template][i : i + 1]
                 if isinstance(voice.renderer, yamaha.DX7Renderer):
                     audio[i] = voice.renderer.render(
-                        1, modulation, tuning, bend, controllers
+                        1, rows[voice.template][i : i + 1], tuning, bend, controllers
                     )[0]
                 else:
+                    ends = tick_ends[voice.template]
+                    begin = int(ends[i - 1]) if i else 0
+                    end = int(ends[i])
                     audio[i] = voice.renderer.render(
                         1,
-                        modulation,
+                        (
+                            ends[i : i + 1] - begin,
+                            rows[voice.template][begin : end + 1],
+                        ),
                         tuning,
                         controllers,
                         breath,
@@ -628,6 +660,17 @@ class OfflineYamaha:
                 self._retire(voice, start + count)
         for group in self.definition.score.body.tx81z_outputs:
             audio = yamaha.tx81z_dac(groups[group.name])
+            if frames:
+                ends = tick_ends[group.voices[0]]
+                clocked = np.diff(ends, prepend=0) > 0
+                if not np.all(clocked):
+                    latest = np.maximum.accumulate(
+                        np.where(clocked, np.arange(1, frames + 1), 0)
+                    )
+                    audio = np.concatenate([[[self.held_dac[group.name]]], audio])[
+                        latest
+                    ]
+                self.held_dac[group.name] = float(audio[-1, 0])
             processing = group.processing
             gain = 10 ** (processing.volume_db / 20)
             if processing.invert_polarity:
@@ -795,11 +838,20 @@ def _note(
     pitch: float | None,
     phases: list[float] | None = None,
     start_pitch: float | None = None,
+    *,
+    start_frame: int = 0,
 ) -> yamaha.DX7Renderer | yamaha.TX81ZRenderer:
     if isinstance(template, YamahaDX7Voice):
         return yamaha.DX7Renderer(template.patch, key, velocity, rate, pitch, phases)
     return yamaha.TX81ZRenderer(
-        template.patch, template.additional, key, velocity, rate, pitch, start_pitch
+        template.patch,
+        template.additional,
+        key,
+        velocity,
+        rate,
+        pitch,
+        start_pitch,
+        start_frame=start_frame,
     )
 
 

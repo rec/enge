@@ -155,6 +155,8 @@ class TX81ZSnapshot(BaseModel, frozen=True):
     note: int
     velocity: int
     sample_rate: int
+    frame: int = Field(ge=0)
+    held_output: float
     pitch_hz: float | None = None
     start_pitch_hz: float | None = None
     portamento: TX81ZPortamento | None = None
@@ -167,14 +169,14 @@ class TX81ZSnapshot(BaseModel, frozen=True):
 class TX81ZRenderer:
     """Offline provisional four-operator note renderer with explicit edit buffers.
 
-    LFO modulation uses caller-owned raw OPZ rows: signed PM, unsigned AM,
-    delay numerator and delay denominator. Optional controller-depth rows hold
+    LFO observations carry signed PM, unsigned AM, a delay numerator and a
+    delay denominator. Optional controller-depth rows hold
     summed integer PMD/AMD byte contributions in 0..255. These add to delayed
     patch bytes and saturate before register conversion. Controller modulation
     bypasses patch delay; conversion follows the provisional firmware model.
     Intrinsic key scaling
     uses the transposed key; snapshots retain the original trigger key.
-    Nominal frequencies feed the integer Q20 phase and logarithmic OPZ core.
+    Native chip ticks clock the envelopes, Q20 phases and feedback before output.
     Optional render tuning rows are cents relative to the admitted pitch, applied
     to ratio operators before their additive chip-detune offsets.
     Breath rows are normalized positions, truncated to CC2 before measured
@@ -192,6 +194,8 @@ class TX81ZRenderer:
         sample_rate: int = 48000,
         pitch_hz: float | None = None,
         start_pitch_hz: float | None = None,
+        *,
+        start_frame: int = 0,
     ) -> None:
         for diagnostic in (voice.parameter_diagnostic, additional.parameter_diagnostic):
             if diagnostic is not None:
@@ -205,7 +209,12 @@ class TX81ZRenderer:
                 raise EngineError(
                     f"TX81Z operator {4 - i} fixed frequency flag must be 0 or 1"
                 )
-        if not 0 <= note <= 127 or not 0 <= velocity <= 127 or sample_rate <= 0:
+        if (
+            not 0 <= note <= 127
+            or not 0 <= velocity <= 127
+            or sample_rate <= 0
+            or start_frame < 0
+        ):
             raise EngineError("Invalid TX81Z note, velocity or sample rate")
         _, self.lfo_pitch_depth, self.lfo_amplitude_depth = tx81z_lfo_registers(voice)
         for index, maximum in enumerate([7, 99, 99], start=20):
@@ -230,6 +239,8 @@ class TX81ZRenderer:
         self.note = note
         self.velocity = velocity
         self.sample_rate = sample_rate
+        self.frame = start_frame
+        self.held_output = 0.0
         if pitch_hz is not None and (not isfinite(pitch_hz) or pitch_hz <= 0):
             raise EngineError("Yamaha pitch_hz must be finite and positive")
         self.pitch_hz = pitch_hz
@@ -263,6 +274,9 @@ class TX81ZRenderer:
             ],
             sample_rate=sample_rate,
         )
+        completed = start_frame * self.envelopes.clock_hz // (64 * sample_rate)
+        self.envelopes.counter = completed // 3
+        self.envelopes.remainder = completed % 3 * 64 * sample_rate
         frequencies = []
         detune_offsets = []
         for number in range(1, 5):
@@ -298,7 +312,7 @@ class TX81ZRenderer:
     def render(
         self,
         frames: int,
-        modulation: np.ndarray | None = None,
+        modulation: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
         tuning_cents: np.ndarray | None = None,
         controller_depths: np.ndarray | None = None,
         breath: np.ndarray | None = None,
@@ -309,10 +323,20 @@ class TX81ZRenderer:
 
         The two columns carry integer pitch/amplitude contributions in 0..255,
         before adding delayed patch depth and converting to OPZ registers.
+        A modulation array supplies one value per host frame. The pair from
+        TX81ZLFOContext.advance_ticks supplies individual chip observations.
+        start_frame places a note on the instrument's absolute host timeline.
         """
         tuning = _tuning_ratios(tuning_cents, frames)
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
+        divisor = 64 * self.sample_rate
+        remainder = self.frame * self.envelopes.clock_hz % divisor
+        ends = (
+            np.arange(1, frames + 1) * self.envelopes.clock_hz + remainder
+        ) // divisor
+        ticks = int(ends[-1]) if frames else 0
+        owners = np.repeat(np.arange(frames), np.diff(ends, prepend=0))
         if portamento_enabled is not None and (
             portamento_enabled.shape != (frames,)
             or not np.all(np.isfinite(portamento_enabled))
@@ -358,18 +382,8 @@ class TX81ZRenderer:
                 or (controller_depths is not None and np.any(controller_depths))
             ):
                 raise EngineError("TX81Z modulation requires shared LFO rows")
-        elif (
-            modulation.shape != (frames, 4)
-            or not np.all(np.isfinite(modulation))
-            or np.any(modulation != np.floor(modulation))
-            or np.any((modulation[:, 0] < -128) | (modulation[:, 0] > 127))
-            or np.any((modulation[:, 1] < 0) | (modulation[:, 1] > 255))
-            or np.any((modulation[:, 3] < 1) | (modulation[:, 3] > 2**56))
-            or np.any((modulation[:, 2] < 0) | (modulation[:, 2] > modulation[:, 3]))
-        ):
-            raise EngineError("Invalid TX81Z shared LFO rows")
         if modulation is not None:
-            raw = modulation.astype(np.int64)
+            raw = _tx81z_modulation_ticks(modulation, ends, owners, ticks)
             # uint64 keeps the maximum permitted rational denominator exact.
             delay = (
                 raw[:, 2].astype(np.uint64) * 255 // raw[:, 3].astype(np.uint64)
@@ -377,7 +391,7 @@ class TX81ZRenderer:
             pitch_depth = ((self.voice.data[56] * 165 >> 6) * delay) >> 8
             amplitude_depth = ((self.voice.data[57] * 165 >> 6) * delay) >> 8
             if controller_depths is not None:
-                contributions = controller_depths.astype(np.int64)
+                contributions = controller_depths[owners].astype(np.int64)
                 pitch_depth += contributions[:, 0]
                 amplitude_depth += contributions[:, 1]
             pitch_depth = np.minimum(pitch_depth, 255) >> 1
@@ -401,9 +415,9 @@ class TX81ZRenderer:
             else:
                 glide = self.portamento.ratios(frames)
             tuning = glide if tuning is None else tuning * glide
-        frequencies = np.broadcast_to(self.frequencies, (frames, 4))
-        detune_offsets = np.broadcast_to(self.detune_offsets, (frames, 4))
-        attenuation = self.envelopes.attenuation_samples(frames)
+        frequencies = np.broadcast_to(self.frequencies, (ticks, 4))
+        detune_offsets = np.broadcast_to(self.detune_offsets, (ticks, 4))
+        attenuation = self.envelopes.attenuation_ticks(ticks)
         quiet = attenuation > 896
         attenuation >>= np.array([e.shift for e in self.envelopes.envelopes])
         if modulation is not None:
@@ -434,6 +448,7 @@ class TX81ZRenderer:
                 am = am << (self.amplitude_modulation_sensitivity - 1)
                 attenuation += am[:, None] * self.amplitude_modulation_enabled
         if tuning is not None:
+            tuning = tuning[owners]
             frequencies = frequencies.copy()
             for i in range(4):
                 if self.ratio_operators[i]:
@@ -473,18 +488,26 @@ class TX81ZRenderer:
             levels = np.maximum(
                 2 ** (-127 / 8), levels * 2 ** (-attenuation_tl.astype(float) / 8)
             )
-        gains = 2 ** (-attenuation / 64) * levels
+        gains = 2 ** (-attenuation / 64) * (
+            levels[owners] if levels.ndim == 2 else levels
+        )
         gains[quiet] = 0
-        output, self.operators = tx81z_operator_samples(
+        steps = np.rint(
+            np.remainder(frequencies / (self.envelopes.clock_hz / 64), 1) * 2**20
+        ).astype(np.int64)
+        output, self.operators = tx81z_operator_ticks(
             self.voice.algorithm,
             self.waveforms,
             self.operators,
-            frequencies,
+            steps,
             gains,
-            self.sample_rate,
             self.voice.feedback,
         )
-        return output
+        observed = np.concatenate([[[self.held_output]], output])[ends]
+        if ticks:
+            self.held_output = float(output[-1, 0])
+        self.frame += frames
+        return observed
 
     def retarget(self, note: int, velocity: int, pitch_hz: float | None = None) -> None:
         """Select a legato key without restarting operators or envelope progress.
@@ -532,6 +555,8 @@ class TX81ZRenderer:
             note=self.note,
             velocity=self.velocity,
             sample_rate=self.sample_rate,
+            frame=self.frame,
+            held_output=self.held_output,
             pitch_hz=self.pitch_hz,
             start_pitch_hz=self.start_pitch_hz,
             portamento=self.portamento.model_copy(deep=True)
@@ -552,7 +577,18 @@ class TX81ZRenderer:
             or snapshot.start_pitch_hz != self.start_pitch_hz
         ):
             raise EngineError("TX81Z snapshot belongs to a different note definition")
+        bank = snapshot.envelopes
+        completed = snapshot.frame * self.envelopes.clock_hz // (64 * self.sample_rate)
+        if (
+            bank.sample_rate != self.sample_rate
+            or bank.clock_hz != self.envelopes.clock_hz
+            or bank.counter != completed // 3
+            or bank.remainder != completed % 3 * 64 * self.sample_rate
+        ):
+            raise EngineError("TX81Z snapshot envelope clock disagrees with its frame")
         self.envelopes = snapshot.envelopes.model_copy(deep=True)
+        self.frame = snapshot.frame
+        self.held_output = snapshot.held_output
         self.operators = snapshot.operators.model_copy(deep=True)
         self.portamento = (
             snapshot.portamento.model_copy(deep=True)
@@ -1141,6 +1177,34 @@ def tx81z_wave_samples(waveform: int, phases: np.ndarray) -> np.ndarray:
         [tx81z_operator_output(waveform, i, 0) / 8192 for i in range(1024)]
     )
     return table[indices]
+
+
+def _tx81z_modulation_ticks(
+    modulation: np.ndarray | tuple[np.ndarray, np.ndarray],
+    ends: np.ndarray,
+    owners: np.ndarray,
+    ticks: int,
+) -> np.ndarray:
+    if isinstance(modulation, tuple):
+        indices, rows = modulation
+        if not np.array_equal(indices, ends) or rows.shape != (ticks + 1, 4):
+            raise EngineError("Invalid TX81Z shared LFO tick grid")
+    else:
+        rows = modulation
+        if rows.shape != (len(ends), 4):
+            raise EngineError("Invalid TX81Z shared LFO rows")
+    if (
+        not np.all(np.isfinite(rows))
+        or np.any(rows != np.floor(rows))
+        or np.any((rows[:, 0] < -128) | (rows[:, 0] > 127))
+        or np.any((rows[:, 1] < 0) | (rows[:, 1] > 255))
+        or np.any((rows[:, 3] < 1) | (rows[:, 3] > 2**56))
+        or np.any((rows[:, 2] < 0) | (rows[:, 2] > rows[:, 3]))
+    ):
+        raise EngineError("Invalid TX81Z shared LFO rows")
+    return (rows[1:] if isinstance(modulation, tuple) else rows[owners]).astype(
+        np.int64
+    )
 
 
 def _tx81z_operator_rows(

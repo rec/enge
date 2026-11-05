@@ -165,7 +165,7 @@ observes output at 48 kHz and advances envelopes with the same rational
 are separated from envelope ticks through the public operator cache and clock
 APIs. Key-up occurs before frame 24000. This deliberately qualifies enge's
 output-frame model, not native chip-rate resampling.
-After the native ratio-frequency replacement, the Python test adjusts its host
+After the native ratio-frequency replacement, the former Python test adjusted its host
 pitch ratio by `440 / native_A4` to retain that exact injected phase increment.
 The captured reference audio remains unchanged. This controlled stimulus keeps
 the envelope/core comparison independent of the separate frequency audit.
@@ -204,9 +204,10 @@ hardware measurement. Existing envelope component regressions explicitly apply
 shift when comparing against their captured shifted observations.
 
 After the correction, all **1,536,000 samples match exactly** across the 32
-cases. Tests retain integer reference output in
-`test/data/tx81z-opz-dynamic.npz` and check partitioned attack/release rendering
-and JSON continuation. Separate one-second WAV regressions distinguish raw
+cases. The historical integer reference output remains in
+`test/data/tx81z-opz-dynamic.npz`. Public note regressions now use the
+[complete native-clock note captures](opz-note.md) for partitioned
+attack/release rendering and JSON continuation. Separate WAV regressions distinguish raw
 attenuation 896 from 897 and 1023 with shift enabled. The archive's `parameters`
 rows are algorithm/feedback/profile; `case0` through `case31` contain upstream
 signed integer output before division by 8192.

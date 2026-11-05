@@ -1,4 +1,4 @@
-"""Compare the native register captures with enge at host and chip cadence."""
+"""Compare native register captures with the public note and its components."""
 
 import csv
 import sys
@@ -25,13 +25,15 @@ class Comparison(BaseModel, frozen=True):
                 "feedback",
                 "profile",
                 "reference_peak",
-                "host_relative_rms",
-                "host_max_units",
+                "public_relative_rms",
+                "public_max_units",
+                "public_mismatches",
                 "native_mismatches",
                 "native_max_units",
             ]
         )
         ticks = np.arange(1, 48001) * 3579545 // (64 * 48000)
+        mismatches = 0
         for algorithm, feedback, profile in product(range(1, 9), range(8), range(2)):
             stem = self.source / f"note-{algorithm}-{feedback}-{profile}"
             expected = np.fromfile(stem.with_suffix(".i32"), dtype="=i4")
@@ -45,9 +47,12 @@ class Comparison(BaseModel, frozen=True):
             head = note.render(24000)
             note.release()
             raw = np.concatenate([head, note.render(24000)])
-            host = tx81z_dac(raw[:, 0]) * 32768
+            public = tx81z_dac(raw[:, 0]) * 32768
             native = native_control(prepare_note(algorithm, feedback, profile), ticks)
-            relative_rms = np.linalg.norm(host - expected) / np.linalg.norm(expected)
+            relative_rms = np.linalg.norm(public - expected) / np.linalg.norm(expected)
+            public_errors = int(np.count_nonzero(public != expected))
+            native_errors = int(np.count_nonzero(native != expected))
+            mismatches += public_errors + native_errors
             table.writerow(
                 [
                     algorithm,
@@ -55,19 +60,22 @@ class Comparison(BaseModel, frozen=True):
                     profile,
                     int(np.max(np.abs(expected))),
                     f"{relative_rms:.12f}",
-                    int(np.max(np.abs(host - expected))),
-                    np.count_nonzero(native != expected),
+                    int(np.max(np.abs(public - expected))),
+                    public_errors,
+                    native_errors,
                     int(np.max(np.abs(native - expected))),
                 ]
             )
             if profile == 0 and (algorithm, feedback) in ((8, 0), (1, 7)):
-                for name, samples in (("ymfm", expected), ("enge", host)):
+                for name, samples in (("ymfm", expected), ("public", public)):
                     with wave.open(
                         str(stem.with_name(f"note-{algorithm}-{feedback}-{name}.wav")),
                         "wb",
                     ) as output:
                         output.setparams((1, 2, 48000, 48000, "NONE", ""))
                         output.writeframes(samples.astype("<i2").tobytes())
+        if mismatches:
+            sys.exit(f"{mismatches} differing sample comparisons")
 
 
 def prepare_note(algorithm: int, feedback: int, profile: int) -> TX81ZRenderer:

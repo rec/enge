@@ -1,8 +1,9 @@
 # TX81Z native-clock note comparison
 
-Enge revision `f99514a` renders each operator once per host frame. At 48 kHz its
-output is compared with the pinned YM2414 across all eight algorithms, eight
-feedback levels and two ratio patches. The sweep fixes
+The public TX81Z renderer matches all 6,144,000 captured YM2414 samples across
+eight algorithms, eight feedback levels and two ratio patches. Revision
+`f99514a` supplies the historical baseline from before native clock integration.
+The sweep fixes
 a host observation rule so that the two clock schedules can be compared.
 
 ## Method
@@ -47,7 +48,7 @@ the new phase on each tick. It starts at zero phase, just as the chip does.
 Both comparisons use integer DAC units, a common origin and the same authored
 levels. The control now exercises the production components directly.
 
-## Results
+## Historical host-clock results
 
 | Profile zero | Host relative RMS error | Native mismatches / 48,000 |
 | --- | ---: | ---: |
@@ -57,9 +58,9 @@ levels. The control now exercises the production components directly.
 | Algorithm 1, feedback 7 | 137.7875% | 0 |
 
 All cases have nonzero held and released output. The native control's maximum
-integer sample error is zero across all 6,144,000 observations. Production
+integer sample error is zero across all 6,144,000 observations. Historical
 relative RMS error ranges from 2.94% to 137.79% for profile zero and from
-9.40% to 115.55% for profile one. The production host-clock result
+9.40% to 115.55% for profile one. The former host-clock result
 reaches 16,336 DAC units absolute difference. Full results are in the
 [comparison CSV](opz-note.csv).
 
@@ -86,20 +87,37 @@ for a in 1 2 3 4 5 6 7 8; do
   done
 done
 uv run python doc/yamaha-reference/compare-opz-note.py \
-  --source /tmp/enge-chip-notes > /tmp/opz-note.csv
-diff doc/yamaha-reference/opz-note.csv /tmp/opz-note.csv
+  --source /tmp/enge-chip-notes > /tmp/opz-note-native.csv
+diff doc/yamaha-reference/opz-note-native.csv /tmp/opz-note-native.csv
 ```
 
-## Production acceptance gate
+## Production native-clock results
 
-The public renderer still needs a shared native timebase for oscillators,
-feedback, envelopes and LFOs. It must carry tick remainder and the held output
-across render partitions and snapshots, including host intervals with zero or
-multiple chip ticks. Overlapping voices need a common tick origin. Per-voice
-controls and release events need defined application on that grid. Hardware
-group output must sum voices and apply DAC conversion before observing the
-host frame. The comparator gives a direct end-to-end check for the covered
-patches when that path is implemented.
+The public note clocks its operators, envelopes and feedback for each completed
+chip tick. Host frames observe the latest completed output. Snapshots carry
+the absolute host frame and held sample so a frame containing zero ticks can
+reproduce its output after restoration. Direct callers can supply a host-frame
+modulation array, held throughout each frame, or the native observations from
+`TX81ZLFOContext.advance_ticks`. The renderer validates the supplied tick grid
+against its own position before advancing the note.
+Persisted snapshots require the new clock fields. Start a fresh render when
+switching from snapshots produced by the older host-clock renderer.
+
+Each note in the offline instrument starts at its trigger's absolute frame.
+Simultaneous notes share one LFO advance per interval. An output group sums
+the aligned voice observations before DAC conversion. Selecting the same tick
+from each voice gives the same instantaneous sum as sampling the per-tick mix.
+The group keeps its last DAC value across frames without a chip clock, including
+when the constituent voices retire. Group gain and filters then run at host rate.
+
+The [public renderer results](opz-note-native.csv) have zero differing samples
+in all 128 cases. The automated comparison uses the native signed PCM captures
+in `test/data/tx81z-ym2414-notes.npz` and checks partitioned attack/release and
+JSON replay. The archive stores one little-endian int16 array per case under
+`a{algorithm}f{feedback}p{profile}`. Its SHA-256 is
+`712558eb3283cfd46314c2362386823418990eb7e6f4b1db46baecd2d286d522`.
+Separate regressions exercise held output at 96 kHz and grouped DAC hold after
+retirement at 192 kHz.
 
 This qualification covers the pinned software model and the stated sampling
 convention. Mixed operator modes, modulation and controller assignments,

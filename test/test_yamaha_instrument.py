@@ -110,25 +110,30 @@ def test_yamaha_instrument_shares_clock_and_restores_overlapping_microtuned_note
             template.patch, template.additional, 69, 32, pitch_hz=442
         )
         second = yamaha.TX81ZRenderer(
-            template.patch, template.additional, 69, 1, pitch_hz=444
+            template.patch, template.additional, 69, 1, pitch_hz=444, start_frame=1001
         )
     expected = np.zeros((48000, 2))
+    observations = (
+        clock.advance_ticks
+        if isinstance(clock, yamaha_lfo.TX81ZLFOContext)
+        else clock.advance
+    )
     clock.keydown()
-    expected[:1001] = first.render(1001, clock.advance(1001)) * [0.3, 0.15]
+    expected[:1001] = first.render(1001, observations(1001)) * [0.3, 0.15]
     clock.keydown()
-    rows = clock.advance(1000)
+    rows = observations(1000)
     expected[1001:2001] = (first.render(1000, rows) + second.render(1000, rows)) * [
         0.3,
         0.15,
     ]
     first.release()
-    rows = clock.advance(2000)
+    rows = observations(2000)
     expected[2001:4001] = (first.render(2000, rows) + second.render(2000, rows)) * [
         0.3,
         0.15,
     ]
     second.release()
-    rows = clock.advance(2000)
+    rows = observations(2000)
     expected[4001:6001] = (first.render(2000, rows) + second.render(2000, rows)) * [
         0.3,
         0.15,
@@ -225,7 +230,13 @@ def test_trigger_velocity_rounds_ties_up_and_preserves_positive_notes(
     check_audio(
         tmp_path / "velocity.wav",
         actual,
-        note.render(48000, clock.advance(48000)) * [0.3, 0.15],
+        note.render(
+            48000,
+            clock.advance_ticks(48000)
+            if isinstance(clock, yamaha_lfo.TX81ZLFOContext)
+            else clock.advance(48000),
+        )
+        * [0.3, 0.15],
     )
     assert renderer.snapshot().voices[0].note.velocity == expected
 
@@ -535,6 +546,7 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
                 69,
                 127,
                 pitch_hz=440 * 2 ** (100 / 1200),
+                start_frame=start,
             )
         signal = (
             ramp[start:] if i == 0 or scope == "instrument" else np.zeros(48000 - start)
@@ -545,9 +557,16 @@ def test_scoped_yamaha_controls_smooth_amplitude_and_filters_across_restore(
             else yamaha_lfo.TX81ZLFOContext(template.patch)
         )
         clock.keydown()
-        first = clock.advance(1001)
-        clock.keydown()
-        modulation = np.concatenate([first, clock.advance(46999)])[start:]
+        if isinstance(clock, yamaha_lfo.TX81ZLFOContext):
+            _, first = clock.advance_ticks(1001)
+            clock.keydown()
+            rows = np.concatenate([first, clock.advance_ticks(46999)[1][1:]])
+            edges = np.arange(start, 48001) * 3579545 // (64 * 48000)
+            modulation = (edges[1:] - edges[0], rows[edges[0] :])
+        else:
+            first = clock.advance(1001)
+            clock.keydown()
+            modulation = np.concatenate([first, clock.advance(46999)])[start:]
         if isinstance(note, yamaha.DX7Renderer):
             wheel = np.floor(np.floor(127 * signal) * 0.99)
             breath = np.floor(np.floor(127 * signal * 0.5) * 0.6)

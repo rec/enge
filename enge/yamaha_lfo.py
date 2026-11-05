@@ -249,7 +249,9 @@ class TX81ZLFOContext:
             raise EngineError(
                 "TX81Z LFO snapshot belongs to a different clock definition"
             )
-        if not 0 <= snapshot.clock_remainder < 64 * snapshot.sample_rate:
+        if snapshot.clock_remainder != snapshot.frame * snapshot.clock_hz % (
+            64 * snapshot.sample_rate
+        ):
             raise EngineError("Invalid TX81Z LFO snapshot clock remainder")
         self.state = snapshot.model_copy(deep=True)
 

@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from test_synth import check_audio
-from test_tx81z_integer import opz_carrier
+from test_tx81z_integer import native_carrier
 from ufor import tx81z
 
 from enge.yamaha import TX81ZRenderer, tx81z_base_frequency
@@ -72,7 +72,7 @@ def test_ratio_renderer_adds_detune_before_multiplier_rounding(
     voice = tx81z.TX81ZVoice(data=bytes(raw))
     additional = tx81z.TX81ZAdditional(data=bytes(extra))
     actual = TX81ZRenderer(voice, additional, note, 127).render(48000)
-    expected = (4 * opz_carrier(opz_frequency(note, coarse, fine, detune)))[:, None]
+    expected = (4 * native_carrier(opz_frequency(note, coarse, fine, detune)))[:, None]
     check_audio(tmp_path / "native-detune.wav", actual, expected)
 
 
@@ -94,7 +94,7 @@ def test_pitch_modulation_uses_native_table_and_saturates_before_detune(
     first = renderer.render(17003, rows[:17003])
     saved = renderer.snapshot()
     tail = renderer.render(30997, rows[17003:])
-    expected = 4 * opz_carrier(opz_pm_frequency((wave * 127 >> 7) * 4, note, detune))
+    expected = 4 * native_carrier(opz_pm_frequency((wave * 127 >> 7) * 4, note, detune))
     check_audio(
         tmp_path / "native-pm.wav", np.concatenate([first, tail]), expected[:, None]
     )

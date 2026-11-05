@@ -698,8 +698,8 @@ frequency to Q20 increments; full voice-profile qualification remains work.
 The [native frequency audit](../doc/yamaha-reference/opz-frequency.md) records
 96 ratio and 1,984 fixed register cases. The pinned ymfm fixed path produces
 increments about ten octaves below its stated frequencies, so it is not used
-as a fixed-frequency oracle. Native output-rate and full-voice qualification
-remain open.
+as a fixed-frequency oracle. Fixed-mode chip behavior and broader patch
+qualification remain open.
 The expanded ratio sweep covers all 95,232 legal coarse/fine/key combinations
 with zero chip detune and modulation. It finds 5,456 native top-octave clamps,
 up to 853.530 cents difference from continuous nominal frequency, and up to
@@ -713,19 +713,16 @@ not hardware equivalence or native-rate complete-patch rendering.
 The [complete ratio-note comparison](../doc/yamaha-reference/opz-note.md)
 now programs the pinned YM2414 through register writes and clocks the full
 channel and DAC through release. Across eight algorithms, all eight feedback
-levels and two distinct patches, production host-clock error ranges from 2.94% to 137.79% relative
-RMS. A control drives enge's current operator, envelope and DAC components on
-native ticks and matches all 6,144,000 host observations. The next implementation
-gate is a common native tick origin, tick-aligned events and LFOs, per-tick
-voice summation/DAC and partition-independent host observation. Native timing
-and held output must survive snapshot restoration.
+levels and two distinct patches, the former host-clock renderer differed by
+2.94% to 137.79% relative RMS. The public native-clock renderer and the
+component control now both match all 6,144,000 host observations exactly.
 
 Shared LFO clocks now expose every native tick, the preceding held observation
 and the last completed tick index of each host frame. All 55,930 paired
 noise/triangle observations match the pinned ymfm tick capture at 24 kHz and
 96 kHz, including continuation after a partition with a nonzero clock remainder.
-The note renderer and instrument still need to consume these tick rows on the
-common grid and retain held audio across frames without a chip tick.
+The instrument now supplies these native observations to each note on the
+absolute host timeline. Notes carry held audio across frames without a chip tick.
 
 `TX81ZEnvelopeBank.attenuation_ticks` advances that bank on the chip grid
 and observes attenuation after each clock. Its existing counter and remainder
@@ -734,7 +731,11 @@ preserve the native three-tick envelope divider across calls and snapshots.
 each operator after advancing its phase. It shares waveform, modulation,
 feedback and gain arithmetic with the host-frame operator function. The
 complete-note comparator now calls both production components directly.
-The remaining integration belongs in the public note and instrument renderers.
+The public note and instrument use the same production components. Snapshots
+retain each note's frame and held sample, group DAC hold and filter state.
+Regressions cover 96 kHz note hold, rejection of mismatched native grids and
+192 kHz group output through retirement and restoration. Further qualification
+includes modulated reference patches, fixed operators and physical hardware.
 
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,

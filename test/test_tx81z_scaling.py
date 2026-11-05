@@ -5,12 +5,12 @@ import numpy as np
 import pytest
 from test_synth import check_audio
 from test_tx81z_frequency import opz_frequency
-from test_tx81z_integer import opz_carrier
+from test_tx81z_integer import native_carrier
 from ufor import tx81z
 
 from enge import yamaha
 from enge.synth import EngineError
-from enge.yamaha import TX81ZRenderer, TX81ZState, tx81z_operator_samples
+from enge.yamaha import TX81ZRenderer, TX81ZState, tx81z_operator_ticks
 
 
 @pytest.mark.parametrize(
@@ -98,8 +98,8 @@ def test_tx81z_note_applies_key_and_velocity_attenuation_before_saturation(
     actual = TX81ZRenderer(voice, additional, note - transpose, velocity).render(48000)
     frequency = opz_frequency(note)
     # Algorithm 8 adds 16 TL to each carrier. The other three operators have OUT 0.
-    expected = opz_carrier(frequency, 2 ** (-min(127, 16 + attenuation) / 8))
-    expected += 3 * opz_carrier(frequency, 2 ** (-127 / 8))
+    expected = native_carrier(frequency, 2 ** (-min(127, 16 + attenuation) / 8))
+    expected += 3 * native_carrier(frequency, 2 ** (-127 / 8))
     check_audio(tmp_path / "tx81z-note-scaling.wav", actual, expected[:, None])
     assert voice.data == bytes(raw)
 
@@ -126,7 +126,7 @@ def test_tx81z_breath_uses_measured_attenuation_before_saturation(
     gain = 2 ** (
         -np.minimum(127, (16 if output else 127) + bias + (15 if foot else 0)) / 8
     )
-    expected = opz_carrier(opz_frequency(), gain) + 3 * opz_carrier(
+    expected = native_carrier(opz_frequency(), gain) + 3 * native_carrier(
         opz_frequency(), 2 ** (-127 / 8)
     )
     note = TX81ZRenderer(voice, additional, 69, 127)
@@ -164,9 +164,13 @@ def test_tx81z_foot_range_attenuates_only_carriers(
     carriers = [0] if algorithm == 1 else range(4)
     for i in carriers:
         gains[:, i] = 2 ** (-(base_tl + change) / 8)
-    expected, _ = tx81z_operator_samples(
-        algorithm, [0] * 4, TX81ZState(), np.full((48000, 4), opz_frequency()), gains
+    edges = np.arange(48001) * 3579545 // (64 * 48000)
+    tick_gains = np.repeat(gains, np.diff(edges), axis=0)
+    steps = np.full(tick_gains.shape, round(opz_frequency() * 64 * 2**20 / 3579545))
+    native, _ = tx81z_operator_ticks(
+        algorithm, [0] * 4, TX81ZState(), steps, tick_gains
     )
+    expected = native[edges[1:] - 1]
     note = TX81ZRenderer(voice, additional, 69, 127)
     before = note.render(17003, foot=foot[:17003])
     saved = note.snapshot()

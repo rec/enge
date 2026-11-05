@@ -6,7 +6,7 @@ import pytest
 from meedee import messages
 from test_synth import check_audio
 from test_tx81z_frequency import opz_frequency
-from test_tx81z_integer import opz_carrier
+from test_tx81z_integer import native_carrier
 from test_tx81z_lfo import lfo_voice
 from test_yamaha_instrument import instrument
 from ufor import performance_binding, synth_trace, tx81z
@@ -47,7 +47,7 @@ def test_legato_glide_starts_at_previous_sounding_pitch_across_wrap(
             opz_frequency(target) * 1.01 * glide.ratios(46999),
         ]
     )
-    expected = (4 * opz_carrier(frequencies))[:, None]
+    expected = (4 * native_carrier(frequencies))[:, None]
     saved = note.snapshot()
     actual = np.concatenate([head, note.render(46999)])
     check_audio(tmp_path / "legato-wrap.wav", actual, expected)
@@ -194,7 +194,7 @@ def test_note_portamento_preserves_fixed_operators_detune_and_snapshot(
     fixed_frequency = yamaha.tx81z_base_frequency(
         voice.operator(4), additional.operator(4), 69
     )
-    expected = 3 * opz_carrier(ratio_frequency) + opz_carrier(fixed_frequency)
+    expected = 3 * native_carrier(ratio_frequency) + native_carrier(fixed_frequency)
     check_audio(
         tmp_path / "portamento-tuning.wav",
         np.concatenate([first, tail]),
@@ -277,6 +277,7 @@ def test_polyphonic_portamento_uses_current_pitch_and_retains_part_history(
             event.key,
             127,
             start_pitch_hz=starts[i],
+            start_frame=event.tick,
         )
         expected[event.tick : end] += note.render(end - event.tick)
     check_audio(
@@ -424,6 +425,7 @@ def test_cc65_switch_respects_part_scope_smoothing_and_pitch_history(
             event.key,
             127,
             start_pitch_hz=start_pitch,
+            start_frame=event.tick,
         )
         expected[event.tick :] += note.render(
             48000 - event.tick,
