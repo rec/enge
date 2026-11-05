@@ -849,6 +849,35 @@ assignments or portamento.
 
 ### Remaining integration gates
 
+The portable generator path is still incomplete for Yamaha instruments.
+`enge/yamaha_instrument.py:prepare` explicitly rejects `envelfos` and
+`event_connections`. Its `ControlRenderer` already owns the shared graph
+executor, initializes sources and clears them when voices stop, but the Yamaha
+snapshot currently saves only control contexts. Generator graphs, LFOs,
+envelopes and patches therefore need the same owned snapshot coverage already
+used by `OfflineSynth`; removing the admission check alone would lose state.
+
+Complete this integration through the existing shared renderer:
+
+1. Express the generator release instant independently of
+   `VoiceEnvelopeRenderer`. The current `ControlRenderer.release` takes that
+   general-synth renderer to calculate the absolute voice release time. Yamaha
+   already calculates `Voice.release_at`, including minimum hold. Pass the
+   equivalent absolute instant through the shared contract and update existing
+   synth and sampler callers together.
+2. Save and restore the shared generator state alongside Yamaha control
+   contexts, validating before mutating the live instrument. Connect prepared
+   release actions to the existing trigger/voice release-timing rules, then
+   admit supported generators and their event connections through existing
+   validation.
+3. Verify normal prepared-instrument entry points with scoped LFOs, envelope
+   release under minimum hold, staged/Patch events, overlapping notes and JSON
+   restoration. Reuse the shared modulation executor and its event machinery.
+
+This is a remaining portable control/runtime integration requirement. The
+complete native-note comparison above covers intrinsic Yamaha modulation and
+does not establish the external generator path.
+
 - The approved shared controller schema is available in uFor `047c741`:
   `yamaha.pitch_bend` uses a normalized -1..1 domain; `modulation_wheel`,
   `breath` and `foot` use 0..1. All have unit `ratio` and default zero, and

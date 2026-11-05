@@ -56,6 +56,9 @@ roadmap and Yamaha requirements, while optional catalogues remain deferred.
   behavior, full reference comparison and hardware qualification. Firmware
   tracing is optional: the user has no dump available and asked us to proceed
   without making it a prerequisite.
+  The Yamaha adapter also still rejects external enveLFO generators and event
+  connections. Its shared-control snapshot and minimum-hold release integration
+  are tracked explicitly in the Yamaha plan.
 
 ## Deferred choices
 
