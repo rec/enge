@@ -727,6 +727,15 @@ noise/triangle observations match the pinned ymfm tick capture at 24 kHz and
 The note renderer and instrument still need to consume these tick rows on the
 common grid and retain held audio across frames without a chip tick.
 
+`TX81ZEnvelopeBank.attenuation_ticks` advances that bank on the chip grid
+and observes attenuation after each clock. Its existing counter and remainder
+preserve the native three-tick envelope divider across calls and snapshots.
+`tx81z_operator_ticks` accepts per-tick integer Q20 increments and observes
+each operator after advancing its phase. It shares waveform, modulation,
+feedback and gain arithmetic with the host-frame operator function. The
+complete-note comparator now calls both production components directly.
+The remaining integration belongs in the public note and instrument renderers.
+
 - Pair VCED and ACED edit-buffer messages explicitly before conversion.
 - Decode its four-operator, eight-algorithm routing, frequency modes, feedback,
   and ACED waveform selections into the same Yamaha renderer family.

@@ -40,11 +40,12 @@ so its first possible effect is the first clock after the host event.
 These are explicit event and observation conventions for the experiment.
 
 The first comparison uses the production note renderer and DAC. The controlled
-comparison advances enge's envelope counter every three native ticks, computes
-gain and quiet-gate values for each tick and supplies native phase steps to the
-production operator bank. The first oscillator phase includes one step because
-YM2414 clocks before observing its output. Both comparisons use integer DAC
-units, a common origin and the same authored levels.
+comparison uses two native-tick operations in enge. The envelope bank returns
+attenuation after each completed chip tick and carries its three-tick divider
+through release. The operator bank accepts integer Q20 increments and observes
+the new phase on each tick. It starts at zero phase, just as the chip does.
+Both comparisons use integer DAC units, a common origin and the same authored
+levels. The control now exercises the production components directly.
 
 ## Results
 

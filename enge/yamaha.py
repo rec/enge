@@ -108,8 +108,7 @@ class TX81ZEnvelope(BaseModel):
 class TX81ZEnvelopeBank(BaseModel):
     """Four envelopes on one clock; preserve counter/remainder across host calls.
 
-    OPZ envelope ticks divide the input clock by 2 * 32 * 3. Rows observe the
-    current attenuation before advancing one output-frame interval.
+    OPZ envelopes advance once per three chip ticks (192 master clocks).
     """
 
     envelopes: list[TX81ZEnvelope] = Field(min_length=4, max_length=4)
@@ -123,18 +122,28 @@ class TX81ZEnvelopeBank(BaseModel):
             envelope.release()
 
     def attenuation_samples(self, frames: int) -> np.ndarray:
-        """Return raw attenuation before operator shift or the output quiet gate."""
+        """Observe raw attenuation at the start of each host frame."""
         if frames < 0:
             raise EngineError("TX81Z frame count must be nonnegative")
-        output = np.empty((frames, 4), dtype=np.int64)
+        return self._attenuation_boundaries(frames, self.clock_hz)[:-1]
+
+    def attenuation_ticks(self, ticks: int) -> np.ndarray:
+        """Observe raw attenuation after each completed native chip clock."""
+        if ticks < 0:
+            raise EngineError("TX81Z tick count must be nonnegative")
+        return self._attenuation_boundaries(ticks, 64 * self.sample_rate)[1:]
+
+    def _attenuation_boundaries(self, count: int, increment: int) -> np.ndarray:
+        output = np.empty((count + 1, 4), dtype=np.int64)
+        output[0] = [e.attenuation for e in self.envelopes]
         divisor = 192 * self.sample_rate
-        for frame in range(frames):
-            output[frame] = [e.attenuation for e in self.envelopes]
-            ticks, self.remainder = divmod(self.remainder + self.clock_hz, divisor)
+        for index in range(1, count + 1):
+            ticks, self.remainder = divmod(self.remainder + increment, divisor)
             for _ in range(ticks):
                 self.counter += 1
                 for envelope in self.envelopes:
                     envelope.clock(self.counter)
+            output[index] = [e.attenuation for e in self.envelopes]
         return output
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -1055,45 +1064,41 @@ def tx81z_operator_samples(
     Modulation uses integer phase indices and two signed feedback samples.
     Output is the raw carrier sum divided by 8192, before DAC saturation.
     """
-    if not 1 <= algorithm <= 8 or not 0 <= feedback <= 7:
-        raise EngineError("Invalid TX81Z algorithm or feedback")
-    if len(waveforms) != 4 or any(w not in range(8) for w in waveforms):
-        raise EngineError("TX81Z requires four waveform numbers from 0 through 7")
     if (
         sample_rate <= 0
         or frequencies.ndim != 2
         or frequencies.shape[1] != 4
-        or gains.shape != frequencies.shape
         or not np.all(np.isfinite(frequencies))
-        or not np.all(np.isfinite(gains))
         or np.any(frequencies <= 0)
-        or np.any(gains < 0)
-        or np.any(gains > 1)
     ):
         raise EngineError("TX81Z requires positive frequencies and gains in 0..1")
-    edges, carriers = _TX_ALGORITHMS[algorithm - 1]
-    phases = state.phases.copy()
     steps = np.rint(np.remainder(frequencies / sample_rate, 1) * 2**20).astype(np.int64)
-    attenuation = np.rint(-64 * np.log2(np.maximum(gains, 2.0**-64))).astype(np.int64)
-    history = state.feedback.copy()
-    output = np.empty((len(frequencies), 1))
-    for frame in range(len(frequencies)):
-        values = [0] * 4
-        for operator in (3, 2, 1, 0):
-            modulation = sum(values[s - 1] for s, d in edges if d - 1 == operator) >> 1
-            if operator == 3 and feedback:
-                modulation += sum(history) >> (10 - feedback)
-            values[operator] = tx81z_operator_output(
-                waveforms[operator],
-                (phases[operator] >> 10) + modulation,
-                int(attenuation[frame, operator]),
-            )
-        output[frame, 0] = sum(values[c - 1] for c in carriers) / 8192
-        history = [history[1], values[3]]
-        phases = [
-            (p + int(s)) % 2**20 for p, s in zip(phases, steps[frame], strict=True)
-        ]
-    return output, TX81ZState(phases=phases, feedback=history)
+    return _tx81z_operator_rows(
+        algorithm, waveforms, state, steps, gains, feedback, native=False
+    )
+
+
+def tx81z_operator_ticks(
+    algorithm: int,
+    waveforms: list[int],
+    state: TX81ZState,
+    steps: np.ndarray,
+    gains: np.ndarray,
+    feedback: int = 0,
+) -> tuple[np.ndarray, TX81ZState]:
+    """Clock integer Q20 increments before observing each native operator row."""
+    if (
+        steps.ndim != 2
+        or steps.shape[1] != 4
+        or not np.issubdtype(steps.dtype, np.integer)
+        or np.any(steps < 0)
+    ):
+        raise EngineError(
+            "TX81Z native steps require four nonnegative integers per tick"
+        )
+    return _tx81z_operator_rows(
+        algorithm, waveforms, state, steps, gains, feedback, native=True
+    )
 
 
 def tx81z_operator_output(waveform: int, phase: int, attenuation: int) -> int:
@@ -1136,6 +1141,55 @@ def tx81z_wave_samples(waveform: int, phases: np.ndarray) -> np.ndarray:
         [tx81z_operator_output(waveform, i, 0) / 8192 for i in range(1024)]
     )
     return table[indices]
+
+
+def _tx81z_operator_rows(
+    algorithm: int,
+    waveforms: list[int],
+    state: TX81ZState,
+    steps: np.ndarray,
+    gains: np.ndarray,
+    feedback: int,
+    *,
+    native: bool,
+) -> tuple[np.ndarray, TX81ZState]:
+    if not 1 <= algorithm <= 8 or not 0 <= feedback <= 7:
+        raise EngineError("Invalid TX81Z algorithm or feedback")
+    if len(waveforms) != 4 or any(w not in range(8) for w in waveforms):
+        raise EngineError("TX81Z requires four waveform numbers from 0 through 7")
+    if (
+        gains.shape != steps.shape
+        or not np.all(np.isfinite(gains))
+        or np.any((gains < 0) | (gains > 1))
+    ):
+        raise EngineError("TX81Z requires positive frequencies and gains in 0..1")
+    if not len(steps):
+        return np.empty((0, 1)), state.model_copy(deep=True)
+    edges, carriers = _TX_ALGORITHMS[algorithm - 1]
+    mask = 2**20 - 1
+    boundaries = np.empty((len(steps) + 1, 4), dtype=np.int64)
+    boundaries[0] = [p & mask for p in state.phases]
+    np.cumsum(steps.astype(np.int64) & mask, axis=0, out=boundaries[1:])
+    boundaries[1:] += boundaries[0]
+    boundaries &= mask
+    phases = boundaries[1:] if native else boundaries[:-1]
+    attenuation = np.rint(-64 * np.log2(np.maximum(gains, 2.0**-64))).astype(np.int64)
+    history = state.feedback.copy()
+    output = np.empty((len(steps), 1))
+    for frame in range(len(steps)):
+        values = [0] * 4
+        for operator in (3, 2, 1, 0):
+            modulation = sum(values[s - 1] for s, d in edges if d - 1 == operator) >> 1
+            if operator == 3 and feedback:
+                modulation += sum(history) >> (10 - feedback)
+            values[operator] = tx81z_operator_output(
+                waveforms[operator],
+                (int(phases[frame, operator]) >> 10) + modulation,
+                int(attenuation[frame, operator]),
+            )
+        output[frame, 0] = sum(values[c - 1] for c in carriers) / 8192
+        history = [history[1], values[3]]
+    return output, TX81ZState(phases=boundaries[-1].tolist(), feedback=history)
 
 
 def _tx81z_ratio_steps(

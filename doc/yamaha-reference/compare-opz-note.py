@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from tyro import cli
 from ufor import tx81z
 
-from enge.yamaha import TX81ZRenderer, TX81ZState, tx81z_dac, tx81z_operator_samples
+from enge.yamaha import TX81ZRenderer, TX81ZState, tx81z_dac, tx81z_operator_ticks
 
 
 class Comparison(BaseModel, frozen=True):
@@ -94,27 +94,20 @@ def prepare_note(algorithm: int, feedback: int, profile: int) -> TX81ZRenderer:
 
 def native_control(note: TX81ZRenderer, ticks: np.ndarray) -> np.ndarray:
     """Drive production components at chip cadence using prepared native steps."""
-    envelopes = note.envelopes.envelopes
-    gains = np.empty((ticks[-1], 4))
-    for k in range(1, ticks[-1] + 1):
-        if k == 3579545 // 128 + 1:
-            note.release()
-        if k % 3 == 0:
-            for envelope in envelopes:
-                envelope.clock(k // 3)
-        gains[k - 1] = [
-            2 ** (-(e.attenuation >> e.shift) / 64) * g if e.attenuation <= 896 else 0
-            for e, g in zip(envelopes, note.levels, strict=True)
-        ]
+    release = 3579545 // 128
+    first = note.envelopes.attenuation_ticks(release)
+    note.release()
+    tail = note.envelopes.attenuation_ticks(int(ticks[-1]) - release)
+    raw = np.concatenate([first, tail])
+    shifted = raw >> np.array([e.shift for e in note.envelopes.envelopes])
+    gains = 2 ** (-shifted / 64) * note.levels
+    gains[raw > 896] = 0
     steps = np.rint(note.frequencies * (64 * 2**20 / 3579545)).astype(int)
-    # The chip clocks before output. Start the production output-first kernel
-    # at the first clocked phase and give it exactly one native step per row.
-    frequencies = np.broadcast_to(steps * (48000 / 2**20), gains.shape)
-    chip_rows, _ = tx81z_operator_samples(
+    chip_rows, _ = tx81z_operator_ticks(
         note.voice.algorithm,
         note.waveforms,
-        TX81ZState(phases=steps.tolist()),
-        frequencies,
+        TX81ZState(),
+        np.broadcast_to(steps, gains.shape),
         gains,
         feedback=note.voice.feedback,
     )
