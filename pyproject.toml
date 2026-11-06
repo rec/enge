@@ -12,6 +12,7 @@ dependencies = [
     "envelfo",
     "meedee",
     "numpy>=2.4.1",
+    "pint>=0.25.3",
     "pydantic>=2.13.4",
     "reccy>=0.1.0",
     "tyro>=1.0.16",
