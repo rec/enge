@@ -11,10 +11,10 @@ it does not leave the selected families outside the current scope.
 
 This is a selection catalogue, not a list of wholly missing processors. Existing
 implementations include gain, resonant filtering, multiply, granulation, 4×
-oversampled waveshaping, tap delay, modulated delay, linked peak compression and eight-line
-algorithmic reverb. Optional Rubber Band offline and finite
-realtime adapters also exist. Check `enge/effects.py`, `enge/rubberband.py` and
-their tests before selecting a new slice. The descriptions below retain design
+oversampled waveshaping, tap delay, modulated delay, linked peak compression,
+eight-line algorithmic reverb and a shared-sweep six-stage phaser. Optional Rubber
+Band offline and finite realtime adapters also exist. Check `enge/effects.py`,
+`enge/rubberband.py` and their tests before selecting a new slice. The descriptions below retain design
 requirements, including requirements beyond the implemented profiles.
 
 As of 2026-11-05, the existing graph processors also accept shared enveLFO

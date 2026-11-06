@@ -18,6 +18,7 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
     processors: dict[str, audio_effects.Processor] = {
         "gain": audio_effects.Gain(name="fx", gain_db=-6),
         "clip": audio_effects.Waveshaper(name="fx", drive=2),
+        "phaser": audio_effects.Phaser(name="fx", feedback=0.5),
         "filter": audio_effects.Filter(
             name="fx",
             filters=[
@@ -49,6 +50,7 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
     parameter, default, depth, unit = {
         "gain": ("gain_db", -6, 3, "db"),
         "clip": ("drive", 2, 0.5, "ratio"),
+        "phaser": ("sweep", 0, 0.5, "ratio"),
         "filter": ("low-cutoff_hz", 1000, 250, "hz"),
         "grain": ("duration_seconds", 0.02, 0.005, "seconds"),
         "tap": ("delay_seconds", 0.005, 0.001, "seconds"),
@@ -100,7 +102,7 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
 
 
 @pytest.mark.parametrize(
-    "kind", ["gain", "clip", "filter", "grain", "tap", "chorus", "multiply"]
+    "kind", ["gain", "clip", "phaser", "filter", "grain", "tap", "chorus", "multiply"]
 )
 def test_effect_envelfo_matches_automation_and_native_callback_replay(
     tmp_path: Path, kind: str

@@ -1,5 +1,6 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
+mod phaser;
 mod reverb;
 mod state;
 mod waveshaper;
@@ -13,6 +14,7 @@ use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{RouteMap, sum_partials};
 use numpy::ndarray::{Array2, Array3};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use phaser::Phaser;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -48,6 +50,7 @@ pub(crate) struct EffectRuntime {
     reductions: Vec<f64>,
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
+    phasers: Vec<Option<Phaser>>,
     alignment: Vec<[Option<Alignment>; 2]>,
     port_values: Array3<f64>,
     port_ended: Array2<bool>,
@@ -97,6 +100,7 @@ pub(crate) struct EffectSnapshot {
     reductions: Vec<f64>,
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
+    phasers: Vec<Option<Phaser>>,
     alignment: Vec<[Option<Alignment>; 2]>,
     control_delays: Vec<Vec<Option<ControlDelay>>>,
 }
@@ -308,7 +312,7 @@ impl EffectRuntime {
         let nodes = kinds.len();
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
-        if kinds.iter().any(|v| *v > 8)
+        if kinds.iter().any(|v| *v > 9)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -319,7 +323,7 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6 | 8) {
+                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -467,6 +471,25 @@ impl EffectRuntime {
             });
         }
         let parameters = parameters.as_array().to_owned();
+        let mut phasers = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for node in 0..nodes {
+            if kinds[node] == 9 {
+                if parameters.ncols() < 7
+                    || parameters[[node, 6]] < 0.0
+                    || parameters[[node, 6]] >= tail_thresholds[node]
+                    || !(-0.95..=0.95).contains(&parameters[[node, 5]])
+                {
+                    return Err(PyValueError::new_err("Invalid phaser profile"));
+                }
+                phaser::coefficient(
+                    parameters[[node, 0]],
+                    parameters[[node, 3]],
+                    parameters[[node, 4]],
+                    rate,
+                )?;
+                phasers[node] = Some(Phaser::new(widths[node + inputs], parameters[[node, 6]]));
+            }
+        }
         let mut prepared_granulators = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for row in granulators.as_array().rows() {
             let node = usize::try_from(row[0])
@@ -645,6 +668,7 @@ impl EffectRuntime {
                                 6 => matches!(parameter, 0 | 3..=5),
                                 7 => matches!(parameter, 0 | 3..=7),
                                 8 => matches!(parameter, 0 | 3 | 5),
+                                9 => matches!(parameter, 0 | 3..=5),
                                 _ => false,
                             };
                         let frames = arrival
@@ -675,6 +699,7 @@ impl EffectRuntime {
             reductions: vec![0.0; nodes],
             reverbs,
             waveshapers,
+            phasers,
             alignment,
             port_values: Array3::zeros((nodes, 2, channels)),
             port_ended: Array2::from_elem((nodes, 2), false),
@@ -927,7 +952,20 @@ impl EffectRuntime {
                         *value *= gain;
                     }
                 }
-                _ => self.process_reverb(node, first, rate)?,
+                8 => self.process_reverb(node, first, rate)?,
+                _ => self.phasers[node]
+                    .as_mut()
+                    .expect("prepared phaser")
+                    .process(
+                        &mut self.wet[..channels],
+                        [
+                            self.resolved[[node, 0]],
+                            self.resolved[[node, 3]],
+                            self.resolved[[node, 4]],
+                            self.resolved[[node, 5]],
+                        ],
+                        rate,
+                    )?,
             }
             let drained = self.port_ended[[node, 0]]
                 && match self.kinds[node] {
@@ -964,6 +1002,14 @@ impl EffectRuntime {
                                 .damping
                                 .iter()
                                 .all(|value| value.abs() < self.tail_thresholds[node])
+                    }
+                    9 => {
+                        let phaser = self.phasers[node].as_ref().expect("prepared phaser");
+                        phaser
+                            .stages
+                            .iter()
+                            .chain(phaser.feedback.iter())
+                            .all(|value| value.abs() < self.tail_thresholds[node])
                     }
                     _ => true,
                 };
@@ -1311,6 +1357,7 @@ impl EffectRuntime {
             reductions: self.reductions.clone(),
             reverbs: self.reverbs.clone(),
             waveshapers: self.waveshapers.clone(),
+            phasers: self.phasers.clone(),
             alignment: self.alignment.clone(),
             control_delays: self.control_delays.clone(),
         }
@@ -1336,6 +1383,15 @@ impl EffectRuntime {
             || self.granulators.len() != snapshot.granulators.len()
             || self.tap_delays.len() != snapshot.tap_delays.len()
             || self.modulated_delays.len() != snapshot.modulated_delays.len()
+            || self
+                .phasers
+                .iter()
+                .zip(&snapshot.phasers)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
             || self
                 .waveshapers
                 .iter()
@@ -1419,6 +1475,7 @@ impl EffectRuntime {
         self.reductions.clone_from(&snapshot.reductions);
         self.reverbs.clone_from(&snapshot.reverbs);
         self.waveshapers.clone_from(&snapshot.waveshapers);
+        self.phasers.clone_from(&snapshot.phasers);
         self.alignment.clone_from(&snapshot.alignment);
         self.control_delays.clone_from(&snapshot.control_delays);
         self.ended.clone_from(&snapshot.ended);

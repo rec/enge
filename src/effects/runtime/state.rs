@@ -155,6 +155,13 @@ impl EffectRuntime {
                     value.set_item("modulated_delay", state)?;
                 }
                 7 => value.set_item("reduction_db", self.reductions[node])?,
+                9 => {
+                    let phaser = self.phasers[node].as_ref().expect("prepared phaser");
+                    let state = PyDict::new(py);
+                    state.set_item("stages", rows(phaser.stages.view()))?;
+                    state.set_item("feedback", &phaser.feedback)?;
+                    value.set_item("phaser", state)?;
+                }
                 _ => {}
             }
             result.push(value);
@@ -473,6 +480,18 @@ impl EffectRuntime {
                         return Err(PyValueError::new_err("Invalid native compressor snapshot"));
                     }
                     snapshot.reductions[node] = reduction;
+                }
+                9 => {
+                    let state = field(value, "phaser")?;
+                    let state = state.cast::<PyDict>()?;
+                    let phaser = snapshot.phasers[node].as_mut().expect("prepared phaser");
+                    restore_rows(phaser.stages.view_mut(), field(state, "stages")?.extract()?)?;
+                    let feedback: Vec<f64> = field(state, "feedback")?.extract()?;
+                    if feedback.len() != channels || feedback.iter().any(|value| !value.is_finite())
+                    {
+                        return Err(PyValueError::new_err("Invalid phaser feedback snapshot"));
+                    }
+                    phaser.feedback = feedback;
                 }
                 _ => {}
             }

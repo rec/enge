@@ -4,7 +4,7 @@ Effect graphs use the same `envelfos`, `bindings`, `event_connections` and
 `modulation` definitions as synth voices. Targets address an effect processor
 by name and one of its existing automatable parameters. This applies to gain,
 the [oversampled waveshaper](waveshaper-effects.md), multiply mix, filters,
-granulators, tap delays, modulated delays,
+granulators, tap delays, modulated delays, the [six-stage phaser](phaser-effects.md),
 the [linked peak compressor/ducker](compressor-effects.md) and
 [eight-line reverb](reverb-effects.md).
 

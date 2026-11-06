@@ -13,7 +13,8 @@ from ufor.control import TempoMap
 from ufor.oscillator import Waveform
 from ufor.samples.processing import FilterBoundary, FilterResponse
 
-from . import _native, filters, synth, waveshaper
+from . import _native, filters, phaser, synth, waveshaper
+from .phaser import PhaserState
 from .synth import EngineError
 from .waveshaper import WaveshaperState
 
@@ -111,6 +112,7 @@ class ProcessorState(BaseModel):
     modulated_delay: ModulatedDelayState | None = None
     reverb: ReverbState | None = None
     waveshaper: WaveshaperState | None = None
+    phaser: PhaserState | None = None
     alignment: dict[str, AlignmentState] = Field(default_factory=dict)
     control_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
     freeze_target: bool = False
@@ -571,6 +573,28 @@ class OfflineEffects:
                 ended["input"],
             )
             return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
+        if isinstance(processor, audio_effects.Phaser):
+            dry = ports["input"]
+            assert state.phaser is not None
+            a = phaser.coefficient(
+                self._value(processor, "center_hz", frame),
+                self._value(processor, "depth_cents", frame),
+                self._value(processor, "sweep", frame),
+                self.definition.sample_rate,
+            )
+            wet = phaser.process(
+                state.phaser,
+                dry,
+                a,
+                self._value(processor, "feedback", frame),
+                processor.state_floor,
+            )
+            drained = ended["input"] and all(
+                abs(v) < processor.tail_threshold
+                for s in [*state.phaser.stages, state.phaser.feedback]
+                for v in s
+            )
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, audio_effects.Multiply):
             dry = ports["carrier"]
             wet = dry * ports["modulator"]
@@ -967,6 +991,10 @@ def prepare(
                 sample_rate,
                 audio_effects.reverb_delay_frames(sample_rate),
             )
+        elif isinstance(processor, audio_effects.Phaser):
+            phaser.coefficient(
+                processor.center_hz, processor.depth_cents, processor.sweep, sample_rate
+            )
     return PreparedEffects(
         definition=definition,
         sample_rate=sample_rate,
@@ -1021,7 +1049,7 @@ def native_live_graph(
         else 5
         if isinstance(p, audio_effects.TapDelay)
         else 7
-        if isinstance(p, audio_effects.ModulatedDelay)
+        if isinstance(p, (audio_effects.ModulatedDelay, audio_effects.Phaser))
         else 3
         for p in ordered
     ]
@@ -1061,6 +1089,15 @@ def native_live_graph(
                 int(processor.curve == "hard"),
             ]
             parameters[node, 6:71] = waveshaper.halfband_coefficients()
+        elif isinstance(processor, audio_effects.Phaser):
+            kinds.append(9)
+            parameters[node, [0, 3, 4, 5, 6]] = [
+                processor.center_hz,
+                processor.depth_cents,
+                processor.sweep,
+                processor.feedback,
+                processor.state_floor,
+            ]
         elif isinstance(processor, audio_effects.Compressor):
             kinds.append(7)
             parameters[node, [0, 3, 4, 5, 6, 7]] = [
@@ -1199,6 +1236,7 @@ def native_live_graph(
                     audio_effects.TapDelay,
                     audio_effects.ModulatedDelay,
                     audio_effects.Reverb,
+                    audio_effects.Phaser,
                 ),
             )
             else 0.0
@@ -1374,6 +1412,13 @@ def _initial_state(
             bias=processor.bias,
             output_gain_db=processor.output_gain_db,
         )
+    elif isinstance(processor, audio_effects.Phaser):
+        values.update(
+            center_hz=processor.center_hz,
+            depth_cents=processor.depth_cents,
+            sweep=processor.sweep,
+            feedback=processor.feedback,
+        )
     elif isinstance(processor, audio_effects.Compressor):
         values.update(
             threshold_db=processor.threshold_db,
@@ -1423,6 +1468,11 @@ def _initial_state(
         filter_states=filter_states,
         waveshaper=waveshaper.initial_state(channels)
         if isinstance(processor, audio_effects.Waveshaper)
+        else None,
+        phaser=PhaserState(
+            stages=[[0.0] * channels for _ in range(6)], feedback=[0.0] * channels
+        )
+        if isinstance(processor, audio_effects.Phaser)
         else None,
         granulator=(
             GranulatorState()
@@ -1628,6 +1678,8 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
         return 0
     if isinstance(processor, audio_effects.Waveshaper):
         return {"drive": 0, "bias": 3, "output_gain_db": 4}[name]
+    if isinstance(processor, audio_effects.Phaser):
+        return {"center_hz": 0, "depth_cents": 3, "sweep": 4, "feedback": 5}[name]
     if isinstance(processor, audio_effects.Compressor):
         return {
             "threshold_db": 0,
