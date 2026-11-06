@@ -2,6 +2,10 @@ from typing import Literal
 
 import numpy as np
 
+def compressor_gain(
+    peak: float, parameters: list[float], reduction: float, rate: float
+) -> tuple[float, float]: ...
+
 class SynthRuntimeSnapshot: ...
 
 class RubberBandLiveShifter:

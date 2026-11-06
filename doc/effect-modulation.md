@@ -3,7 +3,8 @@
 Effect graphs use the same `envelfos`, `bindings`, `event_connections` and
 `modulation` definitions as synth voices. Targets address an effect processor
 by name and one of its existing automatable parameters. This applies to gain,
-soft clipping, multiply mix, filters, granulators, tap delays and modulated delays.
+soft clipping, multiply mix, filters, granulators, tap delays, modulated delays
+and the [linked peak compressor/ducker](compressor-effects.md).
 
 Each graph owns one generator instance. Generator/source/parameter scope is
 `voice`, meaning that graph instance, even for a master or host attachment.

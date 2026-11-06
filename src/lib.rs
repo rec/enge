@@ -4,6 +4,7 @@
 )]
 
 mod amplitude;
+mod compressor;
 mod effects;
 mod error;
 mod filters;
@@ -194,6 +195,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "allocation-audit")]
     module.add_function(wrap_pyfunction!(heap_audit::take_callback_audit, module)?)?;
     module.add_function(wrap_pyfunction!(effects::render_effects, module)?)?;
+    module.add_function(wrap_pyfunction!(compressor::compressor_gain, module)?)?;
     module.add_function(wrap_pyfunction!(filters::render_filters, module)?)?;
     module.add_function(wrap_pyfunction!(render, module)?)?;
     module.add_function(wrap_pyfunction!(fm::render_fm, module)?)?;

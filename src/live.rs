@@ -1,6 +1,7 @@
 //! One native owner for persistent generated sources and callback scratch.
 
 use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
+use crate::compressor;
 use crate::error::{NativeError, NativeResult};
 use crate::filters::{FilterBank, Inputs};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
@@ -96,6 +97,7 @@ struct EffectRuntime {
     granulators: Vec<Option<LiveGranulator>>,
     tap_delays: Vec<Option<LiveTapDelay>>,
     modulated_delays: Vec<Option<LiveModulatedDelay>>,
+    reductions: Vec<f64>,
     values: Array2<f64>,
     wet: Vec<f64>,
     producer: Producer<ActionBatch>,
@@ -129,6 +131,7 @@ struct EffectSnapshot {
     granulators: Vec<Option<LiveGranulator>>,
     tap_delays: Vec<Option<LiveTapDelay>>,
     modulated_delays: Vec<Option<LiveModulatedDelay>>,
+    reductions: Vec<f64>,
 }
 
 #[derive(Clone)]
@@ -901,7 +904,7 @@ impl EffectRuntime {
         let nodes = kinds.len();
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
-        if kinds.iter().any(|v| *v > 6)
+        if kinds.iter().any(|v| *v > 7)
             || inputs == 0
             || widths.len() != inputs + nodes
             || widths.contains(&0)
@@ -931,7 +934,7 @@ impl EffectRuntime {
         }
         let sources = sources.as_array().to_owned();
         for node in 0..nodes {
-            let ports = if kinds[node] == 1 { 2 } else { 1 };
+            let ports = if matches!(kinds[node], 1 | 7) { 2 } else { 1 };
             for port in 0..ports {
                 let source = sources[[node, port]];
                 if source < 0 || source as usize >= node + inputs {
@@ -939,11 +942,32 @@ impl EffectRuntime {
                         "Effect source must precede its consumer",
                     ));
                 }
-                if widths[source as usize] != widths[node + inputs] {
+                if !(kinds[node] == 7 && port == 1)
+                    && widths[source as usize] != widths[node + inputs]
+                {
                     return Err(PyValueError::new_err(
                         "Effect input and output widths differ",
                     ));
                 }
+            }
+            if kinds[node] == 7 {
+                if parameters.shape()[1] < 8 {
+                    return Err(PyValueError::new_err("Missing compressor parameters"));
+                }
+                let values = parameters.as_array();
+                compressor::gain(
+                    0.0,
+                    [
+                        values[[node, 0]],
+                        values[[node, 3]],
+                        values[[node, 4]],
+                        values[[node, 5]],
+                        values[[node, 6]],
+                        values[[node, 7]],
+                    ],
+                    0.0,
+                    rate,
+                )?;
             }
         }
         let mut filter_rows = Vec::with_capacity(filters.shape()[0]);
@@ -1084,6 +1108,7 @@ impl EffectRuntime {
         }
         let (producer, consumer) = RingBuffer::new(batch_capacity);
         Ok(Self {
+            reductions: vec![0.0; nodes],
             kinds,
             inputs: Array3::zeros((inputs, maximum_block_frames, channels)),
             input_routes,
@@ -1228,7 +1253,30 @@ impl EffectRuntime {
                         }
                     }
                     5 => self.process_tap_delay(node, channels, rate)?,
-                    _ => self.process_modulated_delay(node, channels, rate)?,
+                    6 => self.process_modulated_delay(node, channels, rate)?,
+                    _ => {
+                        let detector = self.sources[[node, 1]] as usize;
+                        let peak = (0..self.widths[detector])
+                            .map(|channel| self.values[[detector, channel]].abs())
+                            .fold(0.0, f64::max);
+                        let (gain, reduction) = compressor::gain(
+                            peak,
+                            [
+                                self.resolved[[node, 0]],
+                                self.resolved[[node, 3]],
+                                self.resolved[[node, 4]],
+                                self.resolved[[node, 5]],
+                                self.resolved[[node, 6]],
+                                self.resolved[[node, 7]],
+                            ],
+                            self.reductions[node],
+                            rate,
+                        )?;
+                        self.reductions[node] = reduction;
+                        for value in &mut self.wet[..channels] {
+                            *value *= gain;
+                        }
+                    }
                 }
                 for channel in 0..channels {
                     self.values[[node + inputs, channel]] =
@@ -1518,6 +1566,7 @@ impl EffectRuntime {
             granulators: self.granulators.clone(),
             tap_delays: self.tap_delays.clone(),
             modulated_delays: self.modulated_delays.clone(),
+            reductions: self.reductions.clone(),
         }
     }
 
@@ -1596,6 +1645,7 @@ impl EffectRuntime {
         self.granulators.clone_from(&snapshot.granulators);
         self.tap_delays.clone_from(&snapshot.tap_delays);
         self.modulated_delays.clone_from(&snapshot.modulated_delays);
+        self.reductions.clone_from(&snapshot.reductions);
         Ok(())
     }
 }

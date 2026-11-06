@@ -12,8 +12,8 @@ shared primitive does not by itself complete every family using it.
 | ID | Entry | Accepted design | State |
 | --- | --- | --- | --- |
 | P1 | Delay / chorus / flanger | Moving linear-interpolated reads for modulation; continuous fixed-tap retiming from bounded read-head mixtures. Existing retiring heads finish on schedule; capacity is fade frames plus one. | Interpolation/retiming profile verified: schema `21078ca`, pin `8ab7e48`, 3,156 tests passed / 21 skipped. Shared routing/lifecycle gates below remain open. |
-| P2 | Compressor / ducker | Feed-forward soft knee, linked stereo peak detection, explicit detector input, no look-ahead. | Next after P1. |
-| P3 | Algorithmic reverb | Bounded eight-line feedback delay network, stereo output, predelay, damping and decay. | Not implemented. |
+| P2 | Compressor / ducker | Feed-forward soft knee, linked stereo peak detection, explicit detector input, no look-ahead. | Profile verified: schema `43bfb83`, pin `b4a20b2`, full suite 3,178 passed / 21 skipped, final 13-test focused run, zero callback heap operations. Shared lifecycle gate remains open. See the [contract and CPU measurements](../doc/compressor-effects.md). |
+| P3 | Algorithmic reverb | Bounded eight-line feedback delay network, stereo output, predelay, damping and decay. Mono dry maps to both stereo outputs at minus 3 dB each; stereo dry passes through. | Not implemented; shared persistent native offline renderer is next. |
 | P4 | Waveshaper / saturation | Explicit hard/soft curves, drive, bias, output gain, 4× oversampling, graph latency reporting and dry-path compensation. | Not implemented beyond the existing basic soft clip. |
 | P5 | Phaser | Six-stage phaser using shared enveLFO modulation and bounded feedback. | Not implemented. Auto-wah remains a separate selected family below. |
 | P6 | Rubber Band pitch / time | Reuse and qualify the existing optional offline and finite realtime adapters; preserve their explicit timing/storage boundaries. | Existing adapters; closeout audit pending. |
@@ -26,7 +26,11 @@ explicit widths and a separately declared output layout in both live owners:
 3,166 tests passed / 21 skipped, with zero Rust heap operations in the focused
 callback audit. See [the contract](../doc/live-inputs.md).
 Per-instrument effect attachments and their post-effect taps remain unfinished.
-Native input-end/stop handling remains a shared lifecycle gate.
+Native input-end/stop handling remains a shared lifecycle gate. On 2026-11-06,
+the user approved extending the existing native effect graph into a persistent
+offline renderer, exporting/importing explicit processor state for JSON snapshots
+and replacing the old native whole-graph path. Use this foundation for the next
+stateful effects rather than adding separate bindings for their history buffers.
 Named stereo/5.1/7.1 layouts and first-order ACN/SN3D ambisonics, with explicit
 matrices for other layouts, were also approved on 2026-11-06. FFT implementation
 and external IR/HRTF asset policy were asked about; retain their answers before

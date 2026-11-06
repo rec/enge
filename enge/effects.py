@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from fractions import Fraction
-from math import ceil, floor, pow
+from math import ceil, exp, floor, log10, pow
 from typing import Literal
 
 import numpy as np
@@ -87,6 +87,7 @@ class ProcessorState(BaseModel):
     granulator: GranulatorState | None = None
     tap_delay: TapDelayState | None = None
     modulated_delay: ModulatedDelayState | None = None
+    reduction_db: float = 0.0
     ended_at: int | None = None
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -616,6 +617,46 @@ class OfflineEffects:
             dry = ports["carrier"]
             wet = dry * ports["modulator"]
             return _mix(dry, wet, mix), ended["carrier"]
+        if isinstance(processor, audio_effects.Compressor):
+            dry = ports["input"]
+            peak = float(np.max(np.abs(ports["detector"])))
+            parameters = [
+                self._value(processor, p, frame)
+                for p in (
+                    "threshold_db",
+                    "ratio",
+                    "knee_db",
+                    "attack_seconds",
+                    "release_seconds",
+                    "makeup_db",
+                )
+            ]
+            if self.backend == "native":
+                gain, reduction = _native.compressor_gain(
+                    peak, parameters, state.reduction_db, self.definition.sample_rate
+                )
+            else:
+                threshold, ratio, knee, attack, release, makeup = parameters
+                x = 20 * log10(peak) - threshold if peak else -np.inf
+                if x <= -knee / 2:
+                    target = 0.0
+                elif x >= knee / 2:
+                    target = (1 / ratio - 1) * x
+                else:
+                    target = (0.5 * (1 / ratio - 1) * knee) * (x / knee + 0.5) ** 2
+                time = attack if target < state.reduction_db else release
+                reduction = (
+                    target
+                    if time == 0
+                    else target
+                    + exp(-1 / (self.definition.sample_rate * time))
+                    * (state.reduction_db - target)
+                )
+                gain = float(np.power(10, (reduction + makeup) / 20))
+                if not np.isfinite(gain) or not np.isfinite(reduction):
+                    raise ValueError("Non-finite compressor gain")
+            state.reduction_db = reduction
+            return _mix(dry, dry * gain, mix), ended["input"]
         if isinstance(processor, audio_effects.Filter):
             dry = ports["input"]
             values = np.array(
@@ -969,7 +1010,7 @@ def native_live_graph(
         3 + 2 * len(p.filters)
         if isinstance(p, audio_effects.Filter)
         else 8
-        if isinstance(p, audio_effects.Granulator)
+        if isinstance(p, (audio_effects.Granulator, audio_effects.Compressor))
         else 5
         if isinstance(p, audio_effects.TapDelay)
         else 7
@@ -988,6 +1029,8 @@ def native_live_graph(
         ports = (
             ["carrier", "modulator"]
             if isinstance(processor, audio_effects.Multiply)
+            else ["input", "detector"]
+            if isinstance(processor, audio_effects.Compressor)
             else ["input"]
         )
         for port, name in enumerate(ports):
@@ -1005,6 +1048,16 @@ def native_live_graph(
         elif isinstance(processor, audio_effects.SoftClip):
             kinds.append(4)
             parameters[node, 0] = processor.drive
+        elif isinstance(processor, audio_effects.Compressor):
+            kinds.append(7)
+            parameters[node, [0, 3, 4, 5, 6, 7]] = [
+                processor.threshold_db,
+                processor.ratio,
+                processor.knee_db,
+                processor.attack_seconds,
+                processor.release_seconds,
+                processor.makeup_db,
+            ]
         elif isinstance(processor, audio_effects.Filter):
             kinds.append(2)
             values = filters.parameters(processor.filters, definition.sample_rate, 1)[0]
@@ -1255,6 +1308,15 @@ def _initial_state(
         values["gain_db"] = processor.gain_db
     elif isinstance(processor, audio_effects.SoftClip):
         values["drive"] = processor.drive
+    elif isinstance(processor, audio_effects.Compressor):
+        values.update(
+            threshold_db=processor.threshold_db,
+            ratio=processor.ratio,
+            knee_db=processor.knee_db,
+            attack_seconds=processor.attack_seconds,
+            release_seconds=processor.release_seconds,
+            makeup_db=processor.makeup_db,
+        )
     elif isinstance(processor, audio_effects.Filter):
         filter_states = filters.initial_states(processor.filters, channels)
         for definition in processor.filters:
@@ -1387,7 +1449,14 @@ def _native_supported(
 ) -> bool:
     granular = [p for p in graph.processors if isinstance(p, audio_effects.Granulator)]
     if any(
-        isinstance(p, (audio_effects.TapDelay, audio_effects.ModulatedDelay))
+        isinstance(
+            p,
+            (
+                audio_effects.TapDelay,
+                audio_effects.ModulatedDelay,
+                audio_effects.Compressor,
+            ),
+        )
         for p in graph.processors
     ):
         return False
@@ -1424,6 +1493,15 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
         return 1
     if isinstance(processor, (audio_effects.Gain, audio_effects.SoftClip)):
         return 0
+    if isinstance(processor, audio_effects.Compressor):
+        return {
+            "threshold_db": 0,
+            "ratio": 3,
+            "knee_db": 4,
+            "attack_seconds": 5,
+            "release_seconds": 6,
+            "makeup_db": 7,
+        }[name]
     if isinstance(processor, audio_effects.Filter):
         return 3 + [
             n for f in processor.filters for n in (f"{f.name}-cutoff_hz", f"{f.name}-q")

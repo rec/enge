@@ -25,6 +25,7 @@ class Settings(BaseModel):
     voices: int = Field(default=16, gt=0)
     effect_actions: int = Field(default=64, ge=1, le=64)
     granular: bool = False
+    compressor: bool = False
     delay: Literal["none", "tap", "modulated"] = "none"
     audio_output: Path | None = None
 
@@ -108,6 +109,32 @@ def main(settings: Settings) -> None:
         processors,
         settings.block_frames,
     )
+    if settings.compressor:
+        graph = audio_effects.EffectGraph(
+            scope=graph.scope,
+            inputs=[
+                *graph.inputs,
+                audio_effects.GraphInput(
+                    name="sidechain",
+                    channels=["mono"],
+                    source=audio_effects.HostStream(stream="detector"),
+                ),
+            ],
+            processors=[*graph.processors, audio_effects.Compressor(name="duck")],
+            connections=[
+                *graph.connections,
+                audio_effects.Connection(
+                    processor="duck", port="input", source=graph.output
+                ),
+                audio_effects.Connection(
+                    processor="duck",
+                    port="detector",
+                    source=audio_effects.InputSource(input="sidechain"),
+                ),
+            ],
+            output=audio_effects.ProcessorSource(processor="duck"),
+            maximum_block_frames=settings.block_frames,
+        )
     engine = live.NativeLiveEngine(
         {"synth": synth.PersistentSynth(synth.prepare(document), settings.voices)},
         settings.block_frames,
@@ -116,6 +143,21 @@ def main(settings: Settings) -> None:
     output = np.empty((settings.block_frames, 2))
     durations = []
     callbacks = settings.seconds * 48000 // settings.block_frames
+    detector = (
+        (
+            0.5
+            + 0.5
+            * np.sin(
+                2
+                * np.pi
+                * np.arange(callbacks * settings.block_frames)[:, None]
+                * 4
+                / 48000
+            )
+        )
+        if settings.compressor
+        else None
+    )
     recording = (
         np.empty((callbacks * settings.block_frames, 2))
         if settings.audio_output is not None
@@ -124,6 +166,11 @@ def main(settings: Settings) -> None:
     for i in range(callbacks):
         start = i * settings.block_frames
         batch = effect_actions(settings, start)
+        host = (
+            None
+            if detector is None
+            else {"detector": detector[start : start + settings.block_frames]}
+        )
         before = perf_counter_ns()
         engine.advance_into(
             {"synth": actions if i == 0 else []},
@@ -131,6 +178,7 @@ def main(settings: Settings) -> None:
             start,
             start + settings.block_frames,
             output,
+            host,
         )
         durations.append((perf_counter_ns() - before) / 1000)
         if recording is not None:
@@ -142,6 +190,7 @@ def main(settings: Settings) -> None:
         f"callbacks={callbacks} block={settings.block_frames} voices={settings.voices} "
         f"effect_actions={settings.effect_actions} granular={settings.granular}"
         f" delay={settings.delay}"
+        f" compressor={settings.compressor}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
@@ -176,6 +225,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
             if ordinal % 3 == 1 or not settings.granular
             else ("cloud", "density_hz", 40 + (start + ordinal) % 50)
         )
+        if settings.compressor and ordinal % 4 == 3:
+            processor, parameter, value = (
+                "duck",
+                "threshold_db",
+                -24 + (start + ordinal) % 18,
+            )
         actions.append(
             audio_effects.ParameterAction(
                 tick=start,
