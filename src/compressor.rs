@@ -1,17 +1,6 @@
 //! Linked peak compression shared by offline and native callback rendering.
 
 use crate::error::{NativeError, NativeResult};
-use pyo3::prelude::*;
-
-#[pyfunction]
-pub fn compressor_gain(
-    peak: f64,
-    parameters: [f64; 6],
-    reduction: f64,
-    rate: f64,
-) -> PyResult<(f64, f64)> {
-    gain(peak, parameters, reduction, rate).map_err(Into::into)
-}
 
 pub(crate) fn gain(
     peak: f64,

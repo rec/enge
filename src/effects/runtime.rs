@@ -1,20 +1,30 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
+mod state;
+
+use crate::amplitude::frame_time;
 use crate::compressor;
 use crate::error::{NativeError, NativeResult};
-use crate::queue::ActionBatch;
+use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::ControlBank;
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{RouteMap, sum_partials};
 use numpy::ndarray::{Array2, Array3};
-use numpy::{PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::f64::consts::PI;
 
+#[pyclass(unsendable)]
 pub(crate) struct EffectRuntime {
     kinds: Vec<u8>,
+    rate: f64,
+    main_input: usize,
+    tail_thresholds: Vec<f64>,
+    ended: Vec<bool>,
+    pub(crate) stopped: bool,
     pub(crate) widths: Vec<usize>,
     pub(crate) input_routes: Vec<Vec<i64>>,
     pub(crate) inputs: Array3<f64>,
@@ -46,11 +56,19 @@ struct EffectFilter {
     response: u8,
     parameter: usize,
     state_floor: f64,
+    minimum: f64,
+    maximum: f64,
+    clamp: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct EffectSnapshot {
     kinds: Vec<u8>,
+    rate: f64,
+    main_input: usize,
+    tail_thresholds: Vec<f64>,
+    ended: Vec<bool>,
+    stopped: bool,
     widths: Vec<usize>,
     input_routes: Vec<Vec<i64>>,
     sources: Array2<i64>,
@@ -88,7 +106,11 @@ struct LiveGranulator {
     counter: u64,
     frame: usize,
     frozen: bool,
+    frozen_start: i64,
+    order: Vec<usize>,
+    active_count: usize,
     freeze_crossfade_frames: usize,
+    maximum_duration_seconds: f64,
 }
 
 #[derive(Clone)]
@@ -99,6 +121,7 @@ struct LiveTapDelay {
     current: usize,
     fade_frames: usize,
     state_floor: f64,
+    non_silent: usize,
 }
 
 #[derive(Clone)]
@@ -118,6 +141,7 @@ struct LiveModulatedDelay {
     waveform: u8,
     phase_offsets: Vec<f64>,
     state_floor: f64,
+    non_silent: usize,
 }
 
 #[derive(Clone)]
@@ -127,6 +151,110 @@ struct LiveGrain {
     index: usize,
     gain: f64,
     active: bool,
+}
+
+#[pymethods]
+impl EffectRuntime {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn py_new(
+        kinds: Vec<u8>,
+        sources: PyReadonlyArray2<'_, i64>,
+        parameters: PyReadonlyArray2<'_, f64>,
+        output_source: usize,
+        filters: PyReadonlyArray2<'_, f64>,
+        granulators: PyReadonlyArray2<'_, i64>,
+        tap_delays: PyReadonlyArray2<'_, i64>,
+        modulated_delays: PyReadonlyArray2<'_, f64>,
+        widths: Vec<usize>,
+        main_input: usize,
+        tail_thresholds: Vec<f64>,
+        rate: f64,
+    ) -> PyResult<Self> {
+        let inputs = widths
+            .len()
+            .checked_sub(kinds.len())
+            .ok_or_else(|| PyValueError::new_err("Invalid native effect port widths"))?;
+        Self::new(
+            kinds,
+            sources,
+            parameters,
+            output_source,
+            filters,
+            granulators,
+            tap_delays,
+            modulated_delays,
+            rate,
+            widths,
+            main_input,
+            tail_thresholds,
+            vec![vec![-2]; inputs],
+            1,
+            BATCH_ACTIONS,
+            1,
+        )
+    }
+
+    fn render_frame(
+        &mut self,
+        inputs: Vec<PyReadonlyArray1<'_, f64>>,
+        parameters: PyReadonlyArray2<'_, f64>,
+        ended: Vec<bool>,
+        frozen: Vec<bool>,
+    ) -> PyResult<(Vec<f64>, bool)> {
+        if inputs.len() != self.input_routes.len()
+            || ended.len() != inputs.len()
+            || frozen.len() != self.kinds.len()
+            || parameters.shape() != self.parameters.shape()
+            || parameters.as_array().iter().any(|value| !value.is_finite())
+            || inputs.iter().enumerate().any(|(input, values)| {
+                values.len() != self.widths[input]
+                    || values.as_array().iter().any(|value| !value.is_finite())
+            })
+            || frozen
+                .iter()
+                .enumerate()
+                .any(|(node, frozen)| *frozen && self.kinds[node] != 3)
+        {
+            return Err(PyValueError::new_err("Invalid native effect frame"));
+        }
+        self.resolved.assign(&parameters.as_array());
+        for (input, values) in inputs.iter().enumerate() {
+            self.ended[input] = ended[input];
+            for (channel, value) in values.as_array().iter().enumerate() {
+                self.values[[input, channel]] = if ended[input] { 0.0 } else { *value };
+            }
+        }
+        for (node, frozen) in frozen.into_iter().enumerate() {
+            if self.kinds[node] == 3 {
+                self.set_frozen(node, frozen);
+            }
+        }
+        self.process_nodes(self.rate)?;
+        let width = self.widths[self.output_source];
+        let drained = self.ended[self.output_source];
+        let output = (0..width)
+            .map(|channel| {
+                if drained {
+                    0.0
+                } else {
+                    self.values[[self.output_source, channel]]
+                }
+            })
+            .collect::<Vec<_>>();
+        if output.iter().any(|value| !value.is_finite()) {
+            return Err(PyValueError::new_err("Non-finite native effect output"));
+        }
+        Ok((output, drained))
+    }
+
+    fn export_state<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.export_processors(py)
+    }
+
+    fn import_state(&mut self, values: Vec<Bound<'_, PyDict>>, frame: usize) -> PyResult<()> {
+        self.import_processors(values, frame)
+    }
 }
 
 impl EffectRuntime {
@@ -142,6 +270,8 @@ impl EffectRuntime {
         modulated_delays: PyReadonlyArray2<'_, f64>,
         rate: f64,
         widths: Vec<usize>,
+        main_input: usize,
+        tail_thresholds: Vec<f64>,
         input_routes: Vec<Vec<i64>>,
         maximum_block_frames: usize,
         action_capacity: usize,
@@ -151,7 +281,22 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         if kinds.iter().any(|v| *v > 7)
+            || !rate.is_finite()
+            || rate <= 0.0
+            || maximum_block_frames == 0
+            || action_capacity < BATCH_ACTIONS
+            || batch_capacity == 0
             || inputs == 0
+            || main_input >= inputs
+            || tail_thresholds.len() != nodes
+            || tail_thresholds.iter().enumerate().any(|(node, value)| {
+                !value.is_finite()
+                    || if matches!(kinds[node], 2 | 5 | 6) {
+                        *value <= 0.0
+                    } else {
+                        *value != 0.0
+                    }
+            })
             || widths.len() != inputs + nodes
             || widths.contains(&0)
             || sources.shape() != [nodes, 2]
@@ -169,7 +314,7 @@ impl EffectRuntime {
                 .iter()
                 .any(|v| !(0.0..=1.0).contains(v))
             || output_source >= inputs + nodes
-            || filters.shape()[1] != 4
+            || filters.shape()[1] != 7
             || filters.as_array().iter().any(|v| !v.is_finite())
             || granulators.shape()[1] != 4
             || tap_delays.shape()[1] != 3
@@ -229,6 +374,11 @@ impl EffectRuntime {
                 || row[2] != parameter as f64
                 || parameter + 1 >= parameters.shape()[1]
                 || row[3] < 0.0
+                || row[3] >= tail_thresholds[node]
+                || row[4] <= 0.0
+                || row[5] < row[4]
+                || row[5] >= rate / 2.0
+                || !matches!(row[6], 0.0 | 1.0)
             {
                 return Err(PyValueError::new_err("Invalid live effect filter"));
             }
@@ -237,6 +387,9 @@ impl EffectRuntime {
                 response,
                 parameter,
                 state_floor: row[3],
+                minimum: row[4],
+                maximum: row[5],
+                clamp: row[6] == 1.0,
             });
         }
         let parameters = parameters.as_array().to_owned();
@@ -256,15 +409,29 @@ impl EffectRuntime {
                 || maximum_grains == 0
                 || freeze_crossfade_frames == 0
                 || prepared_granulators[node].is_some()
-                || parameters.ncols() < 8
+                || parameters.ncols() < 9
             {
                 return Err(PyValueError::new_err("Invalid live granulator"));
             }
+            let duration_frames = parameters[[node, 8]] * rate;
+            if !duration_frames.is_finite()
+                || duration_frames <= 0.0
+                || duration_frames >= usize::MAX as f64
+                || parameters[[node, 8]] <= 0.0
+                || parameters[[node, 3]] > parameters[[node, 8]]
+            {
+                return Err(PyValueError::new_err(
+                    "Invalid native granulator duration capacity",
+                ));
+            }
+            let maximum_grain_frames = duration_frames.round_ties_even().max(2.0) as usize;
             prepared_granulators[node] = Some(LiveGranulator::new(
                 history_frames,
+                maximum_grain_frames,
                 maximum_grains,
                 widths[node + inputs],
                 freeze_crossfade_frames,
+                parameters[[node, 8]],
             ));
         }
         if kinds
@@ -290,6 +457,7 @@ impl EffectRuntime {
                 || fade_frames == 0
                 || fade_frames.checked_add(1).is_none()
                 || parameters[[node, 4]] < 0.0
+                || parameters[[node, 4]] >= tail_thresholds[node]
             {
                 return Err(PyValueError::new_err("Invalid live tap delay"));
             }
@@ -308,6 +476,7 @@ impl EffectRuntime {
                 current: 0,
                 fade_frames,
                 state_floor: parameters[[node, 4]],
+                non_silent: 0,
             });
         }
         if kinds
@@ -333,6 +502,7 @@ impl EffectRuntime {
                 || prepared_modulated_delays[node].is_some()
                 || parameters.ncols() < 7
                 || parameters[[node, 6]] < 0.0
+                || parameters[[node, 6]] >= tail_thresholds[node]
             {
                 return Err(PyValueError::new_err("Invalid live modulated delay"));
             }
@@ -343,6 +513,7 @@ impl EffectRuntime {
                 waveform,
                 phase_offsets: row.iter().skip(3).copied().collect(),
                 state_floor: parameters[[node, 6]],
+                non_silent: 0,
             });
         }
         if kinds
@@ -354,6 +525,11 @@ impl EffectRuntime {
         }
         let (producer, consumer) = RingBuffer::new(batch_capacity);
         Ok(Self {
+            rate,
+            main_input,
+            tail_thresholds,
+            ended: vec![false; nodes + inputs],
+            stopped: false,
             reductions: vec![0.0; nodes],
             kinds,
             inputs: Array3::zeros((inputs, maximum_block_frames, channels)),
@@ -385,7 +561,6 @@ impl EffectRuntime {
         &mut self,
         output: &mut Array2<f64>,
         frames: usize,
-        rate: f64,
         start: usize,
     ) -> NativeResult<()> {
         let count = self.action_count;
@@ -404,18 +579,22 @@ impl EffectRuntime {
         }
         let mut action = 0;
         for frame in 0..frames {
+            let at = start
+                .checked_add(frame)
+                .ok_or(NativeError::Message("Effect frame overflow"))?;
             while action < count * 6 && self.action_scratch[action] as usize == frame {
                 let values: [f64; 6] = self.action_scratch[action..action + 6]
                     .try_into()
                     .expect("validated action width");
-                self.apply_action(&values)?;
+                self.apply_action(&values, at)?;
                 action += 6;
+            }
+            if self.stopped {
+                self.advance_ramps();
+                continue;
             }
             self.resolved.assign(&self.parameters);
             if let Some(generators) = &mut self.generators {
-                let at = start
-                    .checked_add(frame)
-                    .ok_or(NativeError::Message("Effect frame overflow"))?;
                 generators.bank.settle_patches(&[true], at, true)?;
                 generators.bank.observe_patch(0, at, &generators.controls)?;
                 for (index, (node, parameter, minimum, maximum)) in
@@ -446,91 +625,21 @@ impl EffectRuntime {
             let inputs = self.input_routes.len();
             for input in 0..inputs {
                 for channel in 0..self.widths[input] {
-                    self.values[[input, channel]] = self.inputs[[input, frame, channel]];
+                    self.values[[input, channel]] = if self.ended[input] {
+                        0.0
+                    } else {
+                        self.inputs[[input, frame, channel]]
+                    };
                 }
             }
-            for node in 0..self.kinds.len() {
-                let channels = self.widths[node + inputs];
-                let first = self.sources[[node, 0]] as usize;
-                let authored_mix = self.resolved[[node, 1]];
-                let bypass = self.resolved[[node, 2]];
-                if !(0.0..=1.0).contains(&authored_mix) || !(0.0..=1.0).contains(&bypass) {
-                    return Err(NativeError::Message("Invalid live effect mix"));
-                }
-                let mix = authored_mix * bypass;
-                for channel in 0..channels {
-                    self.wet[channel] = self.values[[first, channel]];
-                }
-                match self.kinds[node] {
-                    0 => {
-                        let gain = 10_f64.powf(self.resolved[[node, 0]] / 20.0);
-                        for value in &mut self.wet[..channels] {
-                            *value *= gain;
-                        }
-                    }
-                    1 => {
-                        let second = self.sources[[node, 1]] as usize;
-                        for (channel, value) in self.wet[..channels].iter_mut().enumerate() {
-                            *value *= self.values[[second, channel]];
-                        }
-                    }
-                    2 => self.process_filters(node, channels, rate)?,
-                    3 => {
-                        let parameters = [
-                            self.resolved[[node, 3]],
-                            self.resolved[[node, 4]],
-                            self.resolved[[node, 5]],
-                            self.resolved[[node, 6]],
-                            self.resolved[[node, 7]],
-                        ];
-                        self.granulators[node]
-                            .as_mut()
-                            .expect("validated live granulator")
-                            .process(&mut self.wet[..channels], parameters, rate)?;
-                    }
-                    4 => {
-                        let drive = self.resolved[[node, 0]];
-                        if drive <= 0.0 {
-                            return Err(NativeError::Message("Invalid live soft clip drive"));
-                        }
-                        let normalization = drive.tanh();
-                        for value in &mut self.wet[..channels] {
-                            *value = (drive * *value).tanh() / normalization;
-                        }
-                    }
-                    5 => self.process_tap_delay(node, channels, rate)?,
-                    6 => self.process_modulated_delay(node, channels, rate)?,
-                    _ => {
-                        let detector = self.sources[[node, 1]] as usize;
-                        let peak = (0..self.widths[detector])
-                            .map(|channel| self.values[[detector, channel]].abs())
-                            .fold(0.0, f64::max);
-                        let (gain, reduction) = compressor::gain(
-                            peak,
-                            [
-                                self.resolved[[node, 0]],
-                                self.resolved[[node, 3]],
-                                self.resolved[[node, 4]],
-                                self.resolved[[node, 5]],
-                                self.resolved[[node, 6]],
-                                self.resolved[[node, 7]],
-                            ],
-                            self.reductions[node],
-                            rate,
-                        )?;
-                        self.reductions[node] = reduction;
-                        for value in &mut self.wet[..channels] {
-                            *value *= gain;
-                        }
-                    }
-                }
-                for channel in 0..channels {
-                    self.values[[node + inputs, channel]] =
-                        (1.0 - mix) * self.values[[first, channel]] + mix * self.wet[channel];
-                }
-            }
+            self.process_nodes(self.rate)?;
+            self.stopped = self.ended[self.output_source];
             for channel in 0..self.widths[self.output_source] {
-                output[[frame, channel]] = self.values[[self.output_source, channel]];
+                output[[frame, channel]] = if self.stopped {
+                    0.0
+                } else {
+                    self.values[[self.output_source, channel]]
+                };
             }
             self.advance_ramps();
         }
@@ -538,17 +647,158 @@ impl EffectRuntime {
         Ok(())
     }
 
-    fn apply_action(&mut self, action: &[f64]) -> NativeResult<()> {
+    fn process_nodes(&mut self, rate: f64) -> NativeResult<()> {
+        let inputs = self.input_routes.len();
+        for node in 0..self.kinds.len() {
+            let channels = self.widths[node + inputs];
+            let first = self.sources[[node, 0]] as usize;
+            let authored_mix = self.resolved[[node, 1]];
+            let bypass = self.resolved[[node, 2]];
+            if !(0.0..=1.0).contains(&authored_mix) || !(0.0..=1.0).contains(&bypass) {
+                return Err(NativeError::Message("Invalid live effect mix"));
+            }
+            let mix = authored_mix * bypass;
+            for channel in 0..channels {
+                self.wet[channel] = self.values[[first, channel]];
+            }
+            match self.kinds[node] {
+                0 => {
+                    let gain = 10_f64.powf(self.resolved[[node, 0]] / 20.0);
+                    for value in &mut self.wet[..channels] {
+                        *value *= gain;
+                    }
+                }
+                1 => {
+                    let second = self.sources[[node, 1]] as usize;
+                    for (channel, value) in self.wet[..channels].iter_mut().enumerate() {
+                        *value *= self.values[[second, channel]];
+                    }
+                }
+                2 => self.process_filters(node, channels, rate)?,
+                3 => {
+                    let parameters = [
+                        self.resolved[[node, 3]],
+                        self.resolved[[node, 4]],
+                        self.resolved[[node, 5]],
+                        self.resolved[[node, 6]],
+                        self.resolved[[node, 7]],
+                    ];
+                    self.granulators[node]
+                        .as_mut()
+                        .expect("validated live granulator")
+                        .process(
+                            &mut self.wet[..channels],
+                            parameters,
+                            rate,
+                            self.ended[first],
+                        )?;
+                }
+                4 => {
+                    let drive = self.resolved[[node, 0]];
+                    if drive <= 0.0 {
+                        return Err(NativeError::Message("Invalid live soft clip drive"));
+                    }
+                    let normalization = drive.tanh();
+                    for value in &mut self.wet[..channels] {
+                        *value = (drive * *value).tanh() / normalization;
+                    }
+                }
+                5 => self.process_tap_delay(node, channels, rate)?,
+                6 => self.process_modulated_delay(node, channels, rate)?,
+                _ => {
+                    let detector = self.sources[[node, 1]] as usize;
+                    let peak = (0..self.widths[detector])
+                        .map(|channel| self.values[[detector, channel]].abs())
+                        .fold(0.0, f64::max);
+                    let (gain, reduction) = compressor::gain(
+                        peak,
+                        [
+                            self.resolved[[node, 0]],
+                            self.resolved[[node, 3]],
+                            self.resolved[[node, 4]],
+                            self.resolved[[node, 5]],
+                            self.resolved[[node, 6]],
+                            self.resolved[[node, 7]],
+                        ],
+                        self.reductions[node],
+                        rate,
+                    )?;
+                    self.reductions[node] = reduction;
+                    for value in &mut self.wet[..channels] {
+                        *value *= gain;
+                    }
+                }
+            }
+            let drained = self.ended[first]
+                && match self.kinds[node] {
+                    2 => self
+                        .filter_rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, filter)| filter.node == node)
+                        .all(|(stage, _)| {
+                            (0..channels).all(|channel| {
+                                (0..2).all(|state| {
+                                    self.filter_states[[stage, channel, state]].abs()
+                                        < self.tail_thresholds[node]
+                                })
+                            })
+                        }),
+                    3 => self.granulators[node]
+                        .as_ref()
+                        .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
+                    5 => self.tap_delays[node]
+                        .as_ref()
+                        .is_some_and(|delay| delay.non_silent == 0),
+                    6 => self.modulated_delays[node]
+                        .as_ref()
+                        .is_some_and(|delay| delay.non_silent == 0),
+                    _ => true,
+                };
+            self.ended[node + inputs] = drained;
+            for channel in 0..channels {
+                self.values[[node + inputs, channel]] = if drained {
+                    0.0
+                } else {
+                    (1.0 - mix) * self.values[[first, channel]] + mix * self.wet[channel]
+                };
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_action(&mut self, action: &[f64], frame: usize) -> NativeResult<()> {
         let kind = action[1] as usize;
         let node = action[2] as usize;
         let parameter = action[3] as usize;
         let duration = action[5] as usize;
-        if action[1] != kind as f64
-            || action[2] != node as f64
-            || node >= self.parameters.nrows()
-            || action[5] != duration as f64
-        {
+        if action[1] != kind as f64 || action[2] != node as f64 || action[5] != duration as f64 {
             return Err(NativeError::Message("Invalid live effect action"));
+        }
+        if kind == 2 {
+            if node >= self.input_routes.len() || self.ended[node] || action[3..] != [0.0, 0.0, 0.0]
+            {
+                return Err(NativeError::Message("Invalid or repeated live input end"));
+            }
+            self.ended[node] = true;
+            if node == self.main_input {
+                if let Some(generators) = &mut self.generators {
+                    generators
+                        .bank
+                        .release_voice(0, frame, frame, frame_time(0.0)?)?;
+                }
+            }
+            return Ok(());
+        }
+        if kind == 3 {
+            if action[2..] != [0.0, 0.0, 0.0, 0.0] {
+                return Err(NativeError::Message("Invalid live effect stop"));
+            }
+            self.stopped = true;
+            return Ok(());
+        }
+        if node >= self.parameters.nrows() {
+            return Err(NativeError::Message("Invalid live effect node"));
         }
         if kind == 1 {
             if self.kinds[node] != 3
@@ -558,10 +808,7 @@ impl EffectRuntime {
             {
                 return Err(NativeError::Message("Invalid live granulator freeze"));
             }
-            self.granulators[node]
-                .as_mut()
-                .expect("validated live granulator")
-                .frozen = action[4] == 1.0;
+            self.set_frozen(node, action[4] == 1.0);
             return Ok(());
         }
         if kind != 0 || action[3] != parameter as f64 || parameter >= self.parameters.ncols() {
@@ -577,6 +824,16 @@ impl EffectRuntime {
                 (action[4] - self.parameters[[node, parameter]]) / duration as f64;
         }
         Ok(())
+    }
+
+    fn set_frozen(&mut self, node: usize, frozen: bool) {
+        let granular = self.granulators[node]
+            .as_mut()
+            .expect("validated live granulator");
+        if frozen && !granular.frozen {
+            granular.frozen_start = granular.history_start;
+        }
+        granular.frozen = frozen;
     }
 
     fn advance_ramps(&mut self) {
@@ -601,11 +858,15 @@ impl EffectRuntime {
             if filter.node != node {
                 continue;
             }
-            let cutoff = self.resolved[[node, filter.parameter]];
+            let mut cutoff = self.resolved[[node, filter.parameter]];
             let q = self.resolved[[node, filter.parameter + 1]];
-            if !cutoff.is_finite() || cutoff <= 0.0 || cutoff >= rate / 2.0 || q <= 0.0 {
+            if !cutoff.is_finite()
+                || q <= 0.0
+                || (!filter.clamp && (cutoff < filter.minimum || cutoff > filter.maximum))
+            {
                 return Err(NativeError::Message("Invalid live filter cutoff/Q"));
             }
+            cutoff = cutoff.clamp(filter.minimum, filter.maximum);
             let g = (PI * cutoff / rate).tan();
             let d = q * (1.0 + g * g) + g;
             let a1 = if q < 1.0 {
@@ -708,11 +969,16 @@ impl EffectRuntime {
                 .sum::<f64>();
             let value = self.wet[channel];
             let stored = value + feedback * wet;
-            delay.history[[delay.write, channel]] = if stored.abs() < delay.state_floor {
+            let stored = if stored.abs() < delay.state_floor {
                 0.0
             } else {
                 stored
             };
+            delay.non_silent -= usize::from(
+                delay.history[[delay.write, channel]].abs() >= self.tail_thresholds[node],
+            );
+            delay.non_silent += usize::from(stored.abs() >= self.tail_thresholds[node]);
+            delay.history[[delay.write, channel]] = stored;
             self.wet[channel] = wet;
         }
         delay.write = (delay.write + 1) % frames;
@@ -783,11 +1049,16 @@ impl EffectRuntime {
             }
             let wet = delay_read(&delay.history, delay.write, delay_frames, channel);
             let stored = self.wet[channel] + feedback * wet;
-            delay.history[[delay.write, channel]] = if stored.abs() < delay.state_floor {
+            let stored = if stored.abs() < delay.state_floor {
                 0.0
             } else {
                 stored
             };
+            delay.non_silent -= usize::from(
+                delay.history[[delay.write, channel]].abs() >= self.tail_thresholds[node],
+            );
+            delay.non_silent += usize::from(stored.abs() >= self.tail_thresholds[node]);
+            delay.history[[delay.write, channel]] = stored;
             self.wet[channel] = wet;
         }
         delay.write = (delay.write + 1) % frames;
@@ -798,6 +1069,11 @@ impl EffectRuntime {
     pub(crate) fn snapshot(&self) -> EffectSnapshot {
         EffectSnapshot {
             kinds: self.kinds.clone(),
+            rate: self.rate,
+            main_input: self.main_input,
+            tail_thresholds: self.tail_thresholds.clone(),
+            ended: self.ended.clone(),
+            stopped: self.stopped,
             widths: self.widths.clone(),
             input_routes: self.input_routes.clone(),
             sources: self.sources.clone(),
@@ -818,6 +1094,9 @@ impl EffectRuntime {
 
     pub(crate) fn validate_snapshot(&self, snapshot: &EffectSnapshot) -> PyResult<()> {
         if self.kinds != snapshot.kinds
+            || self.rate != snapshot.rate
+            || self.main_input != snapshot.main_input
+            || self.tail_thresholds != snapshot.tail_thresholds
             || self.widths != snapshot.widths
             || self.input_routes != snapshot.input_routes
             || match (&self.generators, &snapshot.generators) {
@@ -892,6 +1171,8 @@ impl EffectRuntime {
         self.tap_delays.clone_from(&snapshot.tap_delays);
         self.modulated_delays.clone_from(&snapshot.modulated_delays);
         self.reductions.clone_from(&snapshot.reductions);
+        self.ended.clone_from(&snapshot.ended);
+        self.stopped = snapshot.stopped;
         Ok(())
     }
 }
@@ -907,9 +1188,11 @@ fn delay_read(history: &Array2<f64>, write: usize, delay: f64, channel: usize) -
 impl LiveGranulator {
     fn new(
         history_frames: usize,
+        grain_frames: usize,
         maximum_grains: usize,
         channels: usize,
         freeze_crossfade_frames: usize,
+        maximum_duration_seconds: f64,
     ) -> Self {
         Self {
             history: Array2::zeros((history_frames, channels)),
@@ -918,7 +1201,7 @@ impl LiveGranulator {
             history_write: 0,
             grains: (0..maximum_grains)
                 .map(|_| LiveGrain {
-                    samples: Array2::zeros((history_frames, channels)),
+                    samples: Array2::zeros((grain_frames, channels)),
                     len: 0,
                     index: 0,
                     gain: 0.0,
@@ -929,14 +1212,20 @@ impl LiveGranulator {
             counter: 0,
             frame: 0,
             frozen: false,
+            frozen_start: 0,
+            order: vec![0; maximum_grains],
+            active_count: 0,
             freeze_crossfade_frames,
+            maximum_duration_seconds,
         }
     }
 
     fn same_capacity(&self, other: &Self) -> bool {
         self.history.raw_dim() == other.history.raw_dim()
             && self.grains.len() == other.grains.len()
+            && self.order.len() == other.order.len()
             && self.freeze_crossfade_frames == other.freeze_crossfade_frames
+            && self.maximum_duration_seconds == other.maximum_duration_seconds
             && self
                 .grains
                 .iter()
@@ -944,9 +1233,16 @@ impl LiveGranulator {
                 .all(|(a, b)| a.samples.raw_dim() == b.samples.raw_dim())
     }
 
-    fn process(&mut self, input: &mut [f64], parameters: [f64; 5], rate: f64) -> NativeResult<()> {
+    fn process(
+        &mut self,
+        input: &mut [f64],
+        parameters: [f64; 5],
+        rate: f64,
+        ended: bool,
+    ) -> NativeResult<()> {
         let [duration_seconds, density, lookback, ratio, jitter_seconds] = parameters;
         if duration_seconds <= 0.0
+            || duration_seconds > self.maximum_duration_seconds
             || density <= 0.0
             || density > rate
             || lookback < 0.0
@@ -955,7 +1251,7 @@ impl LiveGranulator {
         {
             return Err(NativeError::Message("Invalid live granulator parameter"));
         }
-        if !self.frozen {
+        if !self.frozen && !ended {
             for (channel, value) in input.iter().enumerate() {
                 self.history[[self.history_write, channel]] = *value;
             }
@@ -971,25 +1267,32 @@ impl LiveGranulator {
             self.phase -= 1.0;
             let launch_counter = self.counter;
             self.counter = self.counter.wrapping_add(1);
-            if let Some(slot) = self.grains.iter().position(|v| !v.active) {
-                let duration = (duration_seconds * rate).round().max(2.0) as usize;
+            let slot = if !ended || self.frozen {
+                self.grains.iter().position(|v| !v.active)
+            } else {
+                None
+            };
+            if let Some(slot) = slot {
+                let duration = (duration_seconds * rate).round_ties_even().max(2.0) as usize;
                 let end = self.frame as f64 - lookback * rate
                     + jitter_seconds * rate * granular_jitter(launch_counter);
                 let start = end - (duration - 1) as f64 * ratio;
-                if duration <= self.history.nrows() && self.capture(slot, start, ratio, duration) {
+                if duration <= self.grains[slot].samples.nrows()
+                    && self.capture(slot, start, ratio, duration)
+                {
                     let grain = &mut self.grains[slot];
                     grain.len = duration;
                     grain.index = 0;
                     grain.gain = 1.0 / (density * duration_seconds).max(1.0).sqrt();
                     grain.active = true;
+                    self.order[self.active_count] = slot;
+                    self.active_count += 1;
                 }
             }
         }
         input.fill(0.0);
-        for grain in &mut self.grains {
-            if !grain.active {
-                continue;
-            }
+        for index in 0..self.active_count {
+            let grain = &mut self.grains[self.order[index]];
             let window = 0.5 - 0.5 * (2.0 * PI * grain.index as f64 / grain.len as f64).cos();
             for (channel, value) in input.iter_mut().enumerate() {
                 *value += grain.samples[[grain.index, channel]] * window * grain.gain;
@@ -999,6 +1302,14 @@ impl LiveGranulator {
                 grain.active = false;
             }
         }
+        let mut active = 0;
+        for index in 0..self.active_count {
+            if self.grains[self.order[index]].active {
+                self.order[active] = self.order[index];
+                active += 1;
+            }
+        }
+        self.active_count = active;
         self.frame = self
             .frame
             .checked_add(1)

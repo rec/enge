@@ -92,11 +92,13 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.array([[0, -1]], dtype=np.int64),
         np.array([[-3, 1, 1]], dtype=np.float64),
         1,
-        np.empty((0, 4), dtype=np.float64),
+        np.empty((0, 7), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
         np.empty((0, 3), dtype=np.int64),
         np.empty((0, 5), dtype=np.float64),
         [2, 2],
+        0,
+        [0.0],
         4,
     )
     runtime.submit(0, oscillator_start)
@@ -115,11 +117,13 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.array([[0, -1]], dtype=np.int64),
         np.array([[-3, 1, 1]], dtype=np.float64),
         1,
-        np.empty((0, 4), dtype=np.float64),
+        np.empty((0, 7), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
         np.empty((0, 3), dtype=np.int64),
         np.empty((0, 5), dtype=np.float64),
         [2, 2],
+        0,
+        [0.0],
         4,
     )
     restored.restore(snapshot)
@@ -180,51 +184,9 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         maximum_block_frames=997,
     )
     prepared = effects.prepare(graph, 48000)
-    (
-        kinds,
-        sources,
-        initial,
-        output_source,
-        filter_rows,
-        granulator_rows,
-        tap_delay_rows,
-        modulated_delay_rows,
-        widths,
-    ) = effects.native_live_graph(prepared)
-    parameter_values = np.broadcast_to(initial[:, :2], (48000, 3, 2)).copy()
     duration = 257
-    ramp = np.minimum(np.maximum(np.arange(48000) - 32, 0), duration) / duration
-    parameter_values[:, 0, 0] = -12 + 12 * ramp
-    bypass = 1 - np.minimum(np.maximum(np.arange(48000) - 16000, 0), 128) / 128
-    parameter_values[:, 2, 1] *= bypass
-    filter_values = np.broadcast_to(initial[2, 3:], (48000, 1, 2)).copy()
-    expected, _ = _native.render_effects(
-        source[None, :, :],
-        kinds,
-        sources,
-        parameter_values,
-        output_source,
-        48000,
-        [
-            None,
-            None,
-            ([0], np.zeros((1, 2, 2)), filter_values),
-        ],
-        [0, 0, filter_rows[0, 3]],
-    )
     runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
-    runtime.set_effect_graph(
-        kinds,
-        sources,
-        initial,
-        output_source,
-        filter_rows,
-        granulator_rows,
-        tap_delay_rows,
-        modulated_delay_rows,
-        widths,
-        4,
-    )
+    runtime.set_effect_graph(*effects.native_live_graph(prepared), 4)
     runtime.submit(0, start_action)
     gain_action = audio_effects.ParameterAction(
         tick=32,
@@ -234,6 +196,12 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         value=0,
         duration_frames=duration,
     )
+    bypass_action = audio_effects.BypassAction(
+        tick=16000, ordinal=0, processor="low", bypassed=True
+    )
+    expected = effects.process_audio(
+        prepared, {"main": source}, [gain_action, bypass_action], backend="numpy"
+    )
     runtime.submit_effects(effects.native_live_actions(prepared, [gain_action], 0, 997))
     actual = np.empty_like(expected)
     for start in range(0, 48000, 997):
@@ -241,14 +209,7 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
             runtime.submit_effects(
                 effects.native_live_actions(
                     prepared,
-                    [
-                        audio_effects.BypassAction(
-                            tick=16000,
-                            ordinal=0,
-                            processor="low",
-                            bypassed=True,
-                        )
-                    ],
+                    [bypass_action],
                     start,
                     start + 997,
                 )
@@ -310,11 +271,13 @@ def test_rejected_live_restore_preserves_all_source_state(
                 np.array([[0, -1]], dtype=np.int64),
                 np.array([[0, 1, 1]], dtype=float),
                 0 if incompatible else 1,
-                np.empty((0, 4)),
+                np.empty((0, 7)),
                 np.empty((0, 4), dtype=np.int64),
                 np.empty((0, 3), dtype=np.int64),
                 np.empty((0, 5)),
                 [2, 2],
+                0,
+                [0.0],
                 2,
             )
         return runtime
@@ -354,11 +317,13 @@ def test_live_restore_recovers_partial_render_and_discards_abandoned_actions(
             np.array([[0, -1]], dtype=np.int64),
             np.array([[0, 1, 1]], dtype=float),
             1,
-            np.empty((0, 4)),
+            np.empty((0, 7)),
             np.empty((0, 4), dtype=np.int64),
             np.empty((0, 3), dtype=np.int64),
             np.empty((0, 5)),
             [2, 2],
+            0,
+            [0.0],
             2,
         )
         return runtime

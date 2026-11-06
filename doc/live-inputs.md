@@ -53,8 +53,16 @@ reallocations or frees in 2,759 successful and seven failed callbacks. Host
 admission failures occur before that audit scope. These measurements qualify the
 tested native paths, not device deadlines or arbitrary host work.
 
-Input-end/stop actions, per-instrument attachments, channel-conversion matrices
-and spatial DSP remain separate roadmap work.
+Input-end and stop actions now run through the shared native processor lifecycle.
+An ended input supplies silence; the other inputs remain independent. Ending the
+main input releases graph generators. Native delay/granular/filter tails drain
+using their declared state rules, and `LiveRuntime.effects_drained` reports the
+graph's terminal state. Source clocks continue advancing under the live owner.
+Stop silences its exact frame and later blocks. Repeated input endings fail the
+block and require restoring a prior valid snapshot, as other callback failures do.
+
+Per-instrument attachments, channel-conversion matrices and spatial DSP remain
+separate roadmap work.
 
 ## Additional work beyond the prompt
 

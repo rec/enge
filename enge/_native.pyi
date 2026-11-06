@@ -2,10 +2,6 @@ from typing import Literal
 
 import numpy as np
 
-def compressor_gain(
-    peak: float, parameters: list[float], reduction: float, rate: float
-) -> tuple[float, float]: ...
-
 class SynthRuntimeSnapshot: ...
 
 class RubberBandLiveShifter:
@@ -39,6 +35,32 @@ class ActionQueue:
 
 class LiveRuntimeSnapshot: ...
 
+class EffectRuntime:
+    def __init__(
+        self,
+        kinds: list[int],
+        sources: np.ndarray,
+        parameters: np.ndarray,
+        output_source: int,
+        filters: np.ndarray,
+        granulators: np.ndarray,
+        tap_delays: np.ndarray,
+        modulated_delays: np.ndarray,
+        widths: list[int],
+        main_input: int,
+        tail_thresholds: list[float],
+        rate: float,
+    ) -> None: ...
+    def render_frame(
+        self,
+        inputs: list[np.ndarray],
+        parameters: np.ndarray,
+        ended: list[bool],
+        frozen: list[bool],
+    ) -> tuple[list[float], bool]: ...
+    def export_state(self) -> list[dict[str, object]]: ...
+    def import_state(self, values: list[dict[str, object]], frame: int) -> None: ...
+
 class LiveRuntime:
     def __init__(
         self,
@@ -65,10 +87,14 @@ class LiveRuntime:
         tap_delays: np.ndarray,
         modulated_delays: np.ndarray,
         widths: list[int],
+        main_input: int,
+        tail_thresholds: list[float],
         batch_capacity: int,
         input_routes: list[list[int]] | None = None,
     ) -> None: ...
     def submit_effects(self, actions: np.ndarray) -> None: ...
+    @property
+    def effects_drained(self) -> bool: ...
     def set_effect_generators(
         self,
         generators: GeneratorBank,
@@ -366,41 +392,6 @@ class SynthRuntime:
     def snapshot(self) -> SynthRuntimeSnapshot: ...
     def restore(self, snapshot: SynthRuntimeSnapshot) -> None: ...
 
-def render_effects(
-    inputs: np.ndarray,
-    kinds: list[int],
-    sources: np.ndarray,
-    parameters: np.ndarray,
-    output_source: int,
-    rate: float,
-    filter_inputs: list[tuple[list[int], np.ndarray, np.ndarray] | None],
-    state_floors: list[float],
-) -> tuple[np.ndarray, list[np.ndarray]]: ...
-def render_granulator(
-    samples: np.ndarray,
-    parameters: np.ndarray,
-    start_frame: int,
-    rate: int,
-    history_frames: int,
-    maximum_grains: int,
-    history: np.ndarray,
-    history_start: int,
-    phase: float,
-    counter: int,
-    freeze_crossfade_frames: int,
-    grain_samples: list[np.ndarray],
-    grain_indices: list[int],
-    grain_gains: list[float],
-) -> tuple[
-    np.ndarray,
-    np.ndarray,
-    int,
-    float,
-    int,
-    list[np.ndarray],
-    list[int],
-    list[float],
-]: ...
 def render_filters(
     samples: np.ndarray,
     rate: float,

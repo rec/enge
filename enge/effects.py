@@ -1,4 +1,4 @@
-"""Independent NumPy realization of uFor's prepared audio-effect graphs."""
+"""Prepared effect graphs with independent NumPy and persistent Rust rendering."""
 
 from collections.abc import Callable
 from fractions import Fraction
@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ufor import audio_effects, instrument_trace, modulation
 from ufor.control import TempoMap
 from ufor.oscillator import Waveform
-from ufor.samples.processing import FilterResponse
+from ufor.samples.processing import FilterBoundary, FilterResponse
 
 from . import _native, filters, synth
 from .synth import EngineError
@@ -154,6 +154,14 @@ class OfflineEffects:
             ),
         )
         self.modulated: dict[tuple[str, str], float] = {}
+        self.native_runtime: _native.EffectRuntime | None = None
+        self.native_parameters: np.ndarray | None = None
+        if backend == "native":
+            encoded = native_live_graph(self.definition)
+            self.native_runtime = _native.EffectRuntime(
+                *encoded, definition.sample_rate
+            )
+            self.native_parameters = encoded[2]
 
     def advance(
         self,
@@ -192,20 +200,6 @@ class OfflineEffects:
         action_index = 0
         output = np.zeros((frames, len(self.definition.channels)))
         try:
-            if (
-                self.backend == "native"
-                and not any(
-                    isinstance(
-                        a, (audio_effects.InputEndAction, audio_effects.StopAction)
-                    )
-                    for a in actions
-                )
-                and not self.ended_inputs
-                and _native_supported(self.processors, graph, actions)
-            ):
-                output = self._advance_native(source_audio, actions, start, end)
-                self.frame = end
-                return output
             for i in range(frames):
                 frame = start + i
                 while (
@@ -221,6 +215,7 @@ class OfflineEffects:
                     self.stopped_at = frame
                 else:
                     output[i] = audio
+            self._sync_native()
         except (ValueError, FloatingPointError) as error:
             self.stopped_at = start
             output.fill(0)
@@ -234,203 +229,8 @@ class OfflineEffects:
         self.frame = end
         return output
 
-    def _advance_native(
-        self,
-        input_audio: dict[str, np.ndarray],
-        actions: list[audio_effects.EffectAction],
-        start: int,
-        end: int,
-    ) -> np.ndarray:
-        from . import _native
-
-        graph = self.definition.definition
-        processors = {p.name: p for p in graph.processors}
-        ordered = [processors[n] for n in self.definition.order]
-        if len(ordered) == 1 and isinstance(
-            processor := ordered[0], audio_effects.Granulator
-        ):
-            return self._advance_native_granulator(
-                processor, input_audio, actions, start, end
-            )
-        input_indices = {v.name: i for i, v in enumerate(graph.inputs)}
-        processor_indices = {
-            p.name: len(graph.inputs) + i for i, p in enumerate(ordered)
-        }
-        connections = {(c.processor, c.port): c.source for c in graph.connections}
-        sources = np.full((len(ordered), 2), -1, dtype=np.int64)
-        kinds: list[int] = []
-        state_floors: list[float] = []
-        for i, processor in enumerate(ordered):
-            ports = sorted(audio_effects.processor_ports(processor))
-            if isinstance(processor, audio_effects.Multiply):
-                ports = ["carrier", "modulator"]
-            for j, port in enumerate(ports):
-                source = connections[(processor.name, port)]
-                sources[i, j] = (
-                    input_indices[source.input]
-                    if isinstance(source, audio_effects.InputSource)
-                    else processor_indices[source.processor]
-                )
-            kinds.append(
-                0
-                if isinstance(processor, audio_effects.Gain)
-                else 1
-                if isinstance(processor, audio_effects.Multiply)
-                else 2
-                if isinstance(processor, audio_effects.Filter)
-                else 3
-            )
-            state_floors.append(
-                processor.state_floor
-                if isinstance(processor, audio_effects.Filter)
-                else 0
-            )
-        frames = end - start
-        values = np.zeros((frames, len(ordered), 2))
-        filter_values: list[np.ndarray | None] = [None] * len(ordered)
-        action_index = 0
-        for i in range(frames):
-            frame = start + i
-            while action_index < len(actions) and actions[action_index].tick == frame:
-                self._apply(actions[action_index])
-                action_index += 1
-            self._modulate(frame)
-            for j, processor in enumerate(ordered):
-                state = self.processors[processor.name]
-                values[i, j, 1] = self._value(
-                    processor, "mix", frame
-                ) * state.bypass.value(frame)
-                if isinstance(processor, audio_effects.Gain):
-                    values[i, j, 0] = self._value(processor, "gain_db", frame)
-                elif isinstance(processor, audio_effects.SoftClip):
-                    values[i, j, 0] = self._value(processor, "drive", frame)
-                elif isinstance(processor, audio_effects.Filter):
-                    if (node_filter_values := filter_values[j]) is None:
-                        node_filter_values = np.zeros(
-                            (frames, len(processor.filters), 2)
-                        )
-                        filter_values[j] = node_filter_values
-                    node_filter_values[i] = [
-                        [
-                            self._value(processor, f"{f.name}-cutoff_hz", frame),
-                            self._value(processor, f"{f.name}-q", frame),
-                        ]
-                        for f in processor.filters
-                    ]
-        native_filters = []
-        for i, processor in enumerate(ordered):
-            if isinstance(processor, audio_effects.Filter):
-                assert filter_values[i] is not None
-                native_filters.append(
-                    filters.native_inputs(
-                        processor.filters,
-                        self.processors[processor.name].filter_states,
-                        filters.parameters(
-                            processor.filters,
-                            self.definition.sample_rate,
-                            frames,
-                            filter_values[i],
-                            start,
-                        ),
-                    )
-                )
-            else:
-                native_filters.append(None)
-        output_source = (
-            input_indices[graph.output.input]
-            if isinstance(graph.output, audio_effects.InputSource)
-            else processor_indices[graph.output.processor]
-        )
-        output, memories = _native.render_effects(
-            np.stack([input_audio[v.name] for v in graph.inputs]),
-            kinds,
-            sources,
-            values,
-            output_source,
-            self.definition.sample_rate,
-            native_filters,
-            state_floors,
-        )
-        for i, processor in enumerate(ordered):
-            if isinstance(processor, audio_effects.Filter):
-                self.processors[processor.name].filter_states = filters.restored_states(
-                    memories[i]
-                )
-        return output
-
-    def _advance_native_granulator(
-        self,
-        processor: audio_effects.Granulator,
-        input_audio: dict[str, np.ndarray],
-        actions: list[audio_effects.EffectAction],
-        start: int,
-        end: int,
-    ) -> np.ndarray:
-        from . import _native
-
-        state = self.processors[processor.name]
-        granular = state.granulator
-        assert granular is not None
-        frames = end - start
-        values = np.zeros((frames, 7))
-        action_index = 0
-        names = [
-            "duration_seconds",
-            "density_hz",
-            "lookback_seconds",
-            "playback_ratio",
-            "position_jitter_seconds",
-        ]
-        for i in range(frames):
-            frame = start + i
-            while action_index < len(actions) and actions[action_index].tick == frame:
-                self._apply(actions[action_index])
-                action_index += 1
-            self._modulate(frame)
-            values[i, :5] = [self._value(processor, n, frame) for n in names]
-            values[i, 5] = self._value(processor, "mix", frame) * state.bypass.value(
-                frame
-            )
-            values[i, 6] = granular.frozen
-        source = next(iter(input_audio.values()))
-        channels = source.shape[1]
-        rendered = _native.render_granulator(
-            source,
-            values,
-            start,
-            self.definition.sample_rate,
-            max(2, round(processor.history_seconds * self.definition.sample_rate)),
-            processor.maximum_grains,
-            np.asarray(granular.history, dtype=np.float64).reshape(-1, channels),
-            granular.history_start,
-            granular.phase,
-            granular.launch_counter,
-            processor.freeze_crossfade_frames,
-            [np.asarray(g.samples, dtype=np.float64) for g in granular.grains],
-            [g.index for g in granular.grains],
-            [g.gain for g in granular.grains],
-        )
-        (
-            output,
-            history,
-            granular.history_start,
-            granular.phase,
-            granular.launch_counter,
-            grain_samples,
-            grain_indices,
-            grain_gains,
-        ) = rendered
-        granular.history = history.tolist()
-        if granular.frozen:
-            granular.frozen_history = granular.history
-            granular.frozen_start = granular.history_start
-        granular.grains = [
-            GrainState(samples=v.tolist(), index=i, gain=g)
-            for v, i, g in zip(grain_samples, grain_indices, grain_gains, strict=True)
-        ]
-        return output
-
     def snapshot(self) -> EffectSnapshot:
+        self._sync_native()
         return EffectSnapshot(
             definition=self.definition.definition,
             sample_rate=self.definition.sample_rate,
@@ -453,6 +253,11 @@ class OfflineEffects:
         ):
             raise EngineError("Snapshot belongs to different prepared effects")
         snapshot = snapshot.model_copy(deep=True)
+        if self.native_runtime is not None:
+            self.native_runtime.import_state(
+                [snapshot.processors[n].model_dump() for n in self.definition.order],
+                snapshot.frame,
+            )
         self.frame = snapshot.frame
         self.processors = snapshot.processors
         self.ended_inputs = snapshot.ended_inputs
@@ -467,6 +272,17 @@ class OfflineEffects:
     @property
     def drained(self) -> bool:
         return self.stopped_at is not None
+
+    def _sync_native(self) -> None:
+        if self.native_runtime is not None:
+            self.processors = {
+                n: ProcessorState.model_validate(self.processors[n].model_dump() | s)
+                for n, s in zip(
+                    self.definition.order,
+                    self.native_runtime.export_state(),
+                    strict=True,
+                )
+            }
 
     def _apply(self, action: audio_effects.EffectAction) -> None:
         graph = self.definition.definition
@@ -516,7 +332,7 @@ class OfflineEffects:
             granular = state.granulator
             if granular is None:
                 raise ValueError("Freeze requires the granular processor profile")
-            if action.frozen and not granular.frozen:
+            if action.frozen and not granular.frozen and self.native_runtime is None:
                 granular.frozen_history = [list(v) for v in granular.history]
                 granular.frozen_start = granular.history_start
             elif not action.frozen:
@@ -560,6 +376,26 @@ class OfflineEffects:
     ) -> tuple[np.ndarray, bool]:
         graph = self.definition.definition
         processors = {p.name: p for p in graph.processors}
+        if self.native_runtime is not None:
+            assert self.native_parameters is not None
+            for node, name in enumerate(self.definition.order):
+                processor = processors[name]
+                state = self.processors[name]
+                for parameter in state.parameters:
+                    self.native_parameters[
+                        node, _native_parameter(processor, parameter)
+                    ] = self._value(processor, parameter, frame)
+                self.native_parameters[node, 2] = state.bypass.value(frame)
+            values, drained = self.native_runtime.render_frame(
+                [input_audio[i.name][index] for i in graph.inputs],
+                self.native_parameters,
+                [i.name in self.ended_inputs for i in graph.inputs],
+                [
+                    (g := self.processors[n].granulator) is not None and g.frozen
+                    for n in self.definition.order
+                ],
+            )
+            return np.asarray(values, dtype=np.float64), drained
         connections = {(c.processor, c.port): c.source for c in graph.connections}
         audio: dict[str, np.ndarray] = {}
         ended: dict[str, bool] = {}
@@ -631,30 +467,25 @@ class OfflineEffects:
                     "makeup_db",
                 )
             ]
-            if self.backend == "native":
-                gain, reduction = _native.compressor_gain(
-                    peak, parameters, state.reduction_db, self.definition.sample_rate
-                )
+            threshold, ratio, knee, attack, release, makeup = parameters
+            x = 20 * log10(peak) - threshold if peak else -np.inf
+            if x <= -knee / 2:
+                target = 0.0
+            elif x >= knee / 2:
+                target = (1 / ratio - 1) * x
             else:
-                threshold, ratio, knee, attack, release, makeup = parameters
-                x = 20 * log10(peak) - threshold if peak else -np.inf
-                if x <= -knee / 2:
-                    target = 0.0
-                elif x >= knee / 2:
-                    target = (1 / ratio - 1) * x
-                else:
-                    target = (0.5 * (1 / ratio - 1) * knee) * (x / knee + 0.5) ** 2
-                time = attack if target < state.reduction_db else release
-                reduction = (
-                    target
-                    if time == 0
-                    else target
-                    + exp(-1 / (self.definition.sample_rate * time))
-                    * (state.reduction_db - target)
-                )
-                gain = float(np.power(10, (reduction + makeup) / 20))
-                if not np.isfinite(gain) or not np.isfinite(reduction):
-                    raise ValueError("Non-finite compressor gain")
+                target = (0.5 * (1 / ratio - 1) * knee) * (x / knee + 0.5) ** 2
+            time = attack if target < state.reduction_db else release
+            reduction = (
+                target
+                if time == 0
+                else target
+                + exp(-1 / (self.definition.sample_rate * time))
+                * (state.reduction_db - target)
+            )
+            gain = float(np.power(10, (reduction + makeup) / 20))
+            if not np.isfinite(gain) or not np.isfinite(reduction):
+                raise ValueError("Non-finite compressor gain")
             state.reduction_db = reduction
             return _mix(dry, dry * gain, mix), ended["input"]
         if isinstance(processor, audio_effects.Filter):
@@ -964,6 +795,7 @@ def prepare(
     if sample_rate <= 0:
         raise EngineError("Effect sample rate must be positive")
     definition = synth.expand_patch_outputs(definition)
+    layouts = _processor_layouts(definition)
     if tempo_map is None and any(
         g.clock == "beats" for g in definition.envelfos.values()
     ):
@@ -972,7 +804,7 @@ def prepare(
         if isinstance(processor, audio_effects.Filter):
             filters.parameters(processor.filters, sample_rate, 1)
         elif isinstance(processor, audio_effects.ModulatedDelay):
-            _channel_phase_offsets(processor, len(definition.output_channels()))
+            _channel_phase_offsets(processor, len(layouts[processor.name]))
     return PreparedEffects(
         definition=definition,
         sample_rate=sample_rate,
@@ -994,6 +826,8 @@ def native_live_graph(
     np.ndarray,
     np.ndarray,
     list[int],
+    int,
+    list[float],
 ]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
@@ -1009,8 +843,10 @@ def native_live_graph(
     widths = [
         3 + 2 * len(p.filters)
         if isinstance(p, audio_effects.Filter)
+        else 9
+        if isinstance(p, audio_effects.Granulator)
         else 8
-        if isinstance(p, (audio_effects.Granulator, audio_effects.Compressor))
+        if isinstance(p, audio_effects.Compressor)
         else 5
         if isinstance(p, audio_effects.TapDelay)
         else 7
@@ -1068,7 +904,15 @@ def native_live_graph(
                 parameters[node, parameter : parameter + 2] = value
                 response = list(FilterResponse).index(filter_definition.response)
                 filter_rows.extend(
-                    [node, response, parameter, processor.state_floor]
+                    [
+                        node,
+                        response,
+                        parameter,
+                        processor.state_floor,
+                        filter_definition.minimum_hz,
+                        definition.sample_rate / 2 * filter_definition.nyquist_ratio,
+                        int(filter_definition.boundary == FilterBoundary.clamp),
+                    ]
                     for _ in range(filter_definition.stages)
                 )
         elif isinstance(processor, audio_effects.Granulator):
@@ -1080,6 +924,7 @@ def native_live_graph(
                 processor.playback_ratio,
                 processor.position_jitter_seconds,
             ]
+            parameters[node, 8] = processor.maximum_duration_seconds
             granulator_rows.append(
                 [
                     node,
@@ -1136,13 +981,31 @@ def native_live_graph(
         sources,
         parameters,
         output_source,
-        np.asarray(filter_rows, dtype=np.float64).reshape(-1, 4),
+        np.asarray(filter_rows, dtype=np.float64).reshape(-1, 7),
         np.asarray(granulator_rows, dtype=np.int64).reshape(-1, 4),
         np.asarray(tap_delay_rows, dtype=np.int64).reshape(-1, 3),
         np.asarray(modulated_delay_rows, dtype=np.float64).reshape(
             -1, max(channel_widths) + 3
         ),
         channel_widths,
+        next(
+            i
+            for i, v in enumerate(graph.inputs)
+            if isinstance(v.source, audio_effects.MainStream)
+        ),
+        [
+            p.tail_threshold
+            if isinstance(
+                p,
+                (
+                    audio_effects.Filter,
+                    audio_effects.TapDelay,
+                    audio_effects.ModulatedDelay,
+                ),
+            )
+            else 0.0
+            for p in ordered
+        ],
     )
 
 
@@ -1154,22 +1017,6 @@ def configure_native_generators(
     if not graph.bindings:
         return
     parameters = graph.modulation.parameters
-    for processor in graph.processors:
-        if isinstance(processor, audio_effects.Filter):
-            for body in processor.filters:
-                for parameter in parameters:
-                    if (parameter.target.name, parameter.target.parameter) == (
-                        processor.name,
-                        f"{body.name}-cutoff_hz",
-                    ) and not (
-                        body.minimum_hz <= parameter.minimum
-                        and parameter.maximum
-                        <= definition.sample_rate / 2 * body.nyquist_ratio
-                    ):
-                        raise EngineError(
-                            "Native effect cutoff modulation must remain "
-                            "within filter limits"
-                        )
     indices = {(p.target.name, p.target.parameter): i for i, p in enumerate(parameters)}
     prepared = synth._persistent_modulation(
         definition.sample_rate,
@@ -1253,6 +1100,23 @@ def native_live_actions(
                     0,
                 ]
             )
+            continue
+        elif isinstance(action, audio_effects.InputEndAction):
+            rows.append(
+                [
+                    action.tick - start,
+                    2,
+                    next(
+                        i for i, v in enumerate(graph.inputs) if v.name == action.input
+                    ),
+                    0,
+                    0,
+                    0,
+                ]
+            )
+            continue
+        elif isinstance(action, audio_effects.StopAction):
+            rows.append([action.tick - start, 3, 0, 0, 0, 0])
             continue
         else:
             raise EngineError("Unsupported native live effect action")
@@ -1440,32 +1304,6 @@ def _frozen_history_values(
             :, None
         ] * history[offsets[mask]]
     return output
-
-
-def _native_supported(
-    states: dict[str, ProcessorState],
-    graph: audio_effects.EffectGraph,
-    actions: list[audio_effects.EffectAction],
-) -> bool:
-    granular = [p for p in graph.processors if isinstance(p, audio_effects.Granulator)]
-    if any(
-        isinstance(
-            p,
-            (
-                audio_effects.TapDelay,
-                audio_effects.ModulatedDelay,
-                audio_effects.Compressor,
-            ),
-        )
-        for p in graph.processors
-    ):
-        return False
-    if not granular:
-        return True
-    if len(graph.processors) != 1:
-        return False
-    state = states[granular[0].name].granulator
-    return state is not None
 
 
 def _channel_phase_offsets(

@@ -11,7 +11,6 @@ from ufor.control import TempoMap
 from ufor.samples import processing
 
 from enge import _native, effects
-from enge.synth import EngineError
 
 
 def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, float]:
@@ -373,8 +372,8 @@ def test_modulated_callback_failure_is_silent_and_retained(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("minimum,maximum", [(1, 1500), (500, 30000)])
-def test_native_filter_modulation_rejects_ranges_requiring_clamping(
-    minimum: int, maximum: int
+def test_native_filter_modulation_uses_authored_clamping_limits(
+    tmp_path: Path, minimum: int, maximum: int
 ) -> None:
     graph, _, _, _ = modulated_graph("filter")
     raw = graph.model_dump()
@@ -382,8 +381,19 @@ def test_native_filter_modulation_rejects_ranges_requiring_clamping(
         boundary="clamp", minimum_hz=20, nyquist_ratio=0.9
     )
     raw["modulation"]["parameters"][0].update(minimum=minimum, maximum=maximum)
+    raw["modulation"]["routes"][0]["points"] = [
+        {"input": -1, "amount": minimum - 1000},
+        {"input": 1, "amount": maximum - 1000},
+    ]
     prepared = effects.prepare(audio_effects.EffectGraph.model_validate(raw), 48000)
     runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
     runtime.set_effect_graph(*effects.native_live_graph(prepared), 4)
-    with pytest.raises(EngineError, match="within filter limits"):
-        effects.configure_native_generators(runtime, prepared)
+    effects.configure_native_generators(runtime, prepared)
+    onset = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
+    source = native_oscillator_runtime().process_actions(48000, 0, 1, 0, onset)
+    expected = effects.OfflineEffects(prepared).advance({"main": source}, [], 0, 48000)
+    runtime.submit(0, onset)
+    actual = np.empty_like(expected)
+    for start in range(0, 48000, 997):
+        runtime.process_into(actual[start : min(start + 997, 48000)])
+    check_audio(tmp_path / "clamped-filter.wav", actual, expected)

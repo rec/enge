@@ -62,15 +62,15 @@ the shared executor rather than effect-specific oscillator implementations.
 Parameter actions update the base beneath the routes: additive contributions
 are added to that current base, then multiplicative contributions are applied.
 The result must remain within the declared parameter domain and prepared storage.
-Native live filter-cutoff modulation requires its entire declared range to stay
-between the filter's minimum frequency and Nyquist-ratio limit. Preparation
-rejects ranges needing NumPy's boundary clamping instead of rendering them
-differently.
+Filter-cutoff modulation uses the authored boundary policy in both paths:
+`clamp` applies the minimum/Nyquist-ratio limits, while `error` rejects an
+out-of-range cutoff. This also applies to the native callback owner.
 
 Generators start at graph frame zero and continue through bypass and audio tails.
 Ending the main input releases their envelopes/stages; stopping the graph stops
-rendering. Effect instances are independent. A native live graph retains the
-existing action profile, which excludes input-end and stop actions.
+rendering. Effect instances are independent. Native live graphs accept input-end
+and stop actions, release generators when the main input ends, and retain their
+ending/drain state across snapshots.
 
 Beat-clock generators require a caller-owned `TempoMap` passed to
 `effects.prepare(graph, sample_rate, tempo_map)`. The prepared clock is used by
@@ -81,12 +81,16 @@ before callback execution.
 
 ## Verification
 
-The full instrumented suite passed **3,150 tests, with 21 skipped**. The
+The original modulation integration's full instrumented suite passed
+**3,150 tests, with 21 skipped**. The
 [callback audit](live-callback-audit.md) measured zero Rust heap operations in
 8,062 successful and eight failed callbacks. Fifteen focused regressions cover
 the effect integrations, automation, clocks, release/tails, snapshots and
-explicit native filter limits. Audio comparisons write paired 48 kHz WAVs of
+authored filter limits. Audio comparisons write paired 48 kHz WAVs of
 at least one second. These are software checks, not device-deadline qualification.
+
+Later shared-core, lifecycle and portable-state verification is recorded in
+[persistent effects](persistent-effects.md).
 
 ## Additional work beyond the prompt
 

@@ -34,9 +34,11 @@ setting rather than another automated parameter.
 
 The weighted wet read enters the existing feedback recurrence. Feedback remains
 in `[0, 1)`. New stored values below `state_floor` are zeroed in both renderers.
-NumPy input-end retirement still tests the complete history against the declared
-tail threshold. The native live owner retains its existing lifecycle profile;
-native input-end/stop action integration is a separate remaining shared gate.
+Input-end retirement tests the complete history against the declared tail
+threshold. The native core maintains a count of stored values at or above that
+threshold, updating it as each history cell is overwritten; callbacks do not
+rescan the entire delay buffer. Native live input-end and stop actions now use
+the same drain rule and survive snapshot replay.
 
 ## State and verification
 

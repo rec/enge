@@ -196,7 +196,7 @@ impl LiveRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (kinds, sources, parameters, output_source, filters, granulators, tap_delays, modulated_delays, widths, batch_capacity, input_routes=None))]
+    #[pyo3(signature = (kinds, sources, parameters, output_source, filters, granulators, tap_delays, modulated_delays, widths, main_input, tail_thresholds, batch_capacity, input_routes=None))]
     fn set_effect_graph(
         &mut self,
         kinds: Vec<u8>,
@@ -208,6 +208,8 @@ impl LiveRuntime {
         tap_delays: PyReadonlyArray2<'_, i64>,
         modulated_delays: PyReadonlyArray2<'_, f64>,
         widths: Vec<usize>,
+        main_input: usize,
+        tail_thresholds: Vec<f64>,
         batch_capacity: usize,
         input_routes: Option<Vec<Vec<i64>>>,
     ) -> PyResult<()> {
@@ -242,6 +244,8 @@ impl LiveRuntime {
             modulated_delays,
             self.rate,
             widths,
+            main_input,
+            tail_thresholds,
             routes,
             self.maximum_block_frames,
             self.action_capacity,
@@ -689,6 +693,11 @@ impl LiveRuntime {
     fn failed(&self) -> bool {
         self.failed
     }
+
+    #[getter]
+    fn effects_drained(&self) -> bool {
+        self.effects.as_ref().is_some_and(|effects| effects.stopped)
+    }
 }
 
 impl LiveRuntime {
@@ -749,7 +758,7 @@ impl LiveRuntime {
             }
         }
         if let Some(effects) = &mut self.effects {
-            effects.process(&mut self.output_scratch, frames, self.rate, self.frame)?;
+            effects.process(&mut self.output_scratch, frames, self.frame)?;
         }
         if self
             .output_scratch

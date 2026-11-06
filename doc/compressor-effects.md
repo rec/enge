@@ -37,9 +37,8 @@ owner share `src/compressor.rs`; NumPy implements the reference independently.
 
 The offline input-end contract is inherited from the graph: an ended detector
 becomes silence and permits recovery; an ended signal ends the compressor's
-output. Native live input-end/stop actions are still an open shared lifecycle
-gate, recorded in the roadmap inventory. The current native callback profile
-supports parameter, bypass and shared-generator processing, not those actions.
+output. Native live input-end and stop actions use the same contract, including
+independent detector endings. Their state survives native snapshot replay.
 
 ## Verification
 

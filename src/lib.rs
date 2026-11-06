@@ -9,7 +9,6 @@ mod effects;
 mod error;
 mod filters;
 mod fm;
-mod granulator;
 #[cfg(feature = "allocation-audit")]
 mod heap_audit;
 mod lfo;
@@ -194,15 +193,13 @@ fn render<'py>(
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "allocation-audit")]
     module.add_function(wrap_pyfunction!(heap_audit::take_callback_audit, module)?)?;
-    module.add_function(wrap_pyfunction!(effects::render_effects, module)?)?;
-    module.add_function(wrap_pyfunction!(compressor::compressor_gain, module)?)?;
     module.add_function(wrap_pyfunction!(filters::render_filters, module)?)?;
     module.add_function(wrap_pyfunction!(render, module)?)?;
     module.add_function(wrap_pyfunction!(fm::render_fm, module)?)?;
     module.add_function(wrap_pyfunction!(fm::render_graph_fm, module)?)?;
-    module.add_function(wrap_pyfunction!(granulator::render_granulator, module)?)?;
     module.add_function(wrap_pyfunction!(noise::render_noise, module)?)?;
     module.add_class::<live::LiveRuntime>()?;
+    module.add_class::<effects::runtime::EffectRuntime>()?;
     module.add_class::<live::LiveRuntimeSnapshot>()?;
     module.add_class::<queue::ActionQueue>()?;
     module.add_class::<runtime::generators::GeneratorBank>()?;

@@ -11,10 +11,10 @@ shared primitive does not by itself complete every family using it.
 
 | ID | Entry | Accepted design | State |
 | --- | --- | --- | --- |
-| P1 | Delay / chorus / flanger | Moving linear-interpolated reads for modulation; continuous fixed-tap retiming from bounded read-head mixtures. Existing retiring heads finish on schedule; capacity is fade frames plus one. | Interpolation/retiming profile verified: schema `21078ca`, pin `8ab7e48`, 3,156 tests passed / 21 skipped. Shared routing/lifecycle gates below remain open. |
-| P2 | Compressor / ducker | Feed-forward soft knee, linked stereo peak detection, explicit detector input, no look-ahead. | Profile verified: schema `43bfb83`, pin `b4a20b2`, full suite 3,178 passed / 21 skipped, final 13-test focused run, zero callback heap operations. Shared lifecycle gate remains open. See the [contract and CPU measurements](../doc/compressor-effects.md). |
-| P3 | Algorithmic reverb | Bounded eight-line feedback delay network, stereo output, predelay, damping and decay. Mono dry maps to both stereo outputs at minus 3 dB each; stereo dry passes through. | Not implemented; shared persistent native offline renderer is next. |
-| P4 | Waveshaper / saturation | Explicit hard/soft curves, drive, bias, output gain, 4× oversampling, graph latency reporting and dry-path compensation. | Not implemented beyond the existing basic soft clip. |
+| P1 | Delay / chorus / flanger | Moving linear-interpolated reads for modulation; continuous fixed-tap retiming from bounded read-head mixtures. Existing retiring heads finish on schedule; capacity is fade frames plus one. | Selected profile complete: schema `21078ca`, pin `8ab7e48`, interpolation/retiming and shared native lifecycle verified. Shared-runtime suite: 3,210 passed / 21 skipped. |
+| P2 | Compressor / ducker | Feed-forward soft knee, linked stereo peak detection, explicit detector input, no look-ahead. | Selected profile complete: schema `43bfb83`, pin `b4a20b2`, shared native lifecycle verified. Shared-runtime suite: 3,210 passed / 21 skipped, zero callback heap operations. See the [contract and CPU measurements](../doc/compressor-effects.md). |
+| P3 | Algorithmic reverb | Bounded eight-line feedback delay network, stereo output, predelay, damping and decay. Mono dry maps to both stereo outputs at minus 3 dB each; stereo dry passes through. | Schema and numerical specification `9c2336f`, uFor 1,512 tests passed. Renderer pending the shared native foundation. |
+| P4 | Waveshaper / saturation | Explicit hard/soft curves, drive, bias, output gain, 4× oversampling, graph latency reporting and dry-path compensation. Two cascaded 2× stages with 65-tap linear-phase half-band filters and fixed 48-frame latency approved. | Not implemented beyond the existing basic soft clip. |
 | P5 | Phaser | Six-stage phaser using shared enveLFO modulation and bounded feedback. | Not implemented. Auto-wah remains a separate selected family below. |
 | P6 | Rubber Band pitch / time | Reuse and qualify the existing optional offline and finite realtime adapters; preserve their explicit timing/storage boundaries. | Existing adapters; closeout audit pending. |
 
@@ -26,7 +26,8 @@ explicit widths and a separately declared output layout in both live owners:
 3,166 tests passed / 21 skipped, with zero Rust heap operations in the focused
 callback audit. See [the contract](../doc/live-inputs.md).
 Per-instrument effect attachments and their post-effect taps remain unfinished.
-Native input-end/stop handling remains a shared lifecycle gate. On 2026-11-06,
+Native input-end/stop handling is implemented in the shared-runtime
+migration, with release, drain and stop regressions. On 2026-11-06,
 the user approved extending the existing native effect graph into a persistent
 offline renderer, exporting/importing explicit processor state for JSON snapshots
 and replacing the old native whole-graph path. Use this foundation for the next
@@ -116,11 +117,22 @@ the source/callback owner in `src/live.rs`. The callback owner consumes that sam
 core; no DSP algorithm changed in the extraction. The 78 existing effect and live
 regressions pass, with Rust build and lint checks clean.
 
-Next, connect the offline owner to the core and remove the old native whole-graph
-path. Preserve the portable Python ramp/generator state and explicit processor
-state used by JSON snapshots. Verify cross-backend snapshot replay, then use the
-shared processor lifecycle for native input-end, tail drain and stop handling.
-This approved foundation precedes the eight-line reverb and later stateful FX.
+The offline owner is now connected to the core, replacing the
+old whole-graph and separate granular paths. Portable ramps/generators retain
+their Python representation; DSP state has explicit JSON export/import. The
+109-test focused audit passes with zero Rust heap operations in 4,118 successful
+and ten failed callbacks. Cross-backend replay, native exact replay and native
+release/drain/stop are covered. The full ordinary suite, including the explicit
+grain cap, passed 3,210 tests with 21 skipped. Six sequential finite CPU
+measurements recorded zero misses; their
+outliers and limits are retained in the implementation report.
+
+The user approved an explicit `maximum_duration_seconds` cap for granulation.
+uFor commit `08010e5` validates authored duration, actions and modulation domains;
+native slots reserve that output duration independently of source history.
+Slow duration automation, portable snapshots and callback failure/recovery are
+covered in the migration. See [the implementation contract](../doc/persistent-effects.md).
+This foundation precedes the eight-line reverb and later stateful FX.
 
 ## Additional work beyond the prompt
 
