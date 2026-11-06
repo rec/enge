@@ -8,7 +8,8 @@ The offline owner keeps its existing Python action, ramp and generator
 processing. At each output frame it gives the core the declared inputs,
 resolved parameters, input-ending flags and granular freeze state. The core
 retains filter integrators, grain pools, delay buffers/read heads, compressor
-reduction and [reverb network state](reverb-effects.md) between calls. The callback
+reduction, [reverb network state](reverb-effects.md), and
+[waveshaper/compensation histories](waveshaper-effects.md) between calls. The callback
 owner resolves its prepared Rust controls and calls the same processor
 implementation. Callback scratch remains fixed
 after preparation.

@@ -16,6 +16,27 @@ impl EffectRuntime {
         for (node, kind) in self.kinds.iter().enumerate() {
             let value = PyDict::new(py);
             let channels = self.widths[node + inputs];
+            let alignment = PyDict::new(py);
+            for (port, delay) in self.alignment[node].iter().enumerate() {
+                if let Some(delay) = delay {
+                    let state = PyDict::new(py);
+                    state.set_item("history", rows(delay.history.view()))?;
+                    state.set_item("write", delay.write)?;
+                    state.set_item("remaining", delay.remaining)?;
+                    alignment.set_item(port_name(*kind, port), state)?;
+                }
+            }
+            value.set_item("alignment", alignment)?;
+            let controls = PyDict::new(py);
+            for (parameter, delay) in self.control_delays[node].iter().enumerate() {
+                if let Some(delay) = delay {
+                    let state = PyDict::new(py);
+                    state.set_item("history", &delay.history)?;
+                    state.set_item("write", delay.write)?;
+                    controls.set_item(parameter.to_string(), state)?;
+                }
+            }
+            value.set_item("control_delays", controls)?;
             match kind {
                 2 => {
                     let mut filters = Vec::new();
@@ -73,6 +94,25 @@ impl EffectRuntime {
                     }
                     state.set_item("grains", grains)?;
                     value.set_item("granulator", state)?;
+                }
+                4 => {
+                    let shaper = self.waveshapers[node]
+                        .as_ref()
+                        .expect("prepared waveshaper");
+                    let state = PyDict::new(py);
+                    state.set_item(
+                        "histories",
+                        shaper
+                            .histories
+                            .iter()
+                            .map(|v| rows(v.view()))
+                            .collect::<Vec<_>>(),
+                    )?;
+                    state.set_item("writes", shaper.writes)?;
+                    state.set_item("dry_history", rows(shaper.dry_history.view()))?;
+                    state.set_item("dry_write", shaper.dry_write)?;
+                    state.set_item("remaining", shaper.remaining)?;
+                    value.set_item("waveshaper", state)?;
                 }
                 5 | 8 => {
                     let delay = self.tap_delays[node].as_ref().expect("prepared tap delay");
@@ -134,6 +174,61 @@ impl EffectRuntime {
         let inputs = self.input_routes.len();
         for (node, (kind, value)) in self.kinds.iter().zip(&values).enumerate() {
             let channels = self.widths[node + inputs];
+            let controls = field(value, "control_delays")?;
+            let controls = controls.cast::<PyDict>()?;
+            if controls.len()
+                != snapshot.control_delays[node]
+                    .iter()
+                    .filter(|v| v.is_some())
+                    .count()
+            {
+                return Err(PyValueError::new_err(
+                    "Invalid control compensation snapshot",
+                ));
+            }
+            for (parameter, delay) in snapshot.control_delays[node].iter_mut().enumerate() {
+                if let Some(delay) = delay {
+                    let state = field(controls, &parameter.to_string())?;
+                    let state = state.cast::<PyDict>()?;
+                    let history: Vec<f64> = field(state, "history")?.extract()?;
+                    let write: usize = field(state, "write")?.extract()?;
+                    if history.len() != delay.history.len()
+                        || history.iter().any(|value| !value.is_finite())
+                        || write >= history.len()
+                    {
+                        return Err(PyValueError::new_err("Invalid control compensation clock"));
+                    }
+                    delay.history = history;
+                    delay.write = write;
+                }
+            }
+            let alignment = field(value, "alignment")?;
+            let alignment = alignment.cast::<PyDict>()?;
+            if alignment.len()
+                != snapshot.alignment[node]
+                    .iter()
+                    .filter(|v| v.is_some())
+                    .count()
+            {
+                return Err(PyValueError::new_err("Invalid effect alignment snapshot"));
+            }
+            for (port, delay) in snapshot.alignment[node].iter_mut().enumerate() {
+                if let Some(delay) = delay {
+                    let state = field(alignment, port_name(*kind, port))?;
+                    let state = state.cast::<PyDict>()?;
+                    restore_rows(
+                        delay.history.view_mut(),
+                        field(state, "history")?.extract()?,
+                    )?;
+                    delay.write = field(state, "write")?.extract()?;
+                    delay.remaining = field(state, "remaining")?.extract()?;
+                    if delay.write >= delay.history.nrows()
+                        || delay.remaining > delay.history.nrows()
+                    {
+                        return Err(PyValueError::new_err("Invalid effect alignment clock"));
+                    }
+                }
+            }
             match kind {
                 2 => {
                     let values: Vec<Bound<'_, PyDict>> =
@@ -220,6 +315,33 @@ impl EffectRuntime {
                         )?;
                         grain.active = true;
                         granular.order[index] = index;
+                    }
+                }
+                4 => {
+                    let state = field(value, "waveshaper")?;
+                    let state = state.cast::<PyDict>()?;
+                    let shaper = snapshot.waveshapers[node]
+                        .as_mut()
+                        .expect("prepared waveshaper");
+                    let histories: Vec<Vec<Vec<f64>>> = field(state, "histories")?.extract()?;
+                    if histories.len() != 4 {
+                        return Err(PyValueError::new_err("Invalid waveshaper histories"));
+                    }
+                    for (target, history) in shaper.histories.iter_mut().zip(histories) {
+                        restore_rows(target.view_mut(), history)?;
+                    }
+                    restore_rows(
+                        shaper.dry_history.view_mut(),
+                        field(state, "dry_history")?.extract()?,
+                    )?;
+                    shaper.writes = field(state, "writes")?.extract()?;
+                    shaper.dry_write = field(state, "dry_write")?.extract()?;
+                    shaper.remaining = field(state, "remaining")?.extract()?;
+                    if shaper.writes.iter().any(|write| *write >= 65)
+                        || shaper.dry_write >= 48
+                        || shaper.remaining > 96
+                    {
+                        return Err(PyValueError::new_err("Invalid waveshaper clock"));
                     }
                 }
                 5 | 8 => {
@@ -363,6 +485,15 @@ impl EffectRuntime {
 
 fn rows(values: ArrayView2<'_, f64>) -> Vec<Vec<f64>> {
     values.rows().into_iter().map(|row| row.to_vec()).collect()
+}
+
+fn port_name(kind: u8, port: usize) -> &'static str {
+    match (kind, port) {
+        (1, 0) => "carrier",
+        (1, 1) => "modulator",
+        (7, 1) => "detector",
+        _ => "input",
+    }
 }
 
 fn restore_rows(mut target: ArrayViewMut2<'_, f64>, values: Vec<Vec<f64>>) -> PyResult<()> {

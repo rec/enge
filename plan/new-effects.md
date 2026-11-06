@@ -10,8 +10,8 @@ selection/deferment language below records the original catalogue rationale;
 it does not leave the selected families outside the current scope.
 
 This is a selection catalogue, not a list of wholly missing processors. Existing
-implementations include gain, resonant filtering, multiply, granulation, soft
-clipping, tap delay, modulated delay, linked peak compression and eight-line
+implementations include gain, resonant filtering, multiply, granulation, 4×
+oversampled waveshaping, tap delay, modulated delay, linked peak compression and eight-line
 algorithmic reverb. Optional Rubber Band offline and finite
 realtime adapters also exist. Check `enge/effects.py`, `enge/rubberband.py` and
 their tests before selecting a new slice. The descriptions below retain design

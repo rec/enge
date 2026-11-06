@@ -2,6 +2,7 @@
 
 mod reverb;
 mod state;
+mod waveshaper;
 
 use crate::amplitude::frame_time;
 use crate::compressor;
@@ -18,6 +19,7 @@ use pyo3::types::PyDict;
 use reverb::Reverb;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::f64::consts::PI;
+use waveshaper::Waveshaper;
 
 #[pyclass(unsendable)]
 pub(crate) struct EffectRuntime {
@@ -45,6 +47,12 @@ pub(crate) struct EffectRuntime {
     modulated_delays: Vec<Option<LiveModulatedDelay>>,
     reductions: Vec<f64>,
     reverbs: Vec<Option<Reverb>>,
+    waveshapers: Vec<Option<Waveshaper>>,
+    alignment: Vec<[Option<Alignment>; 2]>,
+    port_values: Array3<f64>,
+    port_ended: Array2<bool>,
+    dry: Vec<f64>,
+    control_delays: Vec<Vec<Option<ControlDelay>>>,
     values: Array2<f64>,
     wet: Vec<f64>,
     pub(crate) producer: Producer<ActionBatch>,
@@ -88,6 +96,22 @@ pub(crate) struct EffectSnapshot {
     modulated_delays: Vec<Option<LiveModulatedDelay>>,
     reductions: Vec<f64>,
     reverbs: Vec<Option<Reverb>>,
+    waveshapers: Vec<Option<Waveshaper>>,
+    alignment: Vec<[Option<Alignment>; 2]>,
+    control_delays: Vec<Vec<Option<ControlDelay>>>,
+}
+
+#[derive(Clone)]
+struct ControlDelay {
+    history: Vec<f64>,
+    write: usize,
+}
+
+#[derive(Clone)]
+struct Alignment {
+    history: Array2<f64>,
+    write: usize,
+    remaining: usize,
 }
 
 #[derive(Clone)]
@@ -231,7 +255,7 @@ impl EffectRuntime {
         }
         for (node, frozen) in frozen.into_iter().enumerate() {
             if self.kinds[node] == 3 {
-                self.set_frozen(node, frozen);
+                self.resolved[[node, 9]] = f64::from(frozen);
             }
         }
         self.process_nodes(self.rate)?;
@@ -369,6 +393,48 @@ impl EffectRuntime {
                 )?;
             }
         }
+        let mut latencies = vec![0; nodes + inputs];
+        let mut alignment = Vec::with_capacity(nodes);
+        let mut waveshapers = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for node in 0..nodes {
+            let ports = if matches!(kinds[node], 1 | 7) { 2 } else { 1 };
+            let arrival = (0..ports)
+                .map(|port| latencies[sources[[node, port]] as usize])
+                .max()
+                .unwrap_or(0);
+            let mut delays = std::array::from_fn(|_| None);
+            for (port, delay) in delays.iter_mut().enumerate().take(ports) {
+                let source = sources[[node, port]] as usize;
+                let frames = arrival - latencies[source];
+                if frames > 0 {
+                    *delay = Some(Alignment {
+                        history: Array2::zeros((frames, widths[source])),
+                        write: 0,
+                        remaining: frames,
+                    });
+                }
+            }
+            alignment.push(delays);
+            latencies[node + inputs] =
+                arrival
+                    .checked_add(if kinds[node] == 4 { 48 } else { 0 })
+                    .ok_or_else(|| PyValueError::new_err("Effect latency overflow"))?;
+            if kinds[node] == 4 {
+                let values = parameters.as_array();
+                if parameters.shape()[1] < 71
+                    || values[[node, 0]] <= 0.0
+                    || !matches!(values[[node, 5]], 0.0 | 1.0)
+                {
+                    return Err(PyValueError::new_err("Invalid waveshaper profile"));
+                }
+                let coefficients = std::array::from_fn(|i| values[[node, 6 + i]]);
+                waveshapers[node] = Some(Waveshaper::new(
+                    widths[node + inputs],
+                    values[[node, 5]] == 1.0,
+                    coefficients,
+                ));
+            }
+        }
         let mut filter_rows = Vec::with_capacity(filters.shape()[0]);
         for row in filters.as_array().rows() {
             let node = row[0] as usize;
@@ -417,7 +483,7 @@ impl EffectRuntime {
                 || maximum_grains == 0
                 || freeze_crossfade_frames == 0
                 || prepared_granulators[node].is_some()
-                || parameters.ncols() < 9
+                || parameters.ncols() < 10
             {
                 return Err(PyValueError::new_err("Invalid live granulator"));
             }
@@ -560,6 +626,45 @@ impl EffectRuntime {
         {
             return Err(PyValueError::new_err("Missing live modulated delay setup"));
         }
+        let control_delays = (0..nodes)
+            .map(|node| {
+                let arrival = latencies[node + inputs] - if kinds[node] == 4 { 48 } else { 0 };
+                (0..parameters.ncols())
+                    .map(|parameter| {
+                        let dynamic = matches!(parameter, 1 | 2)
+                            || match kinds[node] {
+                                0 => parameter == 0,
+                                2 => filter_rows.iter().any(|filter| {
+                                    filter.node == node
+                                        && (parameter == filter.parameter
+                                            || parameter == filter.parameter + 1)
+                                }),
+                                3 => (3..=7).contains(&parameter) || parameter == 9,
+                                4 => matches!(parameter, 0 | 3 | 4),
+                                5 => matches!(parameter, 0 | 3),
+                                6 => matches!(parameter, 0 | 3..=5),
+                                7 => matches!(parameter, 0 | 3..=7),
+                                8 => matches!(parameter, 0 | 3 | 5),
+                                _ => false,
+                            };
+                        let frames = arrival
+                            + if kinds[node] == 4 {
+                                if matches!(parameter, 0 | 3) { 24 } else { 48 }
+                            } else {
+                                0
+                            };
+                        if dynamic && frames > 0 {
+                            Some(ControlDelay {
+                                history: vec![parameters[[node, parameter]]; frames],
+                                write: 0,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
         let (producer, consumer) = RingBuffer::new(batch_capacity);
         Ok(Self {
             rate,
@@ -569,6 +674,12 @@ impl EffectRuntime {
             stopped: false,
             reductions: vec![0.0; nodes],
             reverbs,
+            waveshapers,
+            alignment,
+            port_values: Array3::zeros((nodes, 2, channels)),
+            port_ended: Array2::from_elem((nodes, 2), false),
+            dry: vec![0.0; channels],
+            control_delays,
             kinds,
             inputs: Array3::zeros((inputs, maximum_block_frames, channels)),
             input_routes,
@@ -688,16 +799,59 @@ impl EffectRuntime {
     fn process_nodes(&mut self, rate: f64) -> NativeResult<()> {
         let inputs = self.input_routes.len();
         for node in 0..self.kinds.len() {
+            for (parameter, delay) in self.control_delays[node].iter_mut().enumerate() {
+                if let Some(delay) = delay {
+                    std::mem::swap(
+                        &mut self.resolved[[node, parameter]],
+                        &mut delay.history[delay.write],
+                    );
+                    delay.write = (delay.write + 1) % delay.history.len();
+                }
+            }
             let channels = self.widths[node + inputs];
             let first = self.sources[[node, 0]] as usize;
+            let ports = if matches!(self.kinds[node], 1 | 7) {
+                2
+            } else {
+                1
+            };
+            for port in 0..ports {
+                let source = self.sources[[node, port]] as usize;
+                self.port_ended[[node, port]] = self.ended[source];
+                if let Some(delay) = &mut self.alignment[node][port] {
+                    self.port_ended[[node, port]] &= delay.remaining == 0;
+                    for channel in 0..self.widths[source] {
+                        self.port_values[[node, port, channel]] =
+                            delay.history[[delay.write, channel]];
+                        delay.history[[delay.write, channel]] = self.values[[source, channel]];
+                    }
+                    delay.write = (delay.write + 1) % delay.history.nrows();
+                    delay.remaining = if self.ended[source] {
+                        delay.remaining.saturating_sub(1)
+                    } else {
+                        delay.history.nrows()
+                    };
+                } else {
+                    for channel in 0..self.widths[source] {
+                        self.port_values[[node, port, channel]] = self.values[[source, channel]];
+                    }
+                }
+            }
             let authored_mix = self.resolved[[node, 1]];
             let bypass = self.resolved[[node, 2]];
             if !(0.0..=1.0).contains(&authored_mix) || !(0.0..=1.0).contains(&bypass) {
                 return Err(NativeError::Message("Invalid live effect mix"));
             }
             let mix = authored_mix * bypass;
+            let mut waveshaper_drained = false;
             for channel in 0..channels {
-                self.wet[channel] = self.values[[first, channel]];
+                let value = if self.kinds[node] == 8 && self.widths[first] == 1 {
+                    self.port_values[[node, 0, 0]] / std::f64::consts::SQRT_2
+                } else {
+                    self.port_values[[node, 0, channel]]
+                };
+                self.dry[channel] = value;
+                self.wet[channel] = value;
             }
             match self.kinds[node] {
                 0 => {
@@ -707,13 +861,17 @@ impl EffectRuntime {
                     }
                 }
                 1 => {
-                    let second = self.sources[[node, 1]] as usize;
                     for (channel, value) in self.wet[..channels].iter_mut().enumerate() {
-                        *value *= self.values[[second, channel]];
+                        *value *= self.port_values[[node, 1, channel]];
                     }
                 }
                 2 => self.process_filters(node, channels, rate)?,
                 3 => {
+                    let frozen = self.resolved[[node, 9]];
+                    if !matches!(frozen, 0.0 | 1.0) {
+                        return Err(NativeError::Message("Invalid granular freeze value"));
+                    }
+                    self.set_frozen(node, frozen == 1.0);
                     let parameters = [
                         self.resolved[[node, 3]],
                         self.resolved[[node, 4]],
@@ -728,25 +886,28 @@ impl EffectRuntime {
                             &mut self.wet[..channels],
                             parameters,
                             rate,
-                            self.ended[first],
+                            self.port_ended[[node, 0]],
                         )?;
                 }
                 4 => {
-                    let drive = self.resolved[[node, 0]];
-                    if drive <= 0.0 {
-                        return Err(NativeError::Message("Invalid live soft clip drive"));
-                    }
-                    let normalization = drive.tanh();
-                    for value in &mut self.wet[..channels] {
-                        *value = (drive * *value).tanh() / normalization;
-                    }
+                    waveshaper_drained = self.waveshapers[node]
+                        .as_mut()
+                        .expect("prepared waveshaper")
+                        .process(
+                            &mut self.dry[..channels],
+                            &mut self.wet[..channels],
+                            self.resolved[[node, 0]],
+                            self.resolved[[node, 3]],
+                            self.resolved[[node, 4]],
+                            self.port_ended[[node, 0]],
+                        )?;
                 }
                 5 => self.process_tap_delay(node, channels, rate)?,
                 6 => self.process_modulated_delay(node, channels, rate)?,
                 7 => {
                     let detector = self.sources[[node, 1]] as usize;
                     let peak = (0..self.widths[detector])
-                        .map(|channel| self.values[[detector, channel]].abs())
+                        .map(|channel| self.port_values[[node, 1, channel]].abs())
                         .fold(0.0, f64::max);
                     let (gain, reduction) = compressor::gain(
                         peak,
@@ -768,7 +929,7 @@ impl EffectRuntime {
                 }
                 _ => self.process_reverb(node, first, rate)?,
             }
-            let drained = self.ended[first]
+            let drained = self.port_ended[[node, 0]]
                 && match self.kinds[node] {
                     2 => self
                         .filter_rows
@@ -786,6 +947,7 @@ impl EffectRuntime {
                     3 => self.granulators[node]
                         .as_ref()
                         .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
+                    4 => waveshaper_drained,
                     5 => self.tap_delays[node]
                         .as_ref()
                         .is_some_and(|delay| delay.non_silent == 0),
@@ -810,12 +972,7 @@ impl EffectRuntime {
                 self.values[[node + inputs, channel]] = if drained {
                     0.0
                 } else {
-                    let dry = if self.kinds[node] == 8 && self.widths[first] == 1 {
-                        self.values[[first, 0]] / std::f64::consts::SQRT_2
-                    } else {
-                        self.values[[first, channel]]
-                    };
-                    (1.0 - mix) * dry + mix * self.wet[channel]
+                    (1.0 - mix) * self.dry[channel] + mix * self.wet[channel]
                 };
             }
         }
@@ -863,7 +1020,7 @@ impl EffectRuntime {
             {
                 return Err(NativeError::Message("Invalid live granulator freeze"));
             }
-            self.set_frozen(node, action[4] == 1.0);
+            self.parameters[[node, 9]] = action[4];
             return Ok(());
         }
         if kind != 0 || action[3] != parameter as f64 || parameter >= self.parameters.ncols() {
@@ -1026,9 +1183,9 @@ impl EffectRuntime {
         let mut delayed = [0.0; 2];
         for (channel, sample) in delayed.iter_mut().enumerate() {
             let dry = if self.widths[input] == 1 {
-                self.values[[input, 0]] / std::f64::consts::SQRT_2
+                self.port_values[[node, 0, 0]] / std::f64::consts::SQRT_2
             } else {
-                self.values[[input, channel]]
+                self.port_values[[node, 0, channel]]
             };
             delay.non_silent -=
                 usize::from(delay.history[[delay.write, channel]].abs() >= threshold);
@@ -1153,6 +1310,9 @@ impl EffectRuntime {
             modulated_delays: self.modulated_delays.clone(),
             reductions: self.reductions.clone(),
             reverbs: self.reverbs.clone(),
+            waveshapers: self.waveshapers.clone(),
+            alignment: self.alignment.clone(),
+            control_delays: self.control_delays.clone(),
         }
     }
 
@@ -1176,6 +1336,15 @@ impl EffectRuntime {
             || self.granulators.len() != snapshot.granulators.len()
             || self.tap_delays.len() != snapshot.tap_delays.len()
             || self.modulated_delays.len() != snapshot.modulated_delays.len()
+            || self
+                .waveshapers
+                .iter()
+                .zip(&snapshot.waveshapers)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
             || self
                 .reverbs
                 .iter()
@@ -1249,6 +1418,9 @@ impl EffectRuntime {
         self.modulated_delays.clone_from(&snapshot.modulated_delays);
         self.reductions.clone_from(&snapshot.reductions);
         self.reverbs.clone_from(&snapshot.reverbs);
+        self.waveshapers.clone_from(&snapshot.waveshapers);
+        self.alignment.clone_from(&snapshot.alignment);
+        self.control_delays.clone_from(&snapshot.control_delays);
         self.ended.clone_from(&snapshot.ended);
         self.stopped = snapshot.stopped;
         Ok(())

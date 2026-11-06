@@ -13,8 +13,9 @@ from ufor.control import TempoMap
 from ufor.oscillator import Waveform
 from ufor.samples.processing import FilterBoundary, FilterResponse
 
-from . import _native, filters, synth
+from . import _native, filters, synth, waveshaper
 from .synth import EngineError
+from .waveshaper import WaveshaperState
 
 
 class ParameterRamp(BaseModel):
@@ -80,6 +81,17 @@ class ModulatedDelayState(DelayState):
     phase: float = 0
 
 
+class AlignmentState(DelayState):
+    remaining: int = Field(ge=0)
+
+
+class ControlDelayState(BaseModel):
+    history: list[float]
+    write: int = 0
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class ReverbState(BaseModel):
     predelay: TapDelayState
     lines: list[list[float]]
@@ -98,6 +110,10 @@ class ProcessorState(BaseModel):
     tap_delay: TapDelayState | None = None
     modulated_delay: ModulatedDelayState | None = None
     reverb: ReverbState | None = None
+    waveshaper: WaveshaperState | None = None
+    alignment: dict[str, AlignmentState] = Field(default_factory=dict)
+    control_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
+    freeze_target: bool = False
     reduction_db: float = 0.0
     ended_at: int | None = None
 
@@ -123,6 +139,7 @@ class PreparedEffects(BaseModel, frozen=True):
     sample_rate: int = Field(gt=0)
     order: list[str]
     channels: list[str]
+    latency_frames: int = Field(ge=0)
     tempo_map: TempoMap | None = None
 
 
@@ -146,6 +163,57 @@ class OfflineEffects:
             p.name: _initial_state(p, len(layouts[p.name]), self.definition.sample_rate)
             for p in definition.definition.processors
         }
+        latencies = definition.definition.latencies()
+        inputs = {i.name: i.channels for i in definition.definition.inputs}
+        connections = {
+            (c.processor, c.port): c.source for c in definition.definition.connections
+        }
+        for processor in definition.definition.processors:
+            ports = {
+                p: connections[(processor.name, p)]
+                for p in audio_effects.processor_ports(processor)
+            }
+            delays = {
+                p: 0
+                if isinstance(s, audio_effects.InputSource)
+                else latencies[s.processor]
+                for p, s in ports.items()
+            }
+            arrival = max(delays.values())
+            self.processors[processor.name].alignment = {
+                p: AlignmentState(
+                    history=[
+                        [0.0]
+                        * len(
+                            inputs[s.input]
+                            if isinstance(s, audio_effects.InputSource)
+                            else layouts[s.processor]
+                        )
+                        for _ in range(arrival - delays[p])
+                    ],
+                    remaining=arrival - delays[p],
+                )
+                for p, s in ports.items()
+                if delays[p] < arrival
+            }
+            state = self.processors[processor.name]
+            commands = [("freeze", 0.0)] if state.granulator is not None else []
+            for name, value in (
+                [(n, r.value(0)) for n, r in state.parameters.items()]
+                + [("bypass", 1.0)]
+                + commands
+            ):
+                index = 2 if name == "bypass" else _native_parameter(processor, name)
+                frames = (
+                    arrival + (24 if name in {"drive", "bias"} else 48)
+                    if isinstance(processor, audio_effects.Waveshaper)
+                    else arrival
+                )
+                if frames:
+                    state.control_delays[str(index)] = ControlDelayState(
+                        history=[value] * frames
+                    )
+        self.waveshaper_coefficients = np.asarray(waveshaper.halfband_coefficients())
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
             {},
@@ -165,6 +233,7 @@ class OfflineEffects:
             ),
         )
         self.modulated: dict[tuple[str, str], float] = {}
+        self.delayed: dict[tuple[str, str], float] = {}
         self.native_runtime: _native.EffectRuntime | None = None
         self.native_parameters: np.ndarray | None = None
         if backend == "native":
@@ -279,6 +348,7 @@ class OfflineEffects:
         self.controls.patches = snapshot.patches
         self.controls.graphs = snapshot.graphs
         self.modulated = {}
+        self.delayed = {}
 
     @property
     def drained(self) -> bool:
@@ -343,12 +413,7 @@ class OfflineEffects:
             granular = state.granulator
             if granular is None:
                 raise ValueError("Freeze requires the granular processor profile")
-            if action.frozen and not granular.frozen and self.native_runtime is None:
-                granular.frozen_history = [list(v) for v in granular.history]
-                granular.frozen_start = granular.history_start
-            elif not action.frozen:
-                granular.frozen_history = []
-            granular.frozen = action.frozen
+            state.freeze_target = action.frozen
         else:
             raise ValueError("Unknown effect action")
 
@@ -377,9 +442,12 @@ class OfflineEffects:
     def _value(
         self, processor: audio_effects.Processor, name: str, frame: int
     ) -> float:
-        return self.modulated.get(
+        return self.delayed.get(
             (processor.name, name),
-            self.processors[processor.name].parameters[name].value(frame),
+            self.modulated.get(
+                (processor.name, name),
+                self.processors[processor.name].parameters[name].value(frame),
+            ),
         )
 
     def _process_frame(
@@ -387,6 +455,7 @@ class OfflineEffects:
     ) -> tuple[np.ndarray, bool]:
         graph = self.definition.definition
         processors = {p.name: p for p in graph.processors}
+        self.delayed.clear()
         if self.native_runtime is not None:
             assert self.native_parameters is not None
             for node, name in enumerate(self.definition.order):
@@ -401,12 +470,33 @@ class OfflineEffects:
                 [input_audio[i.name][index] for i in graph.inputs],
                 self.native_parameters,
                 [i.name in self.ended_inputs for i in graph.inputs],
-                [
-                    (g := self.processors[n].granulator) is not None and g.frozen
-                    for n in self.definition.order
-                ],
+                [self.processors[n].freeze_target for n in self.definition.order],
             )
             return np.asarray(values, dtype=np.float64), drained
+        for name, state in self.processors.items():
+            processor = processors[name]
+            parameters = [*state.parameters, "bypass"]
+            if state.granulator is not None:
+                parameters.append("freeze")
+            for parameter in parameters:
+                parameter_index = (
+                    2
+                    if parameter == "bypass"
+                    else _native_parameter(processor, parameter)
+                )
+                if (
+                    delay := state.control_delays.get(str(parameter_index))
+                ) is not None:
+                    value = (
+                        state.bypass.value(frame)
+                        if parameter == "bypass"
+                        else float(state.freeze_target)
+                        if parameter == "freeze"
+                        else self._value(processor, parameter, frame)
+                    )
+                    self.delayed[(name, parameter)] = delay.history[delay.write]
+                    delay.history[delay.write] = value
+                    delay.write = (delay.write + 1) % len(delay.history)
         connections = {(c.processor, c.port): c.source for c in graph.connections}
         audio: dict[str, np.ndarray] = {}
         ended: dict[str, bool] = {}
@@ -431,6 +521,17 @@ class OfflineEffects:
                 else:
                     ports[port] = processor_audio[source.processor]
                     port_ended[port] = processor_ended[source.processor]
+                if (delay := self.processors[name].alignment.get(port)) is not None:
+                    value = ports[port]
+                    ports[port] = np.asarray(delay.history[delay.write])
+                    delay.history[delay.write] = value.tolist()
+                    delay.write = (delay.write + 1) % len(delay.history)
+                    incoming_ended = port_ended[port]
+                    port_ended[port] = incoming_ended and delay.remaining == 0
+                    if incoming_ended:
+                        delay.remaining = max(0, delay.remaining - 1)
+                    else:
+                        delay.remaining = len(delay.history)
             processor_audio[name], processor_ended[name] = self._processor_frame(
                 processor, ports, port_ended, frame
             )
@@ -450,16 +551,26 @@ class OfflineEffects:
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
         authored_mix = self._value(processor, "mix", frame)
-        mix = authored_mix * state.bypass.value(frame)
+        mix = authored_mix * self.delayed.get(
+            (processor.name, "bypass"), state.bypass.value(frame)
+        )
         if isinstance(processor, audio_effects.Gain):
             dry = ports["input"]
             wet = dry * pow(10, self._value(processor, "gain_db", frame) / 20)
             return _mix(dry, wet, mix), ended["input"]
-        if isinstance(processor, audio_effects.SoftClip):
-            dry = ports["input"]
-            drive = self._value(processor, "drive", frame)
-            wet = np.tanh(drive * dry) / np.tanh(drive)
-            return _mix(dry, wet, mix), ended["input"]
+        if isinstance(processor, audio_effects.Waveshaper):
+            assert state.waveshaper is not None
+            dry, wet, drained = waveshaper.process(
+                state.waveshaper,
+                ports["input"],
+                self._value(processor, "drive", frame),
+                self._value(processor, "bias", frame),
+                self._value(processor, "output_gain_db", frame),
+                processor.curve == "hard",
+                self.waveshaper_coefficients,
+                ended["input"],
+            )
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, audio_effects.Multiply):
             dry = ports["carrier"]
             wet = dry * ports["modulator"]
@@ -611,6 +722,17 @@ class OfflineEffects:
             )
         if isinstance(processor, audio_effects.Granulator):
             dry = ports["input"]
+            granular = state.granulator
+            assert granular is not None
+            frozen = bool(
+                self.delayed.get((processor.name, "freeze"), float(state.freeze_target))
+            )
+            if frozen and not granular.frozen:
+                granular.frozen_history = [list(v) for v in granular.history]
+                granular.frozen_start = granular.history_start
+            elif not frozen:
+                granular.frozen_history = []
+            granular.frozen = frozen
             wet = self._granulator_frame(processor, state, dry, frame, ended["input"])
             granular = state.granulator
             assert granular is not None
@@ -850,6 +972,11 @@ def prepare(
         sample_rate=sample_rate,
         order=definition.order(),
         channels=definition.output_channels(),
+        latency_frames=(
+            0
+            if isinstance(definition.output, audio_effects.InputSource)
+            else definition.latencies()[definition.output.processor]
+        ),
         tempo_map=tempo_map,
     )
 
@@ -883,10 +1010,12 @@ def native_live_graph(
     widths = [
         3 + 2 * len(p.filters)
         if isinstance(p, audio_effects.Filter)
-        else 9
+        else 10
         if isinstance(p, audio_effects.Granulator)
         else 16
         if isinstance(p, audio_effects.Reverb)
+        else 71
+        if isinstance(p, audio_effects.Waveshaper)
         else 8
         if isinstance(p, audio_effects.Compressor)
         else 5
@@ -923,9 +1052,15 @@ def native_live_graph(
             parameters[node, 0] = processor.gain_db
         elif isinstance(processor, audio_effects.Multiply):
             kinds.append(1)
-        elif isinstance(processor, audio_effects.SoftClip):
+        elif isinstance(processor, audio_effects.Waveshaper):
             kinds.append(4)
-            parameters[node, 0] = processor.drive
+            parameters[node, [0, 3, 4, 5]] = [
+                processor.drive,
+                processor.bias,
+                processor.output_gain_db,
+                int(processor.curve == "hard"),
+            ]
+            parameters[node, 6:71] = waveshaper.halfband_coefficients()
         elif isinstance(processor, audio_effects.Compressor):
             kinds.append(7)
             parameters[node, [0, 3, 4, 5, 6, 7]] = [
@@ -1233,8 +1368,12 @@ def _initial_state(
     filter_states: list[filters.FilterState] = []
     if isinstance(processor, audio_effects.Gain):
         values["gain_db"] = processor.gain_db
-    elif isinstance(processor, audio_effects.SoftClip):
-        values["drive"] = processor.drive
+    elif isinstance(processor, audio_effects.Waveshaper):
+        values.update(
+            drive=processor.drive,
+            bias=processor.bias,
+            output_gain_db=processor.output_gain_db,
+        )
     elif isinstance(processor, audio_effects.Compressor):
         values.update(
             threshold_db=processor.threshold_db,
@@ -1282,6 +1421,9 @@ def _initial_state(
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        waveshaper=waveshaper.initial_state(channels)
+        if isinstance(processor, audio_effects.Waveshaper)
+        else None,
         granulator=(
             GranulatorState()
             if isinstance(processor, audio_effects.Granulator)
@@ -1482,8 +1624,10 @@ def _reverb_coefficients(
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
     if name == "mix":
         return 1
-    if isinstance(processor, (audio_effects.Gain, audio_effects.SoftClip)):
+    if isinstance(processor, audio_effects.Gain):
         return 0
+    if isinstance(processor, audio_effects.Waveshaper):
+        return {"drive": 0, "bias": 3, "output_gain_db": 4}[name]
     if isinstance(processor, audio_effects.Compressor):
         return {
             "threshold_db": 0,
@@ -1500,6 +1644,8 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
             n for f in processor.filters for n in (f"{f.name}-cutoff_hz", f"{f.name}-q")
         ].index(name)
     if isinstance(processor, audio_effects.Granulator):
+        if name == "freeze":
+            return 9
         return 3 + [
             "duration_seconds",
             "density_hz",

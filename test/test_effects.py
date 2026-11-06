@@ -30,17 +30,17 @@ def gain_graph(
     )
 
 
-def soft_clip_graph(maximum_block_frames: int = 48000) -> audio_effects.EffectGraph:
+def waveshaper_graph(maximum_block_frames: int = 48000) -> audio_effects.EffectGraph:
     return effects.serial_graph(
         audio_effects.AttachmentScope.voice,
         graph_input(),
-        [audio_effects.SoftClip(name="clip", drive=2)],
+        [audio_effects.Waveshaper(name="clip", drive=2)],
         maximum_block_frames,
     )
 
 
-def test_soft_clip_matches_native_and_automates_drive(tmp_path: Path) -> None:
-    prepared = effects.prepare(soft_clip_graph(), 48000)
+def test_waveshaper_matches_native_and_automates_drive(tmp_path: Path) -> None:
+    prepared = effects.prepare(waveshaper_graph(), 48000)
     source = np.column_stack([np.linspace(-2, 2, 48000)] * 2)
     action = audio_effects.ParameterAction(
         tick=24000,

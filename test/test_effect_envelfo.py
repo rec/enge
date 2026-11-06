@@ -9,6 +9,7 @@ from test_synth import check_audio
 from ufor import audio_effects
 from ufor.control import TempoMap
 from ufor.samples import processing
+from waveshaper_oracle import waveshaper_audio
 
 from enge import _native, effects
 
@@ -16,7 +17,7 @@ from enge import _native, effects
 def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, float]:
     processors: dict[str, audio_effects.Processor] = {
         "gain": audio_effects.Gain(name="fx", gain_db=-6),
-        "clip": audio_effects.SoftClip(name="fx", drive=2),
+        "clip": audio_effects.Waveshaper(name="fx", drive=2),
         "filter": audio_effects.Filter(
             name="fx",
             filters=[
@@ -208,7 +209,7 @@ def test_effect_patch_retains_slew_and_tempo_clock_across_backends(
     start_action = np.array([[0, 0, 0, 220, 0.2, 0]], dtype=np.float64)
     source = native_oscillator_runtime().process_actions(48000, 0, 1, 0, start_action)
     drive = (2.5 + 0.5 * smooth)[:, None]
-    expected = np.tanh(source * drive) / np.tanh(drive)
+    expected = waveshaper_audio(source, drive)
     for backend in ("numpy", "native"):
         renderer = effects.OfflineEffects(prepared, backend)
         head = renderer.advance({"main": source[:14003]}, [], 0, 14003)

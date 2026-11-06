@@ -3,11 +3,12 @@
 from pathlib import Path
 from statistics import median
 from time import perf_counter_ns
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
 import tyro
 from pydantic import BaseModel, ConfigDict, Field
+from reccy.configuration import units
 from ufor import audio_effects
 from ufor.events import PerformanceEvent, Trigger
 from ufor.instrument_trace import TraceAction
@@ -21,12 +22,15 @@ from enge.render import write_flac
 
 class Settings(BaseModel):
     block_frames: int = Field(default=64, gt=0)
-    seconds: int = Field(default=10, gt=0)
+    seconds: Annotated[
+        int, units.unit_validator("second"), tyro.conf.arg(constructor=str)
+    ] = Field(default=10, gt=0)
     voices: int = Field(default=16, gt=0)
     effect_actions: int = Field(default=64, ge=1, le=64)
     granular: bool = False
     compressor: bool = False
     reverb: bool = False
+    waveshaper: bool = False
     delay: Literal["none", "tap", "modulated"] = "none"
     audio_output: Path | None = None
 
@@ -102,6 +106,10 @@ def main(settings: Settings) -> None:
         )
     if settings.reverb:
         processors.append(audio_effects.Reverb(name="room"))
+    if settings.waveshaper:
+        processors.append(
+            audio_effects.Waveshaper(name="shape", drive=3, bias=0.2, mix=0.6)
+        )
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(
@@ -195,6 +203,7 @@ def main(settings: Settings) -> None:
         f" delay={settings.delay}"
         f" compressor={settings.compressor}"
         f" reverb={settings.reverb}"
+        f" waveshaper={settings.waveshaper}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
@@ -240,6 +249,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 "room",
                 "predelay_seconds",
                 0.003 + ((start + ordinal) % 1000) / 480000,
+            )
+        if settings.waveshaper and ordinal % 4 == 2:
+            processor, parameter, value = (
+                "shape",
+                "drive",
+                1 + ((start + ordinal) % 100) / 20,
             )
         actions.append(
             audio_effects.ParameterAction(
