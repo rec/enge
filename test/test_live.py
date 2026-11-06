@@ -96,6 +96,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.empty((0, 4), dtype=np.int64),
         np.empty((0, 3), dtype=np.int64),
         np.empty((0, 5), dtype=np.float64),
+        [2, 2],
         4,
     )
     runtime.submit(0, oscillator_start)
@@ -118,6 +119,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         np.empty((0, 4), dtype=np.int64),
         np.empty((0, 3), dtype=np.int64),
         np.empty((0, 5), dtype=np.float64),
+        [2, 2],
         4,
     )
     restored.restore(snapshot)
@@ -187,6 +189,7 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         granulator_rows,
         tap_delay_rows,
         modulated_delay_rows,
+        widths,
     ) = effects.native_live_graph(prepared)
     parameter_values = np.broadcast_to(initial[:, :2], (48000, 3, 2)).copy()
     duration = 257
@@ -219,6 +222,7 @@ def test_native_live_runtime_owns_effect_graph_and_parameter_ramps(
         granulator_rows,
         tap_delay_rows,
         modulated_delay_rows,
+        widths,
         4,
     )
     runtime.submit(0, start_action)
@@ -310,6 +314,7 @@ def test_rejected_live_restore_preserves_all_source_state(
                 np.empty((0, 4), dtype=np.int64),
                 np.empty((0, 3), dtype=np.int64),
                 np.empty((0, 5)),
+                [2, 2],
                 2,
             )
         return runtime
@@ -353,6 +358,7 @@ def test_live_restore_recovers_partial_render_and_discards_abandoned_actions(
             np.empty((0, 4), dtype=np.int64),
             np.empty((0, 3), dtype=np.int64),
             np.empty((0, 5)),
+            [2, 2],
             2,
         )
         return runtime

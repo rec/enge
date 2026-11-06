@@ -952,15 +952,18 @@ def native_live_graph(
     np.ndarray,
     np.ndarray,
     np.ndarray,
+    list[int],
 ]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
-    if len(graph.inputs) != 1:
-        raise EngineError("Native live effects require exactly one graph input")
     processors = {p.name: p for p in graph.processors}
     ordered = [processors[n] for n in definition.order]
-    input_name = graph.inputs[0].name
-    processor_indices = {p.name: i + 1 for i, p in enumerate(ordered)}
+    input_indices = {p.name: i for i, p in enumerate(graph.inputs)}
+    processor_indices = {p.name: i + len(graph.inputs) for i, p in enumerate(ordered)}
+    layouts = _processor_layouts(graph)
+    channel_widths = [len(p.channels) for p in graph.inputs] + [
+        len(layouts[p.name]) for p in ordered
+    ]
     connections = {(c.processor, c.port): c.source for c in graph.connections}
     widths = [
         3 + 2 * len(p.filters)
@@ -990,9 +993,7 @@ def native_live_graph(
         for port, name in enumerate(ports):
             source = connections[(processor.name, name)]
             if isinstance(source, audio_effects.InputSource):
-                if source.input != input_name:
-                    raise EngineError("Native live graph references an unknown input")
-                sources[node, port] = 0
+                sources[node, port] = input_indices[source.input]
             else:
                 sources[node, port] = processor_indices[source.processor]
         parameters[node, 1:3] = [processor.mix, 1]
@@ -1057,7 +1058,7 @@ def native_live_graph(
                 processor.feedback,
             ]
             parameters[node, 6] = processor.state_floor
-            phases = _channel_phase_offsets(processor, len(definition.channels))
+            phases = _channel_phase_offsets(processor, len(layouts[processor.name]))
             modulated_delay_rows.append(
                 [
                     node,
@@ -1067,12 +1068,13 @@ def native_live_graph(
                     ),
                     list(Waveform).index(processor.waveform),
                     *phases,
+                    *([0.0] * (max(channel_widths) - len(phases))),
                 ]
             )
         else:
             raise EngineError("Unsupported native live effect processor")
     output_source = (
-        0
+        input_indices[graph.output.input]
         if isinstance(graph.output, audio_effects.InputSource)
         else processor_indices[graph.output.processor]
     )
@@ -1085,8 +1087,9 @@ def native_live_graph(
         np.asarray(granulator_rows, dtype=np.int64).reshape(-1, 4),
         np.asarray(tap_delay_rows, dtype=np.int64).reshape(-1, 3),
         np.asarray(modulated_delay_rows, dtype=np.float64).reshape(
-            -1, len(definition.channels) + 3
+            -1, max(channel_widths) + 3
         ),
+        channel_widths,
     )
 
 

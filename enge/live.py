@@ -62,6 +62,8 @@ class NativeLiveEngine:
         self.source_indices = {name: i for i, name in enumerate(generated)}
         self.sample_rate = rates.pop()
         self.channels = list(channels.pop())
+        self.source_channels = self.channels.copy()
+        self.host_widths: dict[str, int] = {}
         self.maximum_block_frames = maximum_block_frames
         self.effect_chain = effect_chain
         self.runtime = (
@@ -83,17 +85,30 @@ class NativeLiveEngine:
             if isinstance(source, sample_instrument.PersistentSampler):
                 source.add_to_native_live(self.runtime, batch_capacity)
         if effect_chain is not None:
-            if (
-                effect_chain.sample_rate != self.sample_rate
-                or effect_chain.channels != self.channels
-            ):
-                raise synth.EngineError(
-                    "Native live effects must match source rate and channels"
-                )
+            self.host_widths = _prepare_live_inputs(
+                effect_chain, self.sample_rate, self.source_channels, list(sources)
+            )
+            source_routes = {
+                n: list(s.native_sources.values())
+                if isinstance(s, sample_instrument.PersistentSampler)
+                else [self.source_indices[n]]
+                for n, s in self.sources.items()
+            }
+            routes = [
+                [-1]
+                if isinstance(i.source, audio_effects.MainStream)
+                else [-2]
+                if isinstance(i.source, audio_effects.HostStream)
+                else source_routes[i.source.instrument]
+                for i in effect_chain.definition.inputs
+            ]
             self.runtime.set_effect_graph(
-                *effects.native_live_graph(effect_chain), batch_capacity
+                *effects.native_live_graph(effect_chain),
+                batch_capacity,
+                input_routes=routes,
             )
             effects.configure_native_generators(self.runtime, effect_chain)
+            self.channels = effect_chain.channels.copy()
         self.frame = 0
 
     def advance_into(
@@ -103,6 +118,7 @@ class NativeLiveEngine:
         start: int,
         end: int,
         output: np.ndarray,
+        host_inputs: dict[str, np.ndarray] | None = None,
     ) -> None:
         if actions.keys() != self.sources.keys():
             raise synth.EngineError("Native live actions must address every source")
@@ -122,6 +138,7 @@ class NativeLiveEngine:
                 "Native live output must be writable C-contiguous float64 with "
                 "shape (frames, channels)"
             )
+        host = _validate_host_inputs(self.host_widths, host_inputs, end - start)
         for name, source in self.sources.items():
             if isinstance(source, sample_instrument.PersistentSampler):
                 for index, encoded in source.native_live_actions(
@@ -149,7 +166,16 @@ class NativeLiveEngine:
             )
             if len(encoded):
                 self.runtime.submit_effects(encoded)
-        self.runtime.process_into(output)
+        self.runtime.process_into(
+            output,
+            []
+            if self.effect_chain is None
+            else [
+                host[i.source.stream]
+                for i in self.effect_chain.definition.inputs
+                if isinstance(i.source, audio_effects.HostStream)
+            ],
+        )
         for name, source in self.sources.items():
             if isinstance(source, sample_instrument.PersistentSampler):
                 source.finish_native_live_block(end, self.runtime)
@@ -203,25 +229,17 @@ class LiveEngine:
         self.sources = sources.copy()
         self.sample_rate = rates.pop()
         self.channels = list(channels.pop())
+        self.source_channels = self.channels.copy()
         self.effects = effect_chain
-        self.effect_input: str | None = None
+        self.host_widths: dict[str, int] = {}
         if effect_chain is not None:
-            graph = effect_chain.definition.definition
-            main = [
-                i
-                for i in graph.inputs
-                if isinstance(i.source, audio_effects.MainStream)
-            ]
-            if (
-                effect_chain.definition.sample_rate != self.sample_rate
-                or effect_chain.definition.channels != self.channels
-                or len(graph.inputs) != 1
-                or len(main) != 1
-            ):
-                raise synth.EngineError(
-                    "Live engine effects require one compatible main input"
-                )
-            self.effect_input = main[0].name
+            self.host_widths = _prepare_live_inputs(
+                effect_chain.definition,
+                self.sample_rate,
+                self.source_channels,
+                list(sources),
+            )
+            self.channels = effect_chain.definition.channels.copy()
         self.frame = 0
 
     def advance(
@@ -230,6 +248,7 @@ class LiveEngine:
         effect_actions: list[audio_effects.EffectAction],
         start: int,
         end: int,
+        host_inputs: dict[str, np.ndarray] | None = None,
     ) -> np.ndarray:
         if actions.keys() != self.sources.keys():
             raise synth.EngineError("Live engine actions must address every source")
@@ -237,17 +256,25 @@ class LiveEngine:
             raise synth.EngineError(
                 "Live engine advance must be contiguous and nonempty"
             )
-        output = np.zeros((end - start, len(self.channels)))
+        host = _validate_host_inputs(self.host_widths, host_inputs, end - start)
+        output = np.zeros((end - start, len(self.source_channels)))
+        rendered: dict[str, np.ndarray] = {}
         for name, source in self.sources.items():
             advance = getattr(source, "advance", None)
             if not isinstance(advance, Callable):
                 raise synth.EngineError(f"Live source {name} has no advance method")
-            output += advance(actions[name], start, end)
+            rendered[name] = advance(actions[name], start, end)
+            output += rendered[name]
         if self.effects is not None:
-            assert self.effect_input is not None
-            output = self.effects.advance(
-                {self.effect_input: output}, effect_actions, start, end
-            )
+            inputs = {
+                i.name: output
+                if isinstance(i.source, audio_effects.MainStream)
+                else host[i.source.stream]
+                if isinstance(i.source, audio_effects.HostStream)
+                else rendered[i.source.instrument]
+                for i in self.effects.definition.definition.inputs
+            }
+            output = self.effects.advance(inputs, effect_actions, start, end)
         elif effect_actions:
             raise synth.EngineError("Live engine has no effect chain")
         self.frame = end
@@ -260,6 +287,7 @@ class LiveEngine:
         start: int,
         end: int,
         output: np.ndarray,
+        host_inputs: dict[str, np.ndarray] | None = None,
     ) -> None:
         if (
             output.shape != (end - start, len(self.channels))
@@ -271,7 +299,7 @@ class LiveEngine:
                 "Live engine output must be writable C-contiguous float64 with "
                 "shape (frames, channels)"
             )
-        output[:] = self.advance(actions, effect_actions, start, end)
+        output[:] = self.advance(actions, effect_actions, start, end, host_inputs)
 
     def snapshot(self) -> LiveEngineSnapshot:
         return LiveEngineSnapshot(
@@ -292,3 +320,55 @@ class LiveEngine:
             assert snapshot.effect_state is not None
             self.effects.restore(snapshot.effect_state)
         self.frame = snapshot.frame
+
+
+def _prepare_live_inputs(
+    definition: effects.PreparedEffects,
+    rate: int,
+    channels: list[str],
+    source_names: list[str],
+) -> dict[str, int]:
+    if definition.sample_rate != rate:
+        raise synth.EngineError("Live effects must match the source sample rate")
+    hosts: dict[str, int] = {}
+    for input in definition.definition.inputs:
+        source = input.source
+        if isinstance(source, audio_effects.HostStream):
+            width = len(input.channels)
+            if source.stream in hosts and hosts[source.stream] != width:
+                raise synth.EngineError(
+                    "Live host stream has inconsistent channel widths"
+                )
+            hosts[source.stream] = width
+        else:
+            if input.channels != channels:
+                raise synth.EngineError(
+                    "Live source input must match its channel layout"
+                )
+            if isinstance(source, audio_effects.InstrumentStream):
+                if source.instrument not in source_names:
+                    raise synth.EngineError(
+                        "Live effect input references an unknown source"
+                    )
+                if source.tap != "pre_effect":
+                    raise synth.EngineError(
+                        "Live sources have no post-effect instrument tap"
+                    )
+    return hosts
+
+
+def _validate_host_inputs(
+    widths: dict[str, int], inputs: dict[str, np.ndarray] | None, frames: int
+) -> dict[str, np.ndarray]:
+    values = {} if inputs is None else inputs
+    if values.keys() != widths.keys():
+        raise synth.EngineError("Live host inputs do not match the prepared graph")
+    for name, width in widths.items():
+        value = values[name]
+        if (
+            value.shape != (frames, width)
+            or value.dtype != np.float64
+            or not np.all(np.isfinite(value))
+        ):
+            raise synth.EngineError(f"Invalid live host input {name}")
+    return values

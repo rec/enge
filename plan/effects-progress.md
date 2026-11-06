@@ -21,7 +21,12 @@ shared primitive does not by itself complete every family using it.
 The user also approved extending the prepared native graph API with explicit
 port widths, source/host input routing, preallocated input buffers and a declared
 output layout before P2. This is required for native sidechains, mixers and
-spatial effects. Native input-end/stop handling remains a shared lifecycle gate.
+spatial effects. The routing implementation now supports main/source/host inputs,
+explicit widths and a separately declared output layout in both live owners:
+3,166 tests passed / 21 skipped, with zero Rust heap operations in the focused
+callback audit. See [the contract](../doc/live-inputs.md).
+Per-instrument effect attachments and their post-effect taps remain unfinished.
+Native input-end/stop handling remains a shared lifecycle gate.
 Named stereo/5.1/7.1 layouts and first-order ACN/SN3D ambisonics, with explicit
 matrices for other layouts, were also approved on 2026-11-06. FFT implementation
 and external IR/HRTF asset policy were asked about; retain their answers before
@@ -76,8 +81,8 @@ without treating them as complete families.
 | M5 | Sample-and-hold modulation | Shared enveLFO execution exists; audio/control capture profile pending. |
 | M6 | Follower-controlled gain/filter/delay/drive | Pending reusable audio-derived modulation sources. |
 | S1 | Stereo panner, width, rotation, binaural balance | Pending explicit channel matrices and pan laws. |
-| S2 | Surround up/down-mix | Pending named layouts and explicit matrices. |
-| S3 | Ambisonic encode / rotate / decode | Pending order, channel ordering and normalization decision. |
+| S2 | Surround up/down-mix | Named stereo/5.1/7.1 layouts and explicit matrices approved; processors pending. |
+| S3 | Ambisonic encode / rotate / decode | First-order ACN/SN3D approved; processors pending. |
 | S4 | Binaural / HRTF | Pending directional assets, interpolation, convolution and head-control contract. |
 | S5 | Doppler / distance | Pending host-supplied trajectory, fractional delay, gain/filter mapping. |
 | S6 | Early reflections | Pending sparse spatial multitap profile. |

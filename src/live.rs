@@ -80,6 +80,9 @@ enum SourceSnapshot {
 
 struct EffectRuntime {
     kinds: Vec<u8>,
+    widths: Vec<usize>,
+    input_routes: Vec<Vec<i64>>,
+    inputs: Array3<f64>,
     sources: Array2<i64>,
     output_source: usize,
     parameters: Array2<f64>,
@@ -112,6 +115,8 @@ struct EffectFilter {
 #[derive(Clone)]
 struct EffectSnapshot {
     kinds: Vec<u8>,
+    widths: Vec<usize>,
+    input_routes: Vec<Vec<i64>>,
     sources: Array2<i64>,
     output_source: usize,
     parameters: Array2<f64>,
@@ -304,6 +309,7 @@ impl LiveRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (kinds, sources, parameters, output_source, filters, granulators, tap_delays, modulated_delays, widths, batch_capacity, input_routes=None))]
     fn set_effect_graph(
         &mut self,
         kinds: Vec<u8>,
@@ -314,12 +320,31 @@ impl LiveRuntime {
         granulators: PyReadonlyArray2<'_, i64>,
         tap_delays: PyReadonlyArray2<'_, i64>,
         modulated_delays: PyReadonlyArray2<'_, f64>,
+        widths: Vec<usize>,
         batch_capacity: usize,
+        input_routes: Option<Vec<Vec<i64>>>,
     ) -> PyResult<()> {
         if self.frame != 0 || self.effects.is_some() || batch_capacity == 0 {
             return Err(PyValueError::new_err("Invalid live effect graph setup"));
         }
-        self.effects = Some(EffectRuntime::new(
+        let inputs = widths
+            .len()
+            .checked_sub(kinds.len())
+            .ok_or_else(|| PyValueError::new_err("Invalid live effect port widths"))?;
+        let routes = input_routes.unwrap_or_else(|| vec![vec![-1]]);
+        if routes.len() != inputs
+            || routes.iter().enumerate().any(|(input, route)| {
+                route.is_empty()
+                    || route
+                        .iter()
+                        .any(|source| *source < -2 || *source >= self.sources.len() as i64)
+                    || (route.iter().any(|source| *source < 0) && route.len() != 1)
+                    || (route != &[-2] && widths[input] != self.channels)
+            })
+        {
+            return Err(PyValueError::new_err("Invalid live effect input routing"));
+        }
+        let prepared = EffectRuntime::new(
             kinds,
             sources,
             parameters,
@@ -329,10 +354,15 @@ impl LiveRuntime {
             tap_delays,
             modulated_delays,
             self.rate,
-            self.channels,
+            widths,
+            routes,
+            self.maximum_block_frames,
             self.action_capacity,
             batch_capacity,
-        )?);
+        )?;
+        self.output_scratch =
+            Array2::zeros((self.maximum_block_frames, prepared.widths[output_source]));
+        self.effects = Some(prepared);
         Ok(())
     }
 
@@ -630,19 +660,62 @@ impl LiveRuntime {
         source.runtime.active_contexts()
     }
 
+    #[pyo3(signature = (output, inputs=Vec::new()))]
     fn process_into(
         &mut self,
         py: Python<'_>,
         mut output: PyReadwriteArray2<'_, f64>,
+        inputs: Vec<PyReadonlyArray2<'_, f64>>,
     ) -> PyResult<()> {
         if !output.is_c_contiguous()
             || output.shape()[0] == 0
             || output.shape()[0] > self.maximum_block_frames
-            || output.shape()[1] != self.channels
+            || output.shape()[1] != self.output_scratch.ncols()
         {
             return Err(PyValueError::new_err("Invalid live runtime output"));
         }
         let frames = output.shape()[0];
+        let expected = self.effects.as_ref().map_or(0, |effects| {
+            effects
+                .input_routes
+                .iter()
+                .filter(|route| *route == &[-2])
+                .count()
+        });
+        if inputs.len() != expected {
+            return Err(PyValueError::new_err(
+                "Live host inputs do not match the prepared graph",
+            ));
+        }
+        if let Some(effects) = &mut self.effects {
+            let mut host = 0;
+            for (input, route) in effects.input_routes.iter().enumerate() {
+                if route == &[-2] {
+                    let values = inputs[host].as_array();
+                    if values.shape() != [frames, effects.widths[input]]
+                        || values.iter().any(|value| !value.is_finite())
+                    {
+                        return Err(PyValueError::new_err("Invalid live host input"));
+                    }
+                    host += 1;
+                }
+            }
+            let mut host = 0;
+            for (input, route) in effects.input_routes.iter().enumerate() {
+                if route == &[-2] {
+                    for ((frame, channel), value) in inputs[host].as_array().indexed_iter() {
+                        effects.inputs[[input, frame, channel]] = *value;
+                    }
+                    host += 1;
+                } else {
+                    for frame in 0..frames {
+                        for channel in 0..effects.widths[input] {
+                            effects.inputs[[input, frame, channel]] = 0.0;
+                        }
+                    }
+                }
+            }
+        }
         let result = py.detach(|| {
             #[cfg(feature = "allocation-audit")]
             let audit = crate::heap_audit::Scope::new();
@@ -733,7 +806,12 @@ impl LiveRuntime {
 
 impl LiveRuntime {
     fn process(&mut self, frames: usize) -> NativeResult<()> {
-        for value in self.output_scratch.iter_mut().take(frames * self.channels) {
+        let output_channels = self.output_scratch.ncols();
+        for value in self
+            .output_scratch
+            .iter_mut()
+            .take(frames * output_channels)
+        {
             *value = 0.0;
         }
         if self.failed {
@@ -755,7 +833,7 @@ impl LiveRuntime {
                 "effect",
             )?;
         }
-        for source in &mut self.sources {
+        for (index, source) in self.sources.iter_mut().enumerate() {
             let mut scratch = ArrayViewMut2::from_shape(
                 (frames, self.channels),
                 &mut self
@@ -769,28 +847,27 @@ impl LiveRuntime {
                 &source.action_scratch[..source.action_count * 6],
             )?;
             source.action_count = 0;
-            for (mixed, value) in self
-                .output_scratch
-                .iter_mut()
-                .take(frames * self.channels)
-                .zip(scratch.iter())
-            {
-                *mixed += *value;
+            if let Some(effects) = &mut self.effects {
+                for (input, route) in effects.input_routes.iter().enumerate() {
+                    if route == &[-1] || route.contains(&(index as i64)) {
+                        for ((frame, channel), value) in scratch.indexed_iter() {
+                            effects.inputs[[input, frame, channel]] += *value;
+                        }
+                    }
+                }
+            } else {
+                for (mixed, value) in self.output_scratch.iter_mut().zip(scratch.iter()) {
+                    *mixed += *value;
+                }
             }
         }
         if let Some(effects) = &mut self.effects {
-            effects.process(
-                &mut self.output_scratch,
-                frames,
-                self.channels,
-                self.rate,
-                self.frame,
-            )?;
+            effects.process(&mut self.output_scratch, frames, self.rate, self.frame)?;
         }
         if self
             .output_scratch
             .iter()
-            .take(frames * self.channels)
+            .take(frames * output_channels)
             .any(|v| !v.is_finite())
         {
             return Err(NativeError::Message("Non-finite live runtime output"));
@@ -815,12 +892,19 @@ impl EffectRuntime {
         tap_delays: PyReadonlyArray2<'_, i64>,
         modulated_delays: PyReadonlyArray2<'_, f64>,
         rate: f64,
-        channels: usize,
+        widths: Vec<usize>,
+        input_routes: Vec<Vec<i64>>,
+        maximum_block_frames: usize,
         action_capacity: usize,
         batch_capacity: usize,
     ) -> PyResult<Self> {
         let nodes = kinds.len();
+        let inputs = input_routes.len();
+        let channels = widths.iter().copied().max().unwrap_or(0);
         if kinds.iter().any(|v| *v > 6)
+            || inputs == 0
+            || widths.len() != inputs + nodes
+            || widths.contains(&0)
             || sources.shape() != [nodes, 2]
             || parameters.shape()[0] != nodes
             || parameters.shape()[1] < 3
@@ -835,7 +919,7 @@ impl EffectRuntime {
                 .column(2)
                 .iter()
                 .any(|v| !(0.0..=1.0).contains(v))
-            || output_source > nodes
+            || output_source >= inputs + nodes
             || filters.shape()[1] != 4
             || filters.as_array().iter().any(|v| !v.is_finite())
             || granulators.shape()[1] != 4
@@ -850,9 +934,14 @@ impl EffectRuntime {
             let ports = if kinds[node] == 1 { 2 } else { 1 };
             for port in 0..ports {
                 let source = sources[[node, port]];
-                if source < 0 || source as usize > node {
+                if source < 0 || source as usize >= node + inputs {
                     return Err(PyValueError::new_err(
                         "Effect source must precede its consumer",
+                    ));
+                }
+                if widths[source as usize] != widths[node + inputs] {
+                    return Err(PyValueError::new_err(
+                        "Effect input and output widths differ",
                     ));
                 }
             }
@@ -904,7 +993,7 @@ impl EffectRuntime {
             prepared_granulators[node] = Some(LiveGranulator::new(
                 history_frames,
                 maximum_grains,
-                channels,
+                widths[node + inputs],
                 freeze_crossfade_frames,
             ));
         }
@@ -935,7 +1024,7 @@ impl EffectRuntime {
                 return Err(PyValueError::new_err("Invalid live tap delay"));
             }
             prepared_tap_delays[node] = Some(LiveTapDelay {
-                history: Array2::zeros((history_frames, channels)),
+                history: Array2::zeros((history_frames, widths[node + inputs])),
                 write: 0,
                 heads: (0..fade_frames + 1)
                     .map(|i| DelayHead {
@@ -978,7 +1067,7 @@ impl EffectRuntime {
                 return Err(PyValueError::new_err("Invalid live modulated delay"));
             }
             prepared_modulated_delays[node] = Some(LiveModulatedDelay {
-                history: Array2::zeros((history_frames, channels)),
+                history: Array2::zeros((history_frames, widths[node + inputs])),
                 write: 0,
                 phase: 0.0,
                 waveform,
@@ -996,6 +1085,9 @@ impl EffectRuntime {
         let (producer, consumer) = RingBuffer::new(batch_capacity);
         Ok(Self {
             kinds,
+            inputs: Array3::zeros((inputs, maximum_block_frames, channels)),
+            input_routes,
+            widths,
             sources,
             output_source,
             targets: parameters.clone(),
@@ -1009,7 +1101,7 @@ impl EffectRuntime {
             granulators: prepared_granulators,
             tap_delays: prepared_tap_delays,
             modulated_delays: prepared_modulated_delays,
-            values: Array2::zeros((nodes + 1, channels)),
+            values: Array2::zeros((nodes + inputs, channels)),
             wet: vec![0.0; channels],
             producer,
             consumer,
@@ -1022,7 +1114,6 @@ impl EffectRuntime {
         &mut self,
         output: &mut Array2<f64>,
         frames: usize,
-        channels: usize,
         rate: f64,
         start: usize,
     ) -> NativeResult<()> {
@@ -1081,10 +1172,14 @@ impl EffectRuntime {
                     self.resolved[[*node, *parameter]] = value;
                 }
             }
-            for channel in 0..channels {
-                self.values[[0, channel]] = output[[frame, channel]];
+            let inputs = self.input_routes.len();
+            for input in 0..inputs {
+                for channel in 0..self.widths[input] {
+                    self.values[[input, channel]] = self.inputs[[input, frame, channel]];
+                }
             }
             for node in 0..self.kinds.len() {
+                let channels = self.widths[node + inputs];
                 let first = self.sources[[node, 0]] as usize;
                 let authored_mix = self.resolved[[node, 1]];
                 let bypass = self.resolved[[node, 2]];
@@ -1098,17 +1193,17 @@ impl EffectRuntime {
                 match self.kinds[node] {
                     0 => {
                         let gain = 10_f64.powf(self.resolved[[node, 0]] / 20.0);
-                        for value in &mut self.wet {
+                        for value in &mut self.wet[..channels] {
                             *value *= gain;
                         }
                     }
                     1 => {
                         let second = self.sources[[node, 1]] as usize;
-                        for (channel, value) in self.wet.iter_mut().enumerate() {
+                        for (channel, value) in self.wet[..channels].iter_mut().enumerate() {
                             *value *= self.values[[second, channel]];
                         }
                     }
-                    2 => self.process_filters(node, rate)?,
+                    2 => self.process_filters(node, channels, rate)?,
                     3 => {
                         let parameters = [
                             self.resolved[[node, 3]],
@@ -1120,7 +1215,7 @@ impl EffectRuntime {
                         self.granulators[node]
                             .as_mut()
                             .expect("validated live granulator")
-                            .process(&mut self.wet, parameters, rate)?;
+                            .process(&mut self.wet[..channels], parameters, rate)?;
                     }
                     4 => {
                         let drive = self.resolved[[node, 0]];
@@ -1128,7 +1223,7 @@ impl EffectRuntime {
                             return Err(NativeError::Message("Invalid live soft clip drive"));
                         }
                         let normalization = drive.tanh();
-                        for value in &mut self.wet {
+                        for value in &mut self.wet[..channels] {
                             *value = (drive * *value).tanh() / normalization;
                         }
                     }
@@ -1136,11 +1231,11 @@ impl EffectRuntime {
                     _ => self.process_modulated_delay(node, channels, rate)?,
                 }
                 for channel in 0..channels {
-                    self.values[[node + 1, channel]] =
+                    self.values[[node + inputs, channel]] =
                         (1.0 - mix) * self.values[[first, channel]] + mix * self.wet[channel];
                 }
             }
-            for channel in 0..channels {
+            for channel in 0..self.widths[self.output_source] {
                 output[[frame, channel]] = self.values[[self.output_source, channel]];
             }
             self.advance_ramps();
@@ -1207,7 +1302,7 @@ impl EffectRuntime {
         }
     }
 
-    fn process_filters(&mut self, node: usize, rate: f64) -> NativeResult<()> {
+    fn process_filters(&mut self, node: usize, channels: usize, rate: f64) -> NativeResult<()> {
         for (stage, filter) in self.filter_rows.iter().enumerate() {
             if filter.node != node {
                 continue;
@@ -1226,7 +1321,7 @@ impl EffectRuntime {
             };
             let a2 = g * a1;
             let a3 = g * a2;
-            for (channel, input) in self.wet.iter_mut().enumerate() {
+            for (channel, input) in self.wet[..channels].iter_mut().enumerate() {
                 let (s1, s2) = (
                     self.filter_states[[stage, channel, 0]],
                     self.filter_states[[stage, channel, 1]],
@@ -1409,6 +1504,8 @@ impl EffectRuntime {
     fn snapshot(&self) -> EffectSnapshot {
         EffectSnapshot {
             kinds: self.kinds.clone(),
+            widths: self.widths.clone(),
+            input_routes: self.input_routes.clone(),
             sources: self.sources.clone(),
             output_source: self.output_source,
             parameters: self.parameters.clone(),
@@ -1426,6 +1523,8 @@ impl EffectRuntime {
 
     fn validate_snapshot(&self, snapshot: &EffectSnapshot) -> PyResult<()> {
         if self.kinds != snapshot.kinds
+            || self.widths != snapshot.widths
+            || self.input_routes != snapshot.input_routes
             || match (&self.generators, &snapshot.generators) {
                 (Some(a), Some(b)) => {
                     a.targets != b.targets || a.maps != b.maps || !a.bank.same_definition(&b.bank)
