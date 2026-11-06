@@ -470,7 +470,7 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.2.0"
-source = { git = "https://github.com/rec/ufor?branch=main#d9da8f6b4cc311de253e2fda7af5b2512ffc23eb" }
+source = { git = "https://github.com/rec/ufor?branch=main#e29fff11ff40b5d272aa046466906d6312c3ba8b" }
 dependencies = [
     { name = "pydantic" },
     { name = "reccy" },
