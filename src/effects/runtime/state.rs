@@ -74,7 +74,7 @@ impl EffectRuntime {
                     state.set_item("grains", grains)?;
                     value.set_item("granulator", state)?;
                 }
-                5 => {
+                5 | 8 => {
                     let delay = self.tap_delays[node].as_ref().expect("prepared tap delay");
                     let state = PyDict::new(py);
                     state.set_item("history", rows(delay.history.view()))?;
@@ -91,7 +91,18 @@ impl EffectRuntime {
                         heads.push(value);
                     }
                     state.set_item("heads", heads)?;
-                    value.set_item("tap_delay", state)?;
+                    if *kind == 8 {
+                        let reverb = self.reverbs[node].as_ref().expect("prepared reverb");
+                        let network = PyDict::new(py);
+                        network.set_item("predelay", state)?;
+                        network.set_item("lines", &reverb.lines)?;
+                        network.set_item("writes", reverb.writes)?;
+                        network.set_item("damping", reverb.damping)?;
+                        network.set_item("non_silent", reverb.non_silent + delay.non_silent)?;
+                        value.set_item("reverb", network)?;
+                    } else {
+                        value.set_item("tap_delay", state)?;
+                    }
                 }
                 6 => {
                     let delay = self.modulated_delays[node]
@@ -211,8 +222,17 @@ impl EffectRuntime {
                         granular.order[index] = index;
                     }
                 }
-                5 => {
-                    let value = field(value, "tap_delay")?;
+                5 | 8 => {
+                    let network = if *kind == 8 {
+                        Some(field(value, "reverb")?)
+                    } else {
+                        None
+                    };
+                    let value = if let Some(network) = &network {
+                        field(network.cast::<PyDict>()?, "predelay")?
+                    } else {
+                        field(value, "tap_delay")?
+                    };
                     let value = value.cast::<PyDict>()?;
                     let delay = snapshot.tap_delays[node]
                         .as_mut()
@@ -239,8 +259,13 @@ impl EffectRuntime {
                             active: field(value, "active")?.extract()?,
                         };
                         if !head.delay.is_finite()
-                            || head.delay < 1.0
-                            || head.delay > delay.history.nrows() as f64
+                            || head.delay < if *kind == 8 { 0.0 } else { 1.0 }
+                            || head.delay
+                                > if *kind == 8 {
+                                    self.parameters[[node, 6]] * self.rate
+                                } else {
+                                    delay.history.nrows() as f64
+                                }
                             || !head.gain.is_finite()
                             || !(0.0..=1.0).contains(&head.gain)
                             || !head.step.is_finite()
@@ -258,6 +283,41 @@ impl EffectRuntime {
                         .iter()
                         .filter(|value| value.abs() >= self.tail_thresholds[node])
                         .count();
+                    if let Some(network) = network {
+                        let network = network.cast::<PyDict>()?;
+                        let reverb = snapshot.reverbs[node].as_mut().expect("prepared reverb");
+                        let lines: Vec<Vec<f64>> = field(network, "lines")?.extract()?;
+                        if lines.len() != 8
+                            || lines.iter().zip(&reverb.lines).any(|(a, b)| {
+                                a.len() != b.len() || a.iter().any(|value| !value.is_finite())
+                            })
+                        {
+                            return Err(PyValueError::new_err(
+                                "Invalid reverb delay-line snapshot",
+                            ));
+                        }
+                        reverb.writes = field(network, "writes")?.extract()?;
+                        reverb.damping = field(network, "damping")?.extract()?;
+                        if reverb
+                            .writes
+                            .iter()
+                            .zip(&lines)
+                            .any(|(write, line)| *write >= line.len())
+                            || reverb.damping.iter().any(|value| !value.is_finite())
+                        {
+                            return Err(PyValueError::new_err("Invalid reverb network snapshot"));
+                        }
+                        reverb.non_silent = lines
+                            .iter()
+                            .flatten()
+                            .filter(|value| value.abs() >= self.tail_thresholds[node])
+                            .count();
+                        let count: usize = field(network, "non_silent")?.extract()?;
+                        if count != reverb.non_silent + delay.non_silent {
+                            return Err(PyValueError::new_err("Invalid reverb tail count"));
+                        }
+                        reverb.lines = lines;
+                    }
                 }
                 6 => {
                     let value = field(value, "modulated_delay")?;

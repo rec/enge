@@ -26,6 +26,7 @@ class Settings(BaseModel):
     effect_actions: int = Field(default=64, ge=1, le=64)
     granular: bool = False
     compressor: bool = False
+    reverb: bool = False
     delay: Literal["none", "tap", "modulated"] = "none"
     audio_output: Path | None = None
 
@@ -99,6 +100,8 @@ def main(settings: Settings) -> None:
                 mix=0.5,
             )
         )
+    if settings.reverb:
+        processors.append(audio_effects.Reverb(name="room"))
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(
@@ -191,6 +194,7 @@ def main(settings: Settings) -> None:
         f"effect_actions={settings.effect_actions} granular={settings.granular}"
         f" delay={settings.delay}"
         f" compressor={settings.compressor}"
+        f" reverb={settings.reverb}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
@@ -230,6 +234,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 "duck",
                 "threshold_db",
                 -24 + (start + ordinal) % 18,
+            )
+        if settings.reverb and ordinal % 4 == 2:
+            processor, parameter, value = (
+                "room",
+                "predelay_seconds",
+                0.003 + ((start + ordinal) % 1000) / 480000,
             )
         actions.append(
             audio_effects.ParameterAction(

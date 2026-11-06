@@ -11,7 +11,8 @@ it does not leave the selected families outside the current scope.
 
 This is a selection catalogue, not a list of wholly missing processors. Existing
 implementations include gain, resonant filtering, multiply, granulation, soft
-clipping, tap delay and modulated delay. Optional Rubber Band offline and finite
+clipping, tap delay, modulated delay, linked peak compression and eight-line
+algorithmic reverb. Optional Rubber Band offline and finite
 realtime adapters also exist. Check `enge/effects.py`, `enge/rubberband.py` and
 their tests before selecting a new slice. The descriptions below retain design
 requirements, including requirements beyond the implemented profiles.

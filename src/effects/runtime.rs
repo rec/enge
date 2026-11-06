@@ -1,5 +1,6 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
+mod reverb;
 mod state;
 
 use crate::amplitude::frame_time;
@@ -14,6 +15,7 @@ use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use reverb::Reverb;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::f64::consts::PI;
 
@@ -42,6 +44,7 @@ pub(crate) struct EffectRuntime {
     tap_delays: Vec<Option<LiveTapDelay>>,
     modulated_delays: Vec<Option<LiveModulatedDelay>>,
     reductions: Vec<f64>,
+    reverbs: Vec<Option<Reverb>>,
     values: Array2<f64>,
     wet: Vec<f64>,
     pub(crate) producer: Producer<ActionBatch>,
@@ -84,6 +87,7 @@ pub(crate) struct EffectSnapshot {
     tap_delays: Vec<Option<LiveTapDelay>>,
     modulated_delays: Vec<Option<LiveModulatedDelay>>,
     reductions: Vec<f64>,
+    reverbs: Vec<Option<Reverb>>,
 }
 
 #[derive(Clone)]
@@ -280,7 +284,7 @@ impl EffectRuntime {
         let nodes = kinds.len();
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
-        if kinds.iter().any(|v| *v > 7)
+        if kinds.iter().any(|v| *v > 8)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -291,7 +295,7 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6) {
+                    || if matches!(kinds[node], 2 | 5 | 6 | 8) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -333,7 +337,11 @@ impl EffectRuntime {
                         "Effect source must precede its consumer",
                     ));
                 }
-                if !(kinds[node] == 7 && port == 1)
+                if kinds[node] == 8 {
+                    if !matches!(widths[source as usize], 1 | 2) || widths[node + inputs] != 2 {
+                        return Err(PyValueError::new_err("Invalid reverb channel widths"));
+                    }
+                } else if !(kinds[node] == 7 && port == 1)
                     && widths[source as usize] != widths[node + inputs]
                 {
                     return Err(PyValueError::new_err(
@@ -441,6 +449,30 @@ impl EffectRuntime {
         {
             return Err(PyValueError::new_err("Missing live granulator setup"));
         }
+        let mut reverbs = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for node in 0..nodes {
+            if kinds[node] != 8 {
+                continue;
+            }
+            if parameters.ncols() < 16
+                || parameters[[node, 0]] < 0.0
+                || parameters[[node, 0]] > parameters[[node, 6]]
+                || parameters[[node, 6]] < 0.0
+            {
+                return Err(PyValueError::new_err("Invalid reverb predelay bounds"));
+            }
+            let mut lengths = [0; 8];
+            for (i, length) in lengths.iter_mut().enumerate() {
+                let value = parameters[[node, i + 8]];
+                if value < 1.0 || value >= usize::MAX as f64 || value.fract() != 0.0 {
+                    return Err(PyValueError::new_err("Invalid reverb delay line"));
+                }
+                *length = value as usize;
+            }
+            let reverb = Reverb::new(lengths);
+            reverb.coefficients(parameters[[node, 3]], parameters[[node, 5]], rate)?;
+            reverbs[node] = Some(reverb);
+        }
         let mut prepared_tap_delays = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for row in tap_delays.as_array().rows() {
             let node = usize::try_from(row[0])
@@ -450,7 +482,7 @@ impl EffectRuntime {
             let fade_frames = usize::try_from(row[2])
                 .map_err(|_| PyValueError::new_err("Invalid live tap retime duration"))?;
             if node >= nodes
-                || kinds[node] != 5
+                || !matches!(kinds[node], 5 | 8)
                 || history_frames == 0
                 || prepared_tap_delays[node].is_some()
                 || parameters.ncols() < 5
@@ -458,6 +490,7 @@ impl EffectRuntime {
                 || fade_frames.checked_add(1).is_none()
                 || parameters[[node, 4]] < 0.0
                 || parameters[[node, 4]] >= tail_thresholds[node]
+                || (kinds[node] == 8 && parameters[[node, 6]] * rate > (history_frames - 1) as f64)
             {
                 return Err(PyValueError::new_err("Invalid live tap delay"));
             }
@@ -466,7 +499,11 @@ impl EffectRuntime {
                 write: 0,
                 heads: (0..fade_frames + 1)
                     .map(|i| DelayHead {
-                        delay: (parameters[[node, 0]] * rate).max(1.0),
+                        delay: (parameters[[node, 0]] * rate).max(if kinds[node] == 8 {
+                            0.0
+                        } else {
+                            1.0
+                        }),
                         gain: if i == 0 { 1.0 } else { 0.0 },
                         step: 0.0,
                         remaining: 0,
@@ -482,7 +519,7 @@ impl EffectRuntime {
         if kinds
             .iter()
             .enumerate()
-            .any(|(i, kind)| *kind == 5 && prepared_tap_delays[i].is_none())
+            .any(|(i, kind)| matches!(*kind, 5 | 8) && prepared_tap_delays[i].is_none())
         {
             return Err(PyValueError::new_err("Missing live tap delay setup"));
         }
@@ -531,6 +568,7 @@ impl EffectRuntime {
             ended: vec![false; nodes + inputs],
             stopped: false,
             reductions: vec![0.0; nodes],
+            reverbs,
             kinds,
             inputs: Array3::zeros((inputs, maximum_block_frames, channels)),
             input_routes,
@@ -705,7 +743,7 @@ impl EffectRuntime {
                 }
                 5 => self.process_tap_delay(node, channels, rate)?,
                 6 => self.process_modulated_delay(node, channels, rate)?,
-                _ => {
+                7 => {
                     let detector = self.sources[[node, 1]] as usize;
                     let peak = (0..self.widths[detector])
                         .map(|channel| self.values[[detector, channel]].abs())
@@ -728,6 +766,7 @@ impl EffectRuntime {
                         *value *= gain;
                     }
                 }
+                _ => self.process_reverb(node, first, rate)?,
             }
             let drained = self.ended[first]
                 && match self.kinds[node] {
@@ -753,6 +792,17 @@ impl EffectRuntime {
                     6 => self.modulated_delays[node]
                         .as_ref()
                         .is_some_and(|delay| delay.non_silent == 0),
+                    8 => {
+                        let reverb = self.reverbs[node].as_ref().expect("prepared reverb");
+                        self.tap_delays[node]
+                            .as_ref()
+                            .is_some_and(|delay| delay.non_silent == 0)
+                            && reverb.non_silent == 0
+                            && reverb
+                                .damping
+                                .iter()
+                                .all(|value| value.abs() < self.tail_thresholds[node])
+                    }
                     _ => true,
                 };
             self.ended[node + inputs] = drained;
@@ -760,7 +810,12 @@ impl EffectRuntime {
                 self.values[[node + inputs, channel]] = if drained {
                     0.0
                 } else {
-                    (1.0 - mix) * self.values[[first, channel]] + mix * self.wet[channel]
+                    let dry = if self.kinds[node] == 8 && self.widths[first] == 1 {
+                        self.values[[first, 0]] / std::f64::consts::SQRT_2
+                    } else {
+                        self.values[[first, channel]]
+                    };
+                    (1.0 - mix) * dry + mix * self.wet[channel]
                 };
             }
         }
@@ -931,35 +986,7 @@ impl EffectRuntime {
         {
             return Err(NativeError::Message("Invalid live tap delay parameters"));
         }
-        delay.heads[delay.current].gain = (1.0
-            - delay
-                .heads
-                .iter()
-                .enumerate()
-                .filter(|(i, h)| h.active && *i != delay.current)
-                .map(|(_, h)| h.gain)
-                .sum::<f64>())
-        .max(0.0);
-        if delay.heads[delay.current].delay != delay_frames {
-            let index = delay
-                .heads
-                .iter()
-                .position(|h| !h.active)
-                .ok_or(NativeError::Message(
-                    "Tap retiming exceeds prepared read-head capacity",
-                ))?;
-            let current = &mut delay.heads[delay.current];
-            current.remaining = delay.fade_frames;
-            current.step = current.gain / delay.fade_frames as f64;
-            delay.heads[index] = DelayHead {
-                delay: delay_frames,
-                gain: 0.0,
-                step: 0.0,
-                remaining: 0,
-                active: true,
-            };
-            delay.current = index;
-        }
+        delay.retime(delay_frames)?;
         for channel in 0..channels {
             let wet = delay
                 .heads
@@ -982,18 +1009,54 @@ impl EffectRuntime {
             self.wet[channel] = wet;
         }
         delay.write = (delay.write + 1) % frames;
-        for (index, head) in delay.heads.iter_mut().enumerate() {
-            if !head.active || index == delay.current {
-                continue;
-            }
-            head.remaining -= 1;
-            if head.remaining == 0 {
-                head.active = false;
-                head.gain = 0.0;
-            } else {
-                head.gain = (head.gain - head.step).max(0.0);
-            }
+        delay.advance_heads();
+        Ok(())
+    }
+
+    fn process_reverb(&mut self, node: usize, input: usize, rate: f64) -> NativeResult<()> {
+        let delay = self.tap_delays[node]
+            .as_mut()
+            .expect("prepared reverb predelay");
+        let seconds = self.resolved[[node, 0]];
+        if !seconds.is_finite() || seconds < 0.0 || seconds > self.parameters[[node, 6]] {
+            return Err(NativeError::Message("Invalid reverb predelay"));
         }
+        delay.retime(seconds * rate)?;
+        let threshold = self.tail_thresholds[node];
+        let mut delayed = [0.0; 2];
+        for (channel, sample) in delayed.iter_mut().enumerate() {
+            let dry = if self.widths[input] == 1 {
+                self.values[[input, 0]] / std::f64::consts::SQRT_2
+            } else {
+                self.values[[input, channel]]
+            };
+            delay.non_silent -=
+                usize::from(delay.history[[delay.write, channel]].abs() >= threshold);
+            delay.non_silent += usize::from(dry.abs() >= threshold);
+            delay.history[[delay.write, channel]] = dry;
+            *sample = delay
+                .heads
+                .iter()
+                .filter(|head| head.active)
+                .map(|head| {
+                    head.gain * delay_read(&delay.history, delay.write, head.delay, channel)
+                })
+                .sum();
+        }
+        delay.write = (delay.write + 1) % delay.history.nrows();
+        delay.advance_heads();
+        let output = self.reverbs[node]
+            .as_mut()
+            .expect("prepared reverb")
+            .process(
+                delayed,
+                self.resolved[[node, 3]],
+                self.resolved[[node, 5]],
+                rate,
+                delay.state_floor,
+                threshold,
+            )?;
+        self.wet[..2].copy_from_slice(&output);
         Ok(())
     }
 
@@ -1089,6 +1152,7 @@ impl EffectRuntime {
             tap_delays: self.tap_delays.clone(),
             modulated_delays: self.modulated_delays.clone(),
             reductions: self.reductions.clone(),
+            reverbs: self.reverbs.clone(),
         }
     }
 
@@ -1112,6 +1176,19 @@ impl EffectRuntime {
             || self.granulators.len() != snapshot.granulators.len()
             || self.tap_delays.len() != snapshot.tap_delays.len()
             || self.modulated_delays.len() != snapshot.modulated_delays.len()
+            || self
+                .reverbs
+                .iter()
+                .zip(&snapshot.reverbs)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => a
+                        .lines
+                        .iter()
+                        .map(Vec::len)
+                        .ne(b.lines.iter().map(Vec::len)),
+                    (None, None) => false,
+                    _ => true,
+                })
             || self
                 .granulators
                 .iter()
@@ -1171,9 +1248,60 @@ impl EffectRuntime {
         self.tap_delays.clone_from(&snapshot.tap_delays);
         self.modulated_delays.clone_from(&snapshot.modulated_delays);
         self.reductions.clone_from(&snapshot.reductions);
+        self.reverbs.clone_from(&snapshot.reverbs);
         self.ended.clone_from(&snapshot.ended);
         self.stopped = snapshot.stopped;
         Ok(())
+    }
+}
+
+impl LiveTapDelay {
+    fn retime(&mut self, frames: f64) -> NativeResult<()> {
+        self.heads[self.current].gain = (1.0
+            - self
+                .heads
+                .iter()
+                .enumerate()
+                .filter(|(i, head)| head.active && *i != self.current)
+                .map(|(_, head)| head.gain)
+                .sum::<f64>())
+        .max(0.0);
+        if self.heads[self.current].delay != frames {
+            let index =
+                self.heads
+                    .iter()
+                    .position(|head| !head.active)
+                    .ok_or(NativeError::Message(
+                        "Tap retiming exceeds prepared read-head capacity",
+                    ))?;
+            let current = &mut self.heads[self.current];
+            current.remaining = self.fade_frames;
+            current.step = current.gain / self.fade_frames as f64;
+            self.heads[index] = DelayHead {
+                delay: frames,
+                gain: 0.0,
+                step: 0.0,
+                remaining: 0,
+                active: true,
+            };
+            self.current = index;
+        }
+        Ok(())
+    }
+
+    fn advance_heads(&mut self) {
+        for (index, head) in self.heads.iter_mut().enumerate() {
+            if !head.active || index == self.current {
+                continue;
+            }
+            head.remaining -= 1;
+            if head.remaining == 0 {
+                head.active = false;
+                head.gain = 0.0;
+            } else {
+                head.gain = (head.gain - head.step).max(0.0);
+            }
+        }
     }
 }
 

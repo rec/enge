@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from fractions import Fraction
-from math import ceil, exp, floor, log10, pow
+from math import ceil, exp, floor, log10, pow, sqrt
 from typing import Literal
 
 import numpy as np
@@ -80,6 +80,16 @@ class ModulatedDelayState(DelayState):
     phase: float = 0
 
 
+class ReverbState(BaseModel):
+    predelay: TapDelayState
+    lines: list[list[float]]
+    writes: list[int]
+    damping: list[float]
+    non_silent: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class ProcessorState(BaseModel):
     parameters: dict[str, ParameterRamp]
     bypass: ParameterRamp
@@ -87,6 +97,7 @@ class ProcessorState(BaseModel):
     granulator: GranulatorState | None = None
     tap_delay: TapDelayState | None = None
     modulated_delay: ModulatedDelayState | None = None
+    reverb: ReverbState | None = None
     reduction_db: float = 0.0
     ended_at: int | None = None
 
@@ -488,6 +499,71 @@ class OfflineEffects:
                 raise ValueError("Non-finite compressor gain")
             state.reduction_db = reduction
             return _mix(dry, dry * gain, mix), ended["input"]
+        if isinstance(processor, audio_effects.Reverb):
+            dry = ports["input"]
+            if len(dry) == 1:
+                dry = np.repeat(dry / sqrt(2), 2)
+            reverb = state.reverb
+            assert reverb is not None
+            predelay = reverb.predelay
+            reverb.non_silent -= sum(
+                abs(v) >= processor.tail_threshold
+                for v in predelay.history[predelay.write]
+            )
+            reverb.non_silent += sum(
+                int(abs(v) >= processor.tail_threshold) for v in dry
+            )
+            predelay.history[predelay.write] = dry.tolist()
+            _retime_delay(
+                predelay,
+                self._value(processor, "predelay_seconds", frame)
+                * self.definition.sample_rate,
+                processor.retime_fade_frames,
+            )
+            delayed = _tap_read(predelay, 2)
+            predelay.write = (predelay.write + 1) % len(predelay.history)
+            _advance_heads(predelay)
+            a, gains = _reverb_coefficients(
+                self._value(processor, "decay_seconds", frame),
+                self._value(processor, "damping_hz", frame),
+                self.definition.sample_rate,
+                [len(r) for r in reverb.lines],
+            )
+            values = [r[w] for r, w in zip(reverb.lines, reverb.writes, strict=True)]
+            scale = 1 / sqrt(8)
+            wet = np.array(
+                [
+                    sum((-1) ** (i % 2) * scale * v for i, v in enumerate(values)),
+                    sum(
+                        (-1) ** i.bit_count() * scale * v for i, v in enumerate(values)
+                    ),
+                ]
+            )
+            reverb.damping = [
+                (1 - a) * v + a * d for v, d in zip(values, reverb.damping, strict=True)
+            ]
+            reverb.damping = [
+                0.0 if abs(v) < processor.state_floor else v for v in reverb.damping
+            ]
+            total = sum(reverb.damping)
+            for i, (line, write, gain) in enumerate(
+                zip(reverb.lines, reverb.writes, gains, strict=True)
+            ):
+                value = (
+                    (-1) ** (i // 4) * scale * delayed[0]
+                    + (-1) ** (i // 2) * scale * delayed[1]
+                    + gain * (reverb.damping[i] - total / 4)
+                )
+                reverb.non_silent -= int(abs(line[write]) >= processor.tail_threshold)
+                reverb.non_silent += int(abs(value) >= processor.tail_threshold)
+                line[write] = 0.0 if abs(value) < processor.state_floor else value
+                reverb.writes[i] = (write + 1) % len(line)
+            drained = (
+                ended["input"]
+                and reverb.non_silent == 0
+                and all(abs(v) < processor.tail_threshold for v in reverb.damping)
+            )
+            return (np.zeros(2) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, audio_effects.Filter):
             dry = ports["input"]
             values = np.array(
@@ -550,58 +626,15 @@ class OfflineEffects:
                 self._value(processor, "delay_seconds", frame)
                 * self.definition.sample_rate,
             )
-            current = delay.heads[delay.current]
-            current.gain = max(
-                0.0,
-                1
-                - sum(
-                    h.gain
-                    for i, h in enumerate(delay.heads)
-                    if h.active and i != delay.current
-                ),
-            )
-            if current.delay_frames != delay_frames:
-                current.remaining = processor.retime_fade_frames
-                current.step = current.gain / processor.retime_fade_frames
-                index = next(
-                    (i for i, h in enumerate(delay.heads) if not h.active), None
-                )
-                if index is None:
-                    raise EngineError(
-                        "Tap retiming exceeds prepared read-head capacity"
-                    )
-                delay.current = index
-                current = delay.heads[index]
-                current.delay_frames, current.gain, current.step = (
-                    delay_frames,
-                    0.0,
-                    0.0,
-                )
-                current.remaining, current.active = 0, True
-            wet = np.array(
-                [
-                    sum(
-                        h.gain * _delay_read(delay, h.delay_frames, c)
-                        for h in delay.heads
-                        if h.active
-                    )
-                    for c in range(len(dry))
-                ]
-            )
+            _retime_delay(delay, delay_frames, processor.retime_fade_frames)
+            wet = _tap_read(delay, len(dry))
             feedback = self._value(processor, "feedback", frame)
             value = dry if not ended["input"] else np.zeros_like(dry)
             history = value + feedback * wet
             history[np.abs(history) < processor.state_floor] = 0
             delay.history[delay.write] = history.tolist()
             delay.write = (delay.write + 1) % frames
-            for i, head in enumerate(delay.heads):
-                if not head.active or i == delay.current:
-                    continue
-                head.remaining -= 1
-                if head.remaining == 0:
-                    head.active, head.gain = False, 0.0
-                else:
-                    head.gain = max(0.0, head.gain - head.step)
+            _advance_heads(delay)
             drained = ended["input"] and all(
                 abs(v) < processor.tail_threshold for row in delay.history for v in row
             )
@@ -805,6 +838,13 @@ def prepare(
             filters.parameters(processor.filters, sample_rate, 1)
         elif isinstance(processor, audio_effects.ModulatedDelay):
             _channel_phase_offsets(processor, len(layouts[processor.name]))
+        elif isinstance(processor, audio_effects.Reverb):
+            _reverb_coefficients(
+                processor.decay_seconds,
+                processor.damping_hz,
+                sample_rate,
+                audio_effects.reverb_delay_frames(sample_rate),
+            )
     return PreparedEffects(
         definition=definition,
         sample_rate=sample_rate,
@@ -845,6 +885,8 @@ def native_live_graph(
         if isinstance(p, audio_effects.Filter)
         else 9
         if isinstance(p, audio_effects.Granulator)
+        else 16
+        if isinstance(p, audio_effects.Reverb)
         else 8
         if isinstance(p, audio_effects.Compressor)
         else 5
@@ -894,6 +936,26 @@ def native_live_graph(
                 processor.release_seconds,
                 processor.makeup_db,
             ]
+        elif isinstance(processor, audio_effects.Reverb):
+            kinds.append(8)
+            parameters[node, [0, 3, 4, 5, 6]] = [
+                processor.predelay_seconds,
+                processor.decay_seconds,
+                processor.state_floor,
+                processor.damping_hz,
+                processor.maximum_predelay_seconds,
+            ]
+            parameters[node, 8:16] = audio_effects.reverb_delay_frames(
+                definition.sample_rate
+            )
+            tap_delay_rows.append(
+                [
+                    node,
+                    ceil(processor.maximum_predelay_seconds * definition.sample_rate)
+                    + 1,
+                    processor.retime_fade_frames,
+                ]
+            )
         elif isinstance(processor, audio_effects.Filter):
             kinds.append(2)
             values = filters.parameters(processor.filters, definition.sample_rate, 1)[0]
@@ -1001,6 +1063,7 @@ def native_live_graph(
                     audio_effects.Filter,
                     audio_effects.TapDelay,
                     audio_effects.ModulatedDelay,
+                    audio_effects.Reverb,
                 ),
             )
             else 0.0
@@ -1181,6 +1244,12 @@ def _initial_state(
             release_seconds=processor.release_seconds,
             makeup_db=processor.makeup_db,
         )
+    elif isinstance(processor, audio_effects.Reverb):
+        values.update(
+            predelay_seconds=processor.predelay_seconds,
+            decay_seconds=processor.decay_seconds,
+            damping_hz=processor.damping_hz,
+        )
     elif isinstance(processor, audio_effects.Filter):
         filter_states = filters.initial_states(processor.filters, channels)
         for definition in processor.filters:
@@ -1248,6 +1317,36 @@ def _initial_state(
                 ]
             )
             if isinstance(processor, audio_effects.ModulatedDelay)
+            else None
+        ),
+        reverb=(
+            ReverbState(
+                predelay=TapDelayState(
+                    heads=[
+                        DelayHead(
+                            delay_frames=processor.predelay_seconds * sample_rate,
+                            gain=1.0,
+                            active=True,
+                        ),
+                        *[
+                            DelayHead(delay_frames=0)
+                            for _ in range(processor.retime_fade_frames)
+                        ],
+                    ],
+                    history=[
+                        [0.0, 0.0]
+                        for _ in range(
+                            ceil(processor.maximum_predelay_seconds * sample_rate) + 1
+                        )
+                    ],
+                ),
+                lines=[
+                    [0.0] * n for n in audio_effects.reverb_delay_frames(sample_rate)
+                ],
+                writes=[0] * 8,
+                damping=[0.0] * 8,
+            )
+            if isinstance(processor, audio_effects.Reverb)
             else None
         ),
     )
@@ -1326,6 +1425,60 @@ def _delay_read(state: DelayState, delay_frames: float, channel: int) -> float:
     ][channel]
 
 
+def _retime_delay(state: TapDelayState, delay_frames: float, fade_frames: int) -> None:
+    current = state.heads[state.current]
+    current.gain = max(
+        0.0,
+        1
+        - sum(
+            h.gain for i, h in enumerate(state.heads) if h.active and i != state.current
+        ),
+    )
+    if current.delay_frames == delay_frames:
+        return
+    current.remaining = fade_frames
+    current.step = current.gain / fade_frames
+    index = next((i for i, h in enumerate(state.heads) if not h.active), None)
+    if index is None:
+        raise EngineError("Tap retiming exceeds prepared read-head capacity")
+    state.current = index
+    state.heads[index] = DelayHead(delay_frames=delay_frames, active=True)
+
+
+def _advance_heads(state: TapDelayState) -> None:
+    for i, head in enumerate(state.heads):
+        if not head.active or i == state.current:
+            continue
+        head.remaining -= 1
+        if head.remaining == 0:
+            head.active, head.gain = False, 0.0
+        else:
+            head.gain = max(0.0, head.gain - head.step)
+
+
+def _tap_read(state: TapDelayState, channels: int) -> np.ndarray:
+    return np.array(
+        [
+            sum(
+                h.gain * _delay_read(state, h.delay_frames, c)
+                for h in state.heads
+                if h.active
+            )
+            for c in range(channels)
+        ]
+    )
+
+
+def _reverb_coefficients(
+    decay: float, damping_hz: float, sample_rate: int, lengths: list[int]
+) -> tuple[float, list[float]]:
+    a = exp(-2 * np.pi * damping_hz / sample_rate)
+    gains = [pow(10, -3 * n / (sample_rate * decay)) for n in lengths]
+    if not 0 <= a < 1 or any(not 0 <= g < 1 for g in gains):
+        raise ValueError("Unrepresentable reverb decay or damping")
+    return a, gains
+
+
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
     if name == "mix":
         return 1
@@ -1340,6 +1493,8 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
             "release_seconds": 6,
             "makeup_db": 7,
         }[name]
+    if isinstance(processor, audio_effects.Reverb):
+        return {"predelay_seconds": 0, "decay_seconds": 3, "damping_hz": 5}[name]
     if isinstance(processor, audio_effects.Filter):
         return 3 + [
             n for f in processor.filters for n in (f"{f.name}-cutoff_hz", f"{f.name}-q")
