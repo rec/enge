@@ -109,6 +109,19 @@ bounds and relevant heap/performance measurements. Preserve limits on optional
 libraries, supplied assets and physical/device qualification. Do not count an
 unimplemented row as complete because its supporting primitive exists.
 
+## Shared native renderer work
+
+The persistent Rust DSP core now lives in `src/effects/runtime.rs`, separate from
+the source/callback owner in `src/live.rs`. The callback owner consumes that same
+core; no DSP algorithm changed in the extraction. The 78 existing effect and live
+regressions pass, with Rust build and lint checks clean.
+
+Next, connect the offline owner to the core and remove the old native whole-graph
+path. Preserve the portable Python ramp/generator state and explicit processor
+state used by JSON snapshots. Verify cross-backend snapshot replay, then use the
+shared processor lifecycle for native input-end, tail drain and stop handling.
+This approved foundation precedes the eight-line reverb and later stateful FX.
+
 ## Additional work beyond the prompt
 
 None.

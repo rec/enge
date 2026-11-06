@@ -1,5 +1,7 @@
 //! Whole-graph native gain, multiply, and resonant-filter processing.
 
+pub(crate) mod runtime;
+
 use crate::filters::{FilterBank, Inputs};
 use numpy::ndarray::{Array2, Array3};
 use numpy::{
