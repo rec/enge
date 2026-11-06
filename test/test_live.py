@@ -94,7 +94,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         1,
         np.empty((0, 4), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
-        np.empty((0, 2), dtype=np.int64),
+        np.empty((0, 3), dtype=np.int64),
         np.empty((0, 5), dtype=np.float64),
         4,
     )
@@ -116,7 +116,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         1,
         np.empty((0, 4), dtype=np.float64),
         np.empty((0, 4), dtype=np.int64),
-        np.empty((0, 2), dtype=np.int64),
+        np.empty((0, 3), dtype=np.int64),
         np.empty((0, 5), dtype=np.float64),
         4,
     )
@@ -308,7 +308,7 @@ def test_rejected_live_restore_preserves_all_source_state(
                 0 if incompatible else 1,
                 np.empty((0, 4)),
                 np.empty((0, 4), dtype=np.int64),
-                np.empty((0, 2), dtype=np.int64),
+                np.empty((0, 3), dtype=np.int64),
                 np.empty((0, 5)),
                 2,
             )
@@ -351,7 +351,7 @@ def test_live_restore_recovers_partial_render_and_discards_abandoned_actions(
             1,
             np.empty((0, 4)),
             np.empty((0, 4), dtype=np.int64),
-            np.empty((0, 2), dtype=np.int64),
+            np.empty((0, 3), dtype=np.int64),
             np.empty((0, 5)),
             2,
         )

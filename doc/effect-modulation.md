@@ -51,7 +51,8 @@ processor whose base delay is 0.005 seconds and maximum delay is 0.01 seconds:
 Set that processor's `depth_seconds` to zero to use enveLFO for its delay-time
 motion. Its built-in oscillator then contributes no motion. A nonzero internal
 depth can be composed with the externally modulated base, within the declared
-delay span. Existing integer-frame reads and channel-phase behavior are unchanged.
+delay span. Reads now use the [fractional delay and tap-retiming profile](delay-effects.md);
+channel phase offsets retain their existing meaning.
 
 Routes can also drive delay depth/rate/feedback, clipping drive, gain, wet/dry
 mix, filter `<filter-name>-cutoff_hz`/`<filter-name>-q`, and the existing granular

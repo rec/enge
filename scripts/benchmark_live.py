@@ -1,18 +1,22 @@
 """Measure the callback-shaped heterogeneous engine path without device I/O."""
 
+from pathlib import Path
 from statistics import median
 from time import perf_counter_ns
+from typing import Literal
 
 import numpy as np
 import tyro
 from pydantic import BaseModel, ConfigDict, Field
 from ufor import audio_effects
-from ufor.events import Trigger
+from ufor.events import PerformanceEvent, Trigger
+from ufor.instrument_trace import TraceAction
 from ufor.samples.processing import FilterResponse, ResonantFilter
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
 from enge import effects, live, synth
+from enge.render import write_flac
 
 
 class Settings(BaseModel):
@@ -21,13 +25,15 @@ class Settings(BaseModel):
     voices: int = Field(default=16, gt=0)
     effect_actions: int = Field(default=64, ge=1, le=64)
     granular: bool = False
+    delay: Literal["none", "tap", "modulated"] = "none"
+    audio_output: Path | None = None
 
     model_config = ConfigDict(frozen=True)
 
 
 def main(settings: Settings) -> None:
     document = _score()
-    events = [
+    events: list[PerformanceEvent] = [
         Trigger(
             tick=0,
             ordinal=i,
@@ -38,7 +44,9 @@ def main(settings: Settings) -> None:
         )
         for i in range(settings.voices)
     ]
-    actions = prepare_trace(document.body, events, seed=0).actions
+    actions: list[TraceAction] = list(
+        prepare_trace(document.body, events, seed=0).actions
+    )
     processors: list[audio_effects.Processor] = [
         audio_effects.Gain(name="trim", gain_db=-6),
         audio_effects.Filter(
@@ -67,6 +75,29 @@ def main(settings: Settings) -> None:
                 mix=0.8,
             )
         )
+    if settings.delay == "tap":
+        processors.append(
+            audio_effects.TapDelay(
+                name="delay",
+                delay_seconds=0.005,
+                maximum_delay_seconds=0.03,
+                feedback=0.6,
+                mix=0.5,
+            )
+        )
+    elif settings.delay == "modulated":
+        processors.append(
+            audio_effects.ModulatedDelay(
+                name="delay",
+                base_delay_seconds=0.006,
+                depth_seconds=0.001,
+                maximum_delay_seconds=0.03,
+                rate_hz=5,
+                channel_phase_offsets=[0, 0.5],
+                feedback=0.6,
+                mix=0.5,
+            )
+        )
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(
@@ -85,29 +116,57 @@ def main(settings: Settings) -> None:
     output = np.empty((settings.block_frames, 2))
     durations = []
     callbacks = settings.seconds * 48000 // settings.block_frames
+    recording = (
+        np.empty((callbacks * settings.block_frames, 2))
+        if settings.audio_output is not None
+        else None
+    )
     for i in range(callbacks):
         start = i * settings.block_frames
+        batch = effect_actions(settings, start)
         before = perf_counter_ns()
         engine.advance_into(
             {"synth": actions if i == 0 else []},
-            effect_actions(settings, start),
+            batch,
             start,
             start + settings.block_frames,
             output,
         )
         durations.append((perf_counter_ns() - before) / 1000)
+        if recording is not None:
+            recording[start : start + settings.block_frames] = output
     ordered = sorted(durations[1:])
     budget = settings.block_frames / 48000 * 1e6
     p99 = ordered[int(0.99 * (len(ordered) - 1))]
     print(
         f"callbacks={callbacks} block={settings.block_frames} voices={settings.voices} "
         f"effect_actions={settings.effect_actions} granular={settings.granular}"
+        f" delay={settings.delay}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
+    print(
+        f"first_us={durations[0]:.1f} "
+        f"misses={sum(v > budget for v in durations)}/{callbacks}"
+    )
+    if settings.audio_output is not None and recording is not None:
+        settings.audio_output.parent.mkdir(parents=True, exist_ok=True)
+        write_flac([recording], settings.audio_output, 48000)
+        print(settings.audio_output)
 
 
 def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectAction]:
+    if settings.delay == "tap":
+        return [
+            audio_effects.ParameterAction(
+                tick=start + i,
+                ordinal=0,
+                processor="delay",
+                parameter="delay_seconds",
+                value=0.003 + ((start + i) % 1000) / 480000,
+            )
+            for i in range(min(settings.effect_actions, settings.block_frames))
+        ]
     actions: list[audio_effects.EffectAction] = []
     for ordinal in range(settings.effect_actions):
         processor, parameter, value = (

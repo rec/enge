@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from fractions import Fraction
-from math import pow
+from math import ceil, floor, pow
 from typing import Literal
 
 import numpy as np
@@ -54,14 +54,29 @@ class GranulatorState(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-class TapDelayState(BaseModel):
+class DelayState(BaseModel):
     history: list[list[float]]
     write: int = 0
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-class ModulatedDelayState(TapDelayState):
+class DelayHead(BaseModel):
+    delay_frames: float = 1.0
+    gain: float = 0.0
+    step: float = 0.0
+    remaining: int = 0
+    active: bool = False
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class TapDelayState(DelayState):
+    heads: list[DelayHead]
+    current: int = 0
+
+
+class ModulatedDelayState(DelayState):
     phase: float = 0
 
 
@@ -659,19 +674,62 @@ class OfflineEffects:
             assert delay is not None
             frames = len(delay.history)
             delay_frames = max(
-                1,
-                round(
-                    self._value(processor, "delay_seconds", frame)
-                    * self.definition.sample_rate
+                1.0,
+                self._value(processor, "delay_seconds", frame)
+                * self.definition.sample_rate,
+            )
+            current = delay.heads[delay.current]
+            current.gain = max(
+                0.0,
+                1
+                - sum(
+                    h.gain
+                    for i, h in enumerate(delay.heads)
+                    if h.active and i != delay.current
                 ),
             )
-            wet = np.asarray(delay.history[(delay.write - delay_frames) % frames])
+            if current.delay_frames != delay_frames:
+                current.remaining = processor.retime_fade_frames
+                current.step = current.gain / processor.retime_fade_frames
+                index = next(
+                    (i for i, h in enumerate(delay.heads) if not h.active), None
+                )
+                if index is None:
+                    raise EngineError(
+                        "Tap retiming exceeds prepared read-head capacity"
+                    )
+                delay.current = index
+                current = delay.heads[index]
+                current.delay_frames, current.gain, current.step = (
+                    delay_frames,
+                    0.0,
+                    0.0,
+                )
+                current.remaining, current.active = 0, True
+            wet = np.array(
+                [
+                    sum(
+                        h.gain * _delay_read(delay, h.delay_frames, c)
+                        for h in delay.heads
+                        if h.active
+                    )
+                    for c in range(len(dry))
+                ]
+            )
             feedback = self._value(processor, "feedback", frame)
             value = dry if not ended["input"] else np.zeros_like(dry)
             history = value + feedback * wet
             history[np.abs(history) < processor.state_floor] = 0
             delay.history[delay.write] = history.tolist()
             delay.write = (delay.write + 1) % frames
+            for i, head in enumerate(delay.heads):
+                if not head.active or i == delay.current:
+                    continue
+                head.remaining -= 1
+                if head.remaining == 0:
+                    head.active, head.gain = False, 0.0
+                else:
+                    head.gain = max(0.0, head.gain - head.step)
             drained = ended["input"] and all(
                 abs(v) < processor.tail_threshold for row in delay.history for v in row
             )
@@ -686,17 +744,15 @@ class OfflineEffects:
             lfo = _delay_waveform(processor.waveform, phase)
             delays = np.maximum(
                 1,
-                np.rint(
-                    (
-                        self._value(processor, "base_delay_seconds", frame)
-                        + self._value(processor, "depth_seconds", frame) * lfo
-                    )
-                    * self.definition.sample_rate
-                ).astype(np.int64),
+                (
+                    self._value(processor, "base_delay_seconds", frame)
+                    + self._value(processor, "depth_seconds", frame) * lfo
+                )
+                * self.definition.sample_rate,
             )
             wet = np.asarray(
                 [
-                    delay.history[(delay.write - value) % frames][channel]
+                    _delay_read(delay, float(value), channel)
                     for channel, value in enumerate(delays)
                 ]
             )
@@ -911,9 +967,9 @@ def native_live_graph(
         if isinstance(p, audio_effects.Filter)
         else 8
         if isinstance(p, audio_effects.Granulator)
-        else 4
+        else 5
         if isinstance(p, audio_effects.TapDelay)
-        else 6
+        else 7
         if isinstance(p, audio_effects.ModulatedDelay)
         else 3
         for p in ordered
@@ -981,13 +1037,15 @@ def native_live_graph(
         elif isinstance(processor, audio_effects.TapDelay):
             kinds.append(5)
             parameters[node, [0, 3]] = [processor.delay_seconds, processor.feedback]
+            parameters[node, 4] = processor.state_floor
             tap_delay_rows.append(
                 [
                     node,
                     max(
                         1,
-                        round(processor.maximum_delay_seconds * definition.sample_rate),
+                        ceil(processor.maximum_delay_seconds * definition.sample_rate),
                     ),
+                    processor.retime_fade_frames,
                 ]
             )
         elif isinstance(processor, audio_effects.ModulatedDelay):
@@ -998,13 +1056,14 @@ def native_live_graph(
                 processor.rate_hz,
                 processor.feedback,
             ]
+            parameters[node, 6] = processor.state_floor
             phases = _channel_phase_offsets(processor, len(definition.channels))
             modulated_delay_rows.append(
                 [
                     node,
                     max(
                         1,
-                        round(processor.maximum_delay_seconds * definition.sample_rate),
+                        ceil(processor.maximum_delay_seconds * definition.sample_rate),
                     ),
                     list(Waveform).index(processor.waveform),
                     *phases,
@@ -1024,7 +1083,7 @@ def native_live_graph(
         output_source,
         np.asarray(filter_rows, dtype=np.float64).reshape(-1, 4),
         np.asarray(granulator_rows, dtype=np.int64).reshape(-1, 4),
-        np.asarray(tap_delay_rows, dtype=np.int64).reshape(-1, 2),
+        np.asarray(tap_delay_rows, dtype=np.int64).reshape(-1, 3),
         np.asarray(modulated_delay_rows, dtype=np.float64).reshape(
             -1, len(definition.channels) + 3
         ),
@@ -1232,12 +1291,20 @@ def _initial_state(
         ),
         tap_delay=(
             TapDelayState(
+                heads=[
+                    DelayHead(
+                        delay_frames=max(1.0, processor.delay_seconds * sample_rate),
+                        gain=1.0,
+                        active=True,
+                    ),
+                    *[DelayHead() for _ in range(processor.retime_fade_frames)],
+                ],
                 history=[
                     [0.0] * channels
                     for _ in range(
-                        max(1, round(processor.maximum_delay_seconds * sample_rate))
+                        max(1, ceil(processor.maximum_delay_seconds * sample_rate))
                     )
-                ]
+                ],
             )
             if isinstance(processor, audio_effects.TapDelay)
             else None
@@ -1247,7 +1314,7 @@ def _initial_state(
                 history=[
                     [0.0] * channels
                     for _ in range(
-                        max(1, round(processor.maximum_delay_seconds * sample_rate))
+                        max(1, ceil(processor.maximum_delay_seconds * sample_rate))
                     )
                 ]
             )
@@ -1337,6 +1404,16 @@ def _channel_phase_offsets(
     if len(processor.channel_phase_offsets) != channels:
         raise EngineError("Modulated delay phase offsets must match output channels")
     return np.asarray(processor.channel_phase_offsets)
+
+
+def _delay_read(state: DelayState, delay_frames: float, channel: int) -> float:
+    whole = floor(delay_frames)
+    fraction = delay_frames - whole
+    index = (state.write - whole) % len(state.history)
+    older = (index - 1) % len(state.history)
+    return (1 - fraction) * state.history[index][channel] + fraction * state.history[
+        older
+    ][channel]
 
 
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:

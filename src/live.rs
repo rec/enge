@@ -153,6 +153,19 @@ struct LiveGranulator {
 struct LiveTapDelay {
     history: Array2<f64>,
     write: usize,
+    heads: Vec<DelayHead>,
+    current: usize,
+    fade_frames: usize,
+    state_floor: f64,
+}
+
+#[derive(Clone)]
+struct DelayHead {
+    delay: f64,
+    gain: f64,
+    step: f64,
+    remaining: usize,
+    active: bool,
 }
 
 #[derive(Clone)]
@@ -162,6 +175,7 @@ struct LiveModulatedDelay {
     phase: f64,
     waveform: u8,
     phase_offsets: Vec<f64>,
+    state_floor: f64,
 }
 
 #[derive(Clone)]
@@ -314,6 +328,7 @@ impl LiveRuntime {
             granulators,
             tap_delays,
             modulated_delays,
+            self.rate,
             self.channels,
             self.action_capacity,
             batch_capacity,
@@ -799,6 +814,7 @@ impl EffectRuntime {
         granulators: PyReadonlyArray2<'_, i64>,
         tap_delays: PyReadonlyArray2<'_, i64>,
         modulated_delays: PyReadonlyArray2<'_, f64>,
+        rate: f64,
         channels: usize,
         action_capacity: usize,
         batch_capacity: usize,
@@ -823,7 +839,7 @@ impl EffectRuntime {
             || filters.shape()[1] != 4
             || filters.as_array().iter().any(|v| !v.is_finite())
             || granulators.shape()[1] != 4
-            || tap_delays.shape()[1] != 2
+            || tap_delays.shape()[1] != 3
             || modulated_delays.shape()[1] != channels + 3
             || modulated_delays.as_array().iter().any(|v| !v.is_finite())
         {
@@ -905,17 +921,34 @@ impl EffectRuntime {
                 .map_err(|_| PyValueError::new_err("Invalid live tap delay node"))?;
             let history_frames = usize::try_from(row[1])
                 .map_err(|_| PyValueError::new_err("Invalid live tap delay history"))?;
+            let fade_frames = usize::try_from(row[2])
+                .map_err(|_| PyValueError::new_err("Invalid live tap retime duration"))?;
             if node >= nodes
                 || kinds[node] != 5
                 || history_frames == 0
                 || prepared_tap_delays[node].is_some()
-                || parameters.ncols() < 4
+                || parameters.ncols() < 5
+                || fade_frames == 0
+                || fade_frames.checked_add(1).is_none()
+                || parameters[[node, 4]] < 0.0
             {
                 return Err(PyValueError::new_err("Invalid live tap delay"));
             }
             prepared_tap_delays[node] = Some(LiveTapDelay {
                 history: Array2::zeros((history_frames, channels)),
                 write: 0,
+                heads: (0..fade_frames + 1)
+                    .map(|i| DelayHead {
+                        delay: (parameters[[node, 0]] * rate).max(1.0),
+                        gain: if i == 0 { 1.0 } else { 0.0 },
+                        step: 0.0,
+                        remaining: 0,
+                        active: i == 0,
+                    })
+                    .collect(),
+                current: 0,
+                fade_frames,
+                state_floor: parameters[[node, 4]],
             });
         }
         if kinds
@@ -939,7 +972,8 @@ impl EffectRuntime {
                 || waveform > 2
                 || row.iter().skip(3).any(|v| !(0.0..1.0).contains(v))
                 || prepared_modulated_delays[node].is_some()
-                || parameters.ncols() < 6
+                || parameters.ncols() < 7
+                || parameters[[node, 6]] < 0.0
             {
                 return Err(PyValueError::new_err("Invalid live modulated delay"));
             }
@@ -949,6 +983,7 @@ impl EffectRuntime {
                 phase: 0.0,
                 waveform,
                 phase_offsets: row.iter().skip(3).copied().collect(),
+                state_floor: parameters[[node, 6]],
             });
         }
         if kinds
@@ -1237,24 +1272,73 @@ impl EffectRuntime {
             .as_mut()
             .expect("validated live tap delay");
         let frames = delay.history.nrows();
-        let delay_frames = (delay_seconds * rate).round() as usize;
+        let delay_frames = (delay_seconds * rate).max(1.0);
         if !delay_seconds.is_finite()
             || delay_seconds <= 0.0
-            || delay_frames == 0
-            || delay_frames > frames
+            || delay_frames > frames as f64
             || !feedback.is_finite()
             || !(0.0..1.0).contains(&feedback)
         {
             return Err(NativeError::Message("Invalid live tap delay parameters"));
         }
-        let read = (delay.write + frames - delay_frames) % frames;
+        delay.heads[delay.current].gain = (1.0
+            - delay
+                .heads
+                .iter()
+                .enumerate()
+                .filter(|(i, h)| h.active && *i != delay.current)
+                .map(|(_, h)| h.gain)
+                .sum::<f64>())
+        .max(0.0);
+        if delay.heads[delay.current].delay != delay_frames {
+            let index = delay
+                .heads
+                .iter()
+                .position(|h| !h.active)
+                .ok_or(NativeError::Message(
+                    "Tap retiming exceeds prepared read-head capacity",
+                ))?;
+            let current = &mut delay.heads[delay.current];
+            current.remaining = delay.fade_frames;
+            current.step = current.gain / delay.fade_frames as f64;
+            delay.heads[index] = DelayHead {
+                delay: delay_frames,
+                gain: 0.0,
+                step: 0.0,
+                remaining: 0,
+                active: true,
+            };
+            delay.current = index;
+        }
         for channel in 0..channels {
-            let wet = delay.history[[read, channel]];
+            let wet = delay
+                .heads
+                .iter()
+                .filter(|h| h.active)
+                .map(|h| h.gain * delay_read(&delay.history, delay.write, h.delay, channel))
+                .sum::<f64>();
             let value = self.wet[channel];
-            delay.history[[delay.write, channel]] = value + feedback * wet;
+            let stored = value + feedback * wet;
+            delay.history[[delay.write, channel]] = if stored.abs() < delay.state_floor {
+                0.0
+            } else {
+                stored
+            };
             self.wet[channel] = wet;
         }
         delay.write = (delay.write + 1) % frames;
+        for (index, head) in delay.heads.iter_mut().enumerate() {
+            if !head.active || index == delay.current {
+                continue;
+            }
+            head.remaining -= 1;
+            if head.remaining == 0 {
+                head.active = false;
+                head.gain = 0.0;
+            } else {
+                head.gain = (head.gain - head.step).max(0.0);
+            }
+        }
         Ok(())
     }
 
@@ -1304,13 +1388,17 @@ impl EffectRuntime {
                     }
                 }
             };
-            let delay_frames = ((base + depth * lfo) * rate).round() as usize;
-            if delay_frames == 0 || delay_frames > frames {
+            let delay_frames = ((base + depth * lfo) * rate).max(1.0);
+            if delay_frames > frames as f64 {
                 return Err(NativeError::Message("Invalid live modulated delay read"));
             }
-            let read = (delay.write + frames - delay_frames) % frames;
-            let wet = delay.history[[read, channel]];
-            delay.history[[delay.write, channel]] = self.wet[channel] + feedback * wet;
+            let wet = delay_read(&delay.history, delay.write, delay_frames, channel);
+            let stored = self.wet[channel] + feedback * wet;
+            delay.history[[delay.write, channel]] = if stored.abs() < delay.state_floor {
+                0.0
+            } else {
+                stored
+            };
             self.wet[channel] = wet;
         }
         delay.write = (delay.write + 1) % frames;
@@ -1369,6 +1457,7 @@ impl EffectRuntime {
                         a.history.raw_dim() != b.history.raw_dim()
                             || a.waveform != b.waveform
                             || a.phase_offsets != b.phase_offsets
+                            || a.state_floor != b.state_floor
                     }
                     (None, None) => false,
                     _ => true,
@@ -1378,7 +1467,12 @@ impl EffectRuntime {
                 .iter()
                 .zip(&snapshot.tap_delays)
                 .any(|(a, b)| match (a, b) {
-                    (Some(a), Some(b)) => a.history.raw_dim() != b.history.raw_dim(),
+                    (Some(a), Some(b)) => {
+                        a.history.raw_dim() != b.history.raw_dim()
+                            || a.heads.len() != b.heads.len()
+                            || a.fade_frames != b.fade_frames
+                            || a.state_floor != b.state_floor
+                    }
                     (None, None) => false,
                     _ => true,
                 })
@@ -1405,6 +1499,14 @@ impl EffectRuntime {
         self.modulated_delays.clone_from(&snapshot.modulated_delays);
         Ok(())
     }
+}
+
+fn delay_read(history: &Array2<f64>, write: usize, delay: f64, channel: usize) -> f64 {
+    let whole = delay.floor() as usize;
+    let fraction = delay - whole as f64;
+    let index = (write + history.nrows() - whole) % history.nrows();
+    let older = (index + history.nrows() - 1) % history.nrows();
+    (1.0 - fraction) * history[[index, channel]] + fraction * history[[older, channel]]
 }
 
 impl LiveGranulator {

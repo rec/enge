@@ -1,6 +1,13 @@
 # Possible new effect categories
 
-## Status as of 2026-11-02
+## Status as of 2026-11-06
+
+The user has now selected the entire catalogue, including the spectral appendix.
+Work proceeds through the first six priority entries in order, then the remaining
+families. The [implementation inventory](effects-progress.md) records every
+family, approved designs, partial foundations and completion evidence. The
+selection/deferment language below records the original catalogue rationale;
+it does not leave the selected families outside the current scope.
 
 This is a selection catalogue, not a list of wholly missing processors. Existing
 implementations include gain, resonant filtering, multiply, granulation, soft
@@ -364,11 +371,11 @@ For each chosen effect:
 
 None.
 
-## Spectral processing choices for a later selection
+## Spectral processing candidates, now selected
 
 These six ideas were discussed on 2026-11-05 as candidates for priority item 7.
-They remain a selection catalogue while the first six priority entries are
-completed. Selecting one does not select all of them.
+All six were selected on 2026-11-06, after the first six priority entries. Their
+individual implementation and qualification status is tracked in the inventory.
 
 | Candidate | Audible result | Useful first profile |
 | --- | --- | --- |
