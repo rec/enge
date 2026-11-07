@@ -1,5 +1,7 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
+pub(crate) mod controls;
+mod follower;
 mod highpass;
 mod matrix;
 mod mixer;
@@ -42,6 +44,8 @@ pub(crate) struct EffectRuntime {
     pub(crate) inputs: Array3<f64>,
     sources: Array2<i64>,
     port_names: Vec<Vec<String>>,
+    pub(crate) controls: controls::Controls,
+    follower_levels: Vec<f64>,
     output_source: usize,
     pub(crate) parameters: Array2<f64>,
     resolved: Array2<f64>,
@@ -98,6 +102,8 @@ pub(crate) struct EffectSnapshot {
     input_routes: Vec<Vec<i64>>,
     sources: Array2<i64>,
     port_names: Vec<Vec<String>>,
+    controls: controls::Controls,
+    follower_levels: Vec<f64>,
     output_source: usize,
     parameters: Array2<f64>,
     generators: Option<EffectGenerators>,
@@ -137,7 +143,7 @@ pub(crate) struct EffectGenerators {
     pub(crate) bank: GeneratorBank,
     pub(crate) controls: ControlBank,
     pub(crate) maps: Vec<Vec<RouteMap>>,
-    pub(crate) targets: Vec<(usize, usize, f64, f64)>,
+    pub(crate) targets: Vec<usize>,
     pub(crate) partials: Vec<f64>,
 }
 
@@ -216,6 +222,7 @@ impl EffectRuntime {
         main_input: usize,
         tail_thresholds: Vec<f64>,
         port_names: Vec<Vec<String>>,
+        control_plan: controls::Definitions,
         rate: f64,
     ) -> PyResult<Self> {
         let inputs = widths
@@ -236,6 +243,7 @@ impl EffectRuntime {
             main_input,
             tail_thresholds,
             port_names,
+            control_plan,
             vec![vec![-2]; inputs],
             1,
             BATCH_ACTIONS,
@@ -249,10 +257,13 @@ impl EffectRuntime {
         parameters: PyReadonlyArray2<'_, f64>,
         ended: Vec<bool>,
         frozen: Vec<bool>,
+        contributions: Vec<f64>,
     ) -> PyResult<(Vec<f64>, bool)> {
         if inputs.len() != self.input_routes.len()
             || ended.len() != inputs.len()
             || frozen.len() != self.kinds.len()
+            || contributions.len() != self.controls.routes.len()
+            || contributions.iter().any(|v| !v.is_finite())
             || parameters.shape() != self.parameters.shape()
             || parameters.as_array().iter().any(|value| !value.is_finite())
             || inputs.iter().enumerate().any(|(input, values)| {
@@ -267,6 +278,7 @@ impl EffectRuntime {
             return Err(PyValueError::new_err("Invalid native effect frame"));
         }
         self.resolved.assign(&parameters.as_array());
+        self.controls.signals.copy_from_slice(&contributions);
         for (input, values) in inputs.iter().enumerate() {
             self.ended[input] = ended[input];
             for (channel, value) in values.as_array().iter().enumerate() {
@@ -321,6 +333,7 @@ impl EffectRuntime {
         main_input: usize,
         tail_thresholds: Vec<f64>,
         port_names: Vec<Vec<String>>,
+        control_plan: controls::Definitions,
         input_routes: Vec<Vec<i64>>,
         maximum_block_frames: usize,
         action_capacity: usize,
@@ -330,7 +343,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 13)
+        if kinds.iter().any(|v| *v > 14)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -341,7 +354,7 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10) {
+                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -365,6 +378,10 @@ impl EffectRuntime {
                 .iter()
                 .any(|v| !(0.0..=1.0).contains(v))
             || output_source >= inputs + nodes
+            || output_source
+                .checked_sub(inputs)
+                .and_then(|n| kinds.get(n))
+                .is_some_and(|k| *k == 14)
             || filters.shape()[1] != 7
             || filters.as_array().iter().any(|v| !v.is_finite())
             || granulators.shape()[1] != 4
@@ -404,12 +421,20 @@ impl EffectRuntime {
                         "Effect source must precede its consumer",
                     ));
                 }
+                if (source as usize)
+                    .checked_sub(inputs)
+                    .and_then(|n| kinds.get(n))
+                    .is_some_and(|k| *k == 14)
+                {
+                    return Err(PyValueError::new_err(
+                        "Follower analysis cannot feed an audio port",
+                    ));
+                }
                 if kinds[node] == 8 {
                     if !matches!(widths[source as usize], 1 | 2) || widths[node + inputs] != 2 {
                         return Err(PyValueError::new_err("Invalid reverb channel widths"));
                     }
-                } else if kinds[node] != 11
-                    && !(kinds[node] == 7 && port == 1)
+                } else if !(matches!(kinds[node], 11 | 14) || kinds[node] == 7 && port == 1)
                     && widths[source as usize] != widths[node + inputs]
                 {
                     return Err(PyValueError::new_err(
@@ -442,10 +467,19 @@ impl EffectRuntime {
         let mut waveshapers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             let ports = port_names[node].len();
-            let arrival = (0..ports)
+            let audio_arrival = (0..ports)
                 .map(|port| latencies[sources[[node, port]] as usize])
                 .max()
                 .unwrap_or(0);
+            let arrival = control_plan
+                .1
+                .iter()
+                .filter_map(|r| {
+                    let target = control_plan.0.get(r.0)?;
+                    (target.0 == node && r.1 >= 0)
+                        .then(|| latencies.get(inputs + r.1 as usize).copied().unwrap_or(0))
+                })
+                .fold(audio_arrival, usize::max);
             let mut delays = (0..ports).map(|_| None).collect::<Vec<_>>();
             for (port, delay) in delays.iter_mut().enumerate().take(ports) {
                 let source = sources[[node, port]] as usize;
@@ -511,6 +545,22 @@ impl EffectRuntime {
             });
         }
         let parameters = parameters.as_array().to_owned();
+        let controls =
+            controls::Controls::new(control_plan, &kinds, &latencies, inputs, parameters.view())?;
+        for node in 0..nodes {
+            if kinds[node] == 14
+                && (widths[inputs + node] != 1
+                    || parameters.ncols() < 5
+                    || parameters[[node, 0]] < 0.0
+                    || parameters[[node, 3]] < 0.0
+                    || parameters[[node, 4]] <= 0.0
+                    || parameters[[node, 4]] >= tail_thresholds[node]
+                    || parameters[[node, 1]] != 1.0
+                    || parameters[[node, 2]] != 1.0)
+            {
+                return Err(PyValueError::new_err("Invalid follower profile"));
+            }
+        }
         let mut mixers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut crossfader_laws = vec![None; nodes];
         for node in 0..nodes {
@@ -752,7 +802,7 @@ impl EffectRuntime {
                 (0..parameters.ncols())
                     .map(|parameter| {
                         let dynamic = kinds[node] != 11
-                            && ((!matches!(kinds[node], 12 | 13) && matches!(parameter, 1 | 2))
+                            && ((!matches!(kinds[node], 12..=14) && matches!(parameter, 1 | 2))
                                 || match kinds[node] {
                                     0 => parameter == 0,
                                     2 => filter_rows.iter().any(|filter| {
@@ -772,9 +822,14 @@ impl EffectRuntime {
                                         parameter >= 3 && parameter < 3 + 3 * port_names[node].len()
                                     }
                                     13 => parameter == 0,
+                                    14 => matches!(parameter, 0 | 3),
                                     _ => false,
                                 });
-                        let frames = arrival
+                        let modulated = controls
+                            .targets
+                            .iter()
+                            .any(|t| t.node == node && t.parameter == parameter);
+                        let frames = (if modulated { 0 } else { arrival })
                             + if kinds[node] == 4 {
                                 if matches!(parameter, 0 | 3) { 24 } else { 48 }
                             } else {
@@ -818,6 +873,8 @@ impl EffectRuntime {
             widths,
             sources,
             port_names,
+            controls,
+            follower_levels: vec![0.0; nodes],
             output_source,
             targets: parameters.clone(),
             resolved: parameters.clone(),
@@ -879,9 +936,7 @@ impl EffectRuntime {
             if let Some(generators) = &mut self.generators {
                 generators.bank.settle_patches(&[true], at, true)?;
                 generators.bank.observe_patch(0, at, &generators.controls)?;
-                for (index, (node, parameter, minimum, maximum)) in
-                    generators.targets.iter().enumerate()
-                {
+                for (index, route) in generators.targets.iter().enumerate() {
                     let mut count = 0;
                     let product = generators.bank.contributions(
                         0,
@@ -893,15 +948,11 @@ impl EffectRuntime {
                         &mut generators.partials,
                         &mut count,
                     )?;
-                    let value = (self.parameters[[*node, *parameter]]
-                        + sum_partials(&generators.partials[..count]))
-                        * product;
-                    if !value.is_finite() || value < *minimum || value > *maximum {
-                        return Err(NativeError::Message(
-                            "Modulated effect parameter is outside its domain",
-                        ));
-                    }
-                    self.resolved[[*node, *parameter]] = value;
+                    self.controls.signals[*route] = if self.controls.definitions.1[*route].2 == 0 {
+                        sum_partials(&generators.partials[..count])
+                    } else {
+                        product
+                    };
                 }
             }
             let inputs = self.input_routes.len();
@@ -932,6 +983,13 @@ impl EffectRuntime {
     fn process_nodes(&mut self, rate: f64) -> NativeResult<()> {
         let inputs = self.input_routes.len();
         for node in 0..self.kinds.len() {
+            let controls_ended = self.controls.resolve(
+                node,
+                &mut self.resolved,
+                &self.values,
+                &self.ended,
+                inputs,
+            )?;
             for (parameter, delay) in self.control_delays[node].iter_mut().enumerate() {
                 if let Some(delay) = delay {
                     std::mem::swap(
@@ -965,6 +1023,7 @@ impl EffectRuntime {
                         self.port_values[[node, port, channel]] = self.values[[source, channel]];
                     }
                 }
+                self.port_ended[[node, port]] &= controls_ended;
             }
             let authored_mix = self.resolved[[node, 1]];
             let bypass = self.resolved[[node, 2]];
@@ -972,7 +1031,7 @@ impl EffectRuntime {
                 return Err(NativeError::Message("Invalid live effect mix"));
             }
             let mix = authored_mix * bypass;
-            if matches!(self.kinds[node], 11..=13) && (authored_mix != 1.0 || bypass != 1.0) {
+            if matches!(self.kinds[node], 11..=14) && (authored_mix != 1.0 || bypass != 1.0) {
                 return Err(NativeError::Message(
                     "Routing processors have no mix or bypass",
                 ));
@@ -1094,6 +1153,21 @@ impl EffectRuntime {
                         self.resolved.row(node),
                         &mut self.wet[..channels],
                     )?,
+                14 => {
+                    let width = self.widths[first];
+                    follower::process(
+                        &mut self.follower_levels[node],
+                        self.port_values
+                            .index_axis(Axis(0), node)
+                            .row(0)
+                            .slice_axis(Axis(0), numpy::ndarray::Slice::from(..width)),
+                        self.resolved[[node, 0]],
+                        self.resolved[[node, 3]],
+                        rate,
+                        self.resolved[[node, 4]],
+                    )?;
+                    self.wet[0] = self.follower_levels[node];
+                }
                 _ => {
                     let position = self.resolved[[node, 0]];
                     if !(0.0..=1.0).contains(&position) {
@@ -1144,6 +1218,7 @@ impl EffectRuntime {
                             .as_ref()
                             .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
                         4 => waveshaper_drained,
+                        14 => self.follower_levels[node] < self.tail_thresholds[node],
                         5 => self.tap_delays[node]
                             .as_ref()
                             .is_some_and(|delay| delay.non_silent == 0),
@@ -1179,6 +1254,9 @@ impl EffectRuntime {
                     }
             };
             self.ended[node + inputs] = drained;
+            if drained && self.kinds[node] == 14 {
+                self.follower_levels[node] = 0.0;
+            }
             for channel in 0..channels {
                 self.values[[node + inputs, channel]] = if drained {
                     0.0
@@ -1253,6 +1331,8 @@ impl EffectRuntime {
             return Err(NativeError::Message(
                 "Crossfader has only a position parameter",
             ));
+        } else if self.kinds[node] == 14 && (!matches!(parameter, 0 | 3) || action[4] < 0.0) {
+            return Err(NativeError::Message("Invalid follower parameter action"));
         }
         self.targets[[node, parameter]] = action[4];
         self.remaining[[node, parameter]] = duration;
@@ -1526,6 +1606,8 @@ impl EffectRuntime {
             input_routes: self.input_routes.clone(),
             sources: self.sources.clone(),
             port_names: self.port_names.clone(),
+            controls: self.controls.clone(),
+            follower_levels: self.follower_levels.clone(),
             output_source: self.output_source,
             parameters: self.parameters.clone(),
             generators: self.generators.clone(),
@@ -1564,6 +1646,7 @@ impl EffectRuntime {
             }
             || self.sources != snapshot.sources
             || self.port_names != snapshot.port_names
+            || self.controls.definitions != snapshot.controls.definitions
             || self.output_source != snapshot.output_source
             || self.filter_rows != snapshot.filter_rows
             || self.granulators.len() != snapshot.granulators.len()
@@ -1678,6 +1761,8 @@ impl EffectRuntime {
     pub(crate) fn restore(&mut self, snapshot: &EffectSnapshot) -> PyResult<()> {
         self.validate_snapshot(snapshot)?;
         self.parameters.assign(&snapshot.parameters);
+        self.controls.clone_from(&snapshot.controls);
+        self.follower_levels.clone_from(&snapshot.follower_levels);
         self.generators.clone_from(&snapshot.generators);
         self.targets.assign(&snapshot.targets);
         self.steps.assign(&snapshot.steps);

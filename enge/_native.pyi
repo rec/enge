@@ -2,6 +2,8 @@ from typing import Literal
 
 import numpy as np
 
+from .effect_controls import EffectControlPlan
+
 class SynthRuntimeSnapshot: ...
 
 class RubberBandLiveShifter:
@@ -50,6 +52,7 @@ class EffectRuntime:
         main_input: int,
         tail_thresholds: list[float],
         port_names: list[list[str]],
+        control_plan: EffectControlPlan,
         rate: float,
     ) -> None: ...
     def render_frame(
@@ -58,6 +61,7 @@ class EffectRuntime:
         parameters: np.ndarray,
         ended: list[bool],
         frozen: list[bool],
+        contributions: list[float],
     ) -> tuple[list[float], bool]: ...
     def export_state(self) -> list[dict[str, object]]: ...
     def import_state(self, values: list[dict[str, object]], frame: int) -> None: ...
@@ -91,6 +95,7 @@ class LiveRuntime:
         main_input: int,
         tail_thresholds: list[float],
         port_names: list[list[str]],
+        control_plan: EffectControlPlan,
         batch_capacity: int,
         input_routes: list[list[int]] | None = None,
     ) -> None: ...
@@ -101,7 +106,7 @@ class LiveRuntime:
         self,
         generators: GeneratorBank,
         maps: list[list[tuple[int, list[tuple[float, float]]]]],
-        targets: list[tuple[int, int, float, float]],
+        targets: list[int],
     ) -> None: ...
     def active_slots(self, source: int) -> list[bool]: ...
     def active_contexts(self, source: int) -> list[bool]: ...

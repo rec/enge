@@ -452,7 +452,9 @@ def test_slow_grains_can_outlast_the_retained_source_history(
 def test_over_capacity_native_grain_failure_preserves_snapshot_recovery(
     tmp_path: Path,
 ) -> None:
-    graph = modulated_graph("grain")[0]
+    raw = modulated_graph("grain")[0].model_dump()
+    raw.update(envelfos={}, bindings=[], modulation={})
+    graph = audio_effects.EffectGraph.model_validate(raw)
     prepared = effects.prepare(graph, 48000)
     inputs = graph_audio(graph)
     runtime = _native.LiveRuntime.empty(48000, 2, 48000, 64)
@@ -479,9 +481,5 @@ def test_over_capacity_native_grain_failure_preserves_snapshot_recovery(
     assert not runtime.failed()
     runtime.submit_effects(effects.native_live_actions(prepared, [action], 0, 48000))
     runtime.process_into(actual, [inputs["main"]])
-    raw = graph.model_dump()
-    raw.update(envelfos={}, bindings=[], modulation={})
-    expected = effects.OfflineEffects(
-        effects.prepare(audio_effects.EffectGraph.model_validate(raw), 48000)
-    ).advance(inputs, [action], 0, 48000)
+    expected = effects.OfflineEffects(prepared).advance(inputs, [action], 0, 48000)
     check_audio(tmp_path / "grain-cap-recovery.wav", actual, expected)

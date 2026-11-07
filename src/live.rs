@@ -196,7 +196,7 @@ impl LiveRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (kinds, sources, parameters, output_source, filters, granulators, tap_delays, modulated_delays, widths, main_input, tail_thresholds, port_names, batch_capacity, input_routes=None))]
+    #[pyo3(signature = (kinds, sources, parameters, output_source, filters, granulators, tap_delays, modulated_delays, widths, main_input, tail_thresholds, port_names, control_plan, batch_capacity, input_routes=None))]
     fn set_effect_graph(
         &mut self,
         kinds: Vec<u8>,
@@ -211,6 +211,7 @@ impl LiveRuntime {
         main_input: usize,
         tail_thresholds: Vec<f64>,
         port_names: Vec<Vec<String>>,
+        control_plan: crate::effects::runtime::controls::Definitions,
         batch_capacity: usize,
         input_routes: Option<Vec<Vec<i64>>>,
     ) -> PyResult<()> {
@@ -248,6 +249,7 @@ impl LiveRuntime {
             main_input,
             tail_thresholds,
             port_names,
+            control_plan,
             routes,
             self.maximum_block_frames,
             self.action_capacity,
@@ -264,7 +266,7 @@ impl LiveRuntime {
         &mut self,
         generators: &GeneratorBank,
         maps: Vec<Vec<(usize, Vec<(f64, f64)>)>>,
-        targets: Vec<(usize, usize, f64, f64)>,
+        targets: Vec<usize>,
     ) -> PyResult<()> {
         let effects = self
             .effects
@@ -276,12 +278,13 @@ impl LiveRuntime {
             || generators.patch_states.len() != 1
             || generators.parameter_count != targets.len()
             || maps.len() != 4
-            || targets.iter().any(|(node, parameter, minimum, maximum)| {
-                *node >= effects.parameters.nrows()
-                    || *parameter >= effects.parameters.ncols()
-                    || !minimum.is_finite()
-                    || !maximum.is_finite()
-                    || minimum > maximum
+            || targets.iter().any(|route| {
+                effects
+                    .controls
+                    .definitions
+                    .1
+                    .get(*route)
+                    .is_none_or(|r| r.1 != -1)
             })
         {
             return Err(PyValueError::new_err("Invalid live effect generator setup"));

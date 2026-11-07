@@ -37,6 +37,27 @@ impl EffectRuntime {
                 }
             }
             value.set_item("control_delays", controls)?;
+            let bases = PyDict::new(py);
+            for target in &self.controls.targets {
+                if target.node != node {
+                    continue;
+                }
+                if let Some(delay) = &target.base {
+                    bases.set_item(target.parameter.to_string(), control_delay(py, delay)?)?;
+                }
+            }
+            value.set_item("base_delays", bases)?;
+            let routes = PyDict::new(py);
+            for route in &self.controls.routes {
+                if self.controls.targets[route.target].node != node {
+                    continue;
+                }
+                if let Some(delay) = &route.delay {
+                    routes.set_item(&route.name, control_delay(py, delay)?)?;
+                }
+            }
+            value.set_item("route_delays", routes)?;
+            value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
                 2 => {
                     let mut filters = Vec::new();
@@ -565,6 +586,42 @@ impl EffectRuntime {
                 _ => {}
             }
         }
+        for (node, value) in values.iter().enumerate() {
+            let bases = field(value, "base_delays")?;
+            let bases = bases.cast::<PyDict>()?;
+            let routes = field(value, "route_delays")?;
+            let routes = routes.cast::<PyDict>()?;
+            let mut base_count = 0;
+            let mut route_count = 0;
+            for target in &mut snapshot.controls.targets {
+                if target.node != node {
+                    continue;
+                }
+                if let Some(delay) = &mut target.base {
+                    restore_control_delay(delay, &field(bases, &target.parameter.to_string())?)?;
+                    base_count += 1;
+                }
+            }
+            for route in &mut snapshot.controls.routes {
+                if snapshot.controls.targets[route.target].node != node {
+                    continue;
+                }
+                if let Some(delay) = &mut route.delay {
+                    restore_control_delay(delay, &field(routes, &route.name)?)?;
+                    route_count += 1;
+                }
+            }
+            if bases.len() != base_count || routes.len() != route_count {
+                return Err(PyValueError::new_err(
+                    "Invalid effect modulation delay layout",
+                ));
+            }
+            let level: f64 = field(value, "follower_level")?.extract()?;
+            if !level.is_finite() || level < 0.0 {
+                return Err(PyValueError::new_err("Invalid follower level"));
+            }
+            snapshot.follower_levels[node] = level;
+        }
         snapshot.ended.fill(false);
         snapshot.stopped = false;
         self.restore(&snapshot)
@@ -573,6 +630,40 @@ impl EffectRuntime {
 
 fn rows(values: ArrayView2<'_, f64>) -> Vec<Vec<f64>> {
     values.rows().into_iter().map(|row| row.to_vec()).collect()
+}
+
+fn control_delay<'py>(
+    py: Python<'py>,
+    delay: &super::controls::Delay,
+) -> PyResult<Bound<'py, PyDict>> {
+    let value = PyDict::new(py);
+    value.set_item("history", &delay.history)?;
+    value.set_item("write", delay.write)?;
+    value.set_item("remaining", delay.remaining)?;
+    Ok(value)
+}
+
+fn restore_control_delay(
+    delay: &mut super::controls::Delay,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    let value = value.cast::<PyDict>()?;
+    let history: Vec<f64> = field(value, "history")?.extract()?;
+    let write: usize = field(value, "write")?.extract()?;
+    let remaining: usize = field(value, "remaining")?.extract()?;
+    if history.len() != delay.history.len()
+        || history.iter().any(|v| !v.is_finite())
+        || write >= history.len()
+        || remaining > history.len()
+    {
+        return Err(PyValueError::new_err(
+            "Invalid effect modulation delay state",
+        ));
+    }
+    delay.history = history;
+    delay.write = write;
+    delay.remaining = remaining;
+    Ok(())
 }
 
 fn restore_rows(mut target: ArrayViewMut2<'_, f64>, values: Vec<Vec<f64>>) -> PyResult<()> {

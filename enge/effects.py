@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from fractions import Fraction
-from math import ceil, exp, floor, log10, pow, sqrt
+from math import ceil, exp, floor, fsum, log10, pow, prod, sqrt
 from typing import Literal
 
 import numpy as np
@@ -11,9 +11,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from ufor import audio_effects, instrument_trace, modulation
 from ufor.control import TempoMap
 from ufor.oscillator import Waveform
-from ufor.samples.processing import FilterBoundary, FilterResponse
+from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBinding
 
-from . import _native, filters, highpass, mixer, phaser, routing, synth, waveshaper
+from . import (
+    _native,
+    effect_controls,
+    filters,
+    follower,
+    highpass,
+    mixer,
+    phaser,
+    routing,
+    synth,
+    waveshaper,
+)
+from .effect_controls import EffectControlPlan
 from .highpass import HighpassState
 from .mixer import MixerState
 from .phaser import PhaserState
@@ -91,6 +103,7 @@ class AlignmentState(DelayState):
 class ControlDelayState(BaseModel):
     history: list[float]
     write: int = 0
+    remaining: int = Field(default=0, ge=0)
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -117,6 +130,9 @@ class ProcessorState(BaseModel):
     phaser: PhaserState | None = None
     highpass: HighpassState | None = None
     mixer: MixerState | None = None
+    follower_level: float = Field(default=0.0, ge=0)
+    route_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
+    base_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
     alignment: dict[str, AlignmentState] = Field(default_factory=dict)
     control_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
     freeze_target: bool = False
@@ -174,6 +190,15 @@ class OfflineEffects:
         connections = {
             (c.processor, c.port): c.source for c in definition.definition.connections
         }
+        followers = {
+            b.name: b.processor
+            for b in definition.definition.bindings
+            if isinstance(b, FollowerBinding)
+        }
+        parameters = {
+            (p.target.name, p.target.parameter): p
+            for p in definition.definition.modulation.parameters
+        }
         for processor in definition.definition.processors:
             ports = {
                 p: connections[(processor.name, p)]
@@ -185,7 +210,9 @@ class OfflineEffects:
                 else latencies[s.processor]
                 for p, s in ports.items()
             }
-            arrival = max(delays.values())
+            arrival = latencies[processor.name] - (
+                48 if isinstance(processor, audio_effects.Waveshaper) else 0
+            )
             self.processors[processor.name].alignment = {
                 p: AlignmentState(
                     history=[
@@ -211,31 +238,63 @@ class OfflineEffects:
                 + (
                     []
                     if isinstance(
-                        processor, (audio_effects.Mixer, audio_effects.Crossfader)
+                        processor,
+                        (
+                            audio_effects.Mixer,
+                            audio_effects.Crossfader,
+                            audio_effects.Follower,
+                        ),
                     )
                     else [("bypass", 1.0)]
                 )
                 + commands
             ):
                 index = 2 if name == "bypass" else _native_parameter(processor, name)
+                modulated = (processor.name, name) in parameters
                 frames = (
-                    arrival + (24 if name in {"drive", "bias"} else 48)
+                    (0 if modulated else arrival)
+                    + (24 if name in {"drive", "bias"} else 48)
                     if isinstance(processor, audio_effects.Waveshaper)
+                    else 0
+                    if modulated
                     else arrival
                 )
+                if modulated and arrival:
+                    state.base_delays[str(index)] = ControlDelayState(
+                        history=[value] * arrival
+                    )
                 if frames:
                     state.control_delays[str(index)] = ControlDelayState(
                         history=[value] * frames
                     )
+            for route in definition.definition.modulation.routes:
+                if route.target.name != processor.name:
+                    continue
+                delay = arrival - (
+                    latencies[followers[route.source]]
+                    if route.source in followers
+                    else 0
+                )
+                if delay:
+                    state.route_delays[route.name] = ControlDelayState(
+                        history=[
+                            0.0 if route.operation == modulation.Operation.add else 1.0
+                        ]
+                        * delay,
+                        remaining=delay,
+                    )
         self.waveshaper_coefficients = np.asarray(waveshaper.halfband_coefficients())
+        self.generator_graph = effect_controls.generator_graph(
+            self.definition.definition
+        )
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
             {},
-            [self.definition.definition],
+            [self.generator_graph],
             tempo_map=definition.tempo_map,
         )
         self.sources = self.controls.sources(
-            self.definition.definition,
+            self.generator_graph,
             instrument_trace.VoiceStart(
                 tick=0,
                 ordinal=0,
@@ -391,7 +450,7 @@ class OfflineEffects:
                 audio_effects.MainStream,
             ):
                 self.controls.release(
-                    graph,
+                    self.generator_graph,
                     self.sources,
                     instrument_trace.VoiceRetirement(
                         tick=action.tick,
@@ -422,6 +481,7 @@ class OfflineEffects:
                     audio_effects.ChannelMatrix,
                     audio_effects.Mixer,
                     audio_effects.Crossfader,
+                    audio_effects.Follower,
                 ),
             )
             state.bypass = ParameterRamp(
@@ -440,26 +500,14 @@ class OfflineEffects:
             raise ValueError("Unknown effect action")
 
     def _modulate(self, frame: int) -> None:
-        graph = self.definition.definition
-        if not graph.modulation.parameters:
-            return
         values = self.controls.values(
-            graph,
+            self.generator_graph,
             self.sources,
             frame,
             1,
-            {
-                (p.target.name, p.target.parameter): np.array(
-                    [
-                        self.processors[p.target.name]
-                        .parameters[p.target.parameter]
-                        .value(frame)
-                    ]
-                )
-                for p in graph.modulation.parameters
-            },
         )
-        self.modulated = {n: float(v[0]) for n, v in values.items()}
+        self.contributions = {n[0]: float(v[0]) for n, v in values.items()}
+        self.modulated.clear()
 
     def _value(
         self, processor: audio_effects.Processor, name: str, frame: int
@@ -493,32 +541,14 @@ class OfflineEffects:
                 self.native_parameters,
                 [i.name in self.ended_inputs for i in graph.inputs],
                 [self.processors[n].freeze_target for n in self.definition.order],
+                [
+                    self.contributions.get(r.name, 0.0)
+                    for r in sorted(
+                        graph.modulation.routes, key=lambda r: (r.source, r.name)
+                    )
+                ],
             )
             return np.asarray(values, dtype=np.float64), drained
-        for name, state in self.processors.items():
-            processor = processors[name]
-            parameters = [*state.parameters, "bypass"]
-            if state.granulator is not None:
-                parameters.append("freeze")
-            for parameter in parameters:
-                parameter_index = (
-                    2
-                    if parameter == "bypass"
-                    else _native_parameter(processor, parameter)
-                )
-                if (
-                    delay := state.control_delays.get(str(parameter_index))
-                ) is not None:
-                    value = (
-                        state.bypass.value(frame)
-                        if parameter == "bypass"
-                        else float(state.freeze_target)
-                        if parameter == "freeze"
-                        else self._value(processor, parameter, frame)
-                    )
-                    self.delayed[(name, parameter)] = delay.history[delay.write]
-                    delay.history[delay.write] = value
-                    delay.write = (delay.write + 1) % len(delay.history)
         connections = {(c.processor, c.port): c.source for c in graph.connections}
         audio: dict[str, np.ndarray] = {}
         ended: dict[str, bool] = {}
@@ -533,6 +563,9 @@ class OfflineEffects:
         processor_ended: dict[str, bool] = {}
         for name in self.definition.order:
             processor = processors[name]
+            controls_ended = self._resolve_node_controls(
+                processor, processor_audio, processor_ended, frame
+            )
             ports = {}
             port_ended = {}
             for port in audio_effects.processor_ports(processor):
@@ -554,6 +587,8 @@ class OfflineEffects:
                         delay.remaining = max(0, delay.remaining - 1)
                     else:
                         delay.remaining = len(delay.history)
+            if not controls_ended:
+                port_ended = {p: False for p in port_ended}
             processor_audio[name], processor_ended[name] = self._processor_frame(
                 processor, ports, port_ended, frame
             )
@@ -564,6 +599,82 @@ class OfflineEffects:
             processor_ended[graph.output.processor],
         )
 
+    def _resolve_node_controls(
+        self,
+        processor: audio_effects.Processor,
+        audio: dict[str, np.ndarray],
+        ended: dict[str, bool],
+        frame: int,
+    ) -> bool:
+        graph = self.definition.definition
+        followers = {
+            b.name: b.processor
+            for b in graph.bindings
+            if isinstance(b, FollowerBinding)
+        }
+        sources = {s.name: s for s in graph.modulation.sources}
+        state = self.processors[processor.name]
+        controls_ended = True
+        for parameter in graph.modulation.parameters:
+            if parameter.target.name != processor.name:
+                continue
+            terms = []
+            for route in sorted(
+                graph.modulation.routes, key=lambda r: (r.source, r.name)
+            ):
+                if route.target != parameter.target:
+                    continue
+                route_ended = True
+                if route.source in followers:
+                    origin = followers[route.source]
+                    value = float(audio[origin][0])
+                    source = sources[route.source]
+                    if not source.minimum <= value <= source.maximum:
+                        raise ValueError("Follower source value is outside its domain")
+                    amount = modulation.map_value(route, value)
+                    route_ended = ended[origin]
+                else:
+                    amount = self.contributions[route.name]
+                if (delay := state.route_delays.get(route.name)) is not None:
+                    amount = _control_delay(amount, delay)
+                    if route.source in followers:
+                        aligned_end = route_ended and delay.remaining == 0
+                        delay.remaining = (
+                            max(0, delay.remaining - 1)
+                            if route_ended
+                            else len(delay.history)
+                        )
+                        route_ended = aligned_end
+                controls_ended &= route_ended
+                terms.append((route.operation, amount))
+            name = parameter.target.parameter
+            base = state.parameters[name].value(frame)
+            if (
+                delay := state.base_delays.get(str(_native_parameter(processor, name)))
+            ) is not None:
+                base = _control_delay(base, delay)
+            value = (
+                base + fsum(v for o, v in terms if o == modulation.Operation.add)
+            ) * prod(v for o, v in terms if o == modulation.Operation.multiply)
+            if not parameter.minimum <= value <= parameter.maximum:
+                raise ValueError("Modulated effect parameter is outside its domain")
+            self.modulated[(processor.name, name)] = value
+        parameters = [*state.parameters, "bypass"]
+        if state.granulator is not None:
+            parameters.append("freeze")
+        for name in parameters:
+            index = 2 if name == "bypass" else _native_parameter(processor, name)
+            if (delay := state.control_delays.get(str(index))) is not None:
+                value = (
+                    state.bypass.value(frame)
+                    if name == "bypass"
+                    else float(state.freeze_target)
+                    if name == "freeze"
+                    else self._value(processor, name, frame)
+                )
+                self.delayed[(processor.name, name)] = _control_delay(value, delay)
+        return controls_ended
+
     def _processor_frame(
         self,
         processor: audio_effects.Processor,
@@ -572,6 +683,19 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.Follower):
+            state.follower_level = follower.process(
+                state.follower_level,
+                ports["input"],
+                self._value(processor, "attack_seconds", frame),
+                self._value(processor, "release_seconds", frame),
+                self.definition.sample_rate,
+                processor.state_floor,
+            )
+            drained = ended["input"] and state.follower_level < processor.tail_threshold
+            if drained:
+                state.follower_level = 0.0
+            return np.array([state.follower_level]), drained
         if isinstance(processor, audio_effects.ChannelMatrix):
             return routing.process(processor.coefficients, ports["input"]), ended[
                 "input"
@@ -1089,6 +1213,7 @@ def native_live_graph(
     int,
     list[float],
     list[list[str]],
+    EffectControlPlan,
 ]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
@@ -1102,7 +1227,9 @@ def native_live_graph(
     ]
     connections = {(c.processor, c.port): c.source for c in graph.connections}
     widths = [
-        3 + 3 * len(p.inputs)
+        5
+        if isinstance(p, audio_effects.Follower)
+        else 3 + 3 * len(p.inputs)
         if isinstance(p, audio_effects.Mixer)
         else 4
         if isinstance(p, audio_effects.Crossfader)
@@ -1164,12 +1291,20 @@ def native_live_graph(
                     audio_effects.ChannelMatrix,
                     audio_effects.Mixer,
                     audio_effects.Crossfader,
+                    audio_effects.Follower,
                 ),
             )
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.Mixer):
+        if isinstance(processor, audio_effects.Follower):
+            kinds.append(14)
+            parameters[node, [0, 3, 4]] = [
+                processor.attack_seconds,
+                processor.release_seconds,
+                processor.state_floor,
+            ]
+        elif isinstance(processor, audio_effects.Mixer):
             kinds.append(12)
             parameters[node, 0] = processor.switch_fade_frames
             for port, value in enumerate(processor.inputs):
@@ -1354,20 +1489,57 @@ def native_live_graph(
                     audio_effects.Reverb,
                     audio_effects.Phaser,
                     audio_effects.Highpass,
+                    audio_effects.Follower,
                 ),
             )
             else 0.0
             for p in ordered
         ],
         port_names,
+        _native_control_plan(definition),
     )
+
+
+def _native_control_plan(definition: PreparedEffects) -> EffectControlPlan:
+    graph = definition.definition
+    nodes = {n: i for i, n in enumerate(definition.order)}
+    processors = {p.name: p for p in graph.processors}
+    targets = [
+        (
+            nodes[p.target.name],
+            _native_parameter(processors[p.target.name], p.target.parameter),
+            p.minimum,
+            p.maximum,
+        )
+        for p in graph.modulation.parameters
+    ]
+    indices = {p.target: i for i, p in enumerate(graph.modulation.parameters)}
+    followers = {
+        b.name: nodes[b.processor]
+        for b in graph.bindings
+        if isinstance(b, FollowerBinding)
+    }
+    sources = {s.name: s for s in graph.modulation.sources}
+    return targets, [
+        (
+            indices[r.target],
+            followers.get(r.source, -1),
+            0 if r.operation == modulation.Operation.add else 1,
+            list(modulation.Interpolation).index(r.interpolation),
+            [(p.input, p.amount) for p in r.points],
+            sources[r.source].minimum,
+            sources[r.source].maximum,
+            r.name,
+        )
+        for r in sorted(graph.modulation.routes, key=lambda r: (r.source, r.name))
+    ]
 
 
 def configure_native_generators(
     runtime: _native.LiveRuntime, definition: PreparedEffects
 ) -> None:
     """Prepare the shared Rust generator executor for one effect instance."""
-    graph = definition.definition
+    graph = effect_controls.generator_graph(definition.definition)
     if not graph.bindings:
         return
     parameters = graph.modulation.parameters
@@ -1396,20 +1568,14 @@ def configure_native_generators(
         definition.tempo_map,
         indices,
     )
-    processors = {p.name: p for p in graph.processors}
-    nodes = {n: i for i, n in enumerate(definition.order)}
+    routes = sorted(
+        definition.definition.modulation.routes, key=lambda r: (r.source, r.name)
+    )
+    route_indices = {r.name: i for i, r in enumerate(routes)}
     runtime.set_effect_generators(
         bank,
         [*prepared[20][1:], transforms],
-        [
-            (
-                nodes[p.target.name],
-                _native_parameter(processors[p.target.name], p.target.parameter),
-                p.minimum,
-                p.maximum,
-            )
-            for p in parameters
-        ],
+        [route_indices[p.target.name] for p in parameters],
     )
 
 
@@ -1444,6 +1610,7 @@ def native_live_actions(
                     audio_effects.ChannelMatrix,
                     audio_effects.Mixer,
                     audio_effects.Crossfader,
+                    audio_effects.Follower,
                 ),
             )
             parameter = 2
@@ -1536,12 +1703,18 @@ def _initial_state(
                 audio_effects.ChannelMatrix,
                 audio_effects.Mixer,
                 audio_effects.Crossfader,
+                audio_effects.Follower,
             ),
         )
         else {"mix": processor.mix}
     )
     filter_states: list[filters.FilterState] = []
-    if isinstance(processor, audio_effects.Mixer):
+    if isinstance(processor, audio_effects.Follower):
+        values.update(
+            attack_seconds=processor.attack_seconds,
+            release_seconds=processor.release_seconds,
+        )
+    elif isinstance(processor, audio_effects.Mixer):
         values.update(
             {
                 f"{i.name}-{p}": float(getattr(i, p))
@@ -1709,6 +1882,13 @@ def _mix(dry: np.ndarray, wet: np.ndarray, mix: float) -> np.ndarray:
     return (1 - mix) * dry + mix * wet
 
 
+def _control_delay(value: float, state: ControlDelayState) -> float:
+    previous = state.history[state.write]
+    state.history[state.write] = value
+    state.write = (state.write + 1) % len(state.history)
+    return previous
+
+
 def _capture_grain(
     history: list[list[float]],
     history_start: int,
@@ -1829,6 +2009,8 @@ def _reverb_coefficients(
 
 
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
+    if isinstance(processor, audio_effects.Follower):
+        return {"attack_seconds": 0, "release_seconds": 3}[name]
     if isinstance(processor, audio_effects.Mixer):
         port, parameter = name.rsplit("-", 1)
         return (

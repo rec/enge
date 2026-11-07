@@ -35,6 +35,7 @@ class Settings(BaseModel):
     highpass: bool = False
     matrix: bool = False
     mixer: bool = False
+    follower: bool = False
     crossfader: Literal["none", "linear", "equal_power"] = "none"
     delay: Literal["none", "tap", "modulated"] = "none"
     audio_output: Path | None = None
@@ -156,6 +157,63 @@ def main(settings: Settings) -> None:
             ],
             output=audio_effects.ProcessorSource(processor="duck"),
             maximum_block_frames=settings.block_frames,
+        )
+    if settings.follower:
+        graph = audio_effects.EffectGraph.model_validate(
+            graph.model_dump()
+            | {
+                "processors": [
+                    *graph.processors,
+                    audio_effects.Follower(name="level"),
+                    audio_effects.Gain(name="follow_gain"),
+                ],
+                "connections": [
+                    *graph.connections,
+                    audio_effects.Connection(
+                        processor="level", port="input", source=graph.output
+                    ),
+                    audio_effects.Connection(
+                        processor="follow_gain", port="input", source=graph.output
+                    ),
+                ],
+                "output": audio_effects.ProcessorSource(processor="follow_gain"),
+                "bindings": [
+                    {"kind": "follower", "name": "amplitude", "processor": "level"}
+                ],
+                "modulation": {
+                    "sources": [
+                        {
+                            "name": "amplitude",
+                            "scope": "voice",
+                            "minimum": 0,
+                            "maximum": 4,
+                        }
+                    ],
+                    "parameters": [
+                        {
+                            "target": {"name": "follow_gain", "parameter": "gain_db"},
+                            "scope": "voice",
+                            "unit": "db",
+                            "minimum": -12,
+                            "maximum": 0,
+                            "default": 0,
+                        }
+                    ],
+                    "routes": [
+                        {
+                            "name": "follow",
+                            "source": "amplitude",
+                            "target": {"name": "follow_gain", "parameter": "gain_db"},
+                            "operation": "add",
+                            "unit": "db",
+                            "points": [
+                                {"input": 0, "amount": -12},
+                                {"input": 1, "amount": 0},
+                            ],
+                        }
+                    ],
+                },
+            }
         )
     extra_streams = []
     if settings.mixer:
@@ -309,6 +367,7 @@ def main(settings: Settings) -> None:
         f" highpass={settings.highpass}"
         f" matrix={settings.matrix}"
         f" mixer={settings.mixer} crossfader={settings.crossfader}"
+        f" follower={settings.follower}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
@@ -373,6 +432,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 "phase",
                 "sweep",
                 ((start + ordinal) % 200) / 100 - 1,
+            )
+        if settings.follower and ordinal % 4 == 2:
+            processor, parameter, value = (
+                "level",
+                "attack_seconds",
+                0.001 + (start + ordinal) % 1000 / 1000000,
             )
         if settings.mixer and ordinal % 4 == 2:
             processor, parameter, value = (
