@@ -29,6 +29,7 @@ class Settings(BaseModel):
     effect_actions: int = Field(default=64, ge=1, le=64)
     granular: bool = False
     compressor: bool = False
+    dynamics: Literal["none", "gate", "expander"] = "none"
     reverb: bool = False
     waveshaper: bool = False
     phaser: bool = False
@@ -132,7 +133,14 @@ def main(settings: Settings) -> None:
         processors,
         settings.block_frames,
     )
+    detectors: list[audio_effects.Processor] = []
     if settings.compressor:
+        detectors.append(audio_effects.Compressor(name="duck"))
+    if settings.dynamics == "gate":
+        detectors.append(audio_effects.Gate(name="dynamics"))
+    elif settings.dynamics == "expander":
+        detectors.append(audio_effects.Expander(name="dynamics"))
+    if detectors:
         graph = audio_effects.EffectGraph(
             scope=graph.scope,
             inputs=[
@@ -143,19 +151,31 @@ def main(settings: Settings) -> None:
                     source=audio_effects.HostStream(stream="detector"),
                 ),
             ],
-            processors=[*graph.processors, audio_effects.Compressor(name="duck")],
+            processors=[*graph.processors, *detectors],
             connections=[
                 *graph.connections,
-                audio_effects.Connection(
-                    processor="duck", port="input", source=graph.output
-                ),
-                audio_effects.Connection(
-                    processor="duck",
-                    port="detector",
-                    source=audio_effects.InputSource(input="sidechain"),
-                ),
+                *[
+                    c
+                    for i, p in enumerate(detectors)
+                    for c in [
+                        audio_effects.Connection(
+                            processor=p.name,
+                            port="input",
+                            source=graph.output
+                            if i == 0
+                            else audio_effects.ProcessorSource(
+                                processor=detectors[i - 1].name
+                            ),
+                        ),
+                        audio_effects.Connection(
+                            processor=p.name,
+                            port="detector",
+                            source=audio_effects.InputSource(input="sidechain"),
+                        ),
+                    ]
+                ],
             ],
-            output=audio_effects.ProcessorSource(processor="duck"),
+            output=audio_effects.ProcessorSource(processor=detectors[-1].name),
             maximum_block_frames=settings.block_frames,
         )
     if settings.follower:
@@ -308,7 +328,7 @@ def main(settings: Settings) -> None:
                 / 48000
             )
         )
-        if settings.compressor
+        if settings.compressor or settings.dynamics != "none"
         else None
     )
     extra_audio = {
@@ -361,6 +381,7 @@ def main(settings: Settings) -> None:
         f"effect_actions={settings.effect_actions} granular={settings.granular}"
         f" delay={settings.delay}"
         f" compressor={settings.compressor}"
+        f" dynamics={settings.dynamics}"
         f" reverb={settings.reverb}"
         f" waveshaper={settings.waveshaper}"
         f" phaser={settings.phaser}"
@@ -406,6 +427,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
         if settings.compressor and ordinal % 4 == 3:
             processor, parameter, value = (
                 "duck",
+                "threshold_db",
+                -24 + (start + ordinal) % 18,
+            )
+        if settings.dynamics != "none" and ordinal % 4 == 3:
+            processor, parameter, value = (
+                "dynamics",
                 "threshold_db",
                 -24 + (start + ordinal) % 18,
             )

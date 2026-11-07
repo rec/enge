@@ -1,6 +1,7 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
 pub(crate) mod controls;
+mod dynamics;
 mod follower;
 mod highpass;
 mod matrix;
@@ -66,6 +67,8 @@ pub(crate) struct EffectRuntime {
     matrices: Vec<Option<RoutingMatrix>>,
     mixers: Vec<Option<Mixer>>,
     crossfader_laws: Vec<Option<bool>>,
+    gates: Vec<Option<dynamics::Gate>>,
+    expansion_gains: Vec<f64>,
     alignment: Vec<Vec<Option<Alignment>>>,
     port_values: Array3<f64>,
     port_ended: Array2<bool>,
@@ -121,6 +124,8 @@ pub(crate) struct EffectSnapshot {
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     mixers: Vec<Option<Mixer>>,
+    gates: Vec<Option<dynamics::Gate>>,
+    expansion_gains: Vec<f64>,
     alignment: Vec<Vec<Option<Alignment>>>,
     control_delays: Vec<Vec<Option<ControlDelay>>>,
 }
@@ -343,7 +348,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 14)
+        if kinds.iter().any(|v| *v > 16)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -396,7 +401,7 @@ impl EffectRuntime {
             let names = &port_names[node];
             let expected: &[&str] = match kinds[node] {
                 1 => &["carrier", "modulator"],
-                7 => &["input", "detector"],
+                7 | 15 | 16 => &["input", "detector"],
                 13 => &["first", "second"],
                 _ => &["input"],
             };
@@ -434,7 +439,8 @@ impl EffectRuntime {
                     if !matches!(widths[source as usize], 1 | 2) || widths[node + inputs] != 2 {
                         return Err(PyValueError::new_err("Invalid reverb channel widths"));
                     }
-                } else if !(matches!(kinds[node], 11 | 14) || kinds[node] == 7 && port == 1)
+                } else if !(matches!(kinds[node], 11 | 14)
+                    || matches!(kinds[node], 7 | 15 | 16) && port == 1)
                     && widths[source as usize] != widths[node + inputs]
                 {
                     return Err(PyValueError::new_err(
@@ -547,6 +553,47 @@ impl EffectRuntime {
         let parameters = parameters.as_array().to_owned();
         let controls =
             controls::Controls::new(control_plan, &kinds, &latencies, inputs, parameters.view())?;
+        let mut gates = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for node in 0..nodes {
+            if kinds[node] == 15 {
+                if parameters.ncols() < 7 {
+                    return Err(PyValueError::new_err("Missing gate parameters"));
+                }
+                let mut gate = dynamics::Gate::default();
+                gate.process(
+                    0.0,
+                    [
+                        parameters[[node, 0]],
+                        parameters[[node, 3]],
+                        parameters[[node, 4]],
+                        parameters[[node, 5]],
+                        parameters[[node, 6]],
+                    ],
+                    rate,
+                )?;
+                gates[node] = Some(gate);
+            } else if kinds[node] == 16 {
+                if parameters.ncols() < 6 {
+                    return Err(PyValueError::new_err("Missing expander parameters"));
+                }
+                dynamics::expand(
+                    1.0,
+                    0.0,
+                    [
+                        parameters[[node, 0]],
+                        parameters[[node, 3]],
+                        parameters[[node, 4]],
+                        parameters[[node, 5]],
+                    ],
+                    rate,
+                )?;
+            }
+        }
+        for (node, parameter, _, maximum) in &controls.definitions.0 {
+            if kinds[*node] == 15 && *parameter == 4 {
+                dynamics::hold_frames(*maximum, rate)?;
+            }
+        }
         for node in 0..nodes {
             if kinds[node] == 14
                 && (widths[inputs + node] != 1
@@ -823,6 +870,8 @@ impl EffectRuntime {
                                     }
                                     13 => parameter == 0,
                                     14 => matches!(parameter, 0 | 3),
+                                    15 => matches!(parameter, 0 | 3..=6),
+                                    16 => matches!(parameter, 0 | 3..=5),
                                     _ => false,
                                 });
                         let modulated = controls
@@ -862,6 +911,8 @@ impl EffectRuntime {
             matrices,
             mixers,
             crossfader_laws,
+            gates,
+            expansion_gains: vec![1.0; nodes],
             alignment,
             port_values: Array3::zeros((nodes, maximum_ports, channels)),
             port_ended: Array2::from_elem((nodes, maximum_ports), false),
@@ -1153,6 +1204,42 @@ impl EffectRuntime {
                         self.resolved.row(node),
                         &mut self.wet[..channels],
                     )?,
+                15 | 16 => {
+                    let detector = self.sources[[node, 1]] as usize;
+                    let peak = (0..self.widths[detector])
+                        .map(|c| self.port_values[[node, 1, c]].abs())
+                        .fold(0.0, f64::max);
+                    let gain = if self.kinds[node] == 15 {
+                        self.gates[node].as_mut().expect("prepared gate").process(
+                            peak,
+                            [
+                                self.resolved[[node, 0]],
+                                self.resolved[[node, 3]],
+                                self.resolved[[node, 4]],
+                                self.resolved[[node, 5]],
+                                self.resolved[[node, 6]],
+                            ],
+                            rate,
+                        )?
+                    } else {
+                        let gain = dynamics::expand(
+                            self.expansion_gains[node],
+                            peak,
+                            [
+                                self.resolved[[node, 0]],
+                                self.resolved[[node, 3]],
+                                self.resolved[[node, 4]],
+                                self.resolved[[node, 5]],
+                            ],
+                            rate,
+                        )?;
+                        self.expansion_gains[node] = gain;
+                        gain
+                    };
+                    for value in &mut self.wet[..channels] {
+                        *value *= gain;
+                    }
+                }
                 14 => {
                     let width = self.widths[first];
                     follower::process(
@@ -1333,6 +1420,14 @@ impl EffectRuntime {
             ));
         } else if self.kinds[node] == 14 && (!matches!(parameter, 0 | 3) || action[4] < 0.0) {
             return Err(NativeError::Message("Invalid follower parameter action"));
+        } else if self.kinds[node] == 15 && (parameter > 6 || (parameter >= 3 && action[4] < 0.0)) {
+            return Err(NativeError::Message("Invalid gate parameter action"));
+        } else if self.kinds[node] == 16
+            && (parameter > 5
+                || (parameter == 3 && action[4] < 1.0)
+                || (parameter >= 4 && action[4] < 0.0))
+        {
+            return Err(NativeError::Message("Invalid expander parameter action"));
         }
         self.targets[[node, parameter]] = action[4];
         self.remaining[[node, parameter]] = duration;
@@ -1625,6 +1720,8 @@ impl EffectRuntime {
             phasers: self.phasers.clone(),
             highpasses: self.highpasses.clone(),
             mixers: self.mixers.clone(),
+            gates: self.gates.clone(),
+            expansion_gains: self.expansion_gains.clone(),
             alignment: self.alignment.clone(),
             control_delays: self.control_delays.clone(),
         }
@@ -1777,6 +1874,8 @@ impl EffectRuntime {
         self.phasers.clone_from(&snapshot.phasers);
         self.highpasses.clone_from(&snapshot.highpasses);
         self.mixers.clone_from(&snapshot.mixers);
+        self.gates.clone_from(&snapshot.gates);
+        self.expansion_gains.clone_from(&snapshot.expansion_gains);
         self.alignment.clone_from(&snapshot.alignment);
         self.control_delays.clone_from(&snapshot.control_delays);
         self.ended.clone_from(&snapshot.ended);

@@ -20,6 +20,8 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "clip": audio_effects.Waveshaper(name="fx", drive=2),
         "phaser": audio_effects.Phaser(name="fx", feedback=0.5),
         "highpass": audio_effects.Highpass(name="fx", cutoff_hz=1000),
+        "gate": audio_effects.Gate(name="fx"),
+        "expander": audio_effects.Expander(name="fx"),
         "filter": audio_effects.Filter(
             name="fx",
             filters=[
@@ -53,6 +55,8 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "clip": ("drive", 2, 0.5, "ratio"),
         "phaser": ("sweep", 0, 0.5, "ratio"),
         "highpass": ("cutoff_hz", 1000, 250, "hz"),
+        "gate": ("hold_seconds", 0.01, 0.005, "seconds"),
+        "expander": ("ratio", 2, 0.5, "ratio"),
         "filter": ("low-cutoff_hz", 1000, 250, "hz"),
         "grain": ("duration_seconds", 0.02, 0.005, "seconds"),
         "tap": ("delay_seconds", 0.005, 0.001, "seconds"),
@@ -110,6 +114,8 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "clip",
         "phaser",
         "highpass",
+        "gate",
+        "expander",
         "filter",
         "grain",
         "tap",

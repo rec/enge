@@ -15,6 +15,7 @@ from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBind
 
 from . import (
     _native,
+    dynamics,
     effect_controls,
     filters,
     follower,
@@ -25,6 +26,7 @@ from . import (
     synth,
     waveshaper,
 )
+from .dynamics import GateState
 from .effect_controls import EffectControlPlan
 from .highpass import HighpassState
 from .mixer import MixerState
@@ -130,6 +132,8 @@ class ProcessorState(BaseModel):
     phaser: PhaserState | None = None
     highpass: HighpassState | None = None
     mixer: MixerState | None = None
+    gate: GateState | None = None
+    expansion_gain: float = Field(default=1.0, ge=0, le=1)
     follower_level: float = Field(default=0.0, ge=0)
     route_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
     base_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
@@ -726,6 +730,32 @@ class OfflineEffects:
         mix = authored_mix * self.delayed.get(
             (processor.name, "bypass"), state.bypass.value(frame)
         )
+        if isinstance(processor, (audio_effects.Gate, audio_effects.Expander)):
+            peak = max(abs(float(v)) for v in ports["detector"])
+            if isinstance(processor, audio_effects.Gate):
+                assert state.gate is not None
+                gain = dynamics.gate_gain(
+                    state.gate,
+                    peak,
+                    self._value(processor, "threshold_db", frame),
+                    self._value(processor, "hysteresis_db", frame),
+                    self._value(processor, "hold_seconds", frame),
+                    self._value(processor, "attack_seconds", frame),
+                    self._value(processor, "release_seconds", frame),
+                    self.definition.sample_rate,
+                )
+            else:
+                gain = state.expansion_gain = dynamics.expander_gain(
+                    state.expansion_gain,
+                    peak,
+                    self._value(processor, "threshold_db", frame),
+                    self._value(processor, "ratio", frame),
+                    self._value(processor, "attack_seconds", frame),
+                    self._value(processor, "release_seconds", frame),
+                    self.definition.sample_rate,
+                )
+            dry = ports["input"]
+            return _mix(dry, dry * gain, mix), ended["input"]
         if isinstance(processor, audio_effects.Gain):
             dry = ports["input"]
             wet = dry * pow(10, self._value(processor, "gain_db", frame) / 20)
@@ -1178,6 +1208,23 @@ def prepare(
             )
         elif isinstance(processor, audio_effects.Highpass):
             highpass.coefficient(processor.cutoff_hz, sample_rate)
+        elif isinstance(processor, audio_effects.Gate):
+            dynamics.gate_gain(
+                GateState(),
+                0.0,
+                processor.threshold_db,
+                processor.hysteresis_db,
+                processor.hold_seconds,
+                processor.attack_seconds,
+                processor.release_seconds,
+                sample_rate,
+            )
+            for parameter in definition.modulation.parameters:
+                if (
+                    parameter.target.name == processor.name
+                    and parameter.target.parameter == "hold_seconds"
+                ):
+                    dynamics.hold_frames(parameter.maximum, sample_rate)
         elif isinstance(processor, audio_effects.Mixer):
             duration = processor.switch_fade_frames
             if duration > np.iinfo(np.intp).max or int(float(duration)) != duration:
@@ -1227,7 +1274,11 @@ def native_live_graph(
     ]
     connections = {(c.processor, c.port): c.source for c in graph.connections}
     widths = [
-        5
+        7
+        if isinstance(p, audio_effects.Gate)
+        else 6
+        if isinstance(p, audio_effects.Expander)
+        else 5
         if isinstance(p, audio_effects.Follower)
         else 3 + 3 * len(p.inputs)
         if isinstance(p, audio_effects.Mixer)
@@ -1263,7 +1314,9 @@ def native_live_graph(
         else ["carrier", "modulator"]
         if isinstance(p, audio_effects.Multiply)
         else ["input", "detector"]
-        if isinstance(p, audio_effects.Compressor)
+        if isinstance(
+            p, (audio_effects.Compressor, audio_effects.Gate, audio_effects.Expander)
+        )
         else ["input"]
         for p in ordered
     ]
@@ -1297,7 +1350,24 @@ def native_live_graph(
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.Follower):
+        if isinstance(processor, audio_effects.Gate):
+            kinds.append(15)
+            parameters[node, [0, 3, 4, 5, 6]] = [
+                processor.threshold_db,
+                processor.hysteresis_db,
+                processor.hold_seconds,
+                processor.attack_seconds,
+                processor.release_seconds,
+            ]
+        elif isinstance(processor, audio_effects.Expander):
+            kinds.append(16)
+            parameters[node, [0, 3, 4, 5]] = [
+                processor.threshold_db,
+                processor.ratio,
+                processor.attack_seconds,
+                processor.release_seconds,
+            ]
+        elif isinstance(processor, audio_effects.Follower):
             kinds.append(14)
             parameters[node, [0, 3, 4]] = [
                 processor.attack_seconds,
@@ -1741,6 +1811,21 @@ def _initial_state(
         )
     elif isinstance(processor, audio_effects.Highpass):
         values["cutoff_hz"] = processor.cutoff_hz
+    elif isinstance(processor, audio_effects.Gate):
+        values.update(
+            threshold_db=processor.threshold_db,
+            hysteresis_db=processor.hysteresis_db,
+            hold_seconds=processor.hold_seconds,
+            attack_seconds=processor.attack_seconds,
+            release_seconds=processor.release_seconds,
+        )
+    elif isinstance(processor, audio_effects.Expander):
+        values.update(
+            threshold_db=processor.threshold_db,
+            ratio=processor.ratio,
+            attack_seconds=processor.attack_seconds,
+            release_seconds=processor.release_seconds,
+        )
     elif isinstance(processor, audio_effects.Compressor):
         values.update(
             threshold_db=processor.threshold_db,
@@ -1788,6 +1873,7 @@ def _initial_state(
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        gate=GateState() if isinstance(processor, audio_effects.Gate) else None,
         waveshaper=waveshaper.initial_state(channels)
         if isinstance(processor, audio_effects.Waveshaper)
         else None,
@@ -2009,6 +2095,23 @@ def _reverb_coefficients(
 
 
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
+    if name == "mix":
+        return 1
+    if isinstance(processor, audio_effects.Gate):
+        return {
+            "threshold_db": 0,
+            "hysteresis_db": 3,
+            "hold_seconds": 4,
+            "attack_seconds": 5,
+            "release_seconds": 6,
+        }[name]
+    if isinstance(processor, audio_effects.Expander):
+        return {
+            "threshold_db": 0,
+            "ratio": 3,
+            "attack_seconds": 4,
+            "release_seconds": 5,
+        }[name]
     if isinstance(processor, audio_effects.Follower):
         return {"attack_seconds": 0, "release_seconds": 3}[name]
     if isinstance(processor, audio_effects.Mixer):
@@ -2020,8 +2123,6 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
         )
     if isinstance(processor, audio_effects.Crossfader):
         return 0
-    if name == "mix":
-        return 1
     if isinstance(processor, audio_effects.Gain):
         return 0
     if isinstance(processor, audio_effects.Waveshaper):

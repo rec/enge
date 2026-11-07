@@ -194,6 +194,15 @@ impl EffectRuntime {
                     )?;
                     value.set_item("highpass", state)?;
                 }
+                15 => {
+                    let gate = self.gates[node].as_ref().expect("prepared gate");
+                    let state = PyDict::new(py);
+                    state.set_item("gain", gate.gain)?;
+                    state.set_item("opened", gate.opened)?;
+                    state.set_item("elapsed", gate.elapsed)?;
+                    value.set_item("gate", state)?;
+                }
+                16 => value.set_item("expansion_gain", self.expansion_gains[node])?,
                 12 => {
                     let mixer = self.mixers[node].as_ref().expect("prepared mixer");
                     let state = PyDict::new(py);
@@ -554,6 +563,28 @@ impl EffectRuntime {
                         .as_mut()
                         .expect("prepared highpass")
                         .memory = memory;
+                }
+                15 => {
+                    let value = field(value, "gate")?;
+                    let value = value.cast::<PyDict>()?;
+                    let gain: f64 = field(value, "gain")?.extract()?;
+                    let opened: bool = field(value, "opened")?.extract()?;
+                    let elapsed: usize = field(value, "elapsed")?.extract()?;
+                    if !(0.0..=1.0).contains(&gain) || elapsed > isize::MAX as usize {
+                        return Err(PyValueError::new_err("Invalid gate snapshot"));
+                    }
+                    snapshot.gates[node] = Some(super::dynamics::Gate {
+                        gain,
+                        opened,
+                        elapsed,
+                    });
+                }
+                16 => {
+                    let gain: f64 = field(value, "expansion_gain")?.extract()?;
+                    if !(0.0..=1.0).contains(&gain) {
+                        return Err(PyValueError::new_err("Invalid expander snapshot"));
+                    }
+                    snapshot.expansion_gains[node] = gain;
                 }
                 12 => {
                     let state = field(value, "mixer")?;

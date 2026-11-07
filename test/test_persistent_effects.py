@@ -85,6 +85,8 @@ def callback_audio(
         "clip",
         "phaser",
         "highpass",
+        "gate",
+        "expander",
         "filter",
         "grain",
         "tap",
@@ -154,7 +156,18 @@ def test_native_stop_ends_a_frozen_tail_and_keeps_later_blocks_silent(
 
 
 @pytest.mark.parametrize(
-    "kind", ["filter", "grain", "tap", "chorus", "compressor", "phaser", "highpass"]
+    "kind",
+    [
+        "filter",
+        "grain",
+        "tap",
+        "chorus",
+        "compressor",
+        "phaser",
+        "highpass",
+        "gate",
+        "expander",
+    ],
 )
 @pytest.mark.parametrize(
     "origin,target", [("numpy", "native"), ("native", "numpy"), ("native", "native")]
