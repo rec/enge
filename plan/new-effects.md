@@ -1,6 +1,6 @@
 # Possible new effect categories
 
-## Status as of 2026-11-06
+## Status as of 2026-11-07
 
 The user has now selected the entire catalogue, including the spectral appendix.
 Work proceeds through the first six priority entries in order, then the remaining
@@ -60,12 +60,13 @@ conversion. Rubber Band output is an external algorithmic result, so tests compa
 documented behavior and tolerances rather than using the NumPy effect path as an
 independent sample-for-sample oracle.
 
-Start with an offline, prepared time-and-pitch processor around
-`RubberBandStretcher`. High-quality offline processing studies the complete input
-before processing and retrieving output, so it belongs on prepared finite audio,
-not a live callback. Its output length, latency, final drain, transient mode,
-formant option, channel-together option, and parameter-change policy are part of
-the effect contract. The optional native feature now also exposes
+The selected offline profile prepares finite 48 kHz audio with the R3 engine,
+linked channels, shifted formants and fixed settings. It studies the complete
+input before processing and retrieving output in bounded chunks. Duration rounds
+to the nearest frame with ties to even; empty results are rejected. Preparation
+allocates outside live callbacks. See [the completed profile and its boundaries](../doc/rubberband-effects.md)
+for output length, latency, final drain, transient handling and resource policy.
+The optional native feature also exposes
 `RubberBandRealtimeStretcher` for incremental time and pitch processing.
 `enge.rubberband.RealtimeRubberBand` clocks finite source segments through it.
 The caller declares the source length, ratio, block size, and maximum queued

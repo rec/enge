@@ -87,12 +87,12 @@ class RealtimeRubberBand:
                 "Real-time Rubber Band input must match the next clock block"
             )
         if expected:
-            self.source_received += expected
             if self._stretcher is None:
                 raise EngineError("Real-time Rubber Band segment is closed")
             produced = self._stretcher.process(
-                audio, self.source_received == self.source_frames
+                audio, self.source_received + expected == self.source_frames
             )
+            self.source_received += expected
             if len(produced):
                 self._queue.append(produced)
                 self.buffered_frames += len(produced)

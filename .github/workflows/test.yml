@@ -62,8 +62,8 @@ jobs:
         run: uv sync --frozen ${{ matrix.profile == 'rubberband' && '--config-settings-package enge:build-args=--features=rubberband' || '' }}
       - name: Check Rust
         run: |
-          cargo fmt --check
-          if ! uv run --no-sync cargo clippy --locked --all-targets --message-format=short ${{ matrix.profile == 'rubberband' && '--features rubberband' || '' }} -- -D warnings 2> "$RUNNER_TEMP/clippy.log"; then
+          cargo fmt --all --check
+          if ! uv run --no-sync cargo clippy --locked --all-targets --message-format=short ${{ matrix.profile == 'rubberband' && '--workspace --features rubberband' || '' }} -- -D warnings 2> "$RUNNER_TEMP/clippy.log"; then
             sed -n '/error/s/^/::error::/p' "$RUNNER_TEMP/clippy.log"
             exit 1
           fi

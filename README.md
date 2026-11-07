@@ -384,6 +384,12 @@ uv sync --frozen --reinstall-package enge --config-settings-package enge:build-a
 uv run --no-sync pytest --require-rubberband
 ```
 
+See [the Rubber Band profile](doc/rubberband-effects.md) for the fixed 48 kHz
+offline preparation contract, finite streaming timing and storage limits, and
+the distinction from allocation-free effect-graph callbacks. Source distributions
+include the locked third-party source archive; wheels carry its licence and
+notice from `third_party`.
+
 This build also needs a C++ compiler and libclang. Install `libclang-dev` on
 Debian/Ubuntu, or LLVM on macOS and Windows. On macOS with Homebrew, set
 `LIBCLANG_PATH` to `$(brew --prefix llvm)/lib`; in Windows PowerShell, set

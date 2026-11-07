@@ -29,6 +29,7 @@ def audio(frames: int = 48000, channels: int = 2) -> np.ndarray:
 
 
 def write_wav(path: Path, values: np.ndarray) -> None:
+    assert len(values) >= 48000
     with wave.open(str(path), "wb") as output:
         output.setnchannels(values.shape[1])
         output.setsampwidth(4)
@@ -37,17 +38,19 @@ def write_wav(path: Path, values: np.ndarray) -> None:
         output.writeframes((values / peak * (2**31 - 1)).astype("<i4").tobytes())
 
 
-@pytest.mark.parametrize("ratio,frames", [(0.5, 24000), (1.0, 48000), (2.0, 96000)])
+@pytest.mark.parametrize("ratio,frames", [(0.5, 48000), (1.0, 96000), (2.0, 192000)])
 def test_offline_rubberband_changes_time_without_changing_channel_layout(
     rubberband: object, ratio: float, frames: int, tmp_path: Path
 ) -> None:
-    source = audio()
+    source = audio(96000)
     actual = rubberband.rubberband_stretch(source, ratio, 1.0)
 
     assert actual.shape == (frames, 2)
     assert actual.dtype == np.float64
     assert np.all(np.isfinite(actual))
     assert np.max(np.abs(actual)) > 0.1
+    assert abs(dominant_frequency(actual[:, 0]) - 220) < 2
+    assert abs(dominant_frequency(actual[:, 1]) - 330) < 2
     write_wav(tmp_path / f"offline-time-{ratio}.wav", actual)
 
 
@@ -59,17 +62,21 @@ def test_offline_rubberband_changes_pitch_without_changing_duration(
 
     assert actual.shape == (48000, 2)
     assert np.all(np.isfinite(actual))
+    assert abs(dominant_frequency(actual[:, 0]) - 220 * pitch) < 2
+    assert abs(dominant_frequency(actual[:, 1]) - 330 * pitch) < 2
     write_wav(tmp_path / f"offline-pitch-{pitch}.wav", actual)
 
 
 def test_offline_rubberband_identity_preserves_audible_signal(
     rubberband: object,
+    tmp_path: Path,
 ) -> None:
     source = audio(channels=1)
     actual = rubberband.rubberband_stretch(source, 1.0, 1.0)
 
     assert actual.shape == source.shape
     assert np.corrcoef(source[:, 0], actual[:, 0])[0, 1] > 0.99
+    write_wav(tmp_path / "offline-identity.wav", actual)
 
 
 @pytest.mark.parametrize("ratio,pitch", [(0.0, 1.0), (1.0, 0.0), (-1.0, 1.0)])
@@ -107,14 +114,20 @@ def test_live_rubberband_identity_streams_fixed_blocks(
 
 def test_live_rubberband_shifts_pitch_without_changing_block_size(
     rubberband: object,
+    tmp_path: Path,
 ) -> None:
     shifter = rubberband.RubberBandLiveShifter(48000, 1, 2.0)
-    block = audio(shifter.block_size, 1)
-
-    actual = shifter.shift(block)
-
-    assert actual.shape == block.shape
+    source = audio(shifter.block_size * 100, 1)
+    actual = np.vstack(
+        [
+            shifter.shift(source[s : s + shifter.block_size])
+            for s in range(0, len(source), shifter.block_size)
+        ]
+    )
+    assert actual.shape == source.shape
     assert np.all(np.isfinite(actual))
+    assert abs(dominant_frequency(actual[shifter.start_delay :, 0]) - 440) < 2
+    write_wav(tmp_path / "live-octave.wav", actual)
 
 
 def test_live_rubberband_rejects_a_wrong_block_size(rubberband: object) -> None:
@@ -214,3 +227,63 @@ def test_native_realtime_stretcher_rejects_oversized_blocks(
 
     with pytest.raises(ValueError, match="block"):
         stretcher.process(audio(513, 1), False)
+
+
+@pytest.mark.parametrize("frames,expected", [(96001, 48000), (96003, 48002)])
+def test_offline_duration_rounds_half_frames_to_even(
+    rubberband: object, frames: int, expected: int, tmp_path: Path
+) -> None:
+    result = rubberband.rubberband_stretch(audio(frames), 0.5, 1.0)
+    assert result.shape == (expected, 2)
+    write_wav(tmp_path / "rounded-duration.wav", result)
+
+
+@pytest.mark.parametrize("frames,ratio", [(0, 1.0), (1, 0.1)])
+def test_offline_rejects_empty_segments(
+    rubberband: object, frames: int, ratio: float
+) -> None:
+    with pytest.raises(ValueError, match="nonempty|duration"):
+        rubberband.rubberband_stretch(np.zeros((frames, 1)), ratio, 1.0)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 1e100])
+def test_invalid_audio_does_not_consume_the_realtime_input_block(
+    rubberband: object, value: float, tmp_path: Path
+) -> None:
+    renderer = RealtimeRubberBand(48000, 1, 1.0, 48000, 512, 100000)
+    invalid = np.zeros((512, 1))
+    invalid[0, 0] = value
+    with pytest.raises(ValueError, match="float32"):
+        rubberband.rubberband_stretch(invalid, 1.0, 1.0)
+    shifter = rubberband.RubberBandLiveShifter(48000, 1, 1.0)
+    with pytest.raises(ValueError, match="float32"):
+        shifter.shift(np.full((shifter.block_size, 1), value))
+    with pytest.raises(ValueError, match="float32"):
+        renderer.advance(invalid)
+    assert renderer.source_received == 0
+    source = audio(channels=1)
+    blocks = []
+    while not renderer.complete:
+        start = renderer.source_received
+        blocks.append(renderer.advance(source[start : start + 512]))
+    result = np.vstack(blocks)
+    assert np.all(np.isfinite(result))
+    assert np.max(np.abs(result)) > 0.5
+    write_wav(tmp_path / "recovered-input.wav", result)
+
+
+def test_offline_linked_channels_preserve_antiphase_stereo(
+    rubberband: object, tmp_path: Path
+) -> None:
+    mono = audio(96000, 1)[:, 0]
+    source = np.column_stack([mono, -mono])
+    result = rubberband.rubberband_stretch(source, 0.5, 1.5)
+    assert np.max(np.abs(result[:, 0] + result[:, 1])) < 1e-6
+    assert abs(dominant_frequency(result[:, 0]) - 330) < 2
+    write_wav(tmp_path / "linked-stereo.wav", result)
+
+
+def dominant_frequency(values: np.ndarray) -> float:
+    center = values[len(values) // 4 : 3 * len(values) // 4]
+    spectrum = np.abs(np.fft.rfft(center * np.hanning(len(center))))
+    return float(np.argmax(spectrum) * 48000 / len(center))

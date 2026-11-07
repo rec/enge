@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 
+[workspace]
+members = ["crates/rubberband"]
+
 [lib]
 name = "_native"
 crate-type = ["cdylib"]
