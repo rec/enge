@@ -34,6 +34,8 @@ class Settings(BaseModel):
     phaser: bool = False
     highpass: bool = False
     matrix: bool = False
+    mixer: bool = False
+    crossfader: Literal["none", "linear", "equal_power"] = "none"
     delay: Literal["none", "tap", "modulated"] = "none"
     audio_output: Path | None = None
 
@@ -155,6 +157,79 @@ def main(settings: Settings) -> None:
             output=audio_effects.ProcessorSource(processor="duck"),
             maximum_block_frames=settings.block_frames,
         )
+    extra_streams = []
+    if settings.mixer:
+        extra_streams.extend(["mix_b", "mix_c", "mix_d"])
+        graph = audio_effects.EffectGraph(
+            scope=graph.scope,
+            inputs=[
+                *graph.inputs,
+                *[
+                    audio_effects.GraphInput(
+                        name=n,
+                        channels=["left", "right"],
+                        source=audio_effects.HostStream(stream=n),
+                    )
+                    for n in extra_streams
+                ],
+            ],
+            processors=[
+                *graph.processors,
+                audio_effects.Mixer(
+                    name="sum",
+                    inputs=[
+                        audio_effects.MixerInput(name=n, gain_db=-12)
+                        for n in ["a", "b", "c", "d"]
+                    ],
+                ),
+            ],
+            connections=[
+                *graph.connections,
+                audio_effects.Connection(
+                    processor="sum", port="a", source=graph.output
+                ),
+                *[
+                    audio_effects.Connection(
+                        processor="sum",
+                        port=n,
+                        source=audio_effects.InputSource(input=f"mix_{n}"),
+                    )
+                    for n in ["b", "c", "d"]
+                ],
+            ],
+            output=audio_effects.ProcessorSource(processor="sum"),
+            maximum_block_frames=settings.block_frames,
+        )
+    if settings.crossfader != "none":
+        extra_streams.append("fade_input")
+        graph = audio_effects.EffectGraph(
+            scope=graph.scope,
+            inputs=[
+                *graph.inputs,
+                audio_effects.GraphInput(
+                    name="fade_input",
+                    channels=["left", "right"],
+                    source=audio_effects.HostStream(stream="fade_input"),
+                ),
+            ],
+            processors=[
+                *graph.processors,
+                audio_effects.Crossfader(name="fade", law=settings.crossfader),
+            ],
+            connections=[
+                *graph.connections,
+                audio_effects.Connection(
+                    processor="fade", port="first", source=graph.output
+                ),
+                audio_effects.Connection(
+                    processor="fade",
+                    port="second",
+                    source=audio_effects.InputSource(input="fade_input"),
+                ),
+            ],
+            output=audio_effects.ProcessorSource(processor="fade"),
+            maximum_block_frames=settings.block_frames,
+        )
     engine = live.NativeLiveEngine(
         {"synth": synth.PersistentSynth(synth.prepare(document), settings.voices)},
         settings.block_frames,
@@ -178,6 +253,23 @@ def main(settings: Settings) -> None:
         if settings.compressor
         else None
     )
+    extra_audio = {
+        n: np.repeat(
+            (
+                0.1
+                * np.sin(
+                    2
+                    * np.pi
+                    * np.arange(callbacks * settings.block_frames)[:, None]
+                    * (220 + i * 73)
+                    / 48000
+                )
+            ),
+            2,
+            axis=1,
+        )
+        for i, n in enumerate(extra_streams)
+    }
     recording = (
         np.empty((callbacks * settings.block_frames, 2))
         if settings.audio_output is not None
@@ -186,11 +278,11 @@ def main(settings: Settings) -> None:
     for i in range(callbacks):
         start = i * settings.block_frames
         batch = effect_actions(settings, start)
-        host = (
-            None
-            if detector is None
-            else {"detector": detector[start : start + settings.block_frames]}
-        )
+        host = {
+            n: a[start : start + settings.block_frames] for n, a in extra_audio.items()
+        }
+        if detector is not None:
+            host["detector"] = detector[start : start + settings.block_frames]
         before = perf_counter_ns()
         engine.advance_into(
             {"synth": actions if i == 0 else []},
@@ -198,7 +290,7 @@ def main(settings: Settings) -> None:
             start,
             start + settings.block_frames,
             output,
-            host,
+            host or None,
         )
         durations.append((perf_counter_ns() - before) / 1000)
         if recording is not None:
@@ -216,6 +308,7 @@ def main(settings: Settings) -> None:
         f" phaser={settings.phaser}"
         f" highpass={settings.highpass}"
         f" matrix={settings.matrix}"
+        f" mixer={settings.mixer} crossfader={settings.crossfader}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
@@ -243,6 +336,7 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
         ]
     actions: list[audio_effects.EffectAction] = []
     for ordinal in range(settings.effect_actions):
+        duration = ordinal % 31
         processor, parameter, value = (
             ("trim", "gain_db", -8 + (start + ordinal) % 9)
             if ordinal % 3 == 0
@@ -280,6 +374,20 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 "sweep",
                 ((start + ordinal) % 200) / 100 - 1,
             )
+        if settings.mixer and ordinal % 4 == 2:
+            processor, parameter, value = (
+                "sum",
+                f"{'bcd'[ordinal % 3]}-{'muted' if ordinal % 8 == 2 else 'solo'}",
+                float((start // settings.block_frames + ordinal) % 2),
+            )
+            duration = 0
+        if settings.crossfader != "none" and ordinal % 4 == 2:
+            processor, parameter, value = (
+                "fade",
+                "position",
+                ((start + ordinal) % 200) / 200,
+            )
+            duration = ordinal % 31
         actions.append(
             audio_effects.ParameterAction(
                 tick=start,
@@ -287,7 +395,7 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 processor=processor,
                 parameter=parameter,
                 value=value,
-                duration_frames=ordinal % 31,
+                duration_frames=duration,
             )
         )
     if settings.granular and start > 0 and start % 48000 == 0:

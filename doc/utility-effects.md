@@ -62,8 +62,8 @@ cancellation, input end, upstream Waveshaper latency, portable/callback replay,
 invalid raw actions, overflow failure/recovery and snapshot identity.
 All 13 focused tests pass. Their callback audit records zero heap operations in
 743 successful and two failed callbacks. uFor's combined highpass/matrix schema
-suite passed 1,519 tests. The later mixer schema is a separate pending renderer
-slice.
+suite passed 1,519 tests. The subsequent mixer and crossfader implementation
+is documented in [mixing profiles](mixer-effects.md).
 
 ## Validation and timing
 

@@ -12,8 +12,9 @@ Main and instrument input declarations must match that layout. Each host input
 declares its own channel list and may have a different width. The graph output
 layout is reported by the live owner's `channels`; callers allocate output
 arrays using that layout rather than assuming the source channel count.
-Existing processors preserve their connected input layout. This routing slice
-does not add matrix conversion or spatial processors.
+Channel matrices explicitly convert named layouts. Mixers and crossfaders
+require matching named layouts on all their inputs. Other processors follow
+their declared layout rules, including the reverb's stereo output.
 
 Supply host audio to `advance` or `advance_into` as the `host_inputs` argument:
 a dictionary keyed by `HostStream.stream`, not by the graph input ID. Every
@@ -30,14 +31,14 @@ The sampler group contains all of its slot runtimes, so an instrument tap is not
 accidentally limited to its first slot.
 
 Preparation allocates input buffers for the maximum callback frame count and
-maximum port width, per-frame node values, processor state, and an output buffer
+maximum port width and authored port count, per-frame node values, processor state, and an output buffer
 with the declared output width. Source audio is accumulated into the connected
 input buffers during rendering. Host audio is validated and copied into its
 prepared buffers before the native callback body and heap-audit scope. Scratch
 is reused for shorter blocks without changing its capacity. The Python wrappers
 still prepare action arrays outside the native callback.
 
-Snapshots retain processor state and input-route/width identity. Host blocks
+Snapshots retain processor state and input-route/width/port-name identity. Host blocks
 and scratch are transient: after restoring a snapshot, the caller supplies the
 host audio for the replayed interval again. A rejected native host block leaves
 queued actions available for a subsequent valid block.
@@ -61,8 +62,9 @@ graph's terminal state. Source clocks continue advancing under the live owner.
 Stop silences its exact frame and later blocks. Repeated input endings fail the
 block and require restoring a prior valid snapshot, as other callback failures do.
 
-Per-instrument attachments, channel-conversion matrices and spatial DSP remain
-separate roadmap work.
+Per-instrument attachments and spatial DSP remain separate roadmap work.
+See [utility routing](utility-effects.md) and [mixing](mixer-effects.md) for
+the completed matrix, mixer and crossfader profiles.
 
 ## Additional work beyond the prompt
 

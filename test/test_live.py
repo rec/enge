@@ -99,6 +99,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         [2, 2],
         0,
         [0.0],
+        [["input"]],
         4,
     )
     runtime.submit(0, oscillator_start)
@@ -124,6 +125,7 @@ def test_native_live_runtime_owns_sources_queue_scratch_and_snapshot(
         [2, 2],
         0,
         [0.0],
+        [["input"]],
         4,
     )
     restored.restore(snapshot)
@@ -278,6 +280,7 @@ def test_rejected_live_restore_preserves_all_source_state(
                 [2, 2],
                 0,
                 [0.0],
+                [["input"]],
                 2,
             )
         return runtime
@@ -324,6 +327,7 @@ def test_live_restore_recovers_partial_render_and_discards_abandoned_actions(
             [2, 2],
             0,
             [0.0],
+            [["input"]],
             2,
         )
         return runtime

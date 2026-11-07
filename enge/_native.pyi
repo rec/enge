@@ -49,6 +49,7 @@ class EffectRuntime:
         widths: list[int],
         main_input: int,
         tail_thresholds: list[float],
+        port_names: list[list[str]],
         rate: float,
     ) -> None: ...
     def render_frame(
@@ -89,6 +90,7 @@ class LiveRuntime:
         widths: list[int],
         main_input: int,
         tail_thresholds: list[float],
+        port_names: list[list[str]],
         batch_capacity: int,
         input_routes: list[list[int]] | None = None,
     ) -> None: ...

@@ -2,6 +2,7 @@
 
 mod highpass;
 mod matrix;
+mod mixer;
 mod phaser;
 mod reverb;
 mod state;
@@ -16,6 +17,7 @@ use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{RouteMap, sum_partials};
 use highpass::Highpass;
 use matrix::RoutingMatrix;
+use mixer::Mixer;
 use numpy::ndarray::{Array2, Array3, Axis};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use phaser::Phaser;
@@ -39,6 +41,7 @@ pub(crate) struct EffectRuntime {
     pub(crate) input_routes: Vec<Vec<i64>>,
     pub(crate) inputs: Array3<f64>,
     sources: Array2<i64>,
+    port_names: Vec<Vec<String>>,
     output_source: usize,
     pub(crate) parameters: Array2<f64>,
     resolved: Array2<f64>,
@@ -57,7 +60,9 @@ pub(crate) struct EffectRuntime {
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     matrices: Vec<Option<RoutingMatrix>>,
-    alignment: Vec<[Option<Alignment>; 2]>,
+    mixers: Vec<Option<Mixer>>,
+    crossfader_laws: Vec<Option<bool>>,
+    alignment: Vec<Vec<Option<Alignment>>>,
     port_values: Array3<f64>,
     port_ended: Array2<bool>,
     dry: Vec<f64>,
@@ -92,6 +97,7 @@ pub(crate) struct EffectSnapshot {
     widths: Vec<usize>,
     input_routes: Vec<Vec<i64>>,
     sources: Array2<i64>,
+    port_names: Vec<Vec<String>>,
     output_source: usize,
     parameters: Array2<f64>,
     generators: Option<EffectGenerators>,
@@ -108,7 +114,8 @@ pub(crate) struct EffectSnapshot {
     waveshapers: Vec<Option<Waveshaper>>,
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
-    alignment: Vec<[Option<Alignment>; 2]>,
+    mixers: Vec<Option<Mixer>>,
+    alignment: Vec<Vec<Option<Alignment>>>,
     control_delays: Vec<Vec<Option<ControlDelay>>>,
 }
 
@@ -208,6 +215,7 @@ impl EffectRuntime {
         widths: Vec<usize>,
         main_input: usize,
         tail_thresholds: Vec<f64>,
+        port_names: Vec<Vec<String>>,
         rate: f64,
     ) -> PyResult<Self> {
         let inputs = widths
@@ -227,6 +235,7 @@ impl EffectRuntime {
             widths,
             main_input,
             tail_thresholds,
+            port_names,
             vec![vec![-2]; inputs],
             1,
             BATCH_ACTIONS,
@@ -311,6 +320,7 @@ impl EffectRuntime {
         widths: Vec<usize>,
         main_input: usize,
         tail_thresholds: Vec<f64>,
+        port_names: Vec<Vec<String>>,
         input_routes: Vec<Vec<i64>>,
         maximum_block_frames: usize,
         action_capacity: usize,
@@ -319,7 +329,8 @@ impl EffectRuntime {
         let nodes = kinds.len();
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
-        if kinds.iter().any(|v| *v > 11)
+        let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
+        if kinds.iter().any(|v| *v > 13)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -338,7 +349,8 @@ impl EffectRuntime {
             })
             || widths.len() != inputs + nodes
             || widths.contains(&0)
-            || sources.shape() != [nodes, 2]
+            || port_names.len() != nodes
+            || sources.shape() != [nodes, maximum_ports]
             || parameters.shape()[0] != nodes
             || parameters.shape()[1] < 3
             || parameters.as_array().iter().any(|v| !v.is_finite())
@@ -364,7 +376,27 @@ impl EffectRuntime {
         }
         let sources = sources.as_array().to_owned();
         for node in 0..nodes {
-            let ports = if matches!(kinds[node], 1 | 7) { 2 } else { 1 };
+            let names = &port_names[node];
+            let expected: &[&str] = match kinds[node] {
+                1 => &["carrier", "modulator"],
+                7 => &["input", "detector"],
+                13 => &["first", "second"],
+                _ => &["input"],
+            };
+            if names.is_empty()
+                || names
+                    .iter()
+                    .enumerate()
+                    .any(|(i, n)| n.is_empty() || names[..i].contains(n))
+                || (kinds[node] != 12
+                    && names
+                        .iter()
+                        .map(String::as_str)
+                        .ne(expected.iter().copied()))
+            {
+                return Err(PyValueError::new_err("Invalid effect port names"));
+            }
+            let ports = names.len();
             for port in 0..ports {
                 let source = sources[[node, port]];
                 if source < 0 || source as usize >= node + inputs {
@@ -409,12 +441,12 @@ impl EffectRuntime {
         let mut alignment = Vec::with_capacity(nodes);
         let mut waveshapers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
-            let ports = if matches!(kinds[node], 1 | 7) { 2 } else { 1 };
+            let ports = port_names[node].len();
             let arrival = (0..ports)
                 .map(|port| latencies[sources[[node, port]] as usize])
                 .max()
                 .unwrap_or(0);
-            let mut delays = std::array::from_fn(|_| None);
+            let mut delays = (0..ports).map(|_| None).collect::<Vec<_>>();
             for (port, delay) in delays.iter_mut().enumerate().take(ports) {
                 let source = sources[[node, port]] as usize;
                 let frames = arrival - latencies[source];
@@ -479,6 +511,28 @@ impl EffectRuntime {
             });
         }
         let parameters = parameters.as_array().to_owned();
+        let mut mixers = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut crossfader_laws = vec![None; nodes];
+        for node in 0..nodes {
+            if matches!(kinds[node], 12 | 13) {
+                if parameters[[node, 1]] != 1.0 || parameters[[node, 2]] != 1.0 {
+                    return Err(PyValueError::new_err(
+                        "Routing processors have no mix or bypass",
+                    ));
+                }
+                if kinds[node] == 12 {
+                    mixers[node] = Some(Mixer::new(parameters.row(node), port_names[node].len())?);
+                } else {
+                    if parameters.ncols() < 4
+                        || !(0.0..=1.0).contains(&parameters[[node, 0]])
+                        || !matches!(parameters[[node, 3]], 0.0 | 1.0)
+                    {
+                        return Err(PyValueError::new_err("Invalid crossfader profile"));
+                    }
+                    crossfader_laws[node] = Some(parameters[[node, 3]] == 1.0);
+                }
+            }
+        }
         let mut matrices = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             if kinds[node] == 11 {
@@ -698,7 +752,7 @@ impl EffectRuntime {
                 (0..parameters.ncols())
                     .map(|parameter| {
                         let dynamic = kinds[node] != 11
-                            && (matches!(parameter, 1 | 2)
+                            && ((!matches!(kinds[node], 12 | 13) && matches!(parameter, 1 | 2))
                                 || match kinds[node] {
                                     0 => parameter == 0,
                                     2 => filter_rows.iter().any(|filter| {
@@ -714,6 +768,10 @@ impl EffectRuntime {
                                     8 => matches!(parameter, 0 | 3 | 5),
                                     9 => matches!(parameter, 0 | 3..=5),
                                     10 => parameter == 0,
+                                    12 => {
+                                        parameter >= 3 && parameter < 3 + 3 * port_names[node].len()
+                                    }
+                                    13 => parameter == 0,
                                     _ => false,
                                 });
                         let frames = arrival
@@ -747,9 +805,11 @@ impl EffectRuntime {
             phasers,
             highpasses,
             matrices,
+            mixers,
+            crossfader_laws,
             alignment,
-            port_values: Array3::zeros((nodes, 2, channels)),
-            port_ended: Array2::from_elem((nodes, 2), false),
+            port_values: Array3::zeros((nodes, maximum_ports, channels)),
+            port_ended: Array2::from_elem((nodes, maximum_ports), false),
             dry: vec![0.0; channels],
             control_delays,
             kinds,
@@ -757,6 +817,7 @@ impl EffectRuntime {
             input_routes,
             widths,
             sources,
+            port_names,
             output_source,
             targets: parameters.clone(),
             resolved: parameters.clone(),
@@ -882,11 +943,7 @@ impl EffectRuntime {
             }
             let channels = self.widths[node + inputs];
             let first = self.sources[[node, 0]] as usize;
-            let ports = if matches!(self.kinds[node], 1 | 7) {
-                2
-            } else {
-                1
-            };
+            let ports = self.port_names[node].len();
             for port in 0..ports {
                 let source = self.sources[[node, port]] as usize;
                 self.port_ended[[node, port]] = self.ended[source];
@@ -915,8 +972,10 @@ impl EffectRuntime {
                 return Err(NativeError::Message("Invalid live effect mix"));
             }
             let mix = authored_mix * bypass;
-            if self.kinds[node] == 11 && (authored_mix != 1.0 || bypass != 1.0) {
-                return Err(NativeError::Message("Routing matrix has no mix or bypass"));
+            if matches!(self.kinds[node], 11..=13) && (authored_mix != 1.0 || bypass != 1.0) {
+                return Err(NativeError::Message(
+                    "Routing processors have no mix or bypass",
+                ));
             }
             let mut waveshaper_drained = false;
             for channel in 0..channels {
@@ -1020,66 +1079,105 @@ impl EffectRuntime {
                     .as_mut()
                     .expect("prepared highpass")
                     .process(&mut self.wet[..channels], self.resolved[[node, 0]], rate)?,
-                _ => self.matrices[node]
+                11 => self.matrices[node]
                     .as_mut()
                     .expect("prepared routing matrix")
                     .process(
                         self.port_values.index_axis(Axis(0), node).row(0),
                         &mut self.wet[..channels],
                     )?,
+                12 => self.mixers[node]
+                    .as_mut()
+                    .expect("prepared mixer")
+                    .process(
+                        self.port_values.index_axis(Axis(0), node),
+                        self.resolved.row(node),
+                        &mut self.wet[..channels],
+                    )?,
+                _ => {
+                    let position = self.resolved[[node, 0]];
+                    if !(0.0..=1.0).contains(&position) {
+                        return Err(NativeError::Message(
+                            "Crossfader position must be in [0, 1]",
+                        ));
+                    }
+                    let (left, right) = if self.crossfader_laws[node].expect("prepared crossfader")
+                        && position > 0.0
+                        && position < 1.0
+                    {
+                        ((PI * position / 2.0).cos(), (PI * position / 2.0).sin())
+                    } else {
+                        (1.0 - position, position)
+                    };
+                    for (channel, value) in self.wet[..channels].iter_mut().enumerate() {
+                        *value = self.port_values[[node, 0, channel]] * left
+                            + self.port_values[[node, 1, channel]] * right;
+                        if !value.is_finite() {
+                            return Err(NativeError::Message("Non-finite crossfader output"));
+                        }
+                    }
+                }
             }
-            let drained = self.port_ended[[node, 0]]
-                && match self.kinds[node] {
-                    2 => self
-                        .filter_rows
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, filter)| filter.node == node)
-                        .all(|(stage, _)| {
-                            (0..channels).all(|channel| {
-                                (0..2).all(|state| {
-                                    self.filter_states[[stage, channel, state]].abs()
-                                        < self.tail_thresholds[node]
-                                })
-                            })
-                        }),
-                    3 => self.granulators[node]
-                        .as_ref()
-                        .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
-                    4 => waveshaper_drained,
-                    5 => self.tap_delays[node]
-                        .as_ref()
-                        .is_some_and(|delay| delay.non_silent == 0),
-                    6 => self.modulated_delays[node]
-                        .as_ref()
-                        .is_some_and(|delay| delay.non_silent == 0),
-                    8 => {
-                        let reverb = self.reverbs[node].as_ref().expect("prepared reverb");
-                        self.tap_delays[node]
-                            .as_ref()
-                            .is_some_and(|delay| delay.non_silent == 0)
-                            && reverb.non_silent == 0
-                            && reverb
-                                .damping
-                                .iter()
-                                .all(|value| value.abs() < self.tail_thresholds[node])
-                    }
-                    9 => {
-                        let phaser = self.phasers[node].as_ref().expect("prepared phaser");
-                        phaser
-                            .stages
+            let drained = if matches!(self.kinds[node], 12 | 13) {
+                self.port_ended
+                    .row(node)
+                    .iter()
+                    .take(ports)
+                    .all(|value| *value)
+            } else {
+                self.port_ended[[node, 0]]
+                    && match self.kinds[node] {
+                        2 => self
+                            .filter_rows
                             .iter()
-                            .chain(phaser.feedback.iter())
-                            .all(|value| value.abs() < self.tail_thresholds[node])
+                            .enumerate()
+                            .filter(|(_, filter)| filter.node == node)
+                            .all(|(stage, _)| {
+                                (0..channels).all(|channel| {
+                                    (0..2).all(|state| {
+                                        self.filter_states[[stage, channel, state]].abs()
+                                            < self.tail_thresholds[node]
+                                    })
+                                })
+                            }),
+                        3 => self.granulators[node]
+                            .as_ref()
+                            .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
+                        4 => waveshaper_drained,
+                        5 => self.tap_delays[node]
+                            .as_ref()
+                            .is_some_and(|delay| delay.non_silent == 0),
+                        6 => self.modulated_delays[node]
+                            .as_ref()
+                            .is_some_and(|delay| delay.non_silent == 0),
+                        8 => {
+                            let reverb = self.reverbs[node].as_ref().expect("prepared reverb");
+                            self.tap_delays[node]
+                                .as_ref()
+                                .is_some_and(|delay| delay.non_silent == 0)
+                                && reverb.non_silent == 0
+                                && reverb
+                                    .damping
+                                    .iter()
+                                    .all(|value| value.abs() < self.tail_thresholds[node])
+                        }
+                        9 => {
+                            let phaser = self.phasers[node].as_ref().expect("prepared phaser");
+                            phaser
+                                .stages
+                                .iter()
+                                .chain(phaser.feedback.iter())
+                                .all(|value| value.abs() < self.tail_thresholds[node])
+                        }
+                        10 => self.highpasses[node]
+                            .as_ref()
+                            .expect("prepared highpass")
+                            .memory
+                            .iter()
+                            .all(|value| value.abs() < self.tail_thresholds[node]),
+                        _ => true,
                     }
-                    10 => self.highpasses[node]
-                        .as_ref()
-                        .expect("prepared highpass")
-                        .memory
-                        .iter()
-                        .all(|value| value.abs() < self.tail_thresholds[node]),
-                    _ => true,
-                };
+            };
             self.ended[node + inputs] = drained;
             for channel in 0..channels {
                 self.values[[node + inputs, channel]] = if drained {
@@ -1141,6 +1239,20 @@ impl EffectRuntime {
         }
         if kind != 0 || action[3] != parameter as f64 || parameter >= self.parameters.ncols() {
             return Err(NativeError::Message("Invalid live effect parameter action"));
+        }
+        if self.kinds[node] == 12 {
+            if parameter < 3
+                || parameter >= 3 + 3 * self.port_names[node].len()
+                || ((parameter - 3) % 3 != 0 && (duration != 0 || !matches!(action[4], 0.0 | 1.0)))
+            {
+                return Err(NativeError::Message(
+                    "Invalid mixer parameter or selector request",
+                ));
+            }
+        } else if self.kinds[node] == 13 && parameter != 0 {
+            return Err(NativeError::Message(
+                "Crossfader has only a position parameter",
+            ));
         }
         self.targets[[node, parameter]] = action[4];
         self.remaining[[node, parameter]] = duration;
@@ -1413,6 +1525,7 @@ impl EffectRuntime {
             widths: self.widths.clone(),
             input_routes: self.input_routes.clone(),
             sources: self.sources.clone(),
+            port_names: self.port_names.clone(),
             output_source: self.output_source,
             parameters: self.parameters.clone(),
             generators: self.generators.clone(),
@@ -1429,6 +1542,7 @@ impl EffectRuntime {
             waveshapers: self.waveshapers.clone(),
             phasers: self.phasers.clone(),
             highpasses: self.highpasses.clone(),
+            mixers: self.mixers.clone(),
             alignment: self.alignment.clone(),
             control_delays: self.control_delays.clone(),
         }
@@ -1449,12 +1563,23 @@ impl EffectRuntime {
                 _ => true,
             }
             || self.sources != snapshot.sources
+            || self.port_names != snapshot.port_names
             || self.output_source != snapshot.output_source
             || self.filter_rows != snapshot.filter_rows
             || self.granulators.len() != snapshot.granulators.len()
             || self.tap_delays.len() != snapshot.tap_delays.len()
             || self.modulated_delays.len() != snapshot.modulated_delays.len()
             || self.highpasses.len() != snapshot.highpasses.len()
+            || self.mixers.len() != snapshot.mixers.len()
+            || self
+                .mixers
+                .iter()
+                .zip(&snapshot.mixers)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
             || self
                 .highpasses
                 .iter()
@@ -1533,6 +1658,9 @@ impl EffectRuntime {
                     _ => true,
                 })
             || self.parameters.raw_dim() != snapshot.parameters.raw_dim()
+            || self.crossfader_laws.iter().enumerate().any(|(node, law)| {
+                law.is_some_and(|law| snapshot.parameters[[node, 3]] != f64::from(u8::from(law)))
+            })
             || self.matrices.iter().enumerate().any(|(node, matrix)| {
                 matrix
                     .as_ref()
@@ -1563,6 +1691,7 @@ impl EffectRuntime {
         self.waveshapers.clone_from(&snapshot.waveshapers);
         self.phasers.clone_from(&snapshot.phasers);
         self.highpasses.clone_from(&snapshot.highpasses);
+        self.mixers.clone_from(&snapshot.mixers);
         self.alignment.clone_from(&snapshot.alignment);
         self.control_delays.clone_from(&snapshot.control_delays);
         self.ended.clone_from(&snapshot.ended);

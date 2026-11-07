@@ -23,7 +23,7 @@ impl EffectRuntime {
                     state.set_item("history", rows(delay.history.view()))?;
                     state.set_item("write", delay.write)?;
                     state.set_item("remaining", delay.remaining)?;
-                    alignment.set_item(port_name(*kind, port), state)?;
+                    alignment.set_item(&self.port_names[node][port], state)?;
                 }
             }
             value.set_item("alignment", alignment)?;
@@ -173,6 +173,24 @@ impl EffectRuntime {
                     )?;
                     value.set_item("highpass", state)?;
                 }
+                12 => {
+                    let mixer = self.mixers[node].as_ref().expect("prepared mixer");
+                    let state = PyDict::new(py);
+                    let fades = mixer
+                        .fades
+                        .iter()
+                        .map(|fade| {
+                            let value = PyDict::new(py);
+                            value.set_item("value", fade.value)?;
+                            value.set_item("target", fade.target)?;
+                            value.set_item("step", fade.step)?;
+                            value.set_item("remaining", fade.remaining)?;
+                            Ok(value)
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                    state.set_item("fades", fades)?;
+                    value.set_item("mixer", state)?;
+                }
                 _ => {}
             }
             result.push(value);
@@ -232,7 +250,7 @@ impl EffectRuntime {
             }
             for (port, delay) in snapshot.alignment[node].iter_mut().enumerate() {
                 if let Some(delay) = delay {
-                    let state = field(alignment, port_name(*kind, port))?;
+                    let state = field(alignment, &self.port_names[node][port])?;
                     let state = state.cast::<PyDict>()?;
                     restore_rows(
                         delay.history.view_mut(),
@@ -516,6 +534,34 @@ impl EffectRuntime {
                         .expect("prepared highpass")
                         .memory = memory;
                 }
+                12 => {
+                    let state = field(value, "mixer")?;
+                    let state = state.cast::<PyDict>()?;
+                    let fades: Vec<Bound<'_, PyDict>> = field(state, "fades")?.extract()?;
+                    let mixer = snapshot.mixers[node].as_mut().expect("prepared mixer");
+                    if fades.len() != mixer.fades.len() {
+                        return Err(PyValueError::new_err("Invalid mixer fade snapshot"));
+                    }
+                    for (fade, value) in mixer.fades.iter_mut().zip(&fades) {
+                        let current: f64 = field(value, "value")?.extract()?;
+                        let target: f64 = field(value, "target")?.extract()?;
+                        let step: f64 = field(value, "step")?.extract()?;
+                        let remaining: usize = field(value, "remaining")?.extract()?;
+                        if !(0.0..=1.0).contains(&current)
+                            || !matches!(target, 0.0 | 1.0)
+                            || !step.is_finite()
+                            || remaining > mixer.fade_frames
+                        {
+                            return Err(PyValueError::new_err("Invalid mixer fade state"));
+                        }
+                        *fade = super::mixer::InputFade {
+                            value: current,
+                            target,
+                            step,
+                            remaining,
+                        };
+                    }
+                }
                 _ => {}
             }
         }
@@ -527,15 +573,6 @@ impl EffectRuntime {
 
 fn rows(values: ArrayView2<'_, f64>) -> Vec<Vec<f64>> {
     values.rows().into_iter().map(|row| row.to_vec()).collect()
-}
-
-fn port_name(kind: u8, port: usize) -> &'static str {
-    match (kind, port) {
-        (1, 0) => "carrier",
-        (1, 1) => "modulator",
-        (7, 1) => "detector",
-        _ => "input",
-    }
 }
 
 fn restore_rows(mut target: ArrayViewMut2<'_, f64>, values: Vec<Vec<f64>>) -> PyResult<()> {
