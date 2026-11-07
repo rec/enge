@@ -32,6 +32,8 @@ class Settings(BaseModel):
     reverb: bool = False
     waveshaper: bool = False
     phaser: bool = False
+    highpass: bool = False
+    matrix: bool = False
     delay: Literal["none", "tap", "modulated"] = "none"
     audio_output: Path | None = None
 
@@ -111,6 +113,10 @@ def main(settings: Settings) -> None:
         processors.append(
             audio_effects.Waveshaper(name="shape", drive=3, bias=0.2, mix=0.6)
         )
+    if settings.matrix:
+        processors.append(audio_effects.width_matrix("route", 1.5))
+    if settings.highpass:
+        processors.append(audio_effects.Highpass(name="dc"))
     if settings.phaser:
         processors.append(audio_effects.Phaser(name="phase", feedback=0.5))
     graph = effects.serial_graph(
@@ -208,6 +214,8 @@ def main(settings: Settings) -> None:
         f" reverb={settings.reverb}"
         f" waveshaper={settings.waveshaper}"
         f" phaser={settings.phaser}"
+        f" highpass={settings.highpass}"
+        f" matrix={settings.matrix}"
     )
     print(f"median_us={median(ordered):.1f} p99_us={p99:.1f} max_us={max(ordered):.1f}")
     print(f"budget_us={budget:.1f} max_fraction={max(ordered) / budget:.3f}")
@@ -259,6 +267,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 "shape",
                 "drive",
                 1 + ((start + ordinal) % 100) / 20,
+            )
+        if settings.highpass and ordinal % 4 == 2:
+            processor, parameter, value = (
+                "dc",
+                "cutoff_hz",
+                20 + (start + ordinal) % 200 * 10,
             )
         if settings.phaser and ordinal % 4 == 2:
             processor, parameter, value = (

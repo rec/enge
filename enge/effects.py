@@ -13,7 +13,8 @@ from ufor.control import TempoMap
 from ufor.oscillator import Waveform
 from ufor.samples.processing import FilterBoundary, FilterResponse
 
-from . import _native, filters, phaser, synth, waveshaper
+from . import _native, filters, highpass, phaser, routing, synth, waveshaper
+from .highpass import HighpassState
 from .phaser import PhaserState
 from .synth import EngineError
 from .waveshaper import WaveshaperState
@@ -113,6 +114,7 @@ class ProcessorState(BaseModel):
     reverb: ReverbState | None = None
     waveshaper: WaveshaperState | None = None
     phaser: PhaserState | None = None
+    highpass: HighpassState | None = None
     alignment: dict[str, AlignmentState] = Field(default_factory=dict)
     control_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
     freeze_target: bool = False
@@ -199,6 +201,8 @@ class OfflineEffects:
                 if delays[p] < arrival
             }
             state = self.processors[processor.name]
+            if isinstance(processor, audio_effects.ChannelMatrix):
+                continue
             commands = [("freeze", 0.0)] if state.granulator is not None else []
             for name, value in (
                 [(n, r.value(0)) for n, r in state.parameters.items()]
@@ -404,6 +408,7 @@ class OfflineEffects:
         elif isinstance(action, audio_effects.BypassAction):
             state = self.processors[action.processor]
             processor = _processor(graph, action.processor)
+            assert not isinstance(processor, audio_effects.ChannelMatrix)
             state.bypass = ParameterRamp(
                 at=action.tick,
                 start=state.bypass.value(action.tick),
@@ -552,6 +557,10 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.ChannelMatrix):
+            return routing.process(processor.coefficients, ports["input"]), ended[
+                "input"
+            ]
         authored_mix = self._value(processor, "mix", frame)
         mix = authored_mix * self.delayed.get(
             (processor.name, "bypass"), state.bypass.value(frame)
@@ -593,6 +602,17 @@ class OfflineEffects:
                 abs(v) < processor.tail_threshold
                 for s in [*state.phaser.stages, state.phaser.feedback]
                 for v in s
+            )
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
+        if isinstance(processor, audio_effects.Highpass):
+            dry = ports["input"]
+            assert state.highpass is not None
+            a = highpass.coefficient(
+                self._value(processor, "cutoff_hz", frame), self.definition.sample_rate
+            )
+            wet = highpass.process(state.highpass, dry, a, processor.state_floor)
+            drained = ended["input"] and all(
+                abs(v) < processor.tail_threshold for v in state.highpass.memory
             )
             return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, audio_effects.Multiply):
@@ -995,6 +1015,8 @@ def prepare(
             phaser.coefficient(
                 processor.center_hz, processor.depth_cents, processor.sweep, sample_rate
             )
+        elif isinstance(processor, audio_effects.Highpass):
+            highpass.coefficient(processor.cutoff_hz, sample_rate)
     return PreparedEffects(
         definition=definition,
         sample_rate=sample_rate,
@@ -1036,7 +1058,9 @@ def native_live_graph(
     ]
     connections = {(c.processor, c.port): c.source for c in graph.connections}
     widths = [
-        3 + 2 * len(p.filters)
+        3 + len(p.input_channels) * len(p.output_channels)
+        if isinstance(p, audio_effects.ChannelMatrix)
+        else 3 + 2 * len(p.filters)
         if isinstance(p, audio_effects.Filter)
         else 10
         if isinstance(p, audio_effects.Granulator)
@@ -1050,6 +1074,8 @@ def native_live_graph(
         if isinstance(p, audio_effects.TapDelay)
         else 7
         if isinstance(p, (audio_effects.ModulatedDelay, audio_effects.Phaser))
+        else 4
+        if isinstance(p, audio_effects.Highpass)
         else 3
         for p in ordered
     ]
@@ -1074,8 +1100,15 @@ def native_live_graph(
                 sources[node, port] = input_indices[source.input]
             else:
                 sources[node, port] = processor_indices[source.processor]
-        parameters[node, 1:3] = [processor.mix, 1]
-        if isinstance(processor, audio_effects.Gain):
+        parameters[node, 1:3] = [
+            1 if isinstance(processor, audio_effects.ChannelMatrix) else processor.mix,
+            1,
+        ]
+        if isinstance(processor, audio_effects.ChannelMatrix):
+            kinds.append(11)
+            coefficients = np.asarray(processor.coefficients).ravel()
+            parameters[node, 3 : 3 + len(coefficients)] = coefficients
+        elif isinstance(processor, audio_effects.Gain):
             kinds.append(0)
             parameters[node, 0] = processor.gain_db
         elif isinstance(processor, audio_effects.Multiply):
@@ -1098,6 +1131,9 @@ def native_live_graph(
                 processor.feedback,
                 processor.state_floor,
             ]
+        elif isinstance(processor, audio_effects.Highpass):
+            kinds.append(10)
+            parameters[node, [0, 3]] = [processor.cutoff_hz, processor.state_floor]
         elif isinstance(processor, audio_effects.Compressor):
             kinds.append(7)
             parameters[node, [0, 3, 4, 5, 6, 7]] = [
@@ -1237,6 +1273,7 @@ def native_live_graph(
                     audio_effects.ModulatedDelay,
                     audio_effects.Reverb,
                     audio_effects.Phaser,
+                    audio_effects.Highpass,
                 ),
             )
             else 0.0
@@ -1320,6 +1357,7 @@ def native_live_actions(
             duration = action.duration_frames
         elif isinstance(action, audio_effects.BypassAction):
             processor = processors[action.processor]
+            assert not isinstance(processor, audio_effects.ChannelMatrix)
             parameter = 2
             target = 0.0 if action.bypassed else 1.0
             duration = processor.bypass_fade_frames
@@ -1402,7 +1440,11 @@ def serial_graph(
 def _initial_state(
     processor: audio_effects.Processor, channels: int, sample_rate: int
 ) -> ProcessorState:
-    values = {"mix": processor.mix}
+    values = (
+        {}
+        if isinstance(processor, audio_effects.ChannelMatrix)
+        else {"mix": processor.mix}
+    )
     filter_states: list[filters.FilterState] = []
     if isinstance(processor, audio_effects.Gain):
         values["gain_db"] = processor.gain_db
@@ -1419,6 +1461,8 @@ def _initial_state(
             sweep=processor.sweep,
             feedback=processor.feedback,
         )
+    elif isinstance(processor, audio_effects.Highpass):
+        values["cutoff_hz"] = processor.cutoff_hz
     elif isinstance(processor, audio_effects.Compressor):
         values.update(
             threshold_db=processor.threshold_db,
@@ -1473,6 +1517,9 @@ def _initial_state(
             stages=[[0.0] * channels for _ in range(6)], feedback=[0.0] * channels
         )
         if isinstance(processor, audio_effects.Phaser)
+        else None,
+        highpass=HighpassState(memory=[0.0] * channels)
+        if isinstance(processor, audio_effects.Highpass)
         else None,
         granulator=(
             GranulatorState()
@@ -1680,6 +1727,8 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
         return {"drive": 0, "bias": 3, "output_gain_db": 4}[name]
     if isinstance(processor, audio_effects.Phaser):
         return {"center_hz": 0, "depth_cents": 3, "sweep": 4, "feedback": 5}[name]
+    if isinstance(processor, audio_effects.Highpass):
+        return 0
     if isinstance(processor, audio_effects.Compressor):
         return {
             "threshold_db": 0,

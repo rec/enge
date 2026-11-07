@@ -1,5 +1,7 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
+mod highpass;
+mod matrix;
 mod phaser;
 mod reverb;
 mod state;
@@ -12,7 +14,9 @@ use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::ControlBank;
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{RouteMap, sum_partials};
-use numpy::ndarray::{Array2, Array3};
+use highpass::Highpass;
+use matrix::RoutingMatrix;
+use numpy::ndarray::{Array2, Array3, Axis};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use phaser::Phaser;
 use pyo3::exceptions::PyValueError;
@@ -51,6 +55,8 @@ pub(crate) struct EffectRuntime {
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
     phasers: Vec<Option<Phaser>>,
+    highpasses: Vec<Option<Highpass>>,
+    matrices: Vec<Option<RoutingMatrix>>,
     alignment: Vec<[Option<Alignment>; 2]>,
     port_values: Array3<f64>,
     port_ended: Array2<bool>,
@@ -101,6 +107,7 @@ pub(crate) struct EffectSnapshot {
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
     phasers: Vec<Option<Phaser>>,
+    highpasses: Vec<Option<Highpass>>,
     alignment: Vec<[Option<Alignment>; 2]>,
     control_delays: Vec<Vec<Option<ControlDelay>>>,
 }
@@ -312,7 +319,7 @@ impl EffectRuntime {
         let nodes = kinds.len();
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
-        if kinds.iter().any(|v| *v > 9)
+        if kinds.iter().any(|v| *v > 11)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -323,7 +330,7 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9) {
+                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -369,7 +376,8 @@ impl EffectRuntime {
                     if !matches!(widths[source as usize], 1 | 2) || widths[node + inputs] != 2 {
                         return Err(PyValueError::new_err("Invalid reverb channel widths"));
                     }
-                } else if !(kinds[node] == 7 && port == 1)
+                } else if kinds[node] != 11
+                    && !(kinds[node] == 7 && port == 1)
                     && widths[source as usize] != widths[node + inputs]
                 {
                     return Err(PyValueError::new_err(
@@ -471,6 +479,41 @@ impl EffectRuntime {
             });
         }
         let parameters = parameters.as_array().to_owned();
+        let mut matrices = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for node in 0..nodes {
+            if kinds[node] == 11 {
+                let columns = widths[sources[[node, 0]] as usize];
+                let rows = widths[node + inputs];
+                let size = rows
+                    .checked_mul(columns)
+                    .and_then(|size| size.checked_add(3))
+                    .ok_or_else(|| PyValueError::new_err("Invalid routing matrix size"))?;
+                if parameters.ncols() < size
+                    || parameters[[node, 1]] != 1.0
+                    || parameters[[node, 2]] != 1.0
+                {
+                    return Err(PyValueError::new_err("Invalid routing matrix profile"));
+                }
+                matrices[node] = Some(RoutingMatrix::new(Array2::from_shape_fn(
+                    (rows, columns),
+                    |(row, column)| parameters[[node, 3 + row * columns + column]],
+                )));
+            }
+        }
+        let mut highpasses = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for node in 0..nodes {
+            if kinds[node] == 10 {
+                if parameters.ncols() < 4
+                    || parameters[[node, 3]] < 0.0
+                    || parameters[[node, 3]] >= tail_thresholds[node]
+                {
+                    return Err(PyValueError::new_err("Invalid highpass profile"));
+                }
+                highpass::coefficient(parameters[[node, 0]], rate)?;
+                highpasses[node] =
+                    Some(Highpass::new(widths[node + inputs], parameters[[node, 3]]));
+            }
+        }
         let mut phasers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             if kinds[node] == 9 {
@@ -654,23 +697,25 @@ impl EffectRuntime {
                 let arrival = latencies[node + inputs] - if kinds[node] == 4 { 48 } else { 0 };
                 (0..parameters.ncols())
                     .map(|parameter| {
-                        let dynamic = matches!(parameter, 1 | 2)
-                            || match kinds[node] {
-                                0 => parameter == 0,
-                                2 => filter_rows.iter().any(|filter| {
-                                    filter.node == node
-                                        && (parameter == filter.parameter
-                                            || parameter == filter.parameter + 1)
-                                }),
-                                3 => (3..=7).contains(&parameter) || parameter == 9,
-                                4 => matches!(parameter, 0 | 3 | 4),
-                                5 => matches!(parameter, 0 | 3),
-                                6 => matches!(parameter, 0 | 3..=5),
-                                7 => matches!(parameter, 0 | 3..=7),
-                                8 => matches!(parameter, 0 | 3 | 5),
-                                9 => matches!(parameter, 0 | 3..=5),
-                                _ => false,
-                            };
+                        let dynamic = kinds[node] != 11
+                            && (matches!(parameter, 1 | 2)
+                                || match kinds[node] {
+                                    0 => parameter == 0,
+                                    2 => filter_rows.iter().any(|filter| {
+                                        filter.node == node
+                                            && (parameter == filter.parameter
+                                                || parameter == filter.parameter + 1)
+                                    }),
+                                    3 => (3..=7).contains(&parameter) || parameter == 9,
+                                    4 => matches!(parameter, 0 | 3 | 4),
+                                    5 => matches!(parameter, 0 | 3),
+                                    6 => matches!(parameter, 0 | 3..=5),
+                                    7 => matches!(parameter, 0 | 3..=7),
+                                    8 => matches!(parameter, 0 | 3 | 5),
+                                    9 => matches!(parameter, 0 | 3..=5),
+                                    10 => parameter == 0,
+                                    _ => false,
+                                });
                         let frames = arrival
                             + if kinds[node] == 4 {
                                 if matches!(parameter, 0 | 3) { 24 } else { 48 }
@@ -700,6 +745,8 @@ impl EffectRuntime {
             reverbs,
             waveshapers,
             phasers,
+            highpasses,
+            matrices,
             alignment,
             port_values: Array3::zeros((nodes, 2, channels)),
             port_ended: Array2::from_elem((nodes, 2), false),
@@ -868,6 +915,9 @@ impl EffectRuntime {
                 return Err(NativeError::Message("Invalid live effect mix"));
             }
             let mix = authored_mix * bypass;
+            if self.kinds[node] == 11 && (authored_mix != 1.0 || bypass != 1.0) {
+                return Err(NativeError::Message("Routing matrix has no mix or bypass"));
+            }
             let mut waveshaper_drained = false;
             for channel in 0..channels {
                 let value = if self.kinds[node] == 8 && self.widths[first] == 1 {
@@ -953,7 +1003,7 @@ impl EffectRuntime {
                     }
                 }
                 8 => self.process_reverb(node, first, rate)?,
-                _ => self.phasers[node]
+                9 => self.phasers[node]
                     .as_mut()
                     .expect("prepared phaser")
                     .process(
@@ -965,6 +1015,17 @@ impl EffectRuntime {
                             self.resolved[[node, 5]],
                         ],
                         rate,
+                    )?,
+                10 => self.highpasses[node]
+                    .as_mut()
+                    .expect("prepared highpass")
+                    .process(&mut self.wet[..channels], self.resolved[[node, 0]], rate)?,
+                _ => self.matrices[node]
+                    .as_mut()
+                    .expect("prepared routing matrix")
+                    .process(
+                        self.port_values.index_axis(Axis(0), node).row(0),
+                        &mut self.wet[..channels],
                     )?,
             }
             let drained = self.port_ended[[node, 0]]
@@ -1011,6 +1072,12 @@ impl EffectRuntime {
                             .chain(phaser.feedback.iter())
                             .all(|value| value.abs() < self.tail_thresholds[node])
                     }
+                    10 => self.highpasses[node]
+                        .as_ref()
+                        .expect("prepared highpass")
+                        .memory
+                        .iter()
+                        .all(|value| value.abs() < self.tail_thresholds[node]),
                     _ => true,
                 };
             self.ended[node + inputs] = drained;
@@ -1057,6 +1124,9 @@ impl EffectRuntime {
         }
         if node >= self.parameters.nrows() {
             return Err(NativeError::Message("Invalid live effect node"));
+        }
+        if self.kinds[node] == 11 {
+            return Err(NativeError::Message("Routing matrices have no actions"));
         }
         if kind == 1 {
             if self.kinds[node] != 3
@@ -1358,6 +1428,7 @@ impl EffectRuntime {
             reverbs: self.reverbs.clone(),
             waveshapers: self.waveshapers.clone(),
             phasers: self.phasers.clone(),
+            highpasses: self.highpasses.clone(),
             alignment: self.alignment.clone(),
             control_delays: self.control_delays.clone(),
         }
@@ -1383,6 +1454,16 @@ impl EffectRuntime {
             || self.granulators.len() != snapshot.granulators.len()
             || self.tap_delays.len() != snapshot.tap_delays.len()
             || self.modulated_delays.len() != snapshot.modulated_delays.len()
+            || self.highpasses.len() != snapshot.highpasses.len()
+            || self
+                .highpasses
+                .iter()
+                .zip(&snapshot.highpasses)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
             || self
                 .phasers
                 .iter()
@@ -1452,6 +1533,11 @@ impl EffectRuntime {
                     _ => true,
                 })
             || self.parameters.raw_dim() != snapshot.parameters.raw_dim()
+            || self.matrices.iter().enumerate().any(|(node, matrix)| {
+                matrix
+                    .as_ref()
+                    .is_some_and(|matrix| !matrix.matches_parameters(snapshot.parameters.row(node)))
+            })
             || self.filter_states.raw_dim() != snapshot.filter_states.raw_dim()
         {
             return Err(PyValueError::new_err(
@@ -1476,6 +1562,7 @@ impl EffectRuntime {
         self.reverbs.clone_from(&snapshot.reverbs);
         self.waveshapers.clone_from(&snapshot.waveshapers);
         self.phasers.clone_from(&snapshot.phasers);
+        self.highpasses.clone_from(&snapshot.highpasses);
         self.alignment.clone_from(&snapshot.alignment);
         self.control_delays.clone_from(&snapshot.control_delays);
         self.ended.clone_from(&snapshot.ended);

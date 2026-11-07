@@ -79,7 +79,18 @@ def callback_audio(
 
 
 @pytest.mark.parametrize(
-    "kind", ["gain", "clip", "phaser", "filter", "grain", "tap", "chorus", "multiply"]
+    "kind",
+    [
+        "gain",
+        "clip",
+        "phaser",
+        "highpass",
+        "filter",
+        "grain",
+        "tap",
+        "chorus",
+        "multiply",
+    ],
 )
 def test_native_input_end_releases_generators_and_drains_the_graph(
     tmp_path: Path, kind: str
@@ -143,7 +154,7 @@ def test_native_stop_ends_a_frozen_tail_and_keeps_later_blocks_silent(
 
 
 @pytest.mark.parametrize(
-    "kind", ["filter", "grain", "tap", "chorus", "compressor", "phaser"]
+    "kind", ["filter", "grain", "tap", "chorus", "compressor", "phaser", "highpass"]
 )
 @pytest.mark.parametrize(
     "origin,target", [("numpy", "native"), ("native", "numpy"), ("native", "native")]

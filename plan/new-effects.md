@@ -17,6 +17,10 @@ Band offline and finite realtime adapters also exist. Check `enge/effects.py`,
 `enge/rubberband.py` and their tests before selecting a new slice. The descriptions below retain design
 requirements, including requirements beyond the implemented profiles.
 
+Utility profiles now also include one-pole Highpass/DC removal and always-applied
+named-channel matrices for polarity, static pan/balance/width, mid/side and
+explicit channel mapping. See [the utility contracts and validation](../doc/utility-effects.md).
+
 As of 2026-11-05, the existing graph processors also accept shared enveLFO
 bindings and Patch outputs, including delay-time motion. See
 [effect modulation](../doc/effect-modulation.md) for the implemented control,

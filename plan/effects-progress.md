@@ -46,12 +46,12 @@ without treating them as complete families.
 
 | ID | Family / named variants | State or dependency |
 | --- | --- | --- |
-| U1 | Polarity, DC blocker, one-pole highpass | Some source processing exists; shared effects profiles pending. |
-| U2 | Pan, balance, width, mid/side | Static source pan/balance exists; effects matrix profiles pending. |
-| U3 | Channel mapper, swap, sum/difference | Pending explicit matrix processor/layout contracts. |
-| U4 | Mixer, linear/equal-power crossfader, mute/solo | Wet/dry exists; explicit multi-input profiles pending. |
-| U5 | Envelope follower | Pending reusable detector/control output. |
-| U6 | Gate and expander, including sidechains | Pending P2 detector machinery, hold and hysteresis contracts. |
+| U1 | Polarity, DC blocker, one-pole highpass | Complete selected profiles: shared 20 Hz Highpass/DC removal and matrix polarity inversion. uFor `365fc7e`, `8a484fd`; enge 3,277 passed / 29 skipped. Zero callback heap operations and zero timing misses. See [utility profiles](../doc/utility-effects.md). |
+| U2 | Pan, balance, width, mid/side | Complete static matrix profiles: equal-power mono pan, attenuation-only balance, width 0–2 and orthonormal M/S encode/decode. Dynamic auto-pan remains M2. See [utility profiles](../doc/utility-effects.md). |
+| U3 | Channel mapper, swap, sum/difference | Complete always-applied named-channel matrices, unequal widths, explicit swap/sum/difference and compensated accumulation. No implicit clipping, normalization, wet/dry or bypass. See [utility profiles](../doc/utility-effects.md). |
+| U4 | Mixer, linear/equal-power crossfader, mute/solo | Schema `0ac37c7`, uFor 1,521 tests passed; renderer pending. Approved authored port counts, per-input gain and continuously retimed 64-frame mute/solo fades; solo selects then mute silences. Crossfader law is explicit, with no second wet/dry or bypass. |
+| U5 | Envelope follower | Approved linked peak, attack/release and raw linear-amplitude output with same-frame downstream control routing, explicit graph dependencies and cycle rejection. Source-binding and renderer implementation pending. |
+| U6 | Gate and expander, including sidechains | Approved linked peak detection, explicit main/sidechain detector and no look-ahead. Gate uses opening threshold, lower closing threshold, frame-ceiled hold and gain attack/release. Downward expansion uses a hard knee and never boosts. Schema and renderer pending. |
 | D1 | Multiple fixed taps with gain/pan | Single tap exists; multitap/routing profile pending. |
 | D2 | Feedback delay with damping | Feedback exists; damping/profile verification pending. |
 | D3 | Ping-pong / cross-feedback delay | Pending explicit feedback matrices. |

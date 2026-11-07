@@ -162,6 +162,17 @@ impl EffectRuntime {
                     state.set_item("feedback", &phaser.feedback)?;
                     value.set_item("phaser", state)?;
                 }
+                10 => {
+                    let state = PyDict::new(py);
+                    state.set_item(
+                        "memory",
+                        &self.highpasses[node]
+                            .as_ref()
+                            .expect("prepared highpass")
+                            .memory,
+                    )?;
+                    value.set_item("highpass", state)?;
+                }
                 _ => {}
             }
             result.push(value);
@@ -492,6 +503,18 @@ impl EffectRuntime {
                         return Err(PyValueError::new_err("Invalid phaser feedback snapshot"));
                     }
                     phaser.feedback = feedback;
+                }
+                10 => {
+                    let state = field(value, "highpass")?;
+                    let state = state.cast::<PyDict>()?;
+                    let memory: Vec<f64> = field(state, "memory")?.extract()?;
+                    if memory.len() != channels || memory.iter().any(|value| !value.is_finite()) {
+                        return Err(PyValueError::new_err("Invalid highpass memory snapshot"));
+                    }
+                    snapshot.highpasses[node]
+                        .as_mut()
+                        .expect("prepared highpass")
+                        .memory = memory;
                 }
                 _ => {}
             }
