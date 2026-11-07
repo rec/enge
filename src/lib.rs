@@ -1,7 +1,4 @@
-#![cfg_attr(
-    not(any(feature = "rubberband", feature = "allocation-audit")),
-    forbid(unsafe_code)
-)]
+#![cfg_attr(not(feature = "allocation-audit"), forbid(unsafe_code))]
 
 mod amplitude;
 mod compressor;
@@ -15,8 +12,6 @@ mod lfo;
 mod live;
 mod noise;
 mod queue;
-#[cfg(feature = "rubberband")]
-mod rubberband;
 mod runtime;
 mod sampler;
 
@@ -27,9 +22,6 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
-
-#[cfg(feature = "rubberband")]
-use rubberband::{RubberBandLiveShifter, RubberBandRealtimeStretcher, rubberband_stretch};
 
 type RenderedBlock<'py> = (
     Bound<'py, PyArray2<f64>>,
@@ -210,10 +202,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(lfo::render_lfo, module)?)?;
 
     #[cfg(feature = "rubberband")]
-    module.add_function(wrap_pyfunction!(rubberband_stretch, module)?)?;
-    #[cfg(feature = "rubberband")]
-    module.add_class::<RubberBandLiveShifter>()?;
-    #[cfg(feature = "rubberband")]
-    module.add_class::<RubberBandRealtimeStretcher>()?;
+    enge_rubberband::register(module)?;
     Ok(())
 }

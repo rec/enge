@@ -1,0 +1,12 @@
+[package]
+name = "enge-rubberband"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "MIT"
+
+[dependencies]
+numpy = "0.29"
+pyo3 = { version = "0.29", features = ["extension-module"] }
+rubberband-sys = "0.1.4"

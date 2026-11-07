@@ -2,6 +2,13 @@ use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(rubberband_stretch, module)?)?;
+    module.add_class::<RubberBandLiveShifter>()?;
+    module.add_class::<RubberBandRealtimeStretcher>()?;
+    Ok(())
+}
+
 struct Stretcher(*mut rubberband_sys::RubberBandState_);
 
 impl Drop for Stretcher {

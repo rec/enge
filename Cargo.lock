@@ -127,10 +127,19 @@ checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 name = "enge-native"
 version = "0.1.0"
 dependencies = [
+ "enge-rubberband",
  "envelfo-core",
  "numpy",
  "pyo3",
  "rtrb",
+]
+
+[[package]]
+name = "enge-rubberband"
+version = "0.1.0"
+dependencies = [
+ "numpy",
+ "pyo3",
  "rubberband-sys",
 ]
 
