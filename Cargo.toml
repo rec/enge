@@ -22,3 +22,5 @@ numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module"] }
 rtrb = "0.4.0"
 enge-rubberband = { path = "crates/rubberband", optional = true }
+realfft = "3.5.1"
+sha2 = "0.10.9"
