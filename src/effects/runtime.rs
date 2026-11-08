@@ -7,6 +7,7 @@ mod highpass;
 mod matrix;
 mod mixer;
 mod phaser;
+mod resonant;
 mod reverb;
 mod state;
 mod waveshaper;
@@ -64,6 +65,7 @@ pub(crate) struct EffectRuntime {
     waveshapers: Vec<Option<Waveshaper>>,
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
+    resonants: Vec<Option<resonant::ResonantDelay>>,
     matrices: Vec<Option<RoutingMatrix>>,
     mixers: Vec<Option<Mixer>>,
     crossfader_laws: Vec<Option<bool>>,
@@ -125,6 +127,7 @@ pub(crate) struct EffectSnapshot {
     waveshapers: Vec<Option<Waveshaper>>,
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
+    resonants: Vec<Option<resonant::ResonantDelay>>,
     mixers: Vec<Option<Mixer>>,
     gates: Vec<Option<dynamics::Gate>>,
     expansion_gains: Vec<f64>,
@@ -352,7 +355,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 17)
+        if kinds.iter().any(|v| *v > 18)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -363,7 +366,7 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14 | 17) {
+                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14 | 17 | 18) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -655,6 +658,25 @@ impl EffectRuntime {
                 )));
             }
         }
+        let mut resonants = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for node in 0..nodes {
+            if kinds[node] == 18 {
+                if parameters.ncols() < 6
+                    || parameters[[node, 5]] <= 0.0
+                    || parameters[[node, 5]] >= tail_thresholds[node]
+                {
+                    return Err(PyValueError::new_err("Invalid resonant delay profile"));
+                }
+                resonant::loss(parameters[[node, 0]], parameters[[node, 3]])?;
+                resonants[node] = Some(resonant::ResonantDelay::new(
+                    parameters[[node, 0]],
+                    parameters[[node, 4]],
+                    rate,
+                    widths[node + inputs],
+                    parameters[[node, 5]],
+                )?);
+            }
+        }
         let mut highpasses = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             if kinds[node] == 10 {
@@ -918,6 +940,7 @@ impl EffectRuntime {
                                     14 => matches!(parameter, 0 | 3),
                                     15 => matches!(parameter, 0 | 3..=6),
                                     16 => matches!(parameter, 0 | 3..=5),
+                                    18 => parameter == 3,
                                     _ => false,
                                 });
                         let modulated = controls
@@ -954,6 +977,7 @@ impl EffectRuntime {
             waveshapers,
             phasers,
             highpasses,
+            resonants,
             matrices,
             mixers,
             crossfader_laws,
@@ -1194,6 +1218,17 @@ impl EffectRuntime {
                             self.port_ended[[node, 0]],
                         )?;
                 }
+                18 => self.resonants[node]
+                    .as_mut()
+                    .expect("prepared resonant delay")
+                    .process(
+                        &self.dry[..channels],
+                        &mut self.wet[..channels],
+                        &mut self.filtered[..channels],
+                        self.resolved[[node, 3]],
+                        rate,
+                        self.tail_thresholds[node],
+                    )?,
                 5 | 17 => self.process_tap_delay(node, channels, rate)?,
                 6 => self.process_modulated_delay(node, channels, rate)?,
                 7 => {
@@ -1354,6 +1389,9 @@ impl EffectRuntime {
                             .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
                         4 => waveshaper_drained,
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
+                        18 => self.resonants[node]
+                            .as_ref()
+                            .is_some_and(|r| r.drained(self.tail_thresholds[node])),
                         5 | 17 => self.tap_delays[node].as_ref().is_some_and(|delay| {
                             delay.non_silent == 0
                                 && delay.damping.as_ref().is_none_or(|d| {
@@ -1457,6 +1495,11 @@ impl EffectRuntime {
         }
         if kind != 0 || action[3] != parameter as f64 || parameter >= self.parameters.ncols() {
             return Err(NativeError::Message("Invalid live effect parameter action"));
+        }
+        if self.kinds[node] == 18 && !matches!(parameter, 1..=3) {
+            return Err(NativeError::Message(
+                "Resonant tuning is fixed at preparation",
+            ));
         }
         if self.kinds[node] == 12 {
             if parameter < 3
@@ -1806,6 +1849,7 @@ impl EffectRuntime {
             waveshapers: self.waveshapers.clone(),
             phasers: self.phasers.clone(),
             highpasses: self.highpasses.clone(),
+            resonants: self.resonants.clone(),
             mixers: self.mixers.clone(),
             gates: self.gates.clone(),
             expansion_gains: self.expansion_gains.clone(),
@@ -1842,6 +1886,15 @@ impl EffectRuntime {
                 .mixers
                 .iter()
                 .zip(&snapshot.mixers)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
+            || self
+                .resonants
+                .iter()
+                .zip(&snapshot.resonants)
                 .any(|(a, b)| match (a, b) {
                     (Some(a), Some(b)) => !a.same_capacity(b),
                     (None, None) => false,
@@ -1970,6 +2023,7 @@ impl EffectRuntime {
         self.waveshapers.clone_from(&snapshot.waveshapers);
         self.phasers.clone_from(&snapshot.phasers);
         self.highpasses.clone_from(&snapshot.highpasses);
+        self.resonants.clone_from(&snapshot.resonants);
         self.mixers.clone_from(&snapshot.mixers);
         self.gates.clone_from(&snapshot.gates);
         self.expansion_gains.clone_from(&snapshot.expansion_gains);

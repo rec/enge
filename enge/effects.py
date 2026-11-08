@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from fractions import Fraction
+from functools import cached_property
 from math import ceil, exp, floor, fsum, isfinite, log10, pow, prod, sqrt
 from typing import Literal
 
@@ -22,6 +23,7 @@ from . import (
     highpass,
     mixer,
     phaser,
+    resonant,
     routing,
     synth,
     waveshaper,
@@ -99,6 +101,11 @@ class ModulatedDelayState(DelayState):
     phase: float = 0
 
 
+class ResonantDelayState(DelayState):
+    tuning: HighpassState
+    damping: HighpassState
+
+
 class AlignmentState(DelayState):
     remaining: int = Field(ge=0)
 
@@ -128,6 +135,7 @@ class ProcessorState(BaseModel):
     granulator: GranulatorState | None = None
     tap_delay: TapDelayState | None = None
     modulated_delay: ModulatedDelayState | None = None
+    resonant_delay: ResonantDelayState | None = None
     reverb: ReverbState | None = None
     waveshaper: WaveshaperState | None = None
     phaser: PhaserState | None = None
@@ -172,6 +180,16 @@ class PreparedEffects(BaseModel, frozen=True):
 
 class OfflineEffects:
     """Process one graph with exact frame actions and explicit input endings."""
+
+    @cached_property
+    def resonant_tunings(self) -> dict[str, tuple[int, float]]:
+        return {
+            p.name: resonant.tuning(
+                p.frequency_hz, p.damping_hz, self.definition.sample_rate
+            )
+            for p in self.definition.definition.processors
+            if isinstance(p, audio_effects.ResonantDelay)
+        }
 
     def __init__(
         self,
@@ -412,6 +430,26 @@ class OfflineEffects:
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
+            if isinstance(processor, audio_effects.ResonantDelay):
+                state = snapshot.processors[processor.name].resonant_delay
+                frames, _ = self.resonant_tunings[processor.name]
+                channels = len(layouts[processor.name])
+                if (
+                    state is None
+                    or len(state.history) != frames
+                    or not 0 <= state.write < frames
+                    or any(
+                        len(r) != channels or not all(isfinite(v) for v in r)
+                        for r in state.history
+                    )
+                    or any(
+                        len(f.memory) != channels
+                        or not all(isfinite(v) for v in f.memory)
+                        for f in (state.tuning, state.damping)
+                    )
+                ):
+                    raise EngineError("Invalid resonant delay snapshot")
+                continue
             if not isinstance(
                 processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)
             ):
@@ -990,6 +1028,46 @@ class OfflineEffects:
             assert granular is not None
             drained = ended["input"] and not granular.frozen and not granular.grains
             return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
+        if isinstance(processor, audio_effects.ResonantDelay):
+            dry = ports["input"]
+            delay = state.resonant_delay
+            assert delay is not None
+            gain = resonant.loss(
+                processor.frequency_hz, self._value(processor, "decay_seconds", frame)
+            )
+            _, a = self.resonant_tunings[processor.name]
+            wet = highpass.process_allpass(
+                delay.tuning,
+                np.asarray(delay.history[delay.write]),
+                a,
+                processor.state_floor,
+            )
+            filtered = wet - highpass.process(
+                delay.damping,
+                wet,
+                highpass.coefficient(processor.damping_hz, self.definition.sample_rate),
+                processor.state_floor,
+            )
+            stored = (
+                dry if not ended["input"] else np.zeros_like(dry)
+            ) + gain * filtered
+            if not np.all(np.isfinite(stored)):
+                raise ValueError("Non-finite resonant feedback")
+            stored[np.abs(stored) < processor.state_floor] = 0
+            delay.history[delay.write] = stored.tolist()
+            delay.write = (delay.write + 1) % len(delay.history)
+            drained = (
+                ended["input"]
+                and all(
+                    abs(v) < processor.tail_threshold for r in delay.history for v in r
+                )
+                and all(
+                    abs(v) < processor.tail_threshold
+                    for f in (delay.tuning, delay.damping)
+                    for v in f.memory
+                )
+            )
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
             dry = ports["input"]
             delay = state.tap_delay
@@ -1249,6 +1327,16 @@ def prepare(
             )
         elif isinstance(processor, audio_effects.Highpass):
             highpass.coefficient(processor.cutoff_hz, sample_rate)
+        elif isinstance(processor, audio_effects.ResonantDelay):
+            resonant.tuning(processor.frequency_hz, processor.damping_hz, sample_rate)
+            resonant.loss(processor.frequency_hz, processor.decay_seconds)
+            for parameter in definition.modulation.parameters:
+                if (
+                    parameter.target.name == processor.name
+                    and parameter.target.parameter == "decay_seconds"
+                ):
+                    resonant.loss(processor.frequency_hz, parameter.minimum)
+                    resonant.loss(processor.frequency_hz, parameter.maximum)
         elif (
             isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay))
             and processor.damping_hz is not None
@@ -1331,6 +1419,8 @@ def native_live_graph(
         if isinstance(p, audio_effects.Gate)
         else 6 + len(p.feedback_matrix) ** 2
         if isinstance(p, audio_effects.MatrixDelay)
+        else 6
+        if isinstance(p, audio_effects.ResonantDelay)
         else 6
         if isinstance(p, audio_effects.Expander)
         else 5
@@ -1543,6 +1633,14 @@ def native_live_graph(
                     processor.freeze_crossfade_frames,
                 ]
             )
+        elif isinstance(processor, audio_effects.ResonantDelay):
+            kinds.append(18)
+            parameters[node, [0, 3, 4, 5]] = [
+                processor.frequency_hz,
+                processor.decay_seconds,
+                processor.damping_hz,
+                processor.state_floor,
+            ]
         elif isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
             kinds.append(17 if isinstance(processor, audio_effects.MatrixDelay) else 5)
             parameters[node, [0, 3]] = [processor.delay_seconds, processor.feedback]
@@ -1615,6 +1713,7 @@ def native_live_graph(
                     audio_effects.Filter,
                     audio_effects.TapDelay,
                     audio_effects.MatrixDelay,
+                    audio_effects.ResonantDelay,
                     audio_effects.ModulatedDelay,
                     audio_effects.Reverb,
                     audio_effects.Phaser,
@@ -1914,6 +2013,8 @@ def _initial_state(
             playback_ratio=processor.playback_ratio,
             position_jitter_seconds=processor.position_jitter_seconds,
         )
+    elif isinstance(processor, audio_effects.ResonantDelay):
+        values["decay_seconds"] = processor.decay_seconds
     elif isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
         values.update(
             delay_seconds=processor.delay_seconds,
@@ -1946,6 +2047,20 @@ def _initial_state(
         else None,
         highpass=HighpassState(memory=[0.0] * channels)
         if isinstance(processor, audio_effects.Highpass)
+        else None,
+        resonant_delay=ResonantDelayState(
+            history=[
+                [0.0] * channels
+                for _ in range(
+                    resonant.tuning(
+                        processor.frequency_hz, processor.damping_hz, sample_rate
+                    )[0]
+                )
+            ],
+            tuning=HighpassState(memory=[0.0] * channels),
+            damping=HighpassState(memory=[0.0] * channels),
+        )
+        if isinstance(processor, audio_effects.ResonantDelay)
         else None,
         mixer=mixer.initial_state(
             [i.muted for i in processor.inputs], [i.solo for i in processor.inputs]
@@ -2223,6 +2338,8 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
             "playback_ratio",
             "position_jitter_seconds",
         ].index(name)
+    if isinstance(processor, audio_effects.ResonantDelay):
+        return {"decay_seconds": 3}[name]
     if isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
         return {"delay_seconds": 0, "feedback": 3, "damping_hz": 5}[name]
     if isinstance(processor, audio_effects.ModulatedDelay):

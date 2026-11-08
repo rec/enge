@@ -33,9 +33,19 @@ offline renderer, exporting/importing explicit processor state for JSON snapshot
 and replacing the old native whole-graph path. Use this foundation for the next
 stateful effects rather than adding separate bindings for their history buffers.
 Named stereo/5.1/7.1 layouts and first-order ACN/SN3D ambisonics, with explicit
-matrices for other layouts, were also approved on 2026-11-06. FFT implementation
-and external IR/HRTF asset policy were asked about; retain their answers before
-those slices.
+matrices for other layouts, were also approved on 2026-11-06. On 2026-11-08,
+the user approved RealFFT backed by RustFFT, with plans and scratch prepared
+outside callbacks, as the shared FFT foundation. External IR/HRTF assets remain
+caller-supplied and explicitly declared, with caller-decoded audio following the
+sampler ownership pattern. Tests use generated fixtures; no automatic downloads
+or bundled third-party asset library. The user also approved fixed IRs and
+uniform power-of-two partitions (default 256 frames, with matching declared
+latency), arbitrary callback sizes and complete FIR tails. Convolution uses
+explicit named input/output matrix kernels and is always wet; existing matrices,
+Mixer and Crossfader nodes provide dry routing and warm mix/bypass with graph
+alignment. Graph-local audio assets/timebases reuse uFor types. Effect preparation
+accepts caller-decoded arrays by asset ID, validates dimensions and matching
+sample rates, copies audio immutably and fingerprints it for snapshots.
 
 ## Remaining catalogue families
 
@@ -56,8 +66,8 @@ without treating them as complete families.
 | D2 | Feedback delay with damping | Complete. Atomic runtime/API-pin integration approved. Schema `a8fdc72`, uFor 1,530 tests passed. Optional normalized low-pass on delayed reads before feedback gain, disabled by default; state, controls, tails, replay and failure recovery pass. Same full-suite/heap evidence as D1. Initial 64/256-frame timing stalls did not recur in five repeats; cause remains unresolved and device deadlines remain unqualified. See [delay profiles](../doc/delay-profiles.md). |
 | D3 | Ping-pong / cross-feedback delay | Complete. MatrixDelay shares TapDelay DSP and controls, with one delay time and a static square feedback matrix. Rows are destinations and columns sources; absolute row sums are at most one. Schema `391a6ba` / `76b86a1`, uFor 1,538 tests passed. Enge full audit: 3,343 passed / 29 skipped, with zero Rust heap operations in 16,066 successful and 33 failed callbacks. Pin `7bc06a9` baseline: 3,328 passed / 29 skipped. Three ordinary timing runs have zero misses. See [delay profiles](../doc/delay-profiles.md). |
 | D4 | Doubling, ensemble, ADT | Complete selected compositions. Helper/recipes `1307c96`, uFor 1,545 tests passed; separate pin `6f174dc`. Authored ModulatedDelay voices feed existing stereo placement and Mixer nodes, with explicit bounds, rates, phases and gain. Seven mono/stereo/control regressions pass; shared enveLFO can replace periodic motion. Enge full audit: 3,350 passed / 29 skipped, with zero Rust heap operations in 16,584 successful and 33 failed callbacks. Three ordinary four-voice ensemble timing runs have zero misses. No tape-transport model. See [the profiles](../doc/modulated-multitap.md). |
-| D5 | Karplus-style resonant delay | Pending tuned-loop stability/decay contract. |
-| D6 | Convolution | Pending shared FFT, IR assets, partition/latency/tail contract. |
+| D5 | Karplus-style resonant delay | Complete selected profile. Fixed frequency/damping, integer delay plus all-pass tuning with damping phase compensation, frequency at most quarter-rate, nominal undamped T60 and dynamic decay/mix/bypass. Schema `436b230`, uFor 1,546 tests passed; separate pin `6239b36` baseline: 3,350 passed / 29 skipped. Final enge audit: 3,376 passed / 29 skipped, zero Rust heap operations in 17,115 successful and 37 failed callbacks. Includes a 20-second nominal decay transfer case and filter-only tails. Three ordinary timing runs have zero misses. See [the profile](../doc/resonant-delay.md). |
+| D6 | Convolution | Approved contract: shared RealFFT/RustFFT with prepared plans/scratch; fixed caller-supplied IRs; uniform power-of-two partitions default 256 frames and equal latency; complete FIR tails; always-wet named matrix kernels composed with existing dry/mix routing; graph-local uFor assets/timebases and decoded-array preparation with rate/extent validation and content fingerprints. Implementation follows D5. |
 | N1 | Hard clip, soft clip, waveshaping, wavefolding | P4 establishes the oversampled core; folding remains a distinct curve/profile. |
 | N2 | Tape/tube-style drive | Pending explicit mathematical coloration profiles over P4 and filters. Hardware emulation is not implied. |
 | N3 | Bit crusher and sample-rate reducer | Pending quantization, rounding/dither and held-sample clock contracts. |

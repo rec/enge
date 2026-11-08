@@ -39,9 +39,9 @@ class Settings(BaseModel):
     mixer: bool = False
     follower: bool = False
     crossfader: Literal["none", "linear", "equal_power"] = "none"
-    delay: Literal["none", "tap", "modulated", "multitap", "matrix", "ensemble"] = (
-        "none"
-    )
+    delay: Literal[
+        "none", "tap", "modulated", "multitap", "matrix", "ensemble", "resonant"
+    ] = "none"
     damping_hz: Annotated[Frequency | None, tyro.conf.arg(constructor=str)] = None
     audio_output: Path | None = None
 
@@ -98,7 +98,17 @@ def main(settings: Settings) -> None:
                 mix=0.8,
             )
         )
-    if settings.delay == "matrix":
+    if settings.delay == "resonant":
+        processors.append(
+            audio_effects.ResonantDelay(
+                name="string",
+                frequency_hz=440,
+                damping_hz=6000,
+                decay_seconds=0.04,
+                mix=0.5,
+            )
+        )
+    elif settings.delay == "matrix":
         processors.append(
             audio_effects.MatrixDelay(
                 name="delay",
@@ -495,6 +505,20 @@ def main(settings: Settings) -> None:
 
 
 def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectAction]:
+    if settings.delay == "resonant":
+        return [
+            audio_effects.ParameterAction(
+                tick=start + i,
+                ordinal=0,
+                processor="string",
+                parameter="mix" if i % 4 == 0 else "decay_seconds",
+                value=0.25 + 0.5 * (i % 16) / 15
+                if i % 4 == 0
+                else 0.02 + ((start + i) % 100) / 1000,
+                duration_frames=8,
+            )
+            for i in range(min(settings.effect_actions, settings.block_frames))
+        ]
     if settings.delay in {"multitap", "ensemble"}:
         return [
             audio_effects.ParameterAction(

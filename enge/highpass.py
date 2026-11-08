@@ -25,12 +25,29 @@ def coefficient(cutoff_hz: float, sample_rate: int) -> float:
 def process(
     state: HighpassState, source: np.ndarray, a: float, state_floor: float
 ) -> np.ndarray:
-    memory = np.asarray(state.memory)
+    allpass, memory = _step(np.asarray(state.memory), source, a, state_floor)
+    wet = (source - allpass) / 2
+    if not np.all(np.isfinite(wet)):
+        raise ValueError("Non-finite highpass state")
+    state.memory = memory.tolist()
+    return wet
+
+
+def process_allpass(
+    state: HighpassState, source: np.ndarray, a: float, state_floor: float
+) -> np.ndarray:
+    wet, memory = _step(np.asarray(state.memory), source, a, state_floor)
+    state.memory = memory.tolist()
+    return wet
+
+
+def _step(
+    memory: np.ndarray, source: np.ndarray, a: float, state_floor: float
+) -> tuple[np.ndarray, np.ndarray]:
     b = sqrt((1 - a) * (1 + a))
-    wet = (source - (a * source + b * memory)) / 2
+    wet = a * source + b * memory
     memory = b * source - a * memory
     if not np.all(np.isfinite(wet)) or not np.all(np.isfinite(memory)):
         raise ValueError("Non-finite highpass state")
     memory[np.abs(memory) < state_floor] = 0
-    state.memory = memory.tolist()
-    return wet
+    return wet, memory

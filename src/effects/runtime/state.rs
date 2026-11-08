@@ -59,6 +59,21 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                18 => {
+                    let resonant = self.resonants[node]
+                        .as_ref()
+                        .expect("prepared resonant delay");
+                    let state = PyDict::new(py);
+                    state.set_item("history", rows(resonant.history.view()))?;
+                    state.set_item("write", resonant.write)?;
+                    let tuning = PyDict::new(py);
+                    tuning.set_item("memory", &resonant.tuning.memory)?;
+                    state.set_item("tuning", tuning)?;
+                    let damping = PyDict::new(py);
+                    damping.set_item("memory", &resonant.damping.memory)?;
+                    state.set_item("damping", damping)?;
+                    value.set_item("resonant_delay", state)?;
+                }
                 2 => {
                     let mut filters = Vec::new();
                     for (stage, filter) in self.filter_rows.iter().enumerate() {
@@ -305,6 +320,40 @@ impl EffectRuntime {
                 }
             }
             match kind {
+                18 => {
+                    let state = field(value, "resonant_delay")?;
+                    let state = state.cast::<PyDict>()?;
+                    let resonant = snapshot.resonants[node]
+                        .as_mut()
+                        .expect("prepared resonant delay");
+                    restore_rows(
+                        resonant.history.view_mut(),
+                        field(state, "history")?.extract()?,
+                    )?;
+                    resonant.write = field(state, "write")?.extract()?;
+                    if resonant.write >= resonant.history.nrows() {
+                        return Err(PyValueError::new_err("Invalid resonant history clock"));
+                    }
+                    for (name, filter) in [
+                        ("tuning", &mut resonant.tuning),
+                        ("damping", &mut resonant.damping),
+                    ] {
+                        let values = field(state, name)?;
+                        let memory: Vec<f64> =
+                            field(values.cast::<PyDict>()?, "memory")?.extract()?;
+                        if memory.len() != filter.memory.len()
+                            || memory.iter().any(|v| !v.is_finite())
+                        {
+                            return Err(PyValueError::new_err("Invalid resonant filter memory"));
+                        }
+                        filter.memory = memory;
+                    }
+                    resonant.non_silent = resonant
+                        .history
+                        .iter()
+                        .filter(|v| v.abs() >= self.tail_thresholds[node])
+                        .count();
+                }
                 2 => {
                     let values: Vec<Bound<'_, PyDict>> =
                         field(value, "filter_states")?.extract()?;
