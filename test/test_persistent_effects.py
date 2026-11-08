@@ -91,6 +91,7 @@ def callback_audio(
         "grain",
         "tap",
         "damped-tap",
+        "matrix-delay",
         "chorus",
         "multiply",
     ],
@@ -169,6 +170,7 @@ def test_native_stop_ends_a_frozen_tail_and_keeps_later_blocks_silent(
         "gate",
         "expander",
         "damped-tap",
+        "matrix-delay",
     ],
 )
 @pytest.mark.parametrize(

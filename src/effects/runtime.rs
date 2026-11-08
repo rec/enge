@@ -21,7 +21,7 @@ use crate::runtime::{RouteMap, sum_partials};
 use highpass::Highpass;
 use matrix::RoutingMatrix;
 use mixer::Mixer;
-use numpy::ndarray::{Array2, Array3, Axis};
+use numpy::ndarray::{Array2, Array3, ArrayView1, Axis};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use phaser::Phaser;
 use pyo3::exceptions::PyValueError;
@@ -77,6 +77,7 @@ pub(crate) struct EffectRuntime {
     values: Array2<f64>,
     wet: Vec<f64>,
     filtered: Vec<f64>,
+    routed: Vec<f64>,
     pub(crate) producer: Producer<ActionBatch>,
     pub(crate) consumer: Consumer<ActionBatch>,
     pub(crate) action_scratch: Vec<f64>,
@@ -174,6 +175,7 @@ struct LiveGranulator {
 #[derive(Clone)]
 struct LiveTapDelay {
     damping: Option<Highpass>,
+    feedback_matrix: Option<RoutingMatrix>,
     history: Array2<f64>,
     write: usize,
     heads: Vec<DelayHead>,
@@ -350,7 +352,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 16)
+        if kinds.iter().any(|v| *v > 17)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -361,7 +363,7 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14) {
+                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14 | 17) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -767,11 +769,12 @@ impl EffectRuntime {
             let fade_frames = usize::try_from(row[2])
                 .map_err(|_| PyValueError::new_err("Invalid live tap retime duration"))?;
             if node >= nodes
-                || !matches!(kinds[node], 5 | 8)
+                || !matches!(kinds[node], 5 | 8 | 17)
                 || history_frames == 0
                 || prepared_tap_delays[node].is_some()
                 || parameters.ncols() < 5
-                || (kinds[node] == 5 && (parameters.ncols() < 6 || parameters[[node, 5]] < 0.0))
+                || (matches!(kinds[node], 5 | 17)
+                    && (parameters.ncols() < 6 || parameters[[node, 5]] < 0.0))
                 || fade_frames == 0
                 || fade_frames.checked_add(1).is_none()
                 || parameters[[node, 4]] < 0.0
@@ -780,14 +783,41 @@ impl EffectRuntime {
             {
                 return Err(PyValueError::new_err("Invalid live tap delay"));
             }
-            let damping = if kinds[node] == 5 && parameters[[node, 5]] > 0.0 {
+            let damping = if matches!(kinds[node], 5 | 17) && parameters[[node, 5]] > 0.0 {
                 highpass::coefficient(parameters[[node, 5]], rate)?;
                 Some(Highpass::new(widths[node + inputs], parameters[[node, 4]]))
             } else {
                 None
             };
+            let feedback_matrix = if kinds[node] == 17 {
+                let channels = widths[node + inputs];
+                if parameters.ncols() < 6 + channels * channels {
+                    return Err(PyValueError::new_err("Missing delay feedback matrix"));
+                }
+                let coefficients = Array2::from_shape_fn((channels, channels), |(r, c)| {
+                    parameters[[node, 6 + r * channels + c]]
+                });
+                // A nonnegative compensated sum enforces the authored row bound.
+                let mut partials = vec![0.0; channels];
+                for row in coefficients.rows() {
+                    let mut count = 0;
+                    for value in row {
+                        crate::runtime::add_partial(&mut partials, &mut count, value.abs());
+                    }
+                    let total = sum_partials(&partials[..count]);
+                    if !total.is_finite() || total > 1.0 {
+                        return Err(PyValueError::new_err(
+                            "Delay feedback matrix row exceeds one",
+                        ));
+                    }
+                }
+                Some(RoutingMatrix::new(coefficients))
+            } else {
+                None
+            };
             prepared_tap_delays[node] = Some(LiveTapDelay {
                 damping,
+                feedback_matrix,
                 history: Array2::zeros((history_frames, widths[node + inputs])),
                 write: 0,
                 heads: (0..fade_frames + 1)
@@ -812,7 +842,7 @@ impl EffectRuntime {
         if kinds
             .iter()
             .enumerate()
-            .any(|(i, kind)| matches!(*kind, 5 | 8) && prepared_tap_delays[i].is_none())
+            .any(|(i, kind)| matches!(*kind, 5 | 8 | 17) && prepared_tap_delays[i].is_none())
         {
             return Err(PyValueError::new_err("Missing live tap delay setup"));
         }
@@ -869,7 +899,7 @@ impl EffectRuntime {
                                     }),
                                     3 => (3..=7).contains(&parameter) || parameter == 9,
                                     4 => matches!(parameter, 0 | 3 | 4),
-                                    5 => {
+                                    5 | 17 => {
                                         matches!(parameter, 0 | 3)
                                             || (parameter == 5
                                                 && prepared_tap_delays[node]
@@ -957,6 +987,7 @@ impl EffectRuntime {
             values: Array2::zeros((nodes + inputs, channels)),
             wet: vec![0.0; channels],
             filtered: vec![0.0; channels],
+            routed: vec![0.0; channels],
             producer,
             consumer,
             action_scratch: vec![0.0; action_capacity * 6],
@@ -1163,7 +1194,7 @@ impl EffectRuntime {
                             self.port_ended[[node, 0]],
                         )?;
                 }
-                5 => self.process_tap_delay(node, channels, rate)?,
+                5 | 17 => self.process_tap_delay(node, channels, rate)?,
                 6 => self.process_modulated_delay(node, channels, rate)?,
                 7 => {
                     let detector = self.sources[[node, 1]] as usize;
@@ -1323,7 +1354,7 @@ impl EffectRuntime {
                             .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
                         4 => waveshaper_drained,
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
-                        5 => self.tap_delays[node].as_ref().is_some_and(|delay| {
+                        5 | 17 => self.tap_delays[node].as_ref().is_some_and(|delay| {
                             delay.non_silent == 0
                                 && delay.damping.as_ref().is_none_or(|d| {
                                     d.memory
@@ -1450,7 +1481,9 @@ impl EffectRuntime {
                 || (parameter >= 4 && action[4] < 0.0))
         {
             return Err(NativeError::Message("Invalid expander parameter action"));
-        } else if self.kinds[node] == 5
+        } else if matches!(self.kinds[node], 5 | 17) && !matches!(parameter, 0..=3 | 5) {
+            return Err(NativeError::Message("Invalid tap delay parameter action"));
+        } else if matches!(self.kinds[node], 5 | 17)
             && parameter == 5
             && self.tap_delays[node]
                 .as_ref()
@@ -1598,8 +1631,16 @@ impl EffectRuntime {
         } else if self.resolved[[node, 5]] != 0.0 {
             return Err(NativeError::Message("Tap delay damping is not prepared"));
         }
+        if let Some(matrix) = &mut delay.feedback_matrix {
+            matrix.process(
+                ArrayView1::from(&self.filtered[..channels]),
+                &mut self.routed[..channels],
+            )?;
+        } else {
+            self.routed[..channels].copy_from_slice(&self.filtered[..channels]);
+        }
         for channel in 0..channels {
-            let stored = self.dry[channel] + feedback * self.filtered[channel];
+            let stored = self.dry[channel] + feedback * self.routed[channel];
             if !stored.is_finite() {
                 return Err(NativeError::Message("Non-finite tap delay feedback"));
             }
@@ -1879,6 +1920,11 @@ impl EffectRuntime {
                             || a.heads.len() != b.heads.len()
                             || a.fade_frames != b.fade_frames
                             || a.state_floor != b.state_floor
+                            || match (&a.feedback_matrix, &b.feedback_matrix) {
+                                (Some(a), Some(b)) => !a.same_coefficients(b),
+                                (None, None) => false,
+                                _ => true,
+                            }
                             || match (&a.damping, &b.damping) {
                                 (Some(a), Some(b)) => !a.same_capacity(b),
                                 (None, None) => false,

@@ -39,14 +39,14 @@ class Settings(BaseModel):
     mixer: bool = False
     follower: bool = False
     crossfader: Literal["none", "linear", "equal_power"] = "none"
-    delay: Literal["none", "tap", "modulated", "multitap"] = "none"
+    delay: Literal["none", "tap", "modulated", "multitap", "matrix"] = "none"
     damping_hz: Annotated[Frequency | None, tyro.conf.arg(constructor=str)] = None
     audio_output: Path | None = None
 
     @model_validator(mode="after")
     def damping_profile(self) -> Self:
-        if self.damping_hz is not None and self.delay != "tap":
-            raise ValueError("damping_hz requires the tap delay profile")
+        if self.damping_hz is not None and self.delay not in {"tap", "matrix"}:
+            raise ValueError("damping_hz requires a fixed delay profile")
         return self
 
     model_config = ConfigDict(frozen=True)
@@ -96,7 +96,19 @@ def main(settings: Settings) -> None:
                 mix=0.8,
             )
         )
-    if settings.delay == "tap":
+    if settings.delay == "matrix":
+        processors.append(
+            audio_effects.MatrixDelay(
+                name="delay",
+                delay_seconds=0.005,
+                maximum_delay_seconds=0.03,
+                feedback=0.6,
+                damping_hz=settings.damping_hz,
+                mix=0.5,
+                feedback_matrix=[[0, 1], [1, 0]],
+            )
+        )
+    elif settings.delay == "tap":
         processors.append(
             audio_effects.TapDelay(
                 name="delay",
@@ -468,7 +480,7 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
             )
             for i in range(min(settings.effect_actions, settings.block_frames))
         ]
-    if settings.delay == "tap":
+    if settings.delay in {"tap", "matrix"}:
         return [
             audio_effects.ParameterAction(
                 tick=start + i,

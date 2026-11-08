@@ -412,7 +412,9 @@ class OfflineEffects:
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
-            if not isinstance(processor, audio_effects.TapDelay):
+            if not isinstance(
+                processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)
+            ):
                 continue
             state = snapshot.processors[processor.name].tap_delay
             if state is None or (state.damping is not None) != (
@@ -988,7 +990,7 @@ class OfflineEffects:
             assert granular is not None
             drained = ended["input"] and not granular.frozen and not granular.grains
             return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
-        if isinstance(processor, audio_effects.TapDelay):
+        if isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
             dry = ports["input"]
             delay = state.tap_delay
             assert delay is not None
@@ -1010,6 +1012,8 @@ class OfflineEffects:
                 filtered = wet - highpass.process(
                     delay.damping, wet, a, processor.state_floor
                 )
+            if isinstance(processor, audio_effects.MatrixDelay):
+                filtered = routing.process(processor.feedback_matrix, filtered)
             value = dry if not ended["input"] else np.zeros_like(dry)
             history = value + feedback * filtered
             if not np.all(np.isfinite(history)):
@@ -1246,7 +1250,7 @@ def prepare(
         elif isinstance(processor, audio_effects.Highpass):
             highpass.coefficient(processor.cutoff_hz, sample_rate)
         elif (
-            isinstance(processor, audio_effects.TapDelay)
+            isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay))
             and processor.damping_hz is not None
         ):
             highpass.coefficient(processor.damping_hz, sample_rate)
@@ -1325,6 +1329,8 @@ def native_live_graph(
     widths = [
         7
         if isinstance(p, audio_effects.Gate)
+        else 6 + len(p.feedback_matrix) ** 2
+        if isinstance(p, audio_effects.MatrixDelay)
         else 6
         if isinstance(p, audio_effects.Expander)
         else 5
@@ -1537,11 +1543,14 @@ def native_live_graph(
                     processor.freeze_crossfade_frames,
                 ]
             )
-        elif isinstance(processor, audio_effects.TapDelay):
-            kinds.append(5)
+        elif isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
+            kinds.append(17 if isinstance(processor, audio_effects.MatrixDelay) else 5)
             parameters[node, [0, 3]] = [processor.delay_seconds, processor.feedback]
             parameters[node, 4] = processor.state_floor
             parameters[node, 5] = processor.damping_hz or 0.0
+            if isinstance(processor, audio_effects.MatrixDelay):
+                coefficients = [v for r in processor.feedback_matrix for v in r]
+                parameters[node, 6 : 6 + len(coefficients)] = coefficients
             tap_delay_rows.append(
                 [
                     node,
@@ -1605,6 +1614,7 @@ def native_live_graph(
                 (
                     audio_effects.Filter,
                     audio_effects.TapDelay,
+                    audio_effects.MatrixDelay,
                     audio_effects.ModulatedDelay,
                     audio_effects.Reverb,
                     audio_effects.Phaser,
@@ -1904,7 +1914,7 @@ def _initial_state(
             playback_ratio=processor.playback_ratio,
             position_jitter_seconds=processor.position_jitter_seconds,
         )
-    elif isinstance(processor, audio_effects.TapDelay):
+    elif isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
         values.update(
             delay_seconds=processor.delay_seconds,
             feedback=processor.feedback,
@@ -1967,7 +1977,9 @@ def _initial_state(
                     )
                 ],
             )
-            if isinstance(processor, audio_effects.TapDelay)
+            if isinstance(
+                processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)
+            )
             else None
         ),
         modulated_delay=(
@@ -2211,7 +2223,7 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
             "playback_ratio",
             "position_jitter_seconds",
         ].index(name)
-    if isinstance(processor, audio_effects.TapDelay):
+    if isinstance(processor, (audio_effects.TapDelay, audio_effects.MatrixDelay)):
         return {"delay_seconds": 0, "feedback": 3, "damping_hz": 5}[name]
     if isinstance(processor, audio_effects.ModulatedDelay):
         return {

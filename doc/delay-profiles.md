@@ -1,4 +1,4 @@
-# Multitap and damped feedback delay
+# Multitap, damped and matrix feedback delay
 
 ## Multitap composition
 
@@ -70,6 +70,42 @@ Ruff, formatting, type checking, pyupgrade, Rust formatting and Clippy pass.
 The pinned uFor revision `a8fdc72` includes multitap authoring `2415d82` and
 feedback damping; its complete suite passed 1,530 tests.
 
+## Matrix feedback delay
+
+`MatrixDelay` shares TapDelay's history, fractional reads, retiming heads,
+optional damping, controls and retirement rules. It preserves the named input
+layout and uses one delay time for all channels. The required static square
+`feedback_matrix` has destination rows and source columns. Signed finite
+coefficients are retained without normalization; each absolute row sum is at
+most one, with the separate feedback gain below one.
+
+Every frame reads all channels before any history writes. Optional damping acts
+on the delayed vector, then the matrix routes it, feedback gain scales it and
+new input is added. The audible wet read remains unfiltered and unrouted.
+Stereo `[[0, 1], [1, 0]]` alternates repeats when input starts on one side;
+identity feedback reproduces TapDelay. There is no coefficient automation.
+Delay, feedback, prepared damping, mix and bypass use ordinary actions and
+shared enveLFO/follower routes.
+
+The native runtime reuses the existing compensated routing accumulator and
+preallocates matrix partials and routed-vector scratch. Opaque snapshots retain
+matrix identity and reject another matrix before replacing state. Portable JSON
+snapshots use the existing delay state with the MatrixDelay graph definition.
+
+One-second 48 kHz WAV regressions compare fractional feedback against the
+independent transfer `D(z) * inverse(I - feedback * L(z) * D(z) * M)`. They cover
+stereo ping-pong, signed two- and three-channel feedback, identity routing,
+damping, retiming and automation, endings, shared generator controls, portable
+cross-backend replay, native replay, static-coefficient rejection and recovery.
+The schema/specification is uFor `391a6ba` with bound-validation correction
+`76b86a1`; the final uFor suite passes 1,538 tests. The full instrumented enge
+suite passes 3,343 tests with 29 optional Rubber Band skips. It records zero
+Rust heap operations in 16,066 successful and 33 failed callbacks. All 83 focused
+delay/control/replay tests pass, as do the ten MatrixDelay cases on the final
+pin's ordinary build. Rust tests, Clippy and Python static checks pass.
+The separate pin commit `7bc06a9` was verified against the unchanged renderer:
+3,328 tests passed with 29 optional skips, and type checking passed.
+
 ## CPU timing evidence
 
 After restoring the ordinary build and finishing test jobs, sequential runs used
@@ -104,6 +140,20 @@ Reproduce with `scripts/benchmark_live.py --delay multitap` or
 `--delay tap --damping-hz '1 kHz'`, plus `--seconds '2 s' --voices 16`
 `--effect-actions 64` and the listed `--block-frames`. The undamped control omits
 `--damping-hz`; that profile spends all its actions on retiming.
+
+After the MatrixDelay test jobs finished, the same ordinary-build harness used
+stereo swap feedback with damping initially at 1 kHz, 16 voices and 64 time/cutoff
+actions per block. All three sequential two-second runs had zero misses:
+
+| Profile | Frames | Median | p99 | Maximum | First | Budget | Misses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MatrixDelay | 64 | 392.2 | 515.6 | 638.3 | 681.7 | 1,333.3 | 0 / 1,500 |
+| MatrixDelay | 256 | 958.0 | 1,104.7 | 1,353.4 | 1,180.1 | 5,333.3 | 0 / 375 |
+| MatrixDelay | 1,024 | 3,264.7 | 3,446.7 | 3,764.5 | 3,540.5 | 21,333.3 | 0 / 93 |
+
+Use `--delay matrix --damping-hz '1 kHz'` with the common arguments above.
+These measurements retain the same host/device and scheduling limits as the
+earlier profiles; they do not resolve the earlier damped-delay stalls.
 
 ## Additional work beyond the prompt
 

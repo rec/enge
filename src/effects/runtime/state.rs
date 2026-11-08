@@ -135,7 +135,7 @@ impl EffectRuntime {
                     state.set_item("remaining", shaper.remaining)?;
                     value.set_item("waveshaper", state)?;
                 }
-                5 | 8 => {
+                5 | 8 | 17 => {
                     let delay = self.tap_delays[node].as_ref().expect("prepared tap delay");
                     let state = PyDict::new(py);
                     state.set_item("history", rows(delay.history.view()))?;
@@ -152,7 +152,7 @@ impl EffectRuntime {
                         heads.push(value);
                     }
                     state.set_item("heads", heads)?;
-                    if *kind == 5 {
+                    if matches!(*kind, 5 | 17) {
                         if let Some(damping) = &delay.damping {
                             let value = PyDict::new(py);
                             value.set_item("memory", &damping.memory)?;
@@ -419,7 +419,7 @@ impl EffectRuntime {
                         return Err(PyValueError::new_err("Invalid waveshaper clock"));
                     }
                 }
-                5 | 8 => {
+                5 | 8 | 17 => {
                     let network = if *kind == 8 {
                         Some(field(value, "reverb")?)
                     } else {
@@ -434,7 +434,7 @@ impl EffectRuntime {
                     let delay = snapshot.tap_delays[node]
                         .as_mut()
                         .expect("prepared tap delay");
-                    if *kind == 5 {
+                    if matches!(*kind, 5 | 17) {
                         let state = field(value, "damping")?;
                         match (&mut delay.damping, state.is_none()) {
                             (Some(damping), false) => {

@@ -4,12 +4,17 @@ use crate::error::{NativeError, NativeResult};
 use crate::runtime::{add_partial, sum_partials};
 use numpy::ndarray::{Array2, ArrayView1};
 
+#[derive(Clone)]
 pub(super) struct RoutingMatrix {
     coefficients: Array2<f64>,
     partials: Vec<f64>,
 }
 
 impl RoutingMatrix {
+    pub(super) fn same_coefficients(&self, other: &Self) -> bool {
+        self.coefficients == other.coefficients
+    }
+
     pub(super) fn new(coefficients: Array2<f64>) -> Self {
         Self {
             partials: vec![0.0; coefficients.ncols()],
