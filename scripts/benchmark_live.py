@@ -39,7 +39,9 @@ class Settings(BaseModel):
     mixer: bool = False
     follower: bool = False
     crossfader: Literal["none", "linear", "equal_power"] = "none"
-    delay: Literal["none", "tap", "modulated", "multitap", "matrix"] = "none"
+    delay: Literal["none", "tap", "modulated", "multitap", "matrix", "ensemble"] = (
+        "none"
+    )
     damping_hz: Annotated[Frequency | None, tyro.conf.arg(constructor=str)] = None
     audio_output: Path | None = None
 
@@ -154,29 +156,58 @@ def main(settings: Settings) -> None:
         processors,
         settings.block_frames,
     )
-    if settings.delay == "multitap":
-        multi = audio_effects.multitap_graph(
-            "echo",
-            graph.scope,
-            graph.inputs[0],
-            [
-                audio_effects.DelayTap(
-                    name=n,
-                    delay_seconds=d,
-                    maximum_delay_seconds=0.03,
-                    gain_db=-6,
-                    pan=p,
-                )
-                for n, d, p in [
-                    ("a", 0.003, -1),
-                    ("b", 0.005, -0.3),
-                    ("c", 0.007, 0.3),
-                    ("d", 0.009, 1),
-                ]
-            ],
-            settings.block_frames,
-            dry_gain_db=-6,
-        )
+    if settings.delay in {"multitap", "ensemble"}:
+        if settings.delay == "ensemble":
+            multi = audio_effects.modulated_multitap_graph(
+                "echo",
+                graph.scope,
+                graph.inputs[0],
+                [
+                    audio_effects.ModulatedTap(
+                        delay=audio_effects.ModulatedDelay(
+                            name=n,
+                            base_delay_seconds=b,
+                            depth_seconds=d,
+                            maximum_delay_seconds=0.05,
+                            rate_hz=r,
+                            channel_phase_offsets=[p, (p + 0.37) % 1],
+                        ),
+                        gain_db=-12,
+                        pan=s,
+                    )
+                    for n, b, d, r, p, s in [
+                        ("a", 0.015, 0.002, 0.37, 0.05, -1),
+                        ("b", 0.019, 0.0025, 0.53, 0.27, -0.35),
+                        ("c", 0.023, 0.003, 0.71, 0.51, 0.35),
+                        ("d", 0.027, 0.0018, 0.89, 0.78, 1),
+                    ]
+                ],
+                settings.block_frames,
+                dry_gain_db=-3,
+            )
+        else:
+            multi = audio_effects.multitap_graph(
+                "echo",
+                graph.scope,
+                graph.inputs[0],
+                [
+                    audio_effects.DelayTap(
+                        name=n,
+                        delay_seconds=d,
+                        maximum_delay_seconds=0.03,
+                        gain_db=-6,
+                        pan=p,
+                    )
+                    for n, d, p in [
+                        ("a", 0.003, -1),
+                        ("b", 0.005, -0.3),
+                        ("c", 0.007, 0.3),
+                        ("d", 0.009, 1),
+                    ]
+                ],
+                settings.block_frames,
+                dry_gain_db=-6,
+            )
         graph = audio_effects.EffectGraph(
             scope=graph.scope,
             inputs=graph.inputs,
@@ -464,7 +495,7 @@ def main(settings: Settings) -> None:
 
 
 def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectAction]:
-    if settings.delay == "multitap":
+    if settings.delay in {"multitap", "ensemble"}:
         return [
             audio_effects.ParameterAction(
                 tick=start + i,
@@ -472,10 +503,13 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 processor="echo" if i % 3 == 0 else f"echo-tap-{'abcd'[i % 4]}",
                 parameter=f"tap-{'abcd'[i % 4]}-gain_db"
                 if i % 3 == 0
+                else "base_delay_seconds"
+                if settings.delay == "ensemble"
                 else "delay_seconds",
                 value=-9 + i % 6
                 if i % 3 == 0
-                else 0.003 + ((start + i) % 1000) / 480000,
+                else (0.015 if settings.delay == "ensemble" else 0.003)
+                + ((start + i) % 1000) / 480000,
                 duration_frames=8 if i % 3 == 0 else 0,
             )
             for i in range(min(settings.effect_actions, settings.block_frames))
