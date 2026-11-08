@@ -76,6 +76,7 @@ pub(crate) struct EffectRuntime {
     control_delays: Vec<Vec<Option<ControlDelay>>>,
     values: Array2<f64>,
     wet: Vec<f64>,
+    filtered: Vec<f64>,
     pub(crate) producer: Producer<ActionBatch>,
     pub(crate) consumer: Consumer<ActionBatch>,
     pub(crate) action_scratch: Vec<f64>,
@@ -172,6 +173,7 @@ struct LiveGranulator {
 
 #[derive(Clone)]
 struct LiveTapDelay {
+    damping: Option<Highpass>,
     history: Array2<f64>,
     write: usize,
     heads: Vec<DelayHead>,
@@ -769,6 +771,7 @@ impl EffectRuntime {
                 || history_frames == 0
                 || prepared_tap_delays[node].is_some()
                 || parameters.ncols() < 5
+                || (kinds[node] == 5 && (parameters.ncols() < 6 || parameters[[node, 5]] < 0.0))
                 || fade_frames == 0
                 || fade_frames.checked_add(1).is_none()
                 || parameters[[node, 4]] < 0.0
@@ -777,7 +780,14 @@ impl EffectRuntime {
             {
                 return Err(PyValueError::new_err("Invalid live tap delay"));
             }
+            let damping = if kinds[node] == 5 && parameters[[node, 5]] > 0.0 {
+                highpass::coefficient(parameters[[node, 5]], rate)?;
+                Some(Highpass::new(widths[node + inputs], parameters[[node, 4]]))
+            } else {
+                None
+            };
             prepared_tap_delays[node] = Some(LiveTapDelay {
+                damping,
                 history: Array2::zeros((history_frames, widths[node + inputs])),
                 write: 0,
                 heads: (0..fade_frames + 1)
@@ -859,7 +869,13 @@ impl EffectRuntime {
                                     }),
                                     3 => (3..=7).contains(&parameter) || parameter == 9,
                                     4 => matches!(parameter, 0 | 3 | 4),
-                                    5 => matches!(parameter, 0 | 3),
+                                    5 => {
+                                        matches!(parameter, 0 | 3)
+                                            || (parameter == 5
+                                                && prepared_tap_delays[node]
+                                                    .as_ref()
+                                                    .is_some_and(|d| d.damping.is_some()))
+                                    }
                                     6 => matches!(parameter, 0 | 3..=5),
                                     7 => matches!(parameter, 0 | 3..=7),
                                     8 => matches!(parameter, 0 | 3 | 5),
@@ -940,6 +956,7 @@ impl EffectRuntime {
             modulated_delays: prepared_modulated_delays,
             values: Array2::zeros((nodes + inputs, channels)),
             wet: vec![0.0; channels],
+            filtered: vec![0.0; channels],
             producer,
             consumer,
             action_scratch: vec![0.0; action_capacity * 6],
@@ -1306,9 +1323,14 @@ impl EffectRuntime {
                             .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
                         4 => waveshaper_drained,
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
-                        5 => self.tap_delays[node]
-                            .as_ref()
-                            .is_some_and(|delay| delay.non_silent == 0),
+                        5 => self.tap_delays[node].as_ref().is_some_and(|delay| {
+                            delay.non_silent == 0
+                                && delay.damping.as_ref().is_none_or(|d| {
+                                    d.memory
+                                        .iter()
+                                        .all(|v| v.abs() < self.tail_thresholds[node])
+                                })
+                        }),
                         6 => self.modulated_delays[node]
                             .as_ref()
                             .is_some_and(|delay| delay.non_silent == 0),
@@ -1428,6 +1450,13 @@ impl EffectRuntime {
                 || (parameter >= 4 && action[4] < 0.0))
         {
             return Err(NativeError::Message("Invalid expander parameter action"));
+        } else if self.kinds[node] == 5
+            && parameter == 5
+            && self.tap_delays[node]
+                .as_ref()
+                .is_some_and(|d| d.damping.is_none())
+        {
+            return Err(NativeError::Message("Tap delay damping is not prepared"));
         }
         self.targets[[node, parameter]] = action[4];
         self.remaining[[node, parameter]] = duration;
@@ -1554,8 +1583,26 @@ impl EffectRuntime {
                 .filter(|h| h.active)
                 .map(|h| h.gain * delay_read(&delay.history, delay.write, h.delay, channel))
                 .sum::<f64>();
-            let value = self.wet[channel];
-            let stored = value + feedback * wet;
+            self.filtered[channel] = wet;
+            self.wet[channel] = wet;
+        }
+        if let Some(damping) = &mut delay.damping {
+            damping.process(
+                &mut self.filtered[..channels],
+                self.resolved[[node, 5]],
+                rate,
+            )?;
+            for channel in 0..channels {
+                self.filtered[channel] = self.wet[channel] - self.filtered[channel];
+            }
+        } else if self.resolved[[node, 5]] != 0.0 {
+            return Err(NativeError::Message("Tap delay damping is not prepared"));
+        }
+        for channel in 0..channels {
+            let stored = self.dry[channel] + feedback * self.filtered[channel];
+            if !stored.is_finite() {
+                return Err(NativeError::Message("Non-finite tap delay feedback"));
+            }
             let stored = if stored.abs() < delay.state_floor {
                 0.0
             } else {
@@ -1566,7 +1613,6 @@ impl EffectRuntime {
             );
             delay.non_silent += usize::from(stored.abs() >= self.tail_thresholds[node]);
             delay.history[[delay.write, channel]] = stored;
-            self.wet[channel] = wet;
         }
         delay.write = (delay.write + 1) % frames;
         delay.advance_heads();
@@ -1833,6 +1879,11 @@ impl EffectRuntime {
                             || a.heads.len() != b.heads.len()
                             || a.fade_frames != b.fade_frames
                             || a.state_floor != b.state_floor
+                            || match (&a.damping, &b.damping) {
+                                (Some(a), Some(b)) => !a.same_capacity(b),
+                                (None, None) => false,
+                                _ => true,
+                            }
                     }
                     (None, None) => false,
                     _ => true,

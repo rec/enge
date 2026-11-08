@@ -3,13 +3,14 @@
 from pathlib import Path
 from statistics import median
 from time import perf_counter_ns
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 import numpy as np
 import tyro
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from reccy.configuration import units
 from ufor import audio_effects
+from ufor.base import Frequency
 from ufor.events import PerformanceEvent, Trigger
 from ufor.instrument_trace import TraceAction
 from ufor.samples.processing import FilterResponse, ResonantFilter
@@ -38,8 +39,15 @@ class Settings(BaseModel):
     mixer: bool = False
     follower: bool = False
     crossfader: Literal["none", "linear", "equal_power"] = "none"
-    delay: Literal["none", "tap", "modulated"] = "none"
+    delay: Literal["none", "tap", "modulated", "multitap"] = "none"
+    damping_hz: Annotated[Frequency | None, tyro.conf.arg(constructor=str)] = None
     audio_output: Path | None = None
+
+    @model_validator(mode="after")
+    def damping_profile(self) -> Self:
+        if self.damping_hz is not None and self.delay != "tap":
+            raise ValueError("damping_hz requires the tap delay profile")
+        return self
 
     model_config = ConfigDict(frozen=True)
 
@@ -95,6 +103,7 @@ def main(settings: Settings) -> None:
                 delay_seconds=0.005,
                 maximum_delay_seconds=0.03,
                 feedback=0.6,
+                damping_hz=settings.damping_hz,
                 mix=0.5,
             )
         )
@@ -133,6 +142,45 @@ def main(settings: Settings) -> None:
         processors,
         settings.block_frames,
     )
+    if settings.delay == "multitap":
+        multi = audio_effects.multitap_graph(
+            "echo",
+            graph.scope,
+            graph.inputs[0],
+            [
+                audio_effects.DelayTap(
+                    name=n,
+                    delay_seconds=d,
+                    maximum_delay_seconds=0.03,
+                    gain_db=-6,
+                    pan=p,
+                )
+                for n, d, p in [
+                    ("a", 0.003, -1),
+                    ("b", 0.005, -0.3),
+                    ("c", 0.007, 0.3),
+                    ("d", 0.009, 1),
+                ]
+            ],
+            settings.block_frames,
+            dry_gain_db=-6,
+        )
+        graph = audio_effects.EffectGraph(
+            scope=graph.scope,
+            inputs=graph.inputs,
+            processors=[*graph.processors, *multi.processors],
+            connections=[
+                *graph.connections,
+                *[
+                    c.model_copy(update={"source": graph.output})
+                    if isinstance(c.source, audio_effects.InputSource)
+                    else c
+                    for c in multi.connections
+                ],
+            ],
+            output=multi.output,
+            maximum_block_frames=settings.block_frames,
+        )
     detectors: list[audio_effects.Processor] = []
     if settings.compressor:
         detectors.append(audio_effects.Compressor(name="duck"))
@@ -380,6 +428,7 @@ def main(settings: Settings) -> None:
         f"callbacks={callbacks} block={settings.block_frames} voices={settings.voices} "
         f"effect_actions={settings.effect_actions} granular={settings.granular}"
         f" delay={settings.delay}"
+        f" damping_hz={settings.damping_hz}"
         f" compressor={settings.compressor}"
         f" dynamics={settings.dynamics}"
         f" reverb={settings.reverb}"
@@ -403,14 +452,34 @@ def main(settings: Settings) -> None:
 
 
 def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectAction]:
+    if settings.delay == "multitap":
+        return [
+            audio_effects.ParameterAction(
+                tick=start + i,
+                ordinal=0,
+                processor="echo" if i % 3 == 0 else f"echo-tap-{'abcd'[i % 4]}",
+                parameter=f"tap-{'abcd'[i % 4]}-gain_db"
+                if i % 3 == 0
+                else "delay_seconds",
+                value=-9 + i % 6
+                if i % 3 == 0
+                else 0.003 + ((start + i) % 1000) / 480000,
+                duration_frames=8 if i % 3 == 0 else 0,
+            )
+            for i in range(min(settings.effect_actions, settings.block_frames))
+        ]
     if settings.delay == "tap":
         return [
             audio_effects.ParameterAction(
                 tick=start + i,
                 ordinal=0,
                 processor="delay",
-                parameter="delay_seconds",
-                value=0.003 + ((start + i) % 1000) / 480000,
+                parameter="damping_hz"
+                if settings.damping_hz is not None and i % 3 == 0
+                else "delay_seconds",
+                value=settings.damping_hz * (0.5 + 0.5 * ((start + i) % 100) / 100)
+                if settings.damping_hz is not None and i % 3 == 0
+                else 0.003 + ((start + i) % 1000) / 480000,
             )
             for i in range(min(settings.effect_actions, settings.block_frames))
         ]

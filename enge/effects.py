@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from fractions import Fraction
-from math import ceil, exp, floor, fsum, log10, pow, prod, sqrt
+from math import ceil, exp, floor, fsum, isfinite, log10, pow, prod, sqrt
 from typing import Literal
 
 import numpy as np
@@ -90,6 +90,7 @@ class DelayHead(BaseModel):
 
 
 class TapDelayState(DelayState):
+    damping: HighpassState | None = None
     heads: list[DelayHead]
     current: int = 0
 
@@ -409,6 +410,20 @@ class OfflineEffects:
             or snapshot.tempo_map != self.controls.tempo_map
         ):
             raise EngineError("Snapshot belongs to different prepared effects")
+        layouts = _processor_layouts(self.definition.definition)
+        for processor in self.definition.definition.processors:
+            if not isinstance(processor, audio_effects.TapDelay):
+                continue
+            state = snapshot.processors[processor.name].tap_delay
+            if state is None or (state.damping is not None) != (
+                processor.damping_hz is not None
+            ):
+                raise EngineError("Tap damping preparation differs from snapshot")
+            if state.damping is not None and (
+                len(state.damping.memory) != len(layouts[processor.name])
+                or not all(isfinite(v) for v in state.damping.memory)
+            ):
+                raise EngineError("Invalid tap damping memory")
         snapshot = snapshot.model_copy(deep=True)
         if self.native_runtime is not None:
             self.native_runtime.import_state(
@@ -986,14 +1001,36 @@ class OfflineEffects:
             _retime_delay(delay, delay_frames, processor.retime_fade_frames)
             wet = _tap_read(delay, len(dry))
             feedback = self._value(processor, "feedback", frame)
+            filtered = wet
+            if delay.damping is not None:
+                a = highpass.coefficient(
+                    self._value(processor, "damping_hz", frame),
+                    self.definition.sample_rate,
+                )
+                filtered = wet - highpass.process(
+                    delay.damping, wet, a, processor.state_floor
+                )
             value = dry if not ended["input"] else np.zeros_like(dry)
-            history = value + feedback * wet
+            history = value + feedback * filtered
+            if not np.all(np.isfinite(history)):
+                raise ValueError("Non-finite tap delay feedback")
             history[np.abs(history) < processor.state_floor] = 0
             delay.history[delay.write] = history.tolist()
             delay.write = (delay.write + 1) % frames
             _advance_heads(delay)
-            drained = ended["input"] and all(
-                abs(v) < processor.tail_threshold for row in delay.history for v in row
+            drained = (
+                ended["input"]
+                and all(
+                    abs(v) < processor.tail_threshold
+                    for row in delay.history
+                    for v in row
+                )
+                and (
+                    delay.damping is None
+                    or all(
+                        abs(v) < processor.tail_threshold for v in delay.damping.memory
+                    )
+                )
             )
             return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, audio_effects.ModulatedDelay):
@@ -1208,6 +1245,18 @@ def prepare(
             )
         elif isinstance(processor, audio_effects.Highpass):
             highpass.coefficient(processor.cutoff_hz, sample_rate)
+        elif (
+            isinstance(processor, audio_effects.TapDelay)
+            and processor.damping_hz is not None
+        ):
+            highpass.coefficient(processor.damping_hz, sample_rate)
+            for parameter in definition.modulation.parameters:
+                if (
+                    parameter.target.name == processor.name
+                    and parameter.target.parameter == "damping_hz"
+                ):
+                    highpass.coefficient(parameter.minimum, sample_rate)
+                    highpass.coefficient(parameter.maximum, sample_rate)
         elif isinstance(processor, audio_effects.Gate):
             dynamics.gate_gain(
                 GateState(),
@@ -1296,7 +1345,7 @@ def native_live_graph(
         if isinstance(p, audio_effects.Waveshaper)
         else 8
         if isinstance(p, audio_effects.Compressor)
-        else 5
+        else 6
         if isinstance(p, audio_effects.TapDelay)
         else 7
         if isinstance(p, (audio_effects.ModulatedDelay, audio_effects.Phaser))
@@ -1492,6 +1541,7 @@ def native_live_graph(
             kinds.append(5)
             parameters[node, [0, 3]] = [processor.delay_seconds, processor.feedback]
             parameters[node, 4] = processor.state_floor
+            parameters[node, 5] = processor.damping_hz or 0.0
             tap_delay_rows.append(
                 [
                     node,
@@ -1859,6 +1909,8 @@ def _initial_state(
             delay_seconds=processor.delay_seconds,
             feedback=processor.feedback,
         )
+        if processor.damping_hz is not None:
+            values["damping_hz"] = processor.damping_hz
     elif isinstance(processor, audio_effects.ModulatedDelay):
         values.update(
             base_delay_seconds=processor.base_delay_seconds,
@@ -1897,6 +1949,9 @@ def _initial_state(
         ),
         tap_delay=(
             TapDelayState(
+                damping=HighpassState(memory=[0.0] * channels)
+                if processor.damping_hz is not None
+                else None,
                 heads=[
                     DelayHead(
                         delay_frames=max(1.0, processor.delay_seconds * sample_rate),
@@ -2157,7 +2212,7 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
             "position_jitter_seconds",
         ].index(name)
     if isinstance(processor, audio_effects.TapDelay):
-        return {"delay_seconds": 0, "feedback": 3}[name]
+        return {"delay_seconds": 0, "feedback": 3, "damping_hz": 5}[name]
     if isinstance(processor, audio_effects.ModulatedDelay):
         return {
             "base_delay_seconds": 0,

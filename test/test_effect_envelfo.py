@@ -40,6 +40,13 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "tap": audio_effects.TapDelay(
             name="fx", delay_seconds=0.005, maximum_delay_seconds=0.01, feedback=0.25
         ),
+        "damped-tap": audio_effects.TapDelay(
+            name="fx",
+            delay_seconds=0.005,
+            maximum_delay_seconds=0.01,
+            feedback=0.5,
+            damping_hz=1200,
+        ),
         "chorus": audio_effects.ModulatedDelay(
             name="fx",
             base_delay_seconds=0.005,
@@ -60,6 +67,7 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "filter": ("low-cutoff_hz", 1000, 250, "hz"),
         "grain": ("duration_seconds", 0.02, 0.005, "seconds"),
         "tap": ("delay_seconds", 0.005, 0.001, "seconds"),
+        "damped-tap": ("damping_hz", 1200, 400, "hz"),
         "chorus": ("base_delay_seconds", 0.005, 0.001, "seconds"),
         "multiply": ("mix", 0.5, 0.25, "ratio"),
     }[kind]
@@ -119,6 +127,7 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "filter",
         "grain",
         "tap",
+        "damped-tap",
         "chorus",
         "multiply",
     ],

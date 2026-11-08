@@ -152,6 +152,15 @@ impl EffectRuntime {
                         heads.push(value);
                     }
                     state.set_item("heads", heads)?;
+                    if *kind == 5 {
+                        if let Some(damping) = &delay.damping {
+                            let value = PyDict::new(py);
+                            value.set_item("memory", &damping.memory)?;
+                            state.set_item("damping", value)?;
+                        } else {
+                            state.set_item("damping", py.None())?;
+                        }
+                    }
                     if *kind == 8 {
                         let reverb = self.reverbs[node].as_ref().expect("prepared reverb");
                         let network = PyDict::new(py);
@@ -425,6 +434,29 @@ impl EffectRuntime {
                     let delay = snapshot.tap_delays[node]
                         .as_mut()
                         .expect("prepared tap delay");
+                    if *kind == 5 {
+                        let state = field(value, "damping")?;
+                        match (&mut delay.damping, state.is_none()) {
+                            (Some(damping), false) => {
+                                let memory: Vec<f64> =
+                                    field(state.cast::<PyDict>()?, "memory")?.extract()?;
+                                if memory.len() != damping.memory.len()
+                                    || memory.iter().any(|v| !v.is_finite())
+                                {
+                                    return Err(PyValueError::new_err(
+                                        "Invalid tap damping memory",
+                                    ));
+                                }
+                                damping.memory = memory;
+                            }
+                            (None, true) => {}
+                            _ => {
+                                return Err(PyValueError::new_err(
+                                    "Tap damping preparation differs from snapshot",
+                                ));
+                            }
+                        }
+                    }
                     restore_rows(
                         delay.history.view_mut(),
                         field(value, "history")?.extract()?,

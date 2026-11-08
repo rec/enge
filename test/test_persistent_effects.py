@@ -90,6 +90,7 @@ def callback_audio(
         "filter",
         "grain",
         "tap",
+        "damped-tap",
         "chorus",
         "multiply",
     ],
@@ -167,6 +168,7 @@ def test_native_stop_ends_a_frozen_tail_and_keeps_later_blocks_silent(
         "highpass",
         "gate",
         "expander",
+        "damped-tap",
     ],
 )
 @pytest.mark.parametrize(
