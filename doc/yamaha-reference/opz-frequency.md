@@ -10,10 +10,11 @@ or measured hardware comparisons.
 With the pinned source files in `$YMFM`, reproduce from the repository root:
 
 ```sh
+mkdir -p build
 c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/check-ymfm-frequency.cc \
-  "$YMFM/ymfm_opz.cpp" -o /tmp/enge-check-ymfm-frequency
-/tmp/enge-check-ymfm-frequency > /tmp/opz-frequency.csv
-diff doc/yamaha-reference/opz-frequency.csv /tmp/opz-frequency.csv
+  "$YMFM/ymfm_opz.cpp" -o build/enge-check-ymfm-frequency
+build/enge-check-ymfm-frequency > build/opz-frequency.csv
+diff doc/yamaha-reference/opz-frequency.csv build/opz-frequency.csv
 ```
 
 Each case accumulates 4,096 native ticks, covering the fixed-frequency carry
@@ -57,10 +58,11 @@ per VCED coarse value. Each row retains the tested count, extrema, worst key
 and fine setting, and top-key frequencies at fine zero. No audio is generated.
 
 ```sh
+mkdir -p build
 c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/check-ymfm-ratio.cc \
-  "$YMFM/ymfm_opz.cpp" -o /tmp/enge-check-ymfm-ratio
-/tmp/enge-check-ymfm-ratio > /tmp/opz-ratio.csv
-diff doc/yamaha-reference/opz-ratio.csv /tmp/opz-ratio.csv
+  "$YMFM/ymfm_opz.cpp" -o build/enge-check-ymfm-ratio
+build/enge-check-ymfm-ratio > build/opz-ratio.csv
+diff doc/yamaha-reference/opz-ratio.csv build/opz-ratio.csv
 ```
 
 The harness builds the 64-value displayed-ratio ordering from the four
@@ -116,9 +118,10 @@ key-code helper for multiplier-one PM deltas −512 through 511, with signed
 detune. Reproduce the raw little-endian uint32 exports with:
 
 ```sh
+mkdir -p build
 c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/export-ymfm-frequency.cc \
-  "$YMFM/ymfm_opz.cpp" -o /tmp/enge-export-ymfm-frequency
-/tmp/enge-export-ymfm-frequency /tmp/base.u32 /tmp/pm.u32
+  "$YMFM/ymfm_opz.cpp" -o build/enge-export-ymfm-frequency
+build/enge-export-ymfm-frequency build/base.u32 build/pm.u32
 ```
 
 Pack these arrays with NumPy, preserving the loop order:
@@ -126,9 +129,9 @@ Pack these arrays with NumPy, preserving the loop order:
 ```python
 import numpy as np
 
-base = np.fromfile("/tmp/base.u32", dtype="<u4").reshape(96, 64, 16, 7)
-pm = np.fromfile("/tmp/pm.u32", dtype="<u4").reshape(96, 7, 1024)
-np.savez_compressed("tx81z-frequency.npz", base=base, pm=pm)
+base = np.fromfile("build/base.u32", dtype="<u4").reshape(96, 64, 16, 7)
+pm = np.fromfile("build/pm.u32", dtype="<u4").reshape(96, 7, 1024)
+np.savez_compressed("build/tx81z-frequency.npz", base=base, pm=pm)
 ```
 
 The committed `test/data/tx81z-frequency.npz` SHA-256 is

@@ -39,6 +39,25 @@ For example, source rates 0, 50 and 99 map to 1, 60 and 99, respectively,
 before the second-stage cap. The repeated sustain level permits reuse of the
 existing DX7 state machine without introducing a separate envelope executor.
 
+### Reproduce the table check
+
+From the repository root, save `DXconvert/fourop.py` from the pinned revision
+linked above as `build/references/dxconvert-fourop.py`, creating that directory
+first. Then run:
+
+```sh
+uv run python scripts/check_wt11_reference.py \
+  --reference build/references/dxconvert-fourop.py
+```
+
+The checker requires SHA-256
+`55c6e636ee45bed46d208ae10b1d1fabf786d8adf8804280864165c987ee6c3e`
+for the reference file, reads its literal `pr` table without executing the
+downloaded module, and compares all 100 legal rates with enge's table. Padding
+entries beyond rate 99 are excluded. A different reference file, missing table
+or mismatched mapping fails the check. Generated/reference material under
+`build/` remains ignored by Git; the checker performs no downloads.
+
 ## Limits of that projection
 
 This is a patch-conversion approximation. It is not a measured WT11 firmware

@@ -20,11 +20,12 @@ The [executable check](check-ymfm-dac.cc) exhaustively compares the optimized
 inputs. All **65,536 values match**. It then probes overflow and mixing order;
 the complete [captured output](opz-dac-check.txt) is retained.
 
-Build with `YMFM` pointing to the pinned source folder:
+From the repository root, build with `YMFM` pointing to the pinned source folder:
 
 ```sh
-c++ -std=c++17 -O2 -I"$YMFM" check-ymfm-dac.cc -o /tmp/check-ymfm-dac
-/tmp/check-ymfm-dac
+mkdir -p build
+c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/check-ymfm-dac.cc -o build/check-ymfm-dac
+build/check-ymfm-dac
 ```
 
 The executable exits nonzero if an in-range comparison fails or output cannot
@@ -87,7 +88,8 @@ The check executable optionally accepts a binary output path and captures all
 65,536 decoded signed-16-bit inputs as native-endian `int32_t` values:
 
 ```sh
-/tmp/check-ymfm-dac /tmp/opz-dac.i32
+mkdir -p build
+build/check-ymfm-dac build/opz-dac.i32
 ```
 
 The little-endian capture is stored without value changes as the `decoded`

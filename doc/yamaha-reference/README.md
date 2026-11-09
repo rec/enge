@@ -425,12 +425,13 @@ operator cache of the same pinned ymfm revision
 with ymfm's own integer volume lookup. It does not apply envelope attenuation,
 feedback, modulation, chip-clock pitch quantization or DAC processing.
 
-Build and capture the table, with `YMFM` pointing to that revision's source
-folder:
+From the repository root, build and capture the table, with `YMFM` pointing
+to that revision's source folder:
 
 ```sh
-c++ -std=c++17 -O2 -I"$YMFM" render-ymfm-waveforms.cc "$YMFM/ymfm_opz.cpp" -o /tmp/ymfm-waveforms
-/tmp/ymfm-waveforms > /tmp/ymfm-waveforms.csv
+mkdir -p build
+c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/render-ymfm-waveforms.cc "$YMFM/ymfm_opz.cpp" -o build/ymfm-waveforms
+build/ymfm-waveforms > build/ymfm-waveforms.csv
 ```
 
 The comparison uses 48,000 frames at 48 kHz and 440 Hz, with each WAV's eight

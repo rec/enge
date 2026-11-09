@@ -43,11 +43,12 @@ avoiding nominal-frequency or native-clock differences. The reference uses
 four-carrier sum. Its signed integer output is divided by 8192 for comparison.
 Enge retains continuous phases, waveform evaluation, gains and feedback.
 
-Build with `YMFM` pointing to the pinned source directory:
+From the repository root, build with `YMFM` pointing to the pinned source directory:
 
 ```sh
-c++ -std=c++17 -O2 -I"$YMFM" render-ymfm-core.cc "$YMFM/ymfm_opz.cpp" -o /tmp/ymfm-core
-/tmp/ymfm-core 8 0 0 /tmp/opz-carriers.i32 tx81z-graphs.txt
+mkdir -p build
+c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/render-ymfm-core.cc "$YMFM/ymfm_opz.cpp" -o build/ymfm-core
+build/ymfm-core 8 0 0 build/opz-carriers.i32 doc/yamaha-reference/tx81z-graphs.txt
 ```
 
 Arguments are one-based algorithm, feedback, profile, output path and exported

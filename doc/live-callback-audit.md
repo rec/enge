@@ -82,9 +82,11 @@ snapshot replay and a deliberately rejected modulation range. See
 Reproduce the measurement with the locked environment already installed:
 
 ```sh
+mkdir -p build
 uv pip install --no-deps --reinstall --editable . --config-settings 'build-args=--features allocation-audit'
 cargo test --locked --features allocation-audit
-uv run --no-sync pytest --require-callback-no-allocations --junitxml=/private/tmp/enge-callback-heap.xml
+uv run --no-sync pytest --require-callback-no-allocations --junitxml=build/enge-callback-heap.xml
+uv run --no-sync python scripts/summarize_callback_audit.py --reports build/enge-callback-heap.xml
 uv sync --frozen --reinstall-package enge
 ```
 
@@ -92,6 +94,14 @@ The last command restores the ordinary extension. Instrumentation is absent from
 default builds. This measures the tested Rust paths, not arbitrary future inputs,
 foreign-library allocators, device deadlines or scheduling/lock behavior. Optional
 Rubber Band processing is not qualified by this run.
+
+The summarizer accepts one or more JUnit files after `--reports` and prints JSON
+with the total testcase count and separate `successful` and `failed` rows. Each
+row is `[calls, allocations, reallocations, frees]`. Counts are summed across
+all supplied reports without deduplication. Every report must contain callback
+heap properties; ordinary reports without them are rejected. Nonzero counters
+remain visible in the summary. The pytest assertions above enforce the
+allocation-free requirement; the summarizer only aggregates the measurements.
 
 `LiveRuntime` owns processing for generated and sampled sources. It owns
 cloned oscillator, FM, and noise runtimes, immutable sample assets and traversal

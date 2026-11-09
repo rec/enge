@@ -76,19 +76,19 @@ From the repository root, set `YMFM` to the pinned source directory containing
 [core comparison](opz-core.md).
 
 ```sh
-mkdir -p /tmp/enge-chip-notes
+mkdir -p build/enge-chip-notes
 c++ -std=c++17 -O2 -I"$YMFM" doc/yamaha-reference/render-ymfm-note.cc \
-  "$YMFM/ymfm_opz.cpp" -o /tmp/enge-ymfm-note
+  "$YMFM/ymfm_opz.cpp" -o build/enge-ymfm-note
 for a in 1 2 3 4 5 6 7 8; do
   for f in 0 1 2 3 4 5 6 7; do
     for p in 0 1; do
-      /tmp/enge-ymfm-note "$a" "$f" "$p" "/tmp/enge-chip-notes/note-$a-$f-$p.i32" || exit 1
+      build/enge-ymfm-note "$a" "$f" "$p" "build/enge-chip-notes/note-$a-$f-$p.i32" || exit 1
     done
   done
 done
 uv run python doc/yamaha-reference/compare-opz-note.py \
-  --source /tmp/enge-chip-notes > /tmp/opz-note-native.csv
-diff doc/yamaha-reference/opz-note-native.csv /tmp/opz-note-native.csv
+  --source build/enge-chip-notes > build/opz-note-native.csv
+diff doc/yamaha-reference/opz-note-native.csv build/opz-note-native.csv
 ```
 
 ## Production native-clock results
@@ -140,9 +140,10 @@ Generate profiles 2–5 with the register harness using the command pattern
 above, selecting feedback zero and seven. Then run:
 
 ```sh
+mkdir -p build
 uv run python doc/yamaha-reference/compare-opz-note.py \
-  --source /tmp/enge-chip-notes --modulation > /tmp/opz-note-modulation.csv
-diff doc/yamaha-reference/opz-note-modulation.csv /tmp/opz-note-modulation.csv
+  --source build/enge-chip-notes --modulation > build/opz-note-modulation.csv
+diff doc/yamaha-reference/opz-note-modulation.csv build/opz-note-modulation.csv
 ```
 
 The archive uses the same case keys for profiles 2–5. Each value is the harness

@@ -99,18 +99,21 @@ the larger enge differences or prove that enge's core is otherwise correct.
 Download `source/engine/EngineMkI.cpp` and `.h`, plus `source/msfa/` files
 `synth.h`, `aligned_buf.h`, `fm_op_kernel.h`, `fm_op_kernel.cc`, `controllers.h`,
 `fm_core.h`, `fm_core.cc`, `sin.h`, `sin.cc`, `exp2.h` and `exp2.cc` from the pinned
-revision. Place the engine files in a temporary directory and the others in its
-`msfa` subdirectory. In that temporary `controllers.h` only, omit the unused
+revision. Place the engine files in `build/references/dexed-mki` and the others
+in its `msfa` subdirectory. In that reference copy of `controllers.h` only,
+omit the unused
 `#include "../debugger/Logger.h"` to avoid pulling in the JUCE application logger.
-No DSP code is changed. Set `DEXED_CORE` to that directory and compile:
+No DSP code is changed. Set `DEXED_CORE` to that directory and compile from the
+repository root:
 
 ```sh
-c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" render-dexed-mki.cc \
+mkdir -p build
+c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" doc/yamaha-reference/render-dexed-mki.cc \
   "$DEXED_CORE/EngineMkI.cpp" "$DEXED_CORE/msfa/fm_core.cc" \
   "$DEXED_CORE/msfa/fm_op_kernel.cc" "$DEXED_CORE/msfa/sin.cc" \
-  "$DEXED_CORE/msfa/exp2.cc" -o /tmp/render-dexed-mki
-/tmp/render-dexed-mki 4 7 14 0 /tmp/mki-alg4.i32
-/tmp/render-dexed-mki 4 7 14 1 /tmp/mki-alg4-phase-lsb.i32
+  "$DEXED_CORE/msfa/exp2.cc" -o build/render-dexed-mki
+build/render-dexed-mki 4 7 14 0 build/mki-alg4.i32
+build/render-dexed-mki 4 7 14 1 build/mki-alg4-phase-lsb.i32
 ```
 
 `-fwrapv` specifies the signed integer wrap used by the reference phase
@@ -168,11 +171,12 @@ the harness includes `EngineMkI.cpp`, do not also list that file as a separate
 translation unit:
 
 ```sh
-c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" compare-dexed-mki-graph.cc \
+mkdir -p build
+c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" doc/yamaha-reference/compare-dexed-mki-graph.cc \
   "$DEXED_CORE/msfa/fm_core.cc" "$DEXED_CORE/msfa/fm_op_kernel.cc" \
   "$DEXED_CORE/msfa/sin.cc" "$DEXED_CORE/msfa/exp2.cc" \
-  -o /tmp/compare-dexed-mki-graph
-/tmp/compare-dexed-mki-graph dx7-feedback-graphs.txt /tmp > /tmp/mki-graph.csv
+  -o build/compare-dexed-mki-graph
+build/compare-dexed-mki-graph doc/yamaha-reference/dx7-feedback-graphs.txt build > build/mki-graph.csv
 ```
 
 The output directory must exist. The harness also writes `graph-4.i32`,
@@ -438,12 +442,13 @@ Export a profile array unchanged as native little-endian `int32_t` rows, then
 run the retained harness against the pinned reference directory:
 
 ```sh
-c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" render-dexed-mki-trajectory.cc \
+mkdir -p build
+c++ -std=c++17 -O2 -fwrapv -I"$DEXED_CORE" doc/yamaha-reference/render-dexed-mki-trajectory.cc \
   "$DEXED_CORE/msfa/fm_core.cc" "$DEXED_CORE/msfa/fm_op_kernel.cc" \
   "$DEXED_CORE/msfa/sin.cc" "$DEXED_CORE/msfa/exp2.cc" \
-  -o /tmp/render-dexed-mki-trajectory
-/tmp/render-dexed-mki-trajectory dx7-feedback-graphs.txt 4 7 \
-  /tmp/attenuation0.i32 /tmp/trajectory-output.i32
+  -o build/render-dexed-mki-trajectory
+build/render-dexed-mki-trajectory doc/yamaha-reference/dx7-feedback-graphs.txt 4 7 \
+  build/attenuation0.i32 build/trajectory-output.i32
 ```
 
 The harness requires exactly 48,000 rows and rejects truncated or extra input.

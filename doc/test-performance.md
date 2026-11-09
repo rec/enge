@@ -8,9 +8,10 @@ Keep other projects' test runs idle. Profiler timings include substantial
 instrumentation overhead and are not ordinary test timings.
 
 ```sh
+mkdir -p build
 uv run pytest --durations=30
 uv run pytest -n 0 test/test_control.py
-uv run python -m cProfile -o /private/tmp/enge-latch.prof -m pytest -n 0 -q \
+uv run python -m cProfile -o build/enge-latch.prof -m pytest -n 0 -q \
   'test/test_envelfo_latch.py::test_latch_captures_delivery_frame_with_independent_gates_and_snapshot[1.0-lfo-numpy]'
 ```
 
@@ -18,7 +19,7 @@ Read the profile without launching the engine:
 
 ```sh
 printf 'sort cumulative\nstats (control.py|lfo.py|synth.py) 20\nquit\n' | \
-  uv run python -m pstats /private/tmp/enge-latch.prof
+  uv run python -m pstats build/enge-latch.prof
 ```
 
 The full suite remains the commit gate. Selecting individual tests is for
@@ -89,7 +90,8 @@ and cue-routing regression took 51.84 seconds under cProfile, with roughly
 that contained no events.
 
 ```sh
-uv run python -m cProfile -o /private/tmp/enge-stages.prof -m pytest -n 0 -q \
+mkdir -p build
+uv run python -m cProfile -o build/enge-stages.prof -m pytest -n 0 -q \
   'test/test_lfo_instrument.py::test_patch_division_is_first_aligned_independent_and_snapshot_safe[1-0.5-0-0-0-False-divisors0-cue-stages]'
 ```
 
