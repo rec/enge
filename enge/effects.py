@@ -16,6 +16,7 @@ from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBind
 
 from . import (
     _native,
+    bitcrusher,
     convolution,
     dynamics,
     effect_controls,
@@ -29,6 +30,7 @@ from . import (
     synth,
     waveshaper,
 )
+from .bitcrusher import BitcrusherState
 from .convolution import ConvolutionState
 from .dynamics import GateState
 from .effect_controls import EffectControlPlan
@@ -145,6 +147,7 @@ class ProcessorState(BaseModel):
     mixer: MixerState | None = None
     gate: GateState | None = None
     convolution: ConvolutionState | None = None
+    bitcrusher: BitcrusherState | None = None
     expansion_gain: float = Field(default=1.0, ge=0, le=1)
     follower_level: float = Field(default=0.0, ge=0)
     route_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
@@ -455,6 +458,17 @@ class OfflineEffects:
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
+            if isinstance(processor, audio_effects.Bitcrusher):
+                state = snapshot.processors[processor.name].bitcrusher
+                if (
+                    state is None
+                    or type(state.remaining) is not int
+                    or len(state.held) != len(layouts[processor.name])
+                    or not 0 <= state.remaining <= 65535
+                    or any(not isfinite(v) or abs(v) > 1 for v in state.held)
+                ):
+                    raise EngineError("Invalid bitcrusher snapshot")
+                continue
             if isinstance(processor, audio_effects.Convolution):
                 state = snapshot.processors[processor.name].convolution
                 if state is None:
@@ -776,6 +790,20 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.Bitcrusher):
+            assert state.bitcrusher is not None
+            dry = ports["input"]
+            wet, drained = bitcrusher.process(
+                state.bitcrusher,
+                dry,
+                self._value(processor, "bits", frame),
+                self._value(processor, "hold_frames", frame),
+                ended["input"],
+            )
+            mix = self._value(processor, "mix", frame) * self.delayed.get(
+                (processor.name, "bypass"), state.bypass.value(frame)
+            )
+            return _mix(dry, wet, mix), drained
         if isinstance(processor, audio_effects.Convolution):
             assert state.convolution is not None
             return convolution.process(
@@ -865,7 +893,7 @@ class OfflineEffects:
                 self._value(processor, "drive", frame),
                 self._value(processor, "bias", frame),
                 self._value(processor, "output_gain_db", frame),
-                processor.curve == "hard",
+                processor.curve,
                 self.waveshaper_coefficients,
                 ended["input"],
             )
@@ -1495,7 +1523,7 @@ def native_live_graph(
         else 7
         if isinstance(p, (audio_effects.ModulatedDelay, audio_effects.Phaser))
         else 4
-        if isinstance(p, audio_effects.Highpass)
+        if isinstance(p, (audio_effects.Highpass, audio_effects.Bitcrusher))
         else 3
         for p in ordered
     ]
@@ -1546,7 +1574,10 @@ def native_live_graph(
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.Convolution):
+        if isinstance(processor, audio_effects.Bitcrusher):
+            kinds.append(20)
+            parameters[node, [0, 3]] = [processor.bits, processor.hold_frames]
+        elif isinstance(processor, audio_effects.Convolution):
             kinds.append(19)
             parameters[node, 0] = processor.partition_frames
             assets = {a.name: a for a in graph.assets}
@@ -1619,7 +1650,7 @@ def native_live_graph(
                 processor.drive,
                 processor.bias,
                 processor.output_gain_db,
-                int(processor.curve == "hard"),
+                {"soft": 0, "hard": 1, "fold": 2}[processor.curve],
             ]
             parameters[node, 6:71] = waveshaper.halfband_coefficients()
         elif isinstance(processor, audio_effects.Phaser):
@@ -2014,7 +2045,9 @@ def _initial_state(
         else {"mix": processor.mix}
     )
     filter_states: list[filters.FilterState] = []
-    if isinstance(processor, audio_effects.Follower):
+    if isinstance(processor, audio_effects.Bitcrusher):
+        values.update(bits=processor.bits, hold_frames=processor.hold_frames)
+    elif isinstance(processor, audio_effects.Follower):
         values.update(
             attack_seconds=processor.attack_seconds,
             release_seconds=processor.release_seconds,
@@ -2112,6 +2145,9 @@ def _initial_state(
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        bitcrusher=BitcrusherState(held=[0.0] * channels)
+        if isinstance(processor, audio_effects.Bitcrusher)
+        else None,
         convolution=convolution.initial_state(impulse) if impulse is not None else None,
         gate=GateState() if isinstance(processor, audio_effects.Gate) else None,
         waveshaper=waveshaper.initial_state(channels)
@@ -2356,6 +2392,8 @@ def _reverb_coefficients(
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
     if name == "mix":
         return 1
+    if isinstance(processor, audio_effects.Bitcrusher):
+        return {"bits": 0, "hold_frames": 3}[name]
     if isinstance(processor, audio_effects.Gate):
         return {
             "threshold_db": 0,

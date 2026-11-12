@@ -1,5 +1,6 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
+mod bitcrusher;
 pub(crate) mod controls;
 pub(crate) mod convolution;
 mod dynamics;
@@ -68,6 +69,7 @@ pub(crate) struct EffectRuntime {
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
     convolutions: Vec<Option<convolution::Convolution>>,
+    bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
     matrices: Vec<Option<RoutingMatrix>>,
     mixers: Vec<Option<Mixer>>,
     crossfader_laws: Vec<Option<bool>>,
@@ -131,6 +133,7 @@ pub(crate) struct EffectSnapshot {
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
     convolutions: Vec<Option<convolution::Convolution>>,
+    bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
     mixers: Vec<Option<Mixer>>,
     gates: Vec<Option<dynamics::Gate>>,
     expansion_gains: Vec<f64>,
@@ -361,7 +364,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 19)
+        if kinds.iter().any(|v| *v > 20)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -500,6 +503,7 @@ impl EffectRuntime {
         let mut latencies = vec![0; nodes + inputs];
         let mut alignment = Vec::with_capacity(nodes);
         let mut waveshapers = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut bitcrushers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             let ports = port_names[node].len();
             let audio_arrival = (0..ports)
@@ -528,6 +532,18 @@ impl EffectRuntime {
                 }
             }
             alignment.push(delays);
+            if kinds[node] == 20 {
+                let values = parameters.as_array();
+                if parameters.shape()[1] < 4
+                    || !(1.0..=24.0).contains(&values[[node, 0]])
+                    || values[[node, 0]].fract() != 0.0
+                    || !(1.0..=65536.0).contains(&values[[node, 3]])
+                    || values[[node, 3]].fract() != 0.0
+                {
+                    return Err(PyValueError::new_err("Invalid bitcrusher profile"));
+                }
+                bitcrushers[node] = Some(bitcrusher::Bitcrusher::new(widths[node + inputs]));
+            }
             latencies[node + inputs] = arrival
                 .checked_add(intrinsic_latency(
                     kinds[node],
@@ -538,14 +554,18 @@ impl EffectRuntime {
                 let values = parameters.as_array();
                 if parameters.shape()[1] < 71
                     || values[[node, 0]] <= 0.0
-                    || !matches!(values[[node, 5]], 0.0 | 1.0)
+                    || !matches!(values[[node, 5]], 0.0 | 1.0 | 2.0)
                 {
                     return Err(PyValueError::new_err("Invalid waveshaper profile"));
                 }
                 let coefficients = std::array::from_fn(|i| values[[node, 6 + i]]);
                 waveshapers[node] = Some(Waveshaper::new(
                     widths[node + inputs],
-                    values[[node, 5]] == 1.0,
+                    match values[[node, 5]] {
+                        0.0 => waveshaper::Curve::Soft,
+                        1.0 => waveshaper::Curve::Hard,
+                        _ => waveshaper::Curve::Fold,
+                    },
                     coefficients,
                 ));
             }
@@ -987,6 +1007,7 @@ impl EffectRuntime {
                                     15 => matches!(parameter, 0 | 3..=6),
                                     16 => matches!(parameter, 0 | 3..=5),
                                     18 => parameter == 3,
+                                    20 => matches!(parameter, 0 | 3),
                                     _ => false,
                                 });
                         let modulated = controls
@@ -1025,6 +1046,7 @@ impl EffectRuntime {
             highpasses,
             resonants,
             convolutions,
+            bitcrushers,
             matrices,
             mixers,
             crossfader_laws,
@@ -1208,6 +1230,7 @@ impl EffectRuntime {
             }
             let mut waveshaper_drained = false;
             let mut convolution_drained = false;
+            let mut bitcrusher_drained = false;
             for channel in 0..channels {
                 let value = if self.kinds[node] == 8 && self.widths[first] == 1 {
                     self.port_values[[node, 0, 0]] / std::f64::consts::SQRT_2
@@ -1263,6 +1286,17 @@ impl EffectRuntime {
                             self.resolved[[node, 0]],
                             self.resolved[[node, 3]],
                             self.resolved[[node, 4]],
+                            self.port_ended[[node, 0]],
+                        )?;
+                }
+                20 => {
+                    bitcrusher_drained = self.bitcrushers[node]
+                        .as_mut()
+                        .expect("prepared bitcrusher")
+                        .process(
+                            &mut self.wet[..channels],
+                            self.resolved[[node, 0]],
+                            self.resolved[[node, 3]],
                             self.port_ended[[node, 0]],
                         )?;
                 }
@@ -1457,6 +1491,7 @@ impl EffectRuntime {
                         4 => waveshaper_drained,
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
                         19 => convolution_drained,
+                        20 => bitcrusher_drained,
                         18 => self.resonants[node]
                             .as_ref()
                             .is_some_and(|r| r.drained(self.tail_thresholds[node])),
@@ -1570,6 +1605,18 @@ impl EffectRuntime {
         if self.kinds[node] == 18 && !matches!(parameter, 1..=3) {
             return Err(NativeError::Message(
                 "Resonant tuning is fixed at preparation",
+            ));
+        }
+        if self.kinds[node] == 4 && parameter > 4 {
+            return Err(NativeError::Message(
+                "Invalid waveshaper fixed-curve action",
+            ));
+        }
+        if self.kinds[node] == 20
+            && (parameter > 3 || (matches!(parameter, 0 | 3) && duration != 0))
+        {
+            return Err(NativeError::Message(
+                "Invalid bitcrusher parameter or integer ramp",
             ));
         }
         if self.kinds[node] == 12 {
@@ -1922,6 +1969,7 @@ impl EffectRuntime {
             highpasses: self.highpasses.clone(),
             resonants: self.resonants.clone(),
             convolutions: self.convolutions.clone(),
+            bitcrushers: self.bitcrushers.clone(),
             mixers: self.mixers.clone(),
             gates: self.gates.clone(),
             expansion_gains: self.expansion_gains.clone(),
@@ -2106,6 +2154,7 @@ impl EffectRuntime {
         self.highpasses.clone_from(&snapshot.highpasses);
         self.resonants.clone_from(&snapshot.resonants);
         self.convolutions.clone_from(&snapshot.convolutions);
+        self.bitcrushers.clone_from(&snapshot.bitcrushers);
         self.mixers.clone_from(&snapshot.mixers);
         self.gates.clone_from(&snapshot.gates);
         self.expansion_gains.clone_from(&snapshot.expansion_gains);

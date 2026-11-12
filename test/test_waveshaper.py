@@ -12,10 +12,10 @@ from waveshaper_oracle import waveshaper_audio
 from enge import _native, effects
 
 
-@pytest.mark.parametrize("hard", [False, True])
+@pytest.mark.parametrize("curve", ["soft", "hard", "fold"])
 @pytest.mark.parametrize("bias", [0.0, 0.4])
 def test_waveshaper_matches_independent_oversampling_and_drains(
-    tmp_path: Path, hard: bool, bias: float
+    tmp_path: Path, curve: Literal["soft", "hard", "fold"], bias: float
 ) -> None:
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
@@ -23,7 +23,7 @@ def test_waveshaper_matches_independent_oversampling_and_drains(
         [
             audio_effects.Waveshaper(
                 name="shape",
-                curve="hard" if hard else "soft",
+                curve=curve,
                 drive=3,
                 bias=bias,
                 output_gain_db=-3,
@@ -40,7 +40,7 @@ def test_waveshaper_matches_independent_oversampling_and_drains(
     )
     source[40000:] = 0
     dry = np.concatenate((np.zeros((48, 2)), source[:-48]))
-    expected = 0.4 * dry + 0.6 * waveshaper_audio(source, 3, bias, -3, hard)
+    expected = 0.4 * dry + 0.6 * waveshaper_audio(source, 3, bias, -3, curve)
     actions: list[audio_effects.EffectAction] = [
         audio_effects.InputEndAction(tick=40000, ordinal=0, input="main")
     ]
@@ -65,7 +65,7 @@ def test_waveshaper_aligns_branch_audio_controls_and_portable_state(
     target: Literal["numpy", "native"],
 ) -> None:
     graph = audio_effects.EffectGraph(
-        scope="master",
+        scope=audio_effects.AttachmentScope.master,
         inputs=[graph_input()],
         processors=[
             audio_effects.Waveshaper(name="first", mix=0),
@@ -207,7 +207,7 @@ def test_oversampling_reduces_the_third_harmonic_foldback(tmp_path: Path) -> Non
     actual = effects.process_audio(
         effects.prepare(graph, 48000), {"main": source}, [], backend="native"
     )
-    expected = waveshaper_audio(source, 4, hard=True)
+    expected = waveshaper_audio(source, 4, curve="hard")
     check_audio(tmp_path / "alias-reduction.wav", actual, expected)
     spectrum = np.abs(np.fft.rfft(actual[-48000:, 0]))
     naive = np.abs(np.fft.rfft(np.clip(4 * source[-48000:, 0], -1, 1)))
@@ -215,8 +215,33 @@ def test_oversampling_reduces_the_third_harmonic_foldback(tmp_path: Path) -> Non
     assert spectrum[11000] > 0.5 * naive[11000]
 
 
-@pytest.mark.parametrize("failure", ["gain", "input"])
-def test_waveshaper_callback_failure_can_restore(tmp_path: Path, failure: str) -> None:
+def test_native_snapshot_rejects_a_different_fixed_curve() -> None:
+    runtimes: list[_native.LiveRuntime] = []
+    curves: list[Literal["soft", "fold"]] = ["soft", "fold"]
+    for curve in curves:
+        prepared = effects.prepare(
+            effects.serial_graph(
+                audio_effects.AttachmentScope.master,
+                graph_input(),
+                [audio_effects.Waveshaper(name="shape", curve=curve)],
+                997,
+            ),
+            48000,
+        )
+        runtime = _native.LiveRuntime.empty(48000, 2, 997, 64)
+        runtime.set_effect_graph(
+            *effects.native_live_graph(prepared), 2, input_routes=[[-2]]
+        )
+        runtimes.append(runtime)
+    with pytest.raises(ValueError, match="[Ss]napshot"):
+        runtimes[1].restore(runtimes[0].snapshot())
+
+
+@pytest.mark.parametrize("failure", ["gain", "input", "curve"])
+@pytest.mark.parametrize("curve", ["soft", "fold"])
+def test_waveshaper_callback_failure_can_restore(
+    tmp_path: Path, failure: str, curve: Literal["soft", "fold"]
+) -> None:
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         graph_input(),
@@ -226,7 +251,7 @@ def test_waveshaper_callback_failure_can_restore(tmp_path: Path, failure: str) -
                 if failure == "input"
                 else []
             ),
-            audio_effects.Waveshaper(name="shape"),
+            audio_effects.Waveshaper(name="shape", curve=curve),
         ],
         48000,
     )
@@ -250,6 +275,8 @@ def test_waveshaper_callback_failure_can_restore(tmp_path: Path, failure: str) -
         runtime.submit_effects(
             effects.native_live_actions(prepared, [action], 0, 48000)
         )
+    elif failure == "curve":
+        runtime.submit_effects(np.array([[12003, 0, 0, 5, 2, 0]], dtype=np.float64))
     actual = np.zeros_like(source)
     frames = 1 if failure == "input" else 48000
     actual[:frames] = 1
@@ -262,13 +289,15 @@ def test_waveshaper_callback_failure_can_restore(tmp_path: Path, failure: str) -
     runtime.restore(saved)
     assert not runtime.failed()
     runtime.process_into(actual, [source])
-    expected = waveshaper_audio(source * (10 if failure == "input" else 1), 1)
+    expected = waveshaper_audio(
+        source * (10 if failure == "input" else 1), 1, curve=curve
+    )
     check_audio(tmp_path / "gain-recovery.wav", actual, expected)
 
 
 def test_waveshaper_aligns_a_mono_detector_with_stereo_audio(tmp_path: Path) -> None:
     graph = audio_effects.EffectGraph(
-        scope="master",
+        scope=audio_effects.AttachmentScope.master,
         inputs=[
             graph_input(),
             audio_effects.GraphInput(

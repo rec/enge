@@ -18,6 +18,9 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
     processors: dict[str, audio_effects.Processor] = {
         "gain": audio_effects.Gain(name="fx", gain_db=-6),
         "clip": audio_effects.Waveshaper(name="fx", drive=2),
+        "fold": audio_effects.Waveshaper(name="fx", curve="fold", drive=2),
+        "crush": audio_effects.Bitcrusher(name="fx", bits=8, hold_frames=17, mix=0.5),
+        "crush-bits": audio_effects.Bitcrusher(name="fx", bits=8, hold_frames=17),
         "phaser": audio_effects.Phaser(name="fx", feedback=0.5),
         "highpass": audio_effects.Highpass(name="fx", cutoff_hz=1000),
         "gate": audio_effects.Gate(name="fx"),
@@ -74,6 +77,9 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
     parameter, default, depth, unit = {
         "gain": ("gain_db", -6, 3, "db"),
         "clip": ("drive", 2, 0.5, "ratio"),
+        "fold": ("drive", 2, 0.5, "ratio"),
+        "crush": ("mix", 0.5, 0.25, "ratio"),
+        "crush-bits": ("bits", 8, 2, "ratio"),
         "phaser": ("sweep", 0, 0.5, "ratio"),
         "highpass": ("cutoff_hz", 1000, 250, "hz"),
         "gate": ("hold_seconds", 0.01, 0.005, "seconds"),
@@ -136,6 +142,9 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
     [
         "gain",
         "clip",
+        "fold",
+        "crush",
+        "crush-bits",
         "phaser",
         "highpass",
         "gate",

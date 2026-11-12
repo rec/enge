@@ -3,6 +3,23 @@
 use crate::error::{NativeError, NativeResult};
 use numpy::ndarray::Array2;
 
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Curve {
+    Soft,
+    Hard,
+    Fold,
+}
+
+impl Curve {
+    fn apply(self, value: f64) -> f64 {
+        match self {
+            Self::Soft => value.tanh(),
+            Self::Hard => value.clamp(-1.0, 1.0),
+            Self::Fold => 1.0 - ((value + 1.0).rem_euclid(4.0) - 2.0).abs(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Waveshaper {
     pub(super) histories: [Array2<f64>; 4],
@@ -10,26 +27,26 @@ pub(super) struct Waveshaper {
     pub(super) dry_history: Array2<f64>,
     pub(super) dry_write: usize,
     pub(super) remaining: usize,
-    pub(super) hard: bool,
+    pub(super) curve: Curve,
     coefficients: [f64; 65],
 }
 
 impl Waveshaper {
-    pub(super) fn new(channels: usize, hard: bool, coefficients: [f64; 65]) -> Self {
+    pub(super) fn new(channels: usize, curve: Curve, coefficients: [f64; 65]) -> Self {
         Self {
             histories: std::array::from_fn(|_| Array2::zeros((65, channels))),
             writes: [0; 4],
             dry_history: Array2::zeros((48, channels)),
             dry_write: 0,
             remaining: 96,
-            hard,
+            curve,
             coefficients,
         }
     }
 
     pub(super) fn same_capacity(&self, other: &Self) -> bool {
         self.histories[0].raw_dim() == other.histories[0].raw_dim()
-            && self.hard == other.hard
+            && self.curve == other.curve
             && self.coefficients == other.coefficients
     }
 
@@ -51,11 +68,7 @@ impl Waveshaper {
         if wet.iter().any(|value| !value.is_finite()) {
             return Err(NativeError::Message("Non-finite waveshaper input"));
         }
-        let offset = if self.hard {
-            bias.clamp(-1.0, 1.0)
-        } else {
-            bias.tanh()
-        };
+        let offset = self.curve.apply(bias);
         for channel in 0..dry.len() {
             let source = wet[channel];
             dry[channel] = self.dry_history[[self.dry_write, channel]];
@@ -66,11 +79,7 @@ impl Waveshaper {
                     let second = 2.0
                         * self.filter(1, channel, if j == 0 { first } else { 0.0 }, 2 * i + j)?;
                     let value = drive * second + bias;
-                    let shaped = (if self.hard {
-                        value.clamp(-1.0, 1.0)
-                    } else {
-                        value.tanh()
-                    }) - offset;
+                    let shaped = self.curve.apply(value) - offset;
                     let third = self.filter(2, channel, shaped, 2 * i + j)?;
                     if j == 0 {
                         let fourth = self.filter(3, channel, third, i)?;

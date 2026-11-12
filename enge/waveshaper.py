@@ -1,6 +1,7 @@
 """Four-times oversampling with a fixed linear-phase half-band profile."""
 
 from math import cos, pi, sin
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
@@ -41,7 +42,7 @@ def process(
     drive: float,
     bias: float,
     output_gain_db: float,
-    hard: bool,
+    curve: Literal["soft", "hard", "fold"],
     coefficients: np.ndarray,
     ended: bool,
 ) -> tuple[np.ndarray, np.ndarray, bool]:
@@ -52,13 +53,13 @@ def process(
     state.dry_write = (state.dry_write + 1) % len(state.dry_history)
     wet = np.zeros_like(source)
     zero = np.zeros_like(source)
-    offset = np.clip(bias, -1, 1) if hard else np.tanh(bias)
+    offset = _shape(np.asarray(bias), curve)
     for i in range(2):
         first = 2 * _filter(state, 0, source if i == 0 else zero, coefficients)
         for j in range(2):
             second = 2 * _filter(state, 1, first if j == 0 else zero, coefficients)
             shaped = drive * second + bias
-            shaped = (np.clip(shaped, -1, 1) if hard else np.tanh(shaped)) - offset
+            shaped = _shape(shaped, curve) - offset
             third = _filter(state, 2, shaped, coefficients)
             if j == 0:
                 fourth = _filter(state, 3, third, coefficients)
@@ -73,6 +74,14 @@ def process(
     if not np.all(np.isfinite(wet)):
         raise ValueError("Non-finite waveshaper output")
     return dry, wet, drained
+
+
+def _shape(values: np.ndarray, curve: Literal["soft", "hard", "fold"]) -> np.ndarray:
+    if curve == "hard":
+        return np.clip(values, -1, 1)
+    if curve == "soft":
+        return np.tanh(values)
+    return 1 - np.abs(np.remainder(values + 1, 4) - 2)
 
 
 def _filter(

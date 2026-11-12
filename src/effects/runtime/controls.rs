@@ -77,6 +77,8 @@ impl Controls {
         for (node, parameter, minimum, maximum) in &definitions.0 {
             if *node >= kinds.len()
                 || kinds.get(*node).is_some_and(|k| *k == 19)
+                || (kinds.get(*node) == Some(&4) && *parameter > 4)
+                || (kinds.get(*node) == Some(&20) && *parameter > 3)
                 || *parameter >= parameters.ncols()
                 || !minimum.is_finite()
                 || !maximum.is_finite()

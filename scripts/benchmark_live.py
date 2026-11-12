@@ -33,6 +33,9 @@ class Settings(BaseModel):
     dynamics: Literal["none", "gate", "expander"] = "none"
     reverb: bool = False
     waveshaper: bool = False
+    waveshaper_curve: Literal["soft", "hard", "fold"] = "soft"
+    coloration: Literal["none", "tape", "tube"] = "none"
+    bitcrusher: bool = False
     phaser: bool = False
     highpass: bool = False
     matrix: bool = False
@@ -149,7 +152,13 @@ def main(settings: Settings) -> None:
         processors.append(audio_effects.Reverb(name="room"))
     if settings.waveshaper:
         processors.append(
-            audio_effects.Waveshaper(name="shape", drive=3, bias=0.2, mix=0.6)
+            audio_effects.Waveshaper(
+                name="shape",
+                curve=settings.waveshaper_curve,
+                drive=3,
+                bias=0.2,
+                mix=0.6,
+            )
         )
     if settings.matrix:
         processors.append(audio_effects.width_matrix("route", 1.5))
@@ -157,6 +166,24 @@ def main(settings: Settings) -> None:
         processors.append(audio_effects.Highpass(name="dc"))
     if settings.phaser:
         processors.append(audio_effects.Phaser(name="phase", feedback=0.5))
+    if settings.coloration != "none":
+        processors.extend(
+            audio_effects.coloration_graph(
+                "color",
+                audio_effects.AttachmentScope.master,
+                audio_effects.GraphInput(
+                    name="main",
+                    channels=["left", "right"],
+                    source=audio_effects.MainStream(),
+                ),
+                settings.coloration,
+                settings.block_frames,
+            ).processors
+        )
+    if settings.bitcrusher:
+        processors.append(
+            audio_effects.Bitcrusher(name="crush", bits=8, hold_frames=1)
+        )
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(
@@ -544,6 +571,8 @@ def main(settings: Settings) -> None:
         f" dynamics={settings.dynamics}"
         f" reverb={settings.reverb}"
         f" waveshaper={settings.waveshaper}"
+        f" curve={settings.waveshaper_curve} coloration={settings.coloration}"
+        f" bitcrusher={settings.bitcrusher}"
         f" phaser={settings.phaser}"
         f" highpass={settings.highpass}"
         f" matrix={settings.matrix}"

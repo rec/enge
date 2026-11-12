@@ -47,8 +47,9 @@ def callback_audio(
         input_routes=[[-2] for _ in graph.inputs],
     )
     effects.configure_native_generators(runtime, prepared)
-    actual = np.empty((48000, len(prepared.channels)))
-    for first, end in ((0, 23928), (23928, 48000)):
+    frames = next(iter(inputs.values())).shape[0]
+    actual = np.empty((frames, len(prepared.channels)))
+    for first, end in ((0, 23928), (23928, frames)):
         if first:
             saved = runtime.snapshot()
         for start in range(first, end, 997):
@@ -64,8 +65,8 @@ def callback_audio(
     drained = runtime.effects_drained
     runtime.restore(saved)
     replay = actual.copy()
-    for start in range(23928, 48000, 997):
-        stop = min(start + 997, 48000)
+    for start in range(23928, frames, 997):
+        stop = min(start + 997, frames)
         batch = [a for a in actions if start <= a.tick < stop]
         if batch:
             runtime.submit_effects(
@@ -83,6 +84,8 @@ def callback_audio(
     [
         "gain",
         "clip",
+        "fold",
+        "crush",
         "phaser",
         "highpass",
         "gate",

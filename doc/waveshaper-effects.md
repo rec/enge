@@ -3,10 +3,11 @@
 `ufor.audio_effects.Waveshaper` replaces `SoftClip` and `soft_clip`, without an
 alias. The old normalized, stateless tanh curve has been removed from both
 renderers. Existing callers use the new `waveshaper` definition and its explicit
-`soft` or `hard` curve, positive drive, finite bias and output gain in dB.
+`soft`, `hard` or `fold` curve, positive drive, finite bias and output gain in dB.
 
 The nonlinear stage computes `f(drive*x + bias) - f(bias)`, using tanh for soft
-saturation or clamping to [-1, 1] for hard clipping. This permits asymmetric
+saturation, clamping to [-1, 1] for hard clipping, or the period-four triangle
+transfer for folding. This permits asymmetric
 distortion while preserving zero input at zero. Output gain applies after
 downsampling. It does not normalize individual blocks or signals.
 
@@ -39,10 +40,14 @@ can use the reported latency when aligning recordings and other graphs.
 The persistent native core owns the same implementation for offline and live
 rendering. The NumPy reference uses vector FIR evaluation. Regressions also use
 an independent full-convolution oracle built from sinc and Blackman functions,
-including explicit control timing. Tests cover both curves, bias, wet/dry gain,
+including explicit control timing. Tests cover all three curves, bias, wet/dry gain,
 alias reduction, independent branch delays, mid-buffer JSON replay, shared
 enveLFO and tempo-driven Patch controls, rejected snapshots and callback failure
 recovery. Audio regressions write paired 48 kHz WAVs of at least one second.
+
+The following figures record the original hard/soft qualification. The
+[nonlinear extensions report](nonlinear-effects.md) records folding,
+tape/tube compositions and bitcrushing separately.
 
 The final 124-test allocation audit includes pending granular freeze commands
 behind upstream latency. It recorded zero Rust allocations, reallocations or

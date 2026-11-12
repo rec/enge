@@ -76,9 +76,11 @@ fixed caller-supplied IRs, explicit matrix kernels and prepared uniform FFT
 partitions. See [effects-progress.md](effects-progress.md) for per-profile
 contracts, evidence and the remaining catalogue.
 
-The next slices are the approved triangle-fold curve in the existing
-oversampled Waveshaper, tape/tube-style mathematical coloration, and bitcrushing
-with sample-rate reduction. The broader spectral, spatial, capture, filtering
+The nonlinear catalogue now includes the approved triangle-fold curve in the
+existing oversampled Waveshaper, tape/tube-style mathematical coloration, and
+deterministic bitcrushing with capture-latched sample-rate reduction. See
+[the nonlinear profiles](../doc/nonlinear-effects.md) for their contracts and
+qualification. The broader spectral, spatial, capture, filtering
 and analysis families remain in scope but unfinished. Per-instrument effect
 attachments and post-effect taps also remain unfinished. Tested native callback
 storage bounds do not establish device deadlines or a complete native audio host.

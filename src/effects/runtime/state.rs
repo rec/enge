@@ -59,6 +59,15 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                20 => {
+                    let crusher = self.bitcrushers[node]
+                        .as_ref()
+                        .expect("prepared bitcrusher");
+                    let state = PyDict::new(py);
+                    state.set_item("held", &crusher.held)?;
+                    state.set_item("remaining", crusher.remaining)?;
+                    value.set_item("bitcrusher", state)?;
+                }
                 19 => {
                     let convolution = self.convolutions[node]
                         .as_ref()
@@ -351,6 +360,23 @@ impl EffectRuntime {
                 }
             }
             match kind {
+                20 => {
+                    let state = field(value, "bitcrusher")?;
+                    let state = state.cast::<PyDict>()?;
+                    let crusher = snapshot.bitcrushers[node]
+                        .as_mut()
+                        .expect("prepared bitcrusher");
+                    let held: Vec<f64> = field(state, "held")?.extract()?;
+                    let remaining: usize = field(state, "remaining")?.extract()?;
+                    if held.len() != crusher.held.len()
+                        || held.iter().any(|v| !v.is_finite() || v.abs() > 1.0)
+                        || remaining > 65535
+                    {
+                        return Err(PyValueError::new_err("Invalid bitcrusher snapshot"));
+                    }
+                    crusher.held = held;
+                    crusher.remaining = remaining;
+                }
                 19 => {
                     let state = field(value, "convolution")?;
                     let state = state.cast::<PyDict>()?;
