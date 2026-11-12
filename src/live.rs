@@ -196,7 +196,7 @@ impl LiveRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (kinds, sources, parameters, output_source, filters, granulators, tap_delays, modulated_delays, widths, main_input, tail_thresholds, port_names, control_plan, batch_capacity, input_routes=None))]
+    #[pyo3(signature = (kinds, sources, parameters, output_source, filters, granulators, tap_delays, modulated_delays, widths, main_input, tail_thresholds, port_names, control_plan, impulses, batch_capacity, input_routes=None))]
     fn set_effect_graph(
         &mut self,
         kinds: Vec<u8>,
@@ -212,6 +212,7 @@ impl LiveRuntime {
         tail_thresholds: Vec<f64>,
         port_names: Vec<Vec<String>>,
         control_plan: crate::effects::runtime::controls::Definitions,
+        impulses: crate::effects::runtime::convolution::Definitions<'_>,
         batch_capacity: usize,
         input_routes: Option<Vec<Vec<i64>>>,
     ) -> PyResult<()> {
@@ -250,6 +251,7 @@ impl LiveRuntime {
             tail_thresholds,
             port_names,
             control_plan,
+            impulses,
             routes,
             self.maximum_block_frames,
             self.action_capacity,

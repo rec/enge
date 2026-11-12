@@ -16,6 +16,7 @@ from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBind
 
 from . import (
     _native,
+    convolution,
     dynamics,
     effect_controls,
     filters,
@@ -28,6 +29,7 @@ from . import (
     synth,
     waveshaper,
 )
+from .convolution import ConvolutionState
 from .dynamics import GateState
 from .effect_controls import EffectControlPlan
 from .highpass import HighpassState
@@ -142,6 +144,7 @@ class ProcessorState(BaseModel):
     highpass: HighpassState | None = None
     mixer: MixerState | None = None
     gate: GateState | None = None
+    convolution: ConvolutionState | None = None
     expansion_gain: float = Field(default=1.0, ge=0, le=1)
     follower_level: float = Field(default=0.0, ge=0)
     route_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
@@ -167,6 +170,7 @@ class EffectSnapshot(BaseModel, frozen=True):
     envelopes: list[synth.EnvelopeSource] = Field(default_factory=list)
     patches: list[synth.PatchState] = Field(default_factory=list)
     graphs: dict[str, patch.PatchState] = Field(default_factory=dict)
+    audio_digests: dict[str, str] = Field(default_factory=dict)
 
 
 class PreparedEffects(BaseModel, frozen=True):
@@ -176,6 +180,18 @@ class PreparedEffects(BaseModel, frozen=True):
     channels: list[str]
     latency_frames: int = Field(ge=0)
     tempo_map: TempoMap | None = None
+    audio: dict[str, np.ndarray] = Field(default_factory=dict)
+    audio_digests: dict[str, str] = Field(default_factory=dict)
+
+    @cached_property
+    def convolutions(self) -> dict[str, convolution.PreparedConvolution]:
+        return {
+            p.name: convolution.prepare(p, self.definition, self.audio)
+            for p in self.definition.processors
+            if isinstance(p, audio_effects.Convolution)
+        }
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class OfflineEffects:
@@ -198,14 +214,19 @@ class OfflineEffects:
     ) -> None:
         if backend not in ("numpy", "native"):
             raise EngineError(f"Unknown effect backend: {backend}")
-        self.definition = definition.model_copy(deep=True)
+        self.definition = definition
         self.backend = backend
         self.frame = 0
         self.ended_inputs: dict[str, int] = {}
         self.stopped_at: int | None = None
         layouts = _processor_layouts(definition.definition)
         self.processors = {
-            p.name: _initial_state(p, len(layouts[p.name]), self.definition.sample_rate)
+            p.name: _initial_state(
+                p,
+                len(layouts[p.name]),
+                self.definition.sample_rate,
+                definition.convolutions.get(p.name),
+            )
             for p in definition.definition.processors
         }
         latencies = definition.definition.latencies()
@@ -233,8 +254,8 @@ class OfflineEffects:
                 else latencies[s.processor]
                 for p, s in ports.items()
             }
-            arrival = latencies[processor.name] - (
-                48 if isinstance(processor, audio_effects.Waveshaper) else 0
+            arrival = latencies[processor.name] - audio_effects.processor_latency(
+                processor
             )
             self.processors[processor.name].alignment = {
                 p: AlignmentState(
@@ -253,7 +274,9 @@ class OfflineEffects:
                 if delays[p] < arrival
             }
             state = self.processors[processor.name]
-            if isinstance(processor, audio_effects.ChannelMatrix):
+            if isinstance(
+                processor, (audio_effects.ChannelMatrix, audio_effects.Convolution)
+            ):
                 continue
             commands = [("freeze", 0.0)] if state.granulator is not None else []
             for name, value in (
@@ -419,6 +442,7 @@ class OfflineEffects:
             envelopes=self.controls.envelopes,
             patches=self.controls.patches,
             graphs=self.controls.graphs,
+            audio_digests=self.definition.audio_digests,
         ).model_copy(deep=True)
 
     def restore(self, snapshot: EffectSnapshot) -> None:
@@ -426,10 +450,19 @@ class OfflineEffects:
             snapshot.definition != self.definition.definition
             or snapshot.sample_rate != self.definition.sample_rate
             or snapshot.tempo_map != self.controls.tempo_map
+            or snapshot.audio_digests != self.definition.audio_digests
         ):
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
+            if isinstance(processor, audio_effects.Convolution):
+                state = snapshot.processors[processor.name].convolution
+                if state is None:
+                    raise EngineError("Missing convolution snapshot")
+                convolution.validate_state(
+                    state, self.definition.convolutions[processor.name]
+                )
+                continue
             if isinstance(processor, audio_effects.ResonantDelay):
                 state = snapshot.processors[processor.name].resonant_delay
                 frames, _ = self.resonant_tunings[processor.name]
@@ -538,6 +571,7 @@ class OfflineEffects:
                 processor,
                 (
                     audio_effects.ChannelMatrix,
+                    audio_effects.Convolution,
                     audio_effects.Mixer,
                     audio_effects.Crossfader,
                     audio_effects.Follower,
@@ -742,6 +776,14 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.Convolution):
+            assert state.convolution is not None
+            return convolution.process(
+                state.convolution,
+                self.definition.convolutions[processor.name],
+                ports["input"],
+                ended["input"],
+            )
         if isinstance(processor, audio_effects.Follower):
             state.follower_level = follower.process(
                 state.follower_level,
@@ -1300,6 +1342,7 @@ def prepare(
     definition: audio_effects.EffectGraph,
     sample_rate: int,
     tempo_map: TempoMap | None = None,
+    audio: dict[str, np.ndarray] | None = None,
 ) -> PreparedEffects:
     if sample_rate <= 0:
         raise EngineError("Effect sample rate must be positive")
@@ -1372,7 +1415,8 @@ def prepare(
                 raise EngineError(
                     "Mixer fade duration cannot use the native frame format"
                 )
-    return PreparedEffects(
+    buffers, digests = convolution.prepare_audio(definition, sample_rate, audio)
+    prepared = PreparedEffects(
         definition=definition,
         sample_rate=sample_rate,
         order=definition.order(),
@@ -1383,7 +1427,11 @@ def prepare(
             else definition.latencies()[definition.output.processor]
         ),
         tempo_map=tempo_map,
+        audio=buffers,
+        audio_digests=digests,
     )
+    _ = prepared.convolutions
+    return prepared
 
 
 def native_live_graph(
@@ -1402,6 +1450,7 @@ def native_live_graph(
     list[float],
     list[list[str]],
     EffectControlPlan,
+    convolution.NativeConvolutionPlan,
 ]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
@@ -1473,6 +1522,7 @@ def native_live_graph(
     granulator_rows: list[list[int]] = []
     tap_delay_rows: list[list[int]] = []
     modulated_delay_rows: list[list[float]] = []
+    impulses: convolution.NativeConvolutionPlan = []
     for node, processor in enumerate(ordered):
         ports = port_names[node]
         for port, name in enumerate(ports):
@@ -1487,6 +1537,7 @@ def native_live_graph(
                 processor,
                 (
                     audio_effects.ChannelMatrix,
+                    audio_effects.Convolution,
                     audio_effects.Mixer,
                     audio_effects.Crossfader,
                     audio_effects.Follower,
@@ -1495,7 +1546,26 @@ def native_live_graph(
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.Gate):
+        if isinstance(processor, audio_effects.Convolution):
+            kinds.append(19)
+            parameters[node, 0] = processor.partition_frames
+            assets = {a.name: a for a in graph.assets}
+            impulses.append(
+                (
+                    node,
+                    [
+                        (
+                            processor.input_channels.index(k.input_channel),
+                            processor.output_channels.index(k.output_channel),
+                            definition.audio[k.asset][
+                                :, assets[k.asset].audio.channels.index(k.channel)
+                            ],
+                        )
+                        for k in processor.kernels
+                    ],
+                )
+            )
+        elif isinstance(processor, audio_effects.Gate):
             kinds.append(15)
             parameters[node, [0, 3, 4, 5, 6]] = [
                 processor.threshold_db,
@@ -1726,6 +1796,7 @@ def native_live_graph(
         ],
         port_names,
         _native_control_plan(definition),
+        impulses,
     )
 
 
@@ -1837,6 +1908,7 @@ def native_live_actions(
                 processor,
                 (
                     audio_effects.ChannelMatrix,
+                    audio_effects.Convolution,
                     audio_effects.Mixer,
                     audio_effects.Crossfader,
                     audio_effects.Follower,
@@ -1922,7 +1994,10 @@ def serial_graph(
 
 
 def _initial_state(
-    processor: audio_effects.Processor, channels: int, sample_rate: int
+    processor: audio_effects.Processor,
+    channels: int,
+    sample_rate: int,
+    impulse: convolution.PreparedConvolution | None,
 ) -> ProcessorState:
     values = (
         {}
@@ -1930,6 +2005,7 @@ def _initial_state(
             processor,
             (
                 audio_effects.ChannelMatrix,
+                audio_effects.Convolution,
                 audio_effects.Mixer,
                 audio_effects.Crossfader,
                 audio_effects.Follower,
@@ -2036,6 +2112,7 @@ def _initial_state(
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        convolution=convolution.initial_state(impulse) if impulse is not None else None,
         gate=GateState() if isinstance(processor, audio_effects.Gate) else None,
         waveshaper=waveshaper.initial_state(channels)
         if isinstance(processor, audio_effects.Waveshaper)

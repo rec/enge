@@ -76,6 +76,7 @@ impl Controls {
         let mut targets = Vec::new();
         for (node, parameter, minimum, maximum) in &definitions.0 {
             if *node >= kinds.len()
+                || kinds.get(*node).is_some_and(|k| *k == 19)
                 || *parameter >= parameters.ncols()
                 || !minimum.is_finite()
                 || !maximum.is_finite()
@@ -86,7 +87,8 @@ impl Controls {
             {
                 return Err(PyValueError::new_err("Invalid effect control target"));
             }
-            let arrival = latencies[inputs + node] - if kinds[*node] == 4 { 48 } else { 0 };
+            let arrival = latencies[inputs + node]
+                - super::intrinsic_latency(kinds[*node], parameters.row(*node));
             targets.push(Target {
                 node: *node,
                 parameter: *parameter,
@@ -116,7 +118,10 @@ impl Controls {
             }
             let origin = (*source >= 0).then_some(*source as usize);
             let arrival = latencies[inputs + destination.node]
-                - if kinds[destination.node] == 4 { 48 } else { 0 };
+                - super::intrinsic_latency(
+                    kinds[destination.node],
+                    parameters.row(destination.node),
+                );
             let frames = arrival - origin.map_or(0, |s| latencies[inputs + s]);
             routes.push(Route {
                 target: *target,

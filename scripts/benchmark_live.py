@@ -38,6 +38,7 @@ class Settings(BaseModel):
     matrix: bool = False
     mixer: bool = False
     follower: bool = False
+    convolution: bool = False
     crossfader: Literal["none", "linear", "equal_power"] = "none"
     delay: Literal[
         "none", "tap", "modulated", "multitap", "matrix", "ensemble", "resonant"
@@ -409,10 +410,66 @@ def main(settings: Settings) -> None:
             output=audio_effects.ProcessorSource(processor="fade"),
             maximum_block_frames=settings.block_frames,
         )
+    audio: dict[str, np.ndarray] = {}
+    if settings.convolution:
+        impulse = np.random.default_rng(971).uniform(-0.001, 0.001, (48000, 4))
+        impulse *= np.exp(-np.arange(48000)[:, None] / 8000)
+        impulse[0] += [0.7, 0.1, 0.1, 0.7]
+        audio["impulse"] = impulse
+        graph = audio_effects.EffectGraph.model_validate(
+            graph.model_dump()
+            | {
+                "timebases": [{"name": "ir", "rate": {"numerator": 48000}}],
+                "assets": [
+                    {
+                        "name": "impulse",
+                        "location": {
+                            "kind": "relative_file",
+                            "path": "generated-ir.wav",
+                        },
+                        "encoding": "wav",
+                        "content": {},
+                        "audio": {
+                            "timebase": "ir",
+                            "channels": ["ll", "lr", "rl", "rr"],
+                            "frames": 48000,
+                        },
+                    }
+                ],
+                "processors": [
+                    *graph.processors,
+                    {
+                        "kind": "convolution",
+                        "name": "room",
+                        "input_channels": ["left", "right"],
+                        "output_channels": ["left", "right"],
+                        "kernels": [
+                            {
+                                "input_channel": i,
+                                "output_channel": o,
+                                "asset": "impulse",
+                                "channel": c,
+                            }
+                            for i, o, c in [
+                                ("left", "left", "ll"),
+                                ("left", "right", "lr"),
+                                ("right", "left", "rl"),
+                                ("right", "right", "rr"),
+                            ]
+                        ],
+                    },
+                ],
+                "connections": [
+                    *graph.connections,
+                    {"processor": "room", "port": "input", "source": graph.output},
+                ],
+                "output": {"kind": "processor", "processor": "room"},
+            }
+        )
     engine = live.NativeLiveEngine(
         {"synth": synth.PersistentSynth(synth.prepare(document), settings.voices)},
         settings.block_frames,
-        effects.prepare(graph, 48000),
+        effects.prepare(graph, 48000, audio=audio),
     )
     output = np.empty((settings.block_frames, 2))
     durations = []
@@ -480,6 +537,7 @@ def main(settings: Settings) -> None:
     print(
         f"callbacks={callbacks} block={settings.block_frames} voices={settings.voices} "
         f"effect_actions={settings.effect_actions} granular={settings.granular}"
+        f" convolution={settings.convolution}"
         f" delay={settings.delay}"
         f" damping_hz={settings.damping_hz}"
         f" compressor={settings.compressor}"

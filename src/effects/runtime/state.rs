@@ -59,6 +59,37 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                19 => {
+                    let convolution = self.convolutions[node]
+                        .as_ref()
+                        .expect("prepared convolution");
+                    let state = PyDict::new(py);
+                    state.set_item("input_block", rows(convolution.input.view()))?;
+                    state.set_item("output_block", rows(convolution.output.view()))?;
+                    state.set_item("overlap", rows(convolution.overlap.view()))?;
+                    for (name, imaginary) in [("spectra_real", false), ("spectra_imag", true)] {
+                        let cube = convolution
+                            .spectra
+                            .outer_iter()
+                            .map(|m| {
+                                m.rows()
+                                    .into_iter()
+                                    .map(|r| {
+                                        r.iter()
+                                            .map(|v| if imaginary { v.im } else { v.re })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .collect::<Vec<_>>();
+                        state.set_item(name, cube)?;
+                    }
+                    state.set_item("fill", convolution.fill)?;
+                    state.set_item("slot", convolution.slot)?;
+                    state.set_item("input_ended", convolution.input_ended)?;
+                    state.set_item("tail_remaining", convolution.tail_remaining)?;
+                    value.set_item("convolution", state)?;
+                }
                 18 => {
                     let resonant = self.resonants[node]
                         .as_ref()
@@ -320,6 +351,61 @@ impl EffectRuntime {
                 }
             }
             match kind {
+                19 => {
+                    let state = field(value, "convolution")?;
+                    let state = state.cast::<PyDict>()?;
+                    let convolution = snapshot.convolutions[node]
+                        .as_mut()
+                        .expect("prepared convolution");
+                    restore_rows(
+                        convolution.input.view_mut(),
+                        field(state, "input_block")?.extract()?,
+                    )?;
+                    restore_rows(
+                        convolution.output.view_mut(),
+                        field(state, "output_block")?.extract()?,
+                    )?;
+                    restore_rows(
+                        convolution.overlap.view_mut(),
+                        field(state, "overlap")?.extract()?,
+                    )?;
+                    for (name, imaginary) in [("spectra_real", false), ("spectra_imag", true)] {
+                        let cube: Vec<Vec<Vec<f64>>> = field(state, name)?.extract()?;
+                        let (parts, inputs, bins) = convolution.spectra.dim();
+                        if cube.len() != parts
+                            || cube.iter().any(|m| {
+                                m.len() != inputs
+                                    || m.iter().any(|r| {
+                                        r.len() != bins
+                                            || r.iter().any(|v| !v.is_finite())
+                                            || (imaginary && (r[0] != 0.0 || r[bins - 1] != 0.0))
+                                    })
+                            })
+                        {
+                            return Err(PyValueError::new_err(
+                                "Invalid convolution spectrum history",
+                            ));
+                        }
+                        for ((p, i, b), value) in convolution.spectra.indexed_iter_mut() {
+                            if imaginary {
+                                value.im = cube[p][i][b];
+                            } else {
+                                value.re = cube[p][i][b];
+                            }
+                        }
+                    }
+                    convolution.fill = field(state, "fill")?.extract()?;
+                    convolution.slot = field(state, "slot")?.extract()?;
+                    convolution.input_ended = field(state, "input_ended")?.extract()?;
+                    convolution.tail_remaining = field(state, "tail_remaining")?.extract()?;
+                    if convolution.fill >= convolution.partition
+                        || convolution.slot >= convolution.spectra.dim().0
+                        || convolution.tail_remaining > convolution.tail_frames
+                        || (!convolution.input_ended && convolution.tail_remaining != 0)
+                    {
+                        return Err(PyValueError::new_err("Invalid convolution partition clock"));
+                    }
+                }
                 18 => {
                     let state = field(value, "resonant_delay")?;
                     let state = state.cast::<PyDict>()?;

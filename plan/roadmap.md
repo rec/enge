@@ -1,6 +1,6 @@
 # Roadmap
 
-Reconciled with local implementation on 2026-11-05. Current code and tests take
+Reconciled with local implementation on 2026-11-12. Current code and tests take
 precedence over historical proposals in the other plans.
 
 ## Completed foundations
@@ -14,8 +14,10 @@ precedence over historical proposals in the other plans.
 - Native live mixing, bounded effect queues and sampler control/filter/generator
   integration exist. The tested Rust callback paths pass the heap-allocation
   gate; device deadlines and native host integration are separate boundaries.
-- Effects include gain, filters, multiplication, granulation, soft clip,
-  tap/modulated delay and optional Rubber Band adapters.
+- Effects include gain, filters, multiplication, granulation, oversampled
+  waveshaping, delay/chorus/flanger, compression, reverb, phaser, utility routing,
+  mixing, followers, gates/expanders, resonant delay, convolution and optional
+  Rubber Band adapters.
   Graph processors use shared enveLFO bindings/routes in NumPy and native live
   execution, with generator snapshots and caller-owned beat clocks; see
   [effect modulation](../doc/effect-modulation.md).
@@ -64,9 +66,25 @@ audit are deferred explicitly in the closeout record. They are not claimed as
 implemented or hardware-qualified. Historical requirements in the Yamaha plan
 remain reference material for a separately requested future task.
 
+## Active effects catalogue
+
+The user selected the entire [new-effects.md](new-effects.md) catalogue,
+including its spectral appendix, on 2026-11-06. Effects are no longer deferred.
+The first six priority profiles, utility/routing families and additional delay
+profiles through convolution are implemented and verified. Convolution uses
+fixed caller-supplied IRs, explicit matrix kernels and prepared uniform FFT
+partitions. See [effects-progress.md](effects-progress.md) for per-profile
+contracts, evidence and the remaining catalogue.
+
+The next slices are the approved triangle-fold curve in the existing
+oversampled Waveshaper, tape/tube-style mathematical coloration, and bitcrushing
+with sample-rate reduction. The broader spectral, spatial, capture, filtering
+and analysis families remain in scope but unfinished. Per-instrument effect
+attachments and post-effect taps also remain unfinished. Tested native callback
+storage bounds do not establish device deadlines or a complete native audio host.
+
 ## Deferred choices
 
-- Select further effects from [new-effects.md](new-effects.md).
 - Choose sound-quality improvements or new synthesis from
   [new-engines.md](new-engines.md). Its architectural proposals are not approved.
 - PyTorch work remains excluded.

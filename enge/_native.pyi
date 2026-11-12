@@ -2,6 +2,7 @@ from typing import Literal
 
 import numpy as np
 
+from .convolution import NativeConvolutionPlan
 from .effect_controls import EffectControlPlan
 
 class SynthRuntimeSnapshot: ...
@@ -53,6 +54,7 @@ class EffectRuntime:
         tail_thresholds: list[float],
         port_names: list[list[str]],
         control_plan: EffectControlPlan,
+        impulses: NativeConvolutionPlan,
         rate: float,
     ) -> None: ...
     def render_frame(
@@ -96,6 +98,7 @@ class LiveRuntime:
         tail_thresholds: list[float],
         port_names: list[list[str]],
         control_plan: EffectControlPlan,
+        impulses: NativeConvolutionPlan,
         batch_capacity: int,
         input_routes: list[list[int]] | None = None,
     ) -> None: ...

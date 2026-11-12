@@ -1,6 +1,7 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
 pub(crate) mod controls;
+pub(crate) mod convolution;
 mod dynamics;
 mod follower;
 mod highpass;
@@ -66,6 +67,7 @@ pub(crate) struct EffectRuntime {
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
+    convolutions: Vec<Option<convolution::Convolution>>,
     matrices: Vec<Option<RoutingMatrix>>,
     mixers: Vec<Option<Mixer>>,
     crossfader_laws: Vec<Option<bool>>,
@@ -128,6 +130,7 @@ pub(crate) struct EffectSnapshot {
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
+    convolutions: Vec<Option<convolution::Convolution>>,
     mixers: Vec<Option<Mixer>>,
     gates: Vec<Option<dynamics::Gate>>,
     expansion_gains: Vec<f64>,
@@ -235,6 +238,7 @@ impl EffectRuntime {
         tail_thresholds: Vec<f64>,
         port_names: Vec<Vec<String>>,
         control_plan: controls::Definitions,
+        impulses: convolution::Definitions<'_>,
         rate: f64,
     ) -> PyResult<Self> {
         let inputs = widths
@@ -256,6 +260,7 @@ impl EffectRuntime {
             tail_thresholds,
             port_names,
             control_plan,
+            impulses,
             vec![vec![-2]; inputs],
             1,
             BATCH_ACTIONS,
@@ -346,6 +351,7 @@ impl EffectRuntime {
         tail_thresholds: Vec<f64>,
         port_names: Vec<Vec<String>>,
         control_plan: controls::Definitions,
+        impulses: convolution::Definitions<'_>,
         input_routes: Vec<Vec<i64>>,
         maximum_block_frames: usize,
         action_capacity: usize,
@@ -355,7 +361,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 18)
+        if kinds.iter().any(|v| *v > 19)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -403,6 +409,22 @@ impl EffectRuntime {
         {
             return Err(PyValueError::new_err("Invalid live effect graph"));
         }
+        for (node, kind) in kinds.iter().enumerate() {
+            if *kind == 19 {
+                let values = parameters.as_array();
+                let frames = values[[node, 0]] as usize;
+                if values[[node, 0]] != frames as f64
+                    || !frames.is_power_of_two()
+                    || frames.checked_mul(2).is_none()
+                    || values[[node, 1]] != 1.0
+                    || values[[node, 2]] != 1.0
+                {
+                    return Err(PyValueError::new_err(
+                        "Invalid convolution partition profile",
+                    ));
+                }
+            }
+        }
         let sources = sources.as_array().to_owned();
         for node in 0..nodes {
             let names = &port_names[node];
@@ -446,7 +468,7 @@ impl EffectRuntime {
                     if !matches!(widths[source as usize], 1 | 2) || widths[node + inputs] != 2 {
                         return Err(PyValueError::new_err("Invalid reverb channel widths"));
                     }
-                } else if !(matches!(kinds[node], 11 | 14)
+                } else if !(matches!(kinds[node], 11 | 14 | 19)
                     || matches!(kinds[node], 7 | 15 | 16) && port == 1)
                     && widths[source as usize] != widths[node + inputs]
                 {
@@ -506,10 +528,12 @@ impl EffectRuntime {
                 }
             }
             alignment.push(delays);
-            latencies[node + inputs] =
-                arrival
-                    .checked_add(if kinds[node] == 4 { 48 } else { 0 })
-                    .ok_or_else(|| PyValueError::new_err("Effect latency overflow"))?;
+            latencies[node + inputs] = arrival
+                .checked_add(intrinsic_latency(
+                    kinds[node],
+                    parameters.as_array().row(node),
+                ))
+                .ok_or_else(|| PyValueError::new_err("Effect latency overflow"))?;
             if kinds[node] == 4 {
                 let values = parameters.as_array();
                 if parameters.shape()[1] < 71
@@ -560,6 +584,27 @@ impl EffectRuntime {
         let parameters = parameters.as_array().to_owned();
         let controls =
             controls::Controls::new(control_plan, &kinds, &latencies, inputs, parameters.view())?;
+        let mut convolutions = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut fft_planner = realfft::RealFftPlanner::new();
+        for (node, kernels) in impulses {
+            if node >= nodes || kinds[node] != 19 || convolutions[node].is_some() {
+                return Err(PyValueError::new_err("Invalid convolution setup node"));
+            }
+            convolutions[node] = Some(convolution::Convolution::new(
+                &mut fft_planner,
+                parameters[[node, 0]] as usize,
+                widths[sources[[node, 0]] as usize],
+                widths[node + inputs],
+                kernels,
+            )?);
+        }
+        if kinds
+            .iter()
+            .enumerate()
+            .any(|(node, kind)| *kind == 19 && convolutions[node].is_none())
+        {
+            return Err(PyValueError::new_err("Missing convolution impulse kernels"));
+        }
         let mut gates = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             if kinds[node] == 15 {
@@ -907,10 +952,11 @@ impl EffectRuntime {
         }
         let control_delays = (0..nodes)
             .map(|node| {
-                let arrival = latencies[node + inputs] - if kinds[node] == 4 { 48 } else { 0 };
+                let arrival =
+                    latencies[node + inputs] - intrinsic_latency(kinds[node], parameters.row(node));
                 (0..parameters.ncols())
                     .map(|parameter| {
-                        let dynamic = kinds[node] != 11
+                        let dynamic = !matches!(kinds[node], 11 | 19)
                             && ((!matches!(kinds[node], 12..=14) && matches!(parameter, 1 | 2))
                                 || match kinds[node] {
                                     0 => parameter == 0,
@@ -978,6 +1024,7 @@ impl EffectRuntime {
             phasers,
             highpasses,
             resonants,
+            convolutions,
             matrices,
             mixers,
             crossfader_laws,
@@ -1160,6 +1207,7 @@ impl EffectRuntime {
                 ));
             }
             let mut waveshaper_drained = false;
+            let mut convolution_drained = false;
             for channel in 0..channels {
                 let value = if self.kinds[node] == 8 && self.widths[first] == 1 {
                     self.port_values[[node, 0, 0]] / std::f64::consts::SQRT_2
@@ -1217,6 +1265,25 @@ impl EffectRuntime {
                             self.resolved[[node, 4]],
                             self.port_ended[[node, 0]],
                         )?;
+                }
+                19 => {
+                    let convolution = self.convolutions[node]
+                        .as_mut()
+                        .expect("prepared convolution");
+                    if self.resolved[[node, 0]] != convolution.partition as f64
+                        || self.resolved[[node, 1]] != 1.0
+                        || self.resolved[[node, 2]] != 1.0
+                    {
+                        return Err(NativeError::Message("Convolution configuration is fixed"));
+                    }
+                    convolution_drained = convolution.process(
+                        self.port_values
+                            .index_axis(Axis(0), node)
+                            .row(0)
+                            .slice_axis(Axis(0), numpy::ndarray::Slice::from(..self.widths[first])),
+                        &mut self.wet[..channels],
+                        self.port_ended[[node, 0]],
+                    )?;
                 }
                 18 => self.resonants[node]
                     .as_mut()
@@ -1389,6 +1456,7 @@ impl EffectRuntime {
                             .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
                         4 => waveshaper_drained,
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
+                        19 => convolution_drained,
                         18 => self.resonants[node]
                             .as_ref()
                             .is_some_and(|r| r.drained(self.tail_thresholds[node])),
@@ -1481,6 +1549,9 @@ impl EffectRuntime {
         }
         if self.kinds[node] == 11 {
             return Err(NativeError::Message("Routing matrices have no actions"));
+        }
+        if self.kinds[node] == 19 {
+            return Err(NativeError::Message("Convolution is always wet"));
         }
         if kind == 1 {
             if self.kinds[node] != 3
@@ -1850,6 +1921,7 @@ impl EffectRuntime {
             phasers: self.phasers.clone(),
             highpasses: self.highpasses.clone(),
             resonants: self.resonants.clone(),
+            convolutions: self.convolutions.clone(),
             mixers: self.mixers.clone(),
             gates: self.gates.clone(),
             expansion_gains: self.expansion_gains.clone(),
@@ -1886,6 +1958,15 @@ impl EffectRuntime {
                 .mixers
                 .iter()
                 .zip(&snapshot.mixers)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
+            || self
+                .convolutions
+                .iter()
+                .zip(&snapshot.convolutions)
                 .any(|(a, b)| match (a, b) {
                     (Some(a), Some(b)) => !a.same_capacity(b),
                     (None, None) => false,
@@ -2024,6 +2105,7 @@ impl EffectRuntime {
         self.phasers.clone_from(&snapshot.phasers);
         self.highpasses.clone_from(&snapshot.highpasses);
         self.resonants.clone_from(&snapshot.resonants);
+        self.convolutions.clone_from(&snapshot.convolutions);
         self.mixers.clone_from(&snapshot.mixers);
         self.gates.clone_from(&snapshot.gates);
         self.expansion_gains.clone_from(&snapshot.expansion_gains);
@@ -2082,6 +2164,14 @@ impl LiveTapDelay {
                 head.gain = (head.gain - head.step).max(0.0);
             }
         }
+    }
+}
+
+fn intrinsic_latency(kind: u8, parameters: numpy::ndarray::ArrayView1<'_, f64>) -> usize {
+    match kind {
+        4 => 48,
+        19 => parameters[0] as usize,
+        _ => 0,
     }
 }
 

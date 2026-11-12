@@ -4,6 +4,7 @@ mod amplitude;
 mod compressor;
 mod effects;
 mod error;
+mod fft;
 mod filters;
 mod fm;
 #[cfg(feature = "allocation-audit")]
