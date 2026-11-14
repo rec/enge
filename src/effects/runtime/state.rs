@@ -59,6 +59,15 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                22 => {
+                    let limiter = self.limiters[node].as_ref().expect("prepared limiter");
+                    let state = PyDict::new(py);
+                    state.set_item("history", rows(limiter.history.view()))?;
+                    state.set_item("write", limiter.write)?;
+                    state.set_item("remaining", limiter.remaining)?;
+                    state.set_item("gain", limiter.gain)?;
+                    value.set_item("limiter", state)?;
+                }
                 21 => {
                     let octave = self.octaves[node]
                         .as_ref()
@@ -371,6 +380,26 @@ impl EffectRuntime {
                 }
             }
             match kind {
+                22 => {
+                    let state = field(value, "limiter")?;
+                    let state = state.cast::<PyDict>()?;
+                    let limiter = snapshot.limiters[node].as_mut().expect("prepared limiter");
+                    restore_rows(
+                        limiter.history.view_mut(),
+                        field(state, "history")?.extract()?,
+                    )?;
+                    limiter.write = field(state, "write")?.extract()?;
+                    limiter.remaining = field(state, "remaining")?.extract()?;
+                    limiter.gain = field(state, "gain")?.extract()?;
+                    if limiter.write >= limiter.history.nrows()
+                        || limiter.remaining >= limiter.history.nrows()
+                        || !limiter.gain.is_finite()
+                        || !(0.0..=1.0).contains(&limiter.gain)
+                    {
+                        return Err(PyValueError::new_err("Invalid limiter snapshot"));
+                    }
+                    limiter.rebuild_queue();
+                }
                 21 => {
                     let state = field(value, "octave")?;
                     let state = state.cast::<PyDict>()?;

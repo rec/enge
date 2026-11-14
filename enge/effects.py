@@ -23,6 +23,7 @@ from . import (
     filters,
     follower,
     highpass,
+    limiter,
     mixer,
     octave,
     phaser,
@@ -36,6 +37,7 @@ from .convolution import ConvolutionState
 from .dynamics import GateState
 from .effect_controls import EffectControlPlan
 from .highpass import HighpassState
+from .limiter import LimiterState
 from .mixer import MixerState
 from .octave import OctaveState
 from .phaser import PhaserState
@@ -151,6 +153,7 @@ class ProcessorState(BaseModel):
     convolution: ConvolutionState | None = None
     bitcrusher: BitcrusherState | None = None
     octave: OctaveState | None = None
+    limiter: LimiterState | None = None
     expansion_gain: float = Field(default=1.0, ge=0, le=1)
     follower_level: float = Field(default=0.0, ge=0)
     route_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
@@ -235,7 +238,7 @@ class OfflineEffects:
             )
             for p in definition.definition.processors
         }
-        latencies = definition.definition.latencies()
+        latencies = definition.definition.latencies(definition.sample_rate)
         inputs = {i.name: i.channels for i in definition.definition.inputs}
         connections = {
             (c.processor, c.port): c.source for c in definition.definition.connections
@@ -261,7 +264,7 @@ class OfflineEffects:
                 for p, s in ports.items()
             }
             arrival = latencies[processor.name] - audio_effects.processor_latency(
-                processor
+                processor, definition.sample_rate
             )
             self.processors[processor.name].alignment = {
                 p: AlignmentState(
@@ -303,14 +306,13 @@ class OfflineEffects:
             ):
                 index = 2 if name == "bypass" else _native_parameter(processor, name)
                 modulated = (processor.name, name) in parameters
-                frames = (
-                    (0 if modulated else arrival)
-                    + (24 if name in {"drive", "bias"} else 48)
-                    if isinstance(processor, audio_effects.Waveshaper)
-                    else 0
-                    if modulated
-                    else arrival
-                )
+                frames = 0 if modulated else arrival
+                if isinstance(processor, audio_effects.Waveshaper):
+                    frames += 24 if name in {"drive", "bias"} else 48
+                elif isinstance(processor, audio_effects.Limiter):
+                    frames += audio_effects.processor_latency(
+                        processor, definition.sample_rate
+                    )
                 if modulated and arrival:
                     state.base_delays[str(index)] = ControlDelayState(
                         history=[value] * arrival
@@ -461,6 +463,18 @@ class OfflineEffects:
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
+            if isinstance(processor, audio_effects.Limiter):
+                state = snapshot.processors[processor.name].limiter
+                if state is None:
+                    raise EngineError("Missing limiter snapshot")
+                limiter.validate_state(
+                    state,
+                    audio_effects.processor_latency(
+                        processor, self.definition.sample_rate
+                    ),
+                    len(layouts[processor.name]),
+                )
+                continue
             if isinstance(processor, audio_effects.OctaveDivider):
                 state = snapshot.processors[processor.name].octave
                 if state is None:
@@ -799,6 +813,20 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.Limiter):
+            assert state.limiter is not None
+            dry, wet, drained = limiter.process(
+                state.limiter,
+                ports["input"],
+                self._value(processor, "ceiling_db", frame),
+                self._value(processor, "release_seconds", frame),
+                self.definition.sample_rate,
+                ended["input"],
+            )
+            mix = self._value(processor, "mix", frame) * self.delayed.get(
+                (processor.name, "bypass"), state.bypass.value(frame)
+            )
+            return _mix(dry, wet, mix), drained
         if isinstance(processor, audio_effects.OctaveDivider):
             assert state.octave is not None
             dry = ports["input"]
@@ -1479,7 +1507,7 @@ def prepare(
         latency_frames=(
             0
             if isinstance(definition.output, audio_effects.InputSource)
-            else definition.latencies()[definition.output.processor]
+            else definition.latencies(sample_rate)[definition.output.processor]
         ),
         tempo_map=tempo_map,
         audio=buffers,
@@ -1551,6 +1579,8 @@ def native_live_graph(
         if isinstance(p, (audio_effects.ModulatedDelay, audio_effects.Phaser))
         else 4
         if isinstance(p, (audio_effects.Highpass, audio_effects.Bitcrusher))
+        else 5
+        if isinstance(p, audio_effects.Limiter)
         else 3
         for p in ordered
     ]
@@ -1601,7 +1631,14 @@ def native_live_graph(
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.OctaveDivider):
+        if isinstance(processor, audio_effects.Limiter):
+            kinds.append(22)
+            parameters[node, [0, 3, 4]] = [
+                processor.ceiling_db,
+                processor.release_seconds,
+                audio_effects.processor_latency(processor, definition.sample_rate),
+            ]
+        elif isinstance(processor, audio_effects.OctaveDivider):
             kinds.append(21)
             parameters[node, [0, 3, 4, 5]] = [
                 processor.threshold,
@@ -2083,7 +2120,11 @@ def _initial_state(
         else {"mix": processor.mix}
     )
     filter_states: list[filters.FilterState] = []
-    if isinstance(processor, audio_effects.OctaveDivider):
+    if isinstance(processor, audio_effects.Limiter):
+        values.update(
+            ceiling_db=processor.ceiling_db, release_seconds=processor.release_seconds
+        )
+    elif isinstance(processor, audio_effects.OctaveDivider):
         values.update(
             threshold=processor.threshold,
             attack_seconds=processor.attack_seconds,
@@ -2189,6 +2230,11 @@ def _initial_state(
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        limiter=limiter.initial_state(
+            audio_effects.processor_latency(processor, sample_rate), channels
+        )
+        if isinstance(processor, audio_effects.Limiter)
+        else None,
         octave=octave.initial_state(channels)
         if isinstance(processor, audio_effects.OctaveDivider)
         else None,
@@ -2439,6 +2485,8 @@ def _reverb_coefficients(
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
     if name == "mix":
         return 1
+    if isinstance(processor, audio_effects.Limiter):
+        return {"ceiling_db": 0, "release_seconds": 3}[name]
     if isinstance(processor, audio_effects.OctaveDivider):
         return {"threshold": 0, "attack_seconds": 3, "release_seconds": 4}[name]
     if isinstance(processor, audio_effects.Bitcrusher):

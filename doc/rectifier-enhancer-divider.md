@@ -92,6 +92,7 @@ TMPDIR="$PWD/build/tmp" uv sync --locked --no-editable
 TMPDIR="$PWD/build/tmp" uv run --with maturin --no-sync maturin build \
   --release --locked --features allocation-audit --out build/wheels
 uv pip install --no-deps --reinstall build/wheels/enge-*.whl
+unzip -o -j build/wheels/enge-*.whl 'enge/_native*' -d enge
 TMPDIR="$PWD/build/tmp" uv run --no-sync python -m pytest \
   --require-callback-no-allocations \
   --basetemp=build/verification/n4-full-temp \
@@ -99,6 +100,10 @@ TMPDIR="$PWD/build/tmp" uv run --no-sync python -m pytest \
 uv run --no-sync python scripts/summarize_callback_audit.py \
   --reports build/verification/n4-full.xml
 ```
+
+The extraction refreshes the checkout's generated native extension as well as
+the installed wheel. `python -m pytest` imports the checkout, including its
+development tools; a stale checkout binary must not shadow the new build.
 
 On an ordinary build without `allocation-audit`, the existing CPU benchmark
 accepts `--waveshaper --waveshaper-curve half_wave`, `full_wave`, or

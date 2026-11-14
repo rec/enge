@@ -6,6 +6,7 @@ pub(crate) mod convolution;
 mod dynamics;
 mod follower;
 mod highpass;
+mod limiter;
 mod matrix;
 mod mixer;
 mod octave;
@@ -72,6 +73,7 @@ pub(crate) struct EffectRuntime {
     convolutions: Vec<Option<convolution::Convolution>>,
     bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
     octaves: Vec<Option<octave::Octave>>,
+    limiters: Vec<Option<limiter::Limiter>>,
     matrices: Vec<Option<RoutingMatrix>>,
     mixers: Vec<Option<Mixer>>,
     crossfader_laws: Vec<Option<bool>>,
@@ -137,6 +139,7 @@ pub(crate) struct EffectSnapshot {
     convolutions: Vec<Option<convolution::Convolution>>,
     bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
     octaves: Vec<Option<octave::Octave>>,
+    limiters: Vec<Option<limiter::Limiter>>,
     mixers: Vec<Option<Mixer>>,
     gates: Vec<Option<dynamics::Gate>>,
     expansion_gains: Vec<f64>,
@@ -367,7 +370,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 21)
+        if kinds.iter().any(|v| *v > 22)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -508,6 +511,7 @@ impl EffectRuntime {
         let mut waveshapers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut bitcrushers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut octaves = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut limiters = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             let ports = port_names[node].len();
             let audio_arrival = (0..ports)
@@ -536,6 +540,29 @@ impl EffectRuntime {
                 }
             }
             alignment.push(delays);
+            if kinds[node] == 22 {
+                let values = parameters.as_array();
+                if parameters.shape()[1] < 5
+                    || values[[node, 0]] > 0.0
+                    || values[[node, 3]] < 0.0
+                    || values[[node, 4]] < 1.0
+                    || values[[node, 4]].fract() != 0.0
+                    || values[[node, 4]] >= isize::MAX as f64
+                {
+                    return Err(PyValueError::new_err("Invalid limiter profile"));
+                }
+                let frames = values[[node, 4]] as usize;
+                if frames
+                    .checked_add(1)
+                    .and_then(|n| n.checked_mul(widths[node + inputs]))
+                    .is_none_or(|n| n > isize::MAX as usize / size_of::<f64>())
+                {
+                    return Err(PyValueError::new_err(
+                        "Limiter history exceeds native storage",
+                    ));
+                }
+                limiters[node] = Some(limiter::Limiter::new(frames, widths[node + inputs]));
+            }
             if kinds[node] == 21 {
                 let values = parameters.as_array();
                 if parameters.shape()[1] < 6
@@ -1028,6 +1055,7 @@ impl EffectRuntime {
                                     18 => parameter == 3,
                                     20 => matches!(parameter, 0 | 3),
                                     21 => matches!(parameter, 0 | 3 | 4),
+                                    22 => matches!(parameter, 0 | 3),
                                     _ => false,
                                 });
                         let modulated = controls
@@ -1037,6 +1065,8 @@ impl EffectRuntime {
                         let frames = (if modulated { 0 } else { arrival })
                             + if kinds[node] == 4 {
                                 if matches!(parameter, 0 | 3) { 24 } else { 48 }
+                            } else if kinds[node] == 22 {
+                                intrinsic_latency(kinds[node], parameters.row(node))
                             } else {
                                 0
                             };
@@ -1068,6 +1098,7 @@ impl EffectRuntime {
             convolutions,
             bitcrushers,
             octaves,
+            limiters,
             matrices,
             mixers,
             crossfader_laws,
@@ -1253,6 +1284,7 @@ impl EffectRuntime {
             let mut convolution_drained = false;
             let mut bitcrusher_drained = false;
             let mut octave_drained = false;
+            let mut limiter_drained = false;
             for channel in 0..channels {
                 let value = if self.kinds[node] == 8 && self.widths[first] == 1 {
                     self.port_values[[node, 0, 0]] / std::f64::consts::SQRT_2
@@ -1308,6 +1340,19 @@ impl EffectRuntime {
                             self.resolved[[node, 0]],
                             self.resolved[[node, 3]],
                             self.resolved[[node, 4]],
+                            self.port_ended[[node, 0]],
+                        )?;
+                }
+                22 => {
+                    limiter_drained = self.limiters[node]
+                        .as_mut()
+                        .expect("prepared limiter")
+                        .process(
+                            &mut self.dry[..channels],
+                            &mut self.wet[..channels],
+                            self.resolved[[node, 0]],
+                            self.resolved[[node, 3]],
+                            self.rate,
                             self.port_ended[[node, 0]],
                         )?;
                 }
@@ -1532,6 +1577,7 @@ impl EffectRuntime {
                         19 => convolution_drained,
                         20 => bitcrusher_drained,
                         21 => octave_drained,
+                        22 => limiter_drained,
                         18 => self.resonants[node]
                             .as_ref()
                             .is_some_and(|r| r.drained(self.tail_thresholds[node])),
@@ -1655,6 +1701,11 @@ impl EffectRuntime {
         if self.kinds[node] == 21 && parameter > 4 {
             return Err(NativeError::Message(
                 "Invalid octave divider fixed-field action",
+            ));
+        }
+        if self.kinds[node] == 22 && parameter > 3 {
+            return Err(NativeError::Message(
+                "Invalid limiter fixed-lookahead action",
             ));
         }
         if self.kinds[node] == 20
@@ -2016,6 +2067,7 @@ impl EffectRuntime {
             convolutions: self.convolutions.clone(),
             bitcrushers: self.bitcrushers.clone(),
             octaves: self.octaves.clone(),
+            limiters: self.limiters.clone(),
             mixers: self.mixers.clone(),
             gates: self.gates.clone(),
             expansion_gains: self.expansion_gains.clone(),
@@ -2054,6 +2106,15 @@ impl EffectRuntime {
                 .zip(&snapshot.mixers)
                 .any(|(a, b)| match (a, b) {
                     (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
+            || self
+                .limiters
+                .iter()
+                .zip(&snapshot.limiters)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => a.history.raw_dim() != b.history.raw_dim(),
                     (None, None) => false,
                     _ => true,
                 })
@@ -2202,6 +2263,7 @@ impl EffectRuntime {
         self.convolutions.clone_from(&snapshot.convolutions);
         self.bitcrushers.clone_from(&snapshot.bitcrushers);
         self.octaves.clone_from(&snapshot.octaves);
+        self.limiters.clone_from(&snapshot.limiters);
         self.mixers.clone_from(&snapshot.mixers);
         self.gates.clone_from(&snapshot.gates);
         self.expansion_gains.clone_from(&snapshot.expansion_gains);
@@ -2267,6 +2329,7 @@ fn intrinsic_latency(kind: u8, parameters: numpy::ndarray::ArrayView1<'_, f64>) 
     match kind {
         4 => 48,
         19 => parameters[0] as usize,
+        22 => parameters[4] as usize,
         _ => 0,
     }
 }

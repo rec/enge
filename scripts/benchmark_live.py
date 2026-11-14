@@ -34,7 +34,7 @@ class Settings(BaseModel):
     reverb: bool = False
     waveshaper: bool = False
     waveshaper_curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"] = "soft"
-    nonlinear: Literal["none", "octave", "enhancer"] = "none"
+    nonlinear: Literal["none", "octave", "enhancer", "limiter"] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
     phaser: bool = False
@@ -185,6 +185,8 @@ def main(settings: Settings) -> None:
         processors.append(audio_effects.Bitcrusher(name="crush", bits=8, hold_frames=1))
     if settings.nonlinear == "octave":
         processors.append(audio_effects.OctaveDivider(name="octave"))
+    if settings.nonlinear == "limiter":
+        processors.append(audio_effects.Limiter(name="limit"))
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(
