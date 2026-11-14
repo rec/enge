@@ -24,6 +24,8 @@ use envelfo_core::{lfo, time::Time};
 use numpy::PyReadonlyArray2;
 use pyo3::{exceptions::PyValueError, prelude::*};
 
+type EnvelopeApproachInput = (usize, bool, usize, (f64, f64, f64, f64, f64, f64));
+
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub(crate) struct GeneratorBank {
@@ -548,10 +550,7 @@ impl GeneratorBank {
         })
     }
 
-    fn set_envelope_approaches(
-        &mut self,
-        stages: Vec<(usize, bool, usize, (f64, f64, f64, f64, f64, f64))>,
-    ) -> PyResult<()> {
+    fn set_envelope_approaches(&mut self, stages: Vec<EnvelopeApproachInput>) -> PyResult<()> {
         if self.patch_host.is_some() {
             return Err(PyValueError::new_err(
                 "Envelope approaches must be configured before Patch preparation",
