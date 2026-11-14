@@ -59,6 +59,17 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                21 => {
+                    let octave = self.octaves[node]
+                        .as_ref()
+                        .expect("prepared octave divider");
+                    let state = PyDict::new(py);
+                    state.set_item("levels", &octave.levels)?;
+                    state.set_item("armed", &octave.armed)?;
+                    state.set_item("positive", &octave.positive)?;
+                    state.set_item("active", &octave.active)?;
+                    value.set_item("octave", state)?;
+                }
                 20 => {
                     let crusher = self.bitcrushers[node]
                         .as_ref()
@@ -360,6 +371,29 @@ impl EffectRuntime {
                 }
             }
             match kind {
+                21 => {
+                    let state = field(value, "octave")?;
+                    let state = state.cast::<PyDict>()?;
+                    let octave = snapshot.octaves[node]
+                        .as_mut()
+                        .expect("prepared octave divider");
+                    let levels: Vec<f64> = field(state, "levels")?.extract()?;
+                    let armed: Vec<bool> = field(state, "armed")?.extract()?;
+                    let positive: Vec<bool> = field(state, "positive")?.extract()?;
+                    let active: Vec<bool> = field(state, "active")?.extract()?;
+                    if levels.len() != octave.levels.len()
+                        || armed.len() != levels.len()
+                        || positive.len() != levels.len()
+                        || active.len() != levels.len()
+                        || levels.iter().any(|v| !v.is_finite() || *v < 0.0)
+                    {
+                        return Err(PyValueError::new_err("Invalid octave divider snapshot"));
+                    }
+                    octave.levels = levels;
+                    octave.armed = armed;
+                    octave.positive = positive;
+                    octave.active = active;
+                }
                 20 => {
                     let state = field(value, "bitcrusher")?;
                     let state = state.cast::<PyDict>()?;

@@ -8,7 +8,7 @@ def waveshaper_audio(
     drive: float | np.ndarray = 2.0,
     bias: float | np.ndarray = 0.0,
     output_db: float | np.ndarray = 0.0,
-    curve: Literal["soft", "hard", "fold"] = "soft",
+    curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"] = "soft",
 ) -> np.ndarray:
     """Independent finite convolution oracle, including stage control timing."""
     n = np.arange(65)
@@ -41,6 +41,10 @@ def waveshaper_audio(
         values = np.clip(values, -1, 1) - np.clip(biases, -1, 1)
     elif curve == "soft":
         values = np.tanh(values) - np.tanh(biases)
+    elif curve == "half_wave":
+        values = (values + np.abs(values) - biases - np.abs(biases)) / 2
+    elif curve == "full_wave":
+        values = np.sqrt(values * values) - np.sqrt(biases * biases)
     else:
         bands = np.floor((values + 1) / 2)
         bias_bands = np.floor((biases + 1) / 2)

@@ -8,6 +8,7 @@ mod follower;
 mod highpass;
 mod matrix;
 mod mixer;
+mod octave;
 mod phaser;
 mod resonant;
 mod reverb;
@@ -70,6 +71,7 @@ pub(crate) struct EffectRuntime {
     resonants: Vec<Option<resonant::ResonantDelay>>,
     convolutions: Vec<Option<convolution::Convolution>>,
     bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
+    octaves: Vec<Option<octave::Octave>>,
     matrices: Vec<Option<RoutingMatrix>>,
     mixers: Vec<Option<Mixer>>,
     crossfader_laws: Vec<Option<bool>>,
@@ -134,6 +136,7 @@ pub(crate) struct EffectSnapshot {
     resonants: Vec<Option<resonant::ResonantDelay>>,
     convolutions: Vec<Option<convolution::Convolution>>,
     bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
+    octaves: Vec<Option<octave::Octave>>,
     mixers: Vec<Option<Mixer>>,
     gates: Vec<Option<dynamics::Gate>>,
     expansion_gains: Vec<f64>,
@@ -364,7 +367,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 20)
+        if kinds.iter().any(|v| *v > 21)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -375,7 +378,7 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14 | 17 | 18) {
+                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14 | 17 | 18 | 21) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -504,6 +507,7 @@ impl EffectRuntime {
         let mut alignment = Vec::with_capacity(nodes);
         let mut waveshapers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut bitcrushers = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut octaves = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             let ports = port_names[node].len();
             let audio_arrival = (0..ports)
@@ -532,6 +536,19 @@ impl EffectRuntime {
                 }
             }
             alignment.push(delays);
+            if kinds[node] == 21 {
+                let values = parameters.as_array();
+                if parameters.shape()[1] < 6
+                    || values[[node, 0]] <= 0.0
+                    || values[[node, 3]] < 0.0
+                    || values[[node, 4]] < 0.0
+                    || values[[node, 5]] <= 0.0
+                    || values[[node, 5]] >= tail_thresholds[node]
+                {
+                    return Err(PyValueError::new_err("Invalid octave divider profile"));
+                }
+                octaves[node] = Some(octave::Octave::new(widths[node + inputs]));
+            }
             if kinds[node] == 20 {
                 let values = parameters.as_array();
                 if parameters.shape()[1] < 4
@@ -554,7 +571,7 @@ impl EffectRuntime {
                 let values = parameters.as_array();
                 if parameters.shape()[1] < 71
                     || values[[node, 0]] <= 0.0
-                    || !matches!(values[[node, 5]], 0.0 | 1.0 | 2.0)
+                    || !matches!(values[[node, 5]], 0.0 | 1.0 | 2.0 | 3.0 | 4.0)
                 {
                     return Err(PyValueError::new_err("Invalid waveshaper profile"));
                 }
@@ -564,7 +581,9 @@ impl EffectRuntime {
                     match values[[node, 5]] {
                         0.0 => waveshaper::Curve::Soft,
                         1.0 => waveshaper::Curve::Hard,
-                        _ => waveshaper::Curve::Fold,
+                        2.0 => waveshaper::Curve::Fold,
+                        3.0 => waveshaper::Curve::HalfWave,
+                        _ => waveshaper::Curve::FullWave,
                     },
                     coefficients,
                 ));
@@ -1008,6 +1027,7 @@ impl EffectRuntime {
                                     16 => matches!(parameter, 0 | 3..=5),
                                     18 => parameter == 3,
                                     20 => matches!(parameter, 0 | 3),
+                                    21 => matches!(parameter, 0 | 3 | 4),
                                     _ => false,
                                 });
                         let modulated = controls
@@ -1047,6 +1067,7 @@ impl EffectRuntime {
             resonants,
             convolutions,
             bitcrushers,
+            octaves,
             matrices,
             mixers,
             crossfader_laws,
@@ -1231,6 +1252,7 @@ impl EffectRuntime {
             let mut waveshaper_drained = false;
             let mut convolution_drained = false;
             let mut bitcrusher_drained = false;
+            let mut octave_drained = false;
             for channel in 0..channels {
                 let value = if self.kinds[node] == 8 && self.widths[first] == 1 {
                     self.port_values[[node, 0, 0]] / std::f64::consts::SQRT_2
@@ -1286,6 +1308,23 @@ impl EffectRuntime {
                             self.resolved[[node, 0]],
                             self.resolved[[node, 3]],
                             self.resolved[[node, 4]],
+                            self.port_ended[[node, 0]],
+                        )?;
+                }
+                21 => {
+                    octave_drained = self.octaves[node]
+                        .as_mut()
+                        .expect("prepared octave divider")
+                        .process(
+                            &mut self.wet[..channels],
+                            [
+                                self.resolved[[node, 0]],
+                                self.resolved[[node, 3]],
+                                self.resolved[[node, 4]],
+                            ],
+                            self.rate,
+                            self.parameters[[node, 5]],
+                            self.tail_thresholds[node],
                             self.port_ended[[node, 0]],
                         )?;
                 }
@@ -1492,6 +1531,7 @@ impl EffectRuntime {
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
                         19 => convolution_drained,
                         20 => bitcrusher_drained,
+                        21 => octave_drained,
                         18 => self.resonants[node]
                             .as_ref()
                             .is_some_and(|r| r.drained(self.tail_thresholds[node])),
@@ -1610,6 +1650,11 @@ impl EffectRuntime {
         if self.kinds[node] == 4 && parameter > 4 {
             return Err(NativeError::Message(
                 "Invalid waveshaper fixed-curve action",
+            ));
+        }
+        if self.kinds[node] == 21 && parameter > 4 {
+            return Err(NativeError::Message(
+                "Invalid octave divider fixed-field action",
             ));
         }
         if self.kinds[node] == 20
@@ -1970,6 +2015,7 @@ impl EffectRuntime {
             resonants: self.resonants.clone(),
             convolutions: self.convolutions.clone(),
             bitcrushers: self.bitcrushers.clone(),
+            octaves: self.octaves.clone(),
             mixers: self.mixers.clone(),
             gates: self.gates.clone(),
             expansion_gains: self.expansion_gains.clone(),
@@ -2155,6 +2201,7 @@ impl EffectRuntime {
         self.resonants.clone_from(&snapshot.resonants);
         self.convolutions.clone_from(&snapshot.convolutions);
         self.bitcrushers.clone_from(&snapshot.bitcrushers);
+        self.octaves.clone_from(&snapshot.octaves);
         self.mixers.clone_from(&snapshot.mixers);
         self.gates.clone_from(&snapshot.gates);
         self.expansion_gains.clone_from(&snapshot.expansion_gains);

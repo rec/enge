@@ -33,7 +33,8 @@ class Settings(BaseModel):
     dynamics: Literal["none", "gate", "expander"] = "none"
     reverb: bool = False
     waveshaper: bool = False
-    waveshaper_curve: Literal["soft", "hard", "fold"] = "soft"
+    waveshaper_curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"] = "soft"
+    nonlinear: Literal["none", "octave", "enhancer"] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
     phaser: bool = False
@@ -181,9 +182,9 @@ def main(settings: Settings) -> None:
             ).processors
         )
     if settings.bitcrusher:
-        processors.append(
-            audio_effects.Bitcrusher(name="crush", bits=8, hold_frames=1)
-        )
+        processors.append(audio_effects.Bitcrusher(name="crush", bits=8, hold_frames=1))
+    if settings.nonlinear == "octave":
+        processors.append(audio_effects.OctaveDivider(name="octave"))
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(
@@ -194,6 +195,26 @@ def main(settings: Settings) -> None:
         processors,
         settings.block_frames,
     )
+    if settings.nonlinear == "enhancer":
+        enhancer = audio_effects.enhancer_graph(
+            "exciter", graph.scope, graph.inputs[0], settings.block_frames
+        )
+        graph = audio_effects.EffectGraph(
+            scope=graph.scope,
+            inputs=graph.inputs,
+            processors=[*graph.processors, *enhancer.processors],
+            connections=[
+                *graph.connections,
+                *[
+                    c.model_copy(update={"source": graph.output})
+                    if isinstance(c.source, audio_effects.InputSource)
+                    else c
+                    for c in enhancer.connections
+                ],
+            ],
+            output=enhancer.output,
+            maximum_block_frames=settings.block_frames,
+        )
     if settings.delay in {"multitap", "ensemble"}:
         if settings.delay == "ensemble":
             multi = audio_effects.modulated_multitap_graph(
@@ -572,6 +593,7 @@ def main(settings: Settings) -> None:
         f" reverb={settings.reverb}"
         f" waveshaper={settings.waveshaper}"
         f" curve={settings.waveshaper_curve} coloration={settings.coloration}"
+        f" nonlinear={settings.nonlinear}"
         f" bitcrusher={settings.bitcrusher}"
         f" phaser={settings.phaser}"
         f" highpass={settings.highpass}"

@@ -8,6 +8,8 @@ pub(super) enum Curve {
     Soft,
     Hard,
     Fold,
+    HalfWave,
+    FullWave,
 }
 
 impl Curve {
@@ -16,6 +18,8 @@ impl Curve {
             Self::Soft => value.tanh(),
             Self::Hard => value.clamp(-1.0, 1.0),
             Self::Fold => 1.0 - ((value + 1.0).rem_euclid(4.0) - 2.0).abs(),
+            Self::HalfWave => value.max(0.0),
+            Self::FullWave => value.abs(),
         }
     }
 }

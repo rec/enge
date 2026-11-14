@@ -78,7 +78,10 @@ contracts, evidence and the remaining catalogue.
 
 The nonlinear catalogue now includes the approved triangle-fold curve in the
 existing oversampled Waveshaper, tape/tube-style mathematical coloration, and
-deterministic bitcrushing with capture-latched sample-rate reduction. See
+deterministic bitcrushing with capture-latched sample-rate reduction. It also
+includes half/full-wave rectifiers, the high-band harmonic enhancer and the
+envelope-scaled octave divider. The next slice is the approved sample-peak
+look-ahead limiter. See [the N4 profiles](../doc/rectifier-enhancer-divider.md) and
 [the nonlinear profiles](../doc/nonlinear-effects.md) for their contracts and
 qualification. The broader spectral, spatial, capture, filtering
 and analysis families remain in scope but unfinished. Per-instrument effect

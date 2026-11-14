@@ -42,7 +42,7 @@ def process(
     drive: float,
     bias: float,
     output_gain_db: float,
-    curve: Literal["soft", "hard", "fold"],
+    curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"],
     coefficients: np.ndarray,
     ended: bool,
 ) -> tuple[np.ndarray, np.ndarray, bool]:
@@ -76,11 +76,17 @@ def process(
     return dry, wet, drained
 
 
-def _shape(values: np.ndarray, curve: Literal["soft", "hard", "fold"]) -> np.ndarray:
+def _shape(
+    values: np.ndarray, curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"]
+) -> np.ndarray:
     if curve == "hard":
         return np.clip(values, -1, 1)
     if curve == "soft":
         return np.tanh(values)
+    if curve == "half_wave":
+        return np.maximum(values, 0)
+    if curve == "full_wave":
+        return np.abs(values)
     return 1 - np.abs(np.remainder(values + 1, 4) - 2)
 
 

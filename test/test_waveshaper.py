@@ -12,10 +12,12 @@ from waveshaper_oracle import waveshaper_audio
 from enge import _native, effects
 
 
-@pytest.mark.parametrize("curve", ["soft", "hard", "fold"])
+@pytest.mark.parametrize("curve", ["soft", "hard", "fold", "half_wave", "full_wave"])
 @pytest.mark.parametrize("bias", [0.0, 0.4])
 def test_waveshaper_matches_independent_oversampling_and_drains(
-    tmp_path: Path, curve: Literal["soft", "hard", "fold"], bias: float
+    tmp_path: Path,
+    curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"],
+    bias: float,
 ) -> None:
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
