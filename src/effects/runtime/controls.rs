@@ -81,6 +81,7 @@ impl Controls {
                 || (kinds.get(*node) == Some(&20) && *parameter > 3)
                 || (kinds.get(*node) == Some(&21) && *parameter > 4)
                 || (kinds.get(*node) == Some(&22) && *parameter > 3)
+                || (kinds.get(*node) == Some(&23) && *parameter > 3)
                 || *parameter >= parameters.ncols()
                 || !minimum.is_finite()
                 || !maximum.is_finite()

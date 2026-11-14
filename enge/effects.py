@@ -9,7 +9,8 @@ from typing import Literal
 import numpy as np
 from envelfo import patch
 from pydantic import BaseModel, ConfigDict, Field
-from ufor import audio_effects, instrument_trace, modulation
+from ufor import audio_effects, envelfo, instrument_trace, modulation
+from ufor.approach import ExponentialApproach
 from ufor.control import TempoMap
 from ufor.oscillator import Waveform
 from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBinding
@@ -30,6 +31,7 @@ from . import (
     resonant,
     routing,
     synth,
+    transient,
     waveshaper,
 )
 from .bitcrusher import BitcrusherState
@@ -42,6 +44,7 @@ from .mixer import MixerState
 from .octave import OctaveState
 from .phaser import PhaserState
 from .synth import EngineError
+from .transient import TransientState
 from .waveshaper import WaveshaperState
 
 
@@ -154,6 +157,7 @@ class ProcessorState(BaseModel):
     bitcrusher: BitcrusherState | None = None
     octave: OctaveState | None = None
     limiter: LimiterState | None = None
+    transient: TransientState | None = None
     expansion_gain: float = Field(default=1.0, ge=0, le=1)
     follower_level: float = Field(default=0.0, ge=0)
     route_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
@@ -463,6 +467,12 @@ class OfflineEffects:
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
+            if isinstance(processor, audio_effects.TransientShaper):
+                state = snapshot.processors[processor.name].transient
+                if state is None:
+                    raise EngineError("Missing transient shaper snapshot")
+                TransientState.model_validate(state.model_dump())
+                continue
             if isinstance(processor, audio_effects.Limiter):
                 state = snapshot.processors[processor.name].limiter
                 if state is None:
@@ -813,6 +823,21 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.TransientShaper):
+            assert state.transient is not None
+            dry = ports["input"]
+            wet, drained = transient.process(
+                state.transient,
+                dry,
+                self._value(processor, "attack_gain_db", frame),
+                self._value(processor, "sustain_gain_db", frame),
+                self.definition.sample_rate,
+                ended["input"],
+            )
+            mix = self._value(processor, "mix", frame) * self.delayed.get(
+                (processor.name, "bypass"), state.bypass.value(frame)
+            )
+            return _mix(dry, wet, mix), drained
         if isinstance(processor, audio_effects.Limiter):
             assert state.limiter is not None
             dry, wet, drained = limiter.process(
@@ -1537,6 +1562,17 @@ def native_live_graph(
 ]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
+    pending: list[object] = list(graph.envelfos.values())
+    while pending:
+        body = pending.pop()
+        if isinstance(body, envelfo.Patch):
+            pending.extend(body.envelfos.values())
+        elif isinstance(body, envelfo.Envelope) and any(
+            isinstance(s, ExponentialApproach) for s in body.segments + body.release
+        ):
+            raise EngineError(
+                "Native effects need bounded shared storage for captured envelopes"
+            )
     processors = {p.name: p for p in graph.processors}
     ordered = [processors[n] for n in definition.order]
     input_indices = {p.name: i for i, p in enumerate(graph.inputs)}
@@ -1578,7 +1614,14 @@ def native_live_graph(
         else 7
         if isinstance(p, (audio_effects.ModulatedDelay, audio_effects.Phaser))
         else 4
-        if isinstance(p, (audio_effects.Highpass, audio_effects.Bitcrusher))
+        if isinstance(
+            p,
+            (
+                audio_effects.Highpass,
+                audio_effects.Bitcrusher,
+                audio_effects.TransientShaper,
+            ),
+        )
         else 5
         if isinstance(p, audio_effects.Limiter)
         else 3
@@ -1631,7 +1674,13 @@ def native_live_graph(
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.Limiter):
+        if isinstance(processor, audio_effects.TransientShaper):
+            kinds.append(23)
+            parameters[node, [0, 3]] = [
+                processor.attack_gain_db,
+                processor.sustain_gain_db,
+            ]
+        elif isinstance(processor, audio_effects.Limiter):
             kinds.append(22)
             parameters[node, [0, 3, 4]] = [
                 processor.ceiling_db,
@@ -2120,7 +2169,12 @@ def _initial_state(
         else {"mix": processor.mix}
     )
     filter_states: list[filters.FilterState] = []
-    if isinstance(processor, audio_effects.Limiter):
+    if isinstance(processor, audio_effects.TransientShaper):
+        values.update(
+            attack_gain_db=processor.attack_gain_db,
+            sustain_gain_db=processor.sustain_gain_db,
+        )
+    elif isinstance(processor, audio_effects.Limiter):
         values.update(
             ceiling_db=processor.ceiling_db, release_seconds=processor.release_seconds
         )
@@ -2230,6 +2284,9 @@ def _initial_state(
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        transient=TransientState()
+        if isinstance(processor, audio_effects.TransientShaper)
+        else None,
         limiter=limiter.initial_state(
             audio_effects.processor_latency(processor, sample_rate), channels
         )
@@ -2485,6 +2542,8 @@ def _reverb_coefficients(
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
     if name == "mix":
         return 1
+    if isinstance(processor, audio_effects.TransientShaper):
+        return {"attack_gain_db": 0, "sustain_gain_db": 3}[name]
     if isinstance(processor, audio_effects.Limiter):
         return {"ceiling_db": 0, "release_seconds": 3}[name]
     if isinstance(processor, audio_effects.OctaveDivider):

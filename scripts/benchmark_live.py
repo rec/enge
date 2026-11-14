@@ -34,7 +34,7 @@ class Settings(BaseModel):
     reverb: bool = False
     waveshaper: bool = False
     waveshaper_curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"] = "soft"
-    nonlinear: Literal["none", "octave", "enhancer", "limiter"] = "none"
+    nonlinear: Literal["none", "octave", "enhancer", "limiter", "transient"] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
     phaser: bool = False
@@ -187,6 +187,12 @@ def main(settings: Settings) -> None:
         processors.append(audio_effects.OctaveDivider(name="octave"))
     if settings.nonlinear == "limiter":
         processors.append(audio_effects.Limiter(name="limit"))
+    if settings.nonlinear == "transient":
+        processors.append(
+            audio_effects.TransientShaper(
+                name="transient", attack_gain_db=12, sustain_gain_db=-6
+            )
+        )
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
         audio_effects.GraphInput(

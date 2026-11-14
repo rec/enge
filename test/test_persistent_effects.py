@@ -89,6 +89,7 @@ def callback_audio(
         "full",
         "octave",
         "limiter",
+        "transient",
         "crush",
         "phaser",
         "highpass",

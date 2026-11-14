@@ -14,6 +14,7 @@ mod phaser;
 mod resonant;
 mod reverb;
 mod state;
+mod transient;
 mod waveshaper;
 
 use crate::amplitude::frame_time;
@@ -74,6 +75,7 @@ pub(crate) struct EffectRuntime {
     bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
     octaves: Vec<Option<octave::Octave>>,
     limiters: Vec<Option<limiter::Limiter>>,
+    transients: Vec<Option<transient::Transient>>,
     matrices: Vec<Option<RoutingMatrix>>,
     mixers: Vec<Option<Mixer>>,
     crossfader_laws: Vec<Option<bool>>,
@@ -140,6 +142,7 @@ pub(crate) struct EffectSnapshot {
     bitcrushers: Vec<Option<bitcrusher::Bitcrusher>>,
     octaves: Vec<Option<octave::Octave>>,
     limiters: Vec<Option<limiter::Limiter>>,
+    transients: Vec<Option<transient::Transient>>,
     mixers: Vec<Option<Mixer>>,
     gates: Vec<Option<dynamics::Gate>>,
     expansion_gains: Vec<f64>,
@@ -370,7 +373,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 22)
+        if kinds.iter().any(|v| *v > 23)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -512,6 +515,7 @@ impl EffectRuntime {
         let mut bitcrushers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut octaves = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut limiters = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut transients = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             let ports = port_names[node].len();
             let audio_arrival = (0..ports)
@@ -540,6 +544,16 @@ impl EffectRuntime {
                 }
             }
             alignment.push(delays);
+            if kinds[node] == 23 {
+                let values = parameters.as_array();
+                if parameters.shape()[1] < 4
+                    || !(-24.0..=24.0).contains(&values[[node, 0]])
+                    || !(-24.0..=24.0).contains(&values[[node, 3]])
+                {
+                    return Err(PyValueError::new_err("Invalid transient shaper profile"));
+                }
+                transients[node] = Some(transient::Transient::default());
+            }
             if kinds[node] == 22 {
                 let values = parameters.as_array();
                 if parameters.shape()[1] < 5
@@ -1056,6 +1070,7 @@ impl EffectRuntime {
                                     20 => matches!(parameter, 0 | 3),
                                     21 => matches!(parameter, 0 | 3 | 4),
                                     22 => matches!(parameter, 0 | 3),
+                                    23 => matches!(parameter, 0 | 3),
                                     _ => false,
                                 });
                         let modulated = controls
@@ -1099,6 +1114,7 @@ impl EffectRuntime {
             bitcrushers,
             octaves,
             limiters,
+            transients,
             matrices,
             mixers,
             crossfader_laws,
@@ -1340,6 +1356,18 @@ impl EffectRuntime {
                             self.resolved[[node, 0]],
                             self.resolved[[node, 3]],
                             self.resolved[[node, 4]],
+                            self.port_ended[[node, 0]],
+                        )?;
+                }
+                23 => {
+                    self.transients[node]
+                        .as_mut()
+                        .expect("prepared transient shaper")
+                        .process(
+                            &mut self.wet[..channels],
+                            self.resolved[[node, 0]],
+                            self.resolved[[node, 3]],
+                            self.rate,
                             self.port_ended[[node, 0]],
                         )?;
                 }
@@ -1708,6 +1736,11 @@ impl EffectRuntime {
                 "Invalid limiter fixed-lookahead action",
             ));
         }
+        if self.kinds[node] == 23 && parameter > 3 {
+            return Err(NativeError::Message(
+                "Invalid transient shaper fixed-profile action",
+            ));
+        }
         if self.kinds[node] == 20
             && (parameter > 3 || (matches!(parameter, 0 | 3) && duration != 0))
         {
@@ -2068,6 +2101,7 @@ impl EffectRuntime {
             bitcrushers: self.bitcrushers.clone(),
             octaves: self.octaves.clone(),
             limiters: self.limiters.clone(),
+            transients: self.transients.clone(),
             mixers: self.mixers.clone(),
             gates: self.gates.clone(),
             expansion_gains: self.expansion_gains.clone(),
@@ -2264,6 +2298,7 @@ impl EffectRuntime {
         self.bitcrushers.clone_from(&snapshot.bitcrushers);
         self.octaves.clone_from(&snapshot.octaves);
         self.limiters.clone_from(&snapshot.limiters);
+        self.transients.clone_from(&snapshot.transients);
         self.mixers.clone_from(&snapshot.mixers);
         self.gates.clone_from(&snapshot.gates);
         self.expansion_gains.clone_from(&snapshot.expansion_gains);

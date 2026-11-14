@@ -59,6 +59,15 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                23 => {
+                    let transient = self.transients[node]
+                        .as_ref()
+                        .expect("prepared transient shaper");
+                    let state = PyDict::new(py);
+                    state.set_item("fast", transient.fast)?;
+                    state.set_item("slow", transient.slow)?;
+                    value.set_item("transient", state)?;
+                }
                 22 => {
                     let limiter = self.limiters[node].as_ref().expect("prepared limiter");
                     let state = PyDict::new(py);
@@ -380,6 +389,20 @@ impl EffectRuntime {
                 }
             }
             match kind {
+                23 => {
+                    let state = field(value, "transient")?;
+                    let state = state.cast::<PyDict>()?;
+                    let transient = snapshot.transients[node]
+                        .as_mut()
+                        .expect("prepared transient shaper");
+                    let fast: f64 = field(state, "fast")?.extract()?;
+                    let slow: f64 = field(state, "slow")?.extract()?;
+                    if !fast.is_finite() || !slow.is_finite() || fast < 0.0 || slow < 0.0 {
+                        return Err(PyValueError::new_err("Invalid transient shaper snapshot"));
+                    }
+                    transient.fast = fast;
+                    transient.slow = slow;
+                }
                 22 => {
                     let state = field(value, "limiter")?;
                     let state = state.cast::<PyDict>()?;

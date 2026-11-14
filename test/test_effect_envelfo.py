@@ -23,6 +23,9 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "full": audio_effects.Waveshaper(name="fx", curve="full_wave", drive=2),
         "octave": audio_effects.OctaveDivider(name="fx", release_seconds=0.02),
         "limiter": audio_effects.Limiter(name="fx"),
+        "transient": audio_effects.TransientShaper(
+            name="fx", attack_gain_db=6, sustain_gain_db=-3
+        ),
         "crush": audio_effects.Bitcrusher(name="fx", bits=8, hold_frames=17, mix=0.5),
         "crush-bits": audio_effects.Bitcrusher(name="fx", bits=8, hold_frames=17),
         "phaser": audio_effects.Phaser(name="fx", feedback=0.5),
@@ -86,6 +89,7 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "full": ("drive", 2, 0.5, "ratio"),
         "octave": ("threshold", 0.01, 0.002, "ratio"),
         "limiter": ("release_seconds", 0.05, 0.02, "seconds"),
+        "transient": ("attack_gain_db", 6, 3, "db"),
         "crush": ("mix", 0.5, 0.25, "ratio"),
         "crush-bits": ("bits", 8, 2, "ratio"),
         "phaser": ("sweep", 0, 0.5, "ratio"),
@@ -155,6 +159,7 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         "full",
         "octave",
         "limiter",
+        "transient",
         "crush",
         "crush-bits",
         "phaser",
