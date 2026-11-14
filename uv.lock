@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-10-29T10:43:10.267687Z"
+exclude-newer = "2026-11-07T12:55:00.654771Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -58,14 +58,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "envelfo", git = "https://github.com/rec/envelfo.git?branch=main" },
+    { name = "envelfo", git = "https://github.com/rec/envelfo.git?rev=ea35332" },
     { name = "meedee", git = "https://github.com/rec/meedee?branch=main" },
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "pint", specifier = ">=0.25.3" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "reccy", git = "https://github.com/rec/reccy.git?branch=main" },
     { name = "tyro", specifier = ">=1.0.16" },
-    { name = "ufor", git = "https://github.com/rec/ufor.git?branch=main" },
+    { name = "ufor", git = "https://github.com/rec/ufor.git?rev=8046380" },
 ]
 
 [package.metadata.requires-dev]
@@ -79,7 +79,7 @@ dev = [
 [[package]]
 name = "envelfo"
 version = "0.1.0"
-source = { git = "https://github.com/rec/envelfo.git?branch=main#32c128e3a9db95282999c10b0618b8f5ebe492a3" }
+source = { git = "https://github.com/rec/envelfo.git?rev=ea35332#ea3533233e3f127806938fc929779edf42e2fce0" }
 dependencies = [
     { name = "ufor" },
 ]
@@ -470,7 +470,7 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.2.0"
-source = { git = "https://github.com/rec/ufor?branch=main#6009862ca5b4746ec33de5b8a2952843ed7ac291" }
+source = { git = "https://github.com/rec/ufor?rev=8046380#8046380a63b23ad4e2d6acf0a1880107efd8d3d0" }
 dependencies = [
     { name = "pydantic" },
     { name = "reccy" },

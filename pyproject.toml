@@ -34,8 +34,8 @@ addopts = "-n auto --dist=worksteal"
 
 [tool.uv.sources]
 meedee = { git = "https://github.com/rec/meedee", branch = "main" }
-envelfo = { git = "https://github.com/rec/envelfo.git", branch = "main" }
-ufor = { git = "https://github.com/rec/ufor.git", branch = "main" }
+envelfo = { git = "https://github.com/rec/envelfo.git", rev = "ea35332" }
+ufor = { git = "https://github.com/rec/ufor.git", rev = "8046380" }
 reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }
 
 [dependency-groups]

@@ -13,9 +13,11 @@ from envelfo.runtime import (
     envelfo_event,
     envelope_complete_at,
     initial_envelfo,
+    resolved_envelope,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ufor import envelfo_random, instrument_trace, modulation
+from ufor.approach import ExponentialApproach
 from ufor.base import Model
 from ufor.control import TempoMap
 from ufor.envelfo import (
@@ -1519,6 +1521,7 @@ class ControlRenderer:
             initial = runtime.entry_value
         elif isinstance(runtime, EnvelopeState):
             assert isinstance(body, Envelope)
+            body = resolved_envelope(body, state)
             if runtime.phase == "idle" or runtime.complete_coordinate is not None:
                 return np.full(
                     frames,
@@ -1530,7 +1533,7 @@ class ControlRenderer:
         else:
             return None
         if isinstance(body, Envelope) and any(
-            s.duration is None for s in [*body.segments, *body.release]
+            isinstance(s, IndefiniteSegment) for s in [*body.segments, *body.release]
         ):
             observed = envelfo_at(envelfo, state, Fraction(start, self.sample_rate))
             if observed.status == "held" and (
@@ -1574,7 +1577,9 @@ class ControlRenderer:
         )
         if not frames:
             return np.empty(0)
-        indefinite = any(s.duration is None for s in [*body.segments, *body.release])
+        indefinite = any(
+            isinstance(s, IndefiniteSegment) for s in [*body.segments, *body.release]
+        )
         if indefinite:
             segments = segments[runtime.segment_index :]
         speed = position.rate if indefinite else position.rate * _duration(segments)
@@ -2504,6 +2509,13 @@ def oscillator_samples(
 
 def validate_envelope(envelope: Envelope) -> None:
     """Validate the amplitude-envelope profile shared by both voice renderers."""
+    if any(
+        isinstance(s, ExponentialApproach)
+        for s in [*envelope.segments, *envelope.release]
+    ):
+        raise EngineError(
+            "Captured stages currently require a named modulation Envelope"
+        )
     if envelope.clock != "seconds" or envelope.scope != "voice":
         raise EngineError("Envelopes must use the voice seconds clock")
     if not isinstance(envelope.initial, float) or envelope.start != "activation":
@@ -2611,7 +2623,7 @@ def _validate_voice(voice: SynthVoice) -> None:
 
 def _envelope_values(
     initial: float,
-    segments: list[Segment | IndefiniteSegment],
+    segments: list[Segment | IndefiniteSegment | ExponentialApproach],
     elapsed: Fraction,
     frames: int,
     sample_rate: int,
@@ -2620,6 +2632,8 @@ def _envelope_values(
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
+        if isinstance(segment, ExponentialApproach):
+            raise EngineError("Captured envelope must be resolved before sampling")
         if isinstance(segment, IndefiniteSegment):
             first = max(0, ceil((boundary - elapsed) * sample_rate))
             values[first:] = entry
@@ -2653,15 +2667,24 @@ def _curve_progress(progress: np.ndarray, curve: float) -> np.ndarray:
     return np.expm1(curve * progress) / np.expm1(curve)
 
 
-def _duration(segments: list[Segment | IndefiniteSegment]) -> Fraction:
-    if any(s.duration is None for s in segments):
+def _duration(
+    segments: list[Segment | IndefiniteSegment | ExponentialApproach],
+) -> Fraction:
+    if any(isinstance(s, IndefiniteSegment) for s in segments):
         raise EngineError("An indefinite Envelope has no finite duration")
     return sum((s.duration for s in segments if isinstance(s, Segment)), Fraction(0))
 
 
 def _runtime_segments(
-    segments: list[Segment | IndefiniteSegment], sample_rate: int
+    segments: list[Segment | IndefiniteSegment | ExponentialApproach],
+    sample_rate: int,
+    *,
+    captured: bool = False,
 ) -> list[tuple[tuple[int, int] | None, float, float]]:
+    if any(isinstance(s, ExponentialApproach) for s in segments) and not captured:
+        raise EngineError(
+            "Captured stages currently require a named modulation Envelope"
+        )
     return [
         (
             ((d := s.duration * sample_rate).numerator, d.denominator),
@@ -2669,6 +2692,8 @@ def _runtime_segments(
             s.curve,
         )
         if isinstance(s, Segment)
+        else ((0, 1), s.transition_to, 0.0)
+        if isinstance(s, ExponentialApproach)
         else (None, 0.0, 0.0)
         for s in segments
     ]
@@ -3018,6 +3043,29 @@ def _prepare_native_generators(
         envelope_attacks,
         envelope_releases,
         envelope_parameters,
+    )
+    generators.set_envelope_approaches(
+        [
+            (
+                i,
+                r,
+                j,
+                (
+                    s.asymptote,
+                    s.time_constant,
+                    s.threshold,
+                    s.transition_to,
+                    s.transition_seconds,
+                    s.minimum_transition_distance,
+                ),
+            )
+            for n, k in named_envelfo_sources.items()
+            if isinstance((b := template.envelfos[n]), Envelope)
+            for r, p in [(False, b.segments), (True, b.release)]
+            for j, s in enumerate(p)
+            if isinstance(s, ExponentialApproach)
+            for i in k
+        ]
     )
     _configure_sample_hold_envelfos(generators, template, named_envelfo_sources)
     if tempo_map is not None:
@@ -3465,10 +3513,10 @@ def _persistent_modulation(
                 envelope_initials.append(generator.initial)
                 duration_scale = 1 if envelfo.clock == "beats" else sample_rate
                 envelope_attacks.append(
-                    _runtime_segments(generator.segments, duration_scale)
+                    _runtime_segments(generator.segments, duration_scale, captured=True)
                 )
                 envelope_releases.append(
-                    _runtime_segments(generator.release, duration_scale)
+                    _runtime_segments(generator.release, duration_scale, captured=True)
                 )
                 envelope_parameters.append(
                     (
@@ -3592,10 +3640,10 @@ def _persistent_modulation(
             )
             envelope_initials.append(generator.initial)
             envelope_attacks.append(
-                _runtime_segments(generator.segments, duration_scale)
+                _runtime_segments(generator.segments, duration_scale, captured=True)
             )
             envelope_releases.append(
-                _runtime_segments(generator.release, duration_scale)
+                _runtime_segments(generator.release, duration_scale, captured=True)
             )
             envelope_parameters.append(
                 (

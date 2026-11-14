@@ -30,6 +30,7 @@ impl Amplitude {
         let convert = |parts: AmplitudeSegments, level: f64| -> NativeResult<Vec<Segment>> {
             if parts.is_empty() {
                 return Ok(vec![Segment {
+                    approach: None,
                     duration: Some(Time::ZERO),
                     to: level,
                     curve: 0.0,
@@ -39,6 +40,7 @@ impl Amplitude {
                 .into_iter()
                 .map(|(duration, to, curve)| {
                     Ok(Segment {
+                        approach: None,
                         duration: duration
                             .map(|(n, d)| Time::new(n, d))
                             .transpose()

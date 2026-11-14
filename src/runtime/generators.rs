@@ -13,6 +13,7 @@ use super::{
 use crate::amplitude::AmplitudeSegments;
 use crate::amplitude::{frame_position, frame_time};
 use crate::error::{NativeError, NativeResult};
+use envelfo_core::approach::ExponentialApproach;
 use envelfo_core::envelope::{
     Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
 };
@@ -547,6 +548,60 @@ impl GeneratorBank {
         })
     }
 
+    fn set_envelope_approaches(
+        &mut self,
+        stages: Vec<(usize, bool, usize, (f64, f64, f64, f64, f64, f64))>,
+    ) -> PyResult<()> {
+        if self.patch_host.is_some() {
+            return Err(PyValueError::new_err(
+                "Envelope approaches must be configured before Patch preparation",
+            ));
+        }
+        for (
+            source,
+            release,
+            index,
+            (
+                asymptote,
+                time_constant,
+                threshold,
+                transition_to,
+                transition_seconds,
+                minimum_transition_distance,
+            ),
+        ) in stages
+        {
+            let definition = self
+                .named_envelopes
+                .get_mut(source)
+                .ok_or_else(|| PyValueError::new_err("Unknown captured Envelope"))?;
+            if definition.beat_clock {
+                return Err(PyValueError::new_err(
+                    "Captured envelopes require seconds clocks",
+                ));
+            }
+            let parts = if release {
+                &mut definition.body.release
+            } else {
+                &mut definition.body.segments
+            };
+            let part = parts
+                .get_mut(index)
+                .ok_or_else(|| PyValueError::new_err("Unknown captured stage"))?;
+            part.approach = Some(ExponentialApproach {
+                clock_units_per_second: Time::from_integer(self.rate as i64),
+                asymptote,
+                time_constant,
+                threshold,
+                transition_to,
+                transition_seconds,
+                minimum_transition_distance,
+            });
+            definition.body.validate().map_err(core_error)?;
+        }
+        Ok(())
+    }
+
     fn set_named_envelopes(
         &mut self,
         initials: Vec<f64>,
@@ -586,6 +641,7 @@ impl GeneratorBank {
                             .into_iter()
                             .map(|(duration, to, curve)| {
                                 Ok(CoreSegment {
+                                    approach: None,
                                     duration: duration
                                         .map(|(n, d)| Time::new(n, d))
                                         .transpose()
@@ -607,6 +663,7 @@ impl GeneratorBank {
                     // SampleHold shares the host route slots but does not execute this body.
                     if segments.is_empty() {
                         segments.push(CoreSegment {
+                            approach: None,
                             duration: Some(Time::ZERO),
                             to: initial,
                             curve: 0.0,
@@ -774,6 +831,7 @@ impl GeneratorBank {
                                 .into_iter()
                                 .map(|(duration, to, curve)| {
                                     Ok(CoreSegment {
+                                        approach: None,
                                         duration: duration.map(ratio_time).transpose()?,
                                         to,
                                         curve,

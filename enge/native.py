@@ -4,7 +4,8 @@ from fractions import Fraction
 from math import ceil
 
 import numpy as np
-from envelfo.runtime import envelfo_at
+from envelfo.runtime import envelfo_at, resolved_envelope
+from ufor.approach import ExponentialApproach
 from ufor.envelfo import EnvelfoState, Envelope, EnvelopeState
 from ufor.oscillator import Oscillator, Waveform
 from ufor.segments import IndefiniteSegment, Segment
@@ -55,6 +56,7 @@ def envelope_spans(
     local index origin, and curve. Rust evaluates each segment per sample.
     Later rows overwrite earlier rows, including the release's terminal level.
     """
+    envelope = resolved_envelope(envelope, state)
     if not frames:
         return np.empty((0, 8))
     runtime = state.runtime
@@ -103,7 +105,8 @@ def envelope_spans(
         )
     parts = envelope.release if runtime.phase == "release" else envelope.segments
     indefinite = any(
-        s.duration is None for s in [*envelope.segments, *envelope.release]
+        isinstance(s, IndefiniteSegment)
+        for s in [*envelope.segments, *envelope.release]
     )
     parts = parts[runtime.segment_index :]
     total = sum((s.duration for s in parts if isinstance(s, Segment)), Fraction(0))
@@ -151,7 +154,7 @@ def envelope_spans(
 
 def _spans(
     initial: float,
-    segments: list[Segment | IndefiniteSegment],
+    segments: list[Segment | IndefiniteSegment | ExponentialApproach],
     elapsed: Fraction,
     frames: int,
     sample_rate: int,
@@ -160,13 +163,17 @@ def _spans(
 ) -> list[list[float]]:
     terminal = initial
     for segment in segments:
+        if isinstance(segment, ExponentialApproach):
+            raise ValueError("Captured envelope must be resolved before sampling")
         if isinstance(segment, IndefiniteSegment):
             break
         terminal = segment.to
-    spans = [[offset, offset + frames, terminal, 0, 0, 1, offset, 0]]
+    spans: list[list[float]] = [[offset, offset + frames, terminal, 0, 0, 1, offset, 0]]
     boundary = Fraction(0)
     entry = initial
     for segment in segments:
+        if isinstance(segment, ExponentialApproach):
+            raise ValueError("Captured envelope must be resolved before sampling")
         if isinstance(segment, IndefiniteSegment):
             first = min(frames, max(0, ceil((boundary - elapsed) * sample_rate)))
             spans.append([first + offset, offset + frames, entry, 0, 0, 1, offset, 0])

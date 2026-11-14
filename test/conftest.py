@@ -1,5 +1,7 @@
+import sys
 from collections.abc import Callable, Iterator
 from functools import cache
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -10,6 +12,9 @@ from ufor import synth_trace
 from ufor.synth import SynthInstrumentScore
 
 from enge import _native, synth
+
+# Keep installed enge ahead of the source checkout while exposing tracked tools.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

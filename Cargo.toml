@@ -17,7 +17,7 @@ allocation-audit = []
 rubberband = ["dep:enge-rubberband"]
 
 [dependencies]
-envelfo-core = { git = "ssh://git@github.com/rec/envelfo.git", rev = "2f2ffb0a5fe45f37b7a67d602e7b7eafa908e259" }
+envelfo-core = { git = "ssh://git@github.com/rec/envelfo.git", rev = "ea35332" }
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module"] }
 rtrb = "0.4.0"

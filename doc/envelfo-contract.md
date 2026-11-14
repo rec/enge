@@ -7,6 +7,22 @@ are maintained in [enveLFO's audit](https://github.com/rec/envelfo/blob/main/doc
 
 ## Current ownership and evidence matrix
 
+Captured `exponential_approach` stages now use the same ownership boundary:
+uFor owns the stage definition and nanosecond resolution contract; enveLFO's
+Python and Rust evaluators capture the phase entry value and retain resolved
+curved/linear segments in continuation state. enge's offline block adapters
+consume that resolved state, and native named-generator preparation carries
+the authored stage to the shared Rust evaluator. Frame-clock conversion follows
+rounding in seconds. Existing interpolation kernels are reused.
+
+The supported host profile is named voice modulation Envelopes with one-shot
+seconds clocks. Captured voice-amplitude envelopes remain
+outside enge's amplitude policy and are rejected explicitly; markers, repeats,
+indefinite holds and nesting in Stages are rejected by the shared model.
+`test/test_captured_filter_envelope.py` checks delay/attack/sustain interruption,
+independent gain equations, both offline backends, JSON continuation and native
+persistent continuation with two-second 48 kHz WAV output.
+
 Python and Rust below mean the independent control libraries, not an audio
 backend that happens to use Python orchestration. Consumer tests supplement,
 rather than replace, shared standalone conformance.

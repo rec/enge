@@ -179,6 +179,12 @@ class GeneratorBank:
         lfos: np.ndarray,
         lfo_rationals: list[tuple[int, int]],
     ) -> None: ...
+    def set_envelope_approaches(
+        self,
+        stages: list[
+            tuple[int, bool, int, tuple[float, float, float, float, float, float]]
+        ],
+    ) -> None: ...
     def set_named_envelopes(
         self,
         initials: list[float],
