@@ -16,12 +16,26 @@ the authored stage to the shared Rust evaluator. Frame-clock conversion follows
 rounding in seconds. Existing interpolation kernels are reused.
 
 The supported host profile is named voice modulation Envelopes with one-shot
-seconds clocks. Captured voice-amplitude envelopes remain
-outside enge's amplitude policy and are rejected explicitly; markers, repeats,
+seconds clocks. Main voice-amplitude releases now also support captured stages
+through the same shared state and native amplitude lifetime. Captured onset
+stages remain rejected; markers, repeats,
 indefinite holds and nesting in Stages are rejected by the shared model.
 `test/test_captured_filter_envelope.py` checks delay/attack/sustain interruption,
 independent gain equations, both offline backends, JSON continuation and native
 persistent continuation with two-second 48 kHz WAV output.
+
+Main amplitude commands reserve resolved-stage and command continuation storage
+during preparation. Voice reuse resets that prepared state without allocating;
+captured release commands use enveLFO's shared prepared evaluator. The focused
+`test/test_amplitude_approach.py` suite covers synth, sampler, FM and noise,
+interrupted onset phases, zero and minimum positive time constants, snapshots
+and block partitioning. Its allocation-audit run recorded 100 successful native
+callbacks with zero allocations, reallocations or frees. This evidence applies
+to main amplitude commands, not every named-generator or Patch command path.
+The integration suite reports 3,505 passed and 29 skipped. After rebasing onto
+the concurrent de-esser commit, its four new tests and the 18 release tests
+also pass together with callback allocation auditing enabled. Rust compilation,
+typing, formatting and the selected Ruff checks pass.
 
 Python and Rust below mean the independent control libraries, not an audio
 backend that happens to use Python orchestration. Consumer tests supplement,

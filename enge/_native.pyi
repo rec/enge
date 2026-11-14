@@ -69,6 +69,13 @@ class EffectRuntime:
     def import_state(self, values: list[dict[str, object]], frame: int) -> None: ...
 
 class LiveRuntime:
+    def set_sample_release_approaches(
+        self,
+        source: int,
+        stages: list[
+            tuple[int, tuple[float, float, float, float, float, float, float]]
+        ],
+    ) -> None: ...
     def __init__(
         self,
         runtimes: list[SynthRuntime],
@@ -182,7 +189,9 @@ class GeneratorBank:
     def set_envelope_approaches(
         self,
         stages: list[
-            tuple[int, bool, int, tuple[float, float, float, float, float, float]]
+            tuple[
+                int, bool, int, tuple[float, float, float, float, float, float, float]
+            ]
         ],
     ) -> None: ...
     def set_named_envelopes(
@@ -297,6 +306,12 @@ class GeneratorBank:
     ) -> None: ...
 
 class SynthRuntime:
+    def set_release_approaches(
+        self,
+        stages: list[
+            tuple[int, int, tuple[float, float, float, float, float, float, float]]
+        ],
+    ) -> None: ...
     def set_route_maps(
         self, kind: int, maps: list[tuple[int, list[tuple[float, float]]]]
     ) -> None: ...

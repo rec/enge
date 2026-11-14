@@ -437,7 +437,7 @@ class PersistentNoise(synth.PersistentSynth):
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
             cast(float, template.envelope.initial),
             synth._runtime_segments(template.envelope.segments, rate),
-            synth._runtime_segments(template.envelope.release, rate),
+            synth._runtime_segments(template.envelope.release, rate, captured=True),
             (
                 (hold := template.minimum_hold_seconds * rate).numerator,
                 hold.denominator,
@@ -450,6 +450,8 @@ class PersistentNoise(synth.PersistentSynth):
             context_capacity,
             template.processing.filter_order == FilterOrder.after_amplitude,
         )
+        if approaches := synth.release_approaches([template.envelope]):
+            self.runtime.set_release_approaches(approaches)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
 

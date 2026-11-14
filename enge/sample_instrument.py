@@ -690,7 +690,9 @@ class PersistentSampler(OfflineSampler):
                 routes,
                 cast(float, envelope.initial),
                 synth._runtime_segments(envelope.segments, self.definition.sample_rate),
-                synth._runtime_segments(envelope.release, self.definition.sample_rate),
+                synth._runtime_segments(
+                    envelope.release, self.definition.sample_rate, captured=True
+                ),
                 0,
                 self.voice_capacity,
                 batch_capacity,
@@ -698,6 +700,10 @@ class PersistentSampler(OfflineSampler):
                 filter_order == processing.FilterOrder.after_amplitude,
                 sample.end_fade_seconds * sample.sample_rate,
             )
+            if approaches := synth.release_approaches([envelope]):
+                runtime.set_sample_release_approaches(
+                    self.native_sources[slot.name], [(j, p) for _, j, p in approaches]
+                )
             rows = []
             smoothing = []
             parameters = [0.0] * 12

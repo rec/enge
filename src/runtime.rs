@@ -1,6 +1,8 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
-use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
+use crate::amplitude::{
+    Amplitude, AmplitudeSegments, AmplitudeState, ApproachParameters, frame_time,
+};
 use crate::error::{NativeError, NativeResult};
 use envelfo_core::envelope::Envelope;
 use envelfo_core::lfo::Command;
@@ -371,6 +373,32 @@ pub struct SynthRuntime {
 
 #[pymethods]
 impl SynthRuntime {
+    fn set_release_approaches(
+        &mut self,
+        stages: Vec<(usize, usize, ApproachParameters)>,
+    ) -> PyResult<()> {
+        if self.frame != 0 || self.active.iter().any(|v| *v) {
+            return Err(PyValueError::new_err(
+                "Release approaches require an unused runtime",
+            ));
+        }
+        for (operator, index, parameters) in stages {
+            self.amplitude_definitions
+                .get_mut(operator)
+                .ok_or_else(|| PyValueError::new_err("Unknown amplitude operator"))?
+                .set_release_approach(index, parameters, self.rate)?;
+        }
+        self.amplitude_states = (0..self.active.len())
+            .map(|_| {
+                self.amplitude_definitions
+                    .iter()
+                    .map(|a| a.start())
+                    .collect()
+            })
+            .collect::<NativeResult<_>>()?;
+        Ok(())
+    }
+
     fn set_route_maps(&mut self, kind: usize, maps: Vec<(usize, Vec<(f64, f64)>)>) -> PyResult<()> {
         if self.frame != 0 || self.active.iter().any(|v| *v) {
             return Err(PyValueError::new_err(
@@ -1398,7 +1426,7 @@ impl SynthRuntime {
                     .iter()
                     .zip(&mut self.amplitude_states[voice])
                 {
-                    *state = definition.start()?;
+                    definition.reset(state);
                 }
                 self.ages[voice] = 0;
                 self.release_frames[voice] = None;

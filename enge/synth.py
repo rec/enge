@@ -1912,7 +1912,7 @@ class PersistentSynth:
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
             cast(float, template.envelope.initial),
             _runtime_segments(template.envelope.segments, rate),
-            _runtime_segments(template.envelope.release, rate),
+            _runtime_segments(template.envelope.release, rate, captured=True),
             (
                 (hold := template.minimum_hold_seconds * rate).numerator,
                 hold.denominator,
@@ -1925,6 +1925,8 @@ class PersistentSynth:
             context_capacity,
             template.processing.filter_order == processing.FilterOrder.after_amplitude,
         )
+        if approaches := release_approaches([template.envelope]):
+            self.runtime.set_release_approaches(approaches)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
         self.runtime.set_route_maps(4, transform_maps)
@@ -2509,13 +2511,8 @@ def oscillator_samples(
 
 def validate_envelope(envelope: Envelope) -> None:
     """Validate the amplitude-envelope profile shared by both voice renderers."""
-    if any(
-        isinstance(s, ExponentialApproach)
-        for s in [*envelope.segments, *envelope.release]
-    ):
-        raise EngineError(
-            "Captured stages currently require a named modulation Envelope"
-        )
+    if any(isinstance(s, ExponentialApproach) for s in envelope.segments):
+        raise EngineError("Captured amplitude stages are supported only in release")
     if envelope.clock != "seconds" or envelope.scope != "voice":
         raise EngineError("Envelopes must use the voice seconds clock")
     if not isinstance(envelope.initial, float) or envelope.start != "activation":
@@ -2530,6 +2527,30 @@ def validate_envelope(envelope: Envelope) -> None:
         )
     if not envelope.hold:
         raise EngineError("Only held envelopes are implemented")
+
+
+def release_approaches(
+    envelopes: list[Envelope],
+) -> list[tuple[int, int, tuple[float, float, float, float, float, float, float]]]:
+    """Encode authored release stages for native amplitude preparation."""
+    return [
+        (
+            i,
+            j,
+            (
+                s.asymptote,
+                s.time_constant,
+                s.threshold,
+                s.transition_to,
+                s.transition_seconds,
+                s.minimum_transition_distance,
+                s.minimum_time_constant,
+            ),
+        )
+        for i, e in enumerate(envelopes)
+        for j, s in enumerate(e.release)
+        if isinstance(s, ExponentialApproach)
+    ]
 
 
 def validate_generators(
@@ -3057,6 +3078,7 @@ def _prepare_native_generators(
                     s.transition_to,
                     s.transition_seconds,
                     s.minimum_transition_distance,
+                    s.minimum_time_constant,
                 ),
             )
             for n, k in named_envelfo_sources.items()

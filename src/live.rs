@@ -1,6 +1,8 @@
 //! One native owner for persistent generated sources and callback scratch.
 
-use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, frame_time};
+use crate::amplitude::{
+    Amplitude, AmplitudeSegments, AmplitudeState, ApproachParameters, frame_time,
+};
 use crate::effects::runtime::{EffectGenerators, EffectRuntime, EffectSnapshot};
 use crate::error::{NativeError, NativeResult};
 use crate::filters::{FilterBank, Inputs};
@@ -412,6 +414,34 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Unknown live runtime source"));
         };
         push_batch(&mut source.producer, actions, "source")
+    }
+
+    fn set_sample_release_approaches(
+        &mut self,
+        source: usize,
+        stages: Vec<(usize, ApproachParameters)>,
+    ) -> PyResult<()> {
+        let Some(Source {
+            runtime: SourceRuntime::Sample(runtime),
+            ..
+        }) = self.sources.get_mut(source)
+        else {
+            return Err(PyValueError::new_err("Invalid live sample source"));
+        };
+        if self.frame != 0 {
+            return Err(PyValueError::new_err(
+                "Release approaches require an unused runtime",
+            ));
+        }
+        for (index, parameters) in stages {
+            runtime
+                .amplitude
+                .set_release_approach(index, parameters, self.rate)?;
+        }
+        runtime.amplitude_states = (0..runtime.active.len())
+            .map(|_| runtime.amplitude.start())
+            .collect::<NativeResult<_>>()?;
+        Ok(())
     }
 
     fn active_slots(&self, source: usize) -> PyResult<Vec<bool>> {
@@ -1254,7 +1284,7 @@ impl SampleRuntime {
                 self.controls.reset_voice(voice);
                 self.filters[voice].states.fill(0.0);
                 self.delays[voice] = 0;
-                self.amplitude_states[voice] = self.amplitude.start()?;
+                self.amplitude.reset(&mut self.amplitude_states[voice]);
                 self.release_frames[voice] = None;
                 self.fade_starts[voice] = None;
                 self.fade_gains[voice] = 1.0;

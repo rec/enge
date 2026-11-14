@@ -2,26 +2,66 @@
 
 use crate::error::{NativeError, NativeResult};
 use envelfo_core::Status;
+use envelfo_core::approach::ExponentialApproach;
 use envelfo_core::envelope::{
-    Envelope, EnvelopeCommand, EnvelopeState, Initial, Phase, Playback, Retrigger, Segment, Start,
+    Envelope, EnvelopeCommand, EnvelopeCommandStorage, EnvelopeState, Initial, Phase, Playback,
+    Retrigger, Segment, Start,
 };
 use envelfo_core::lfo::{Command, Value};
 use envelfo_core::time::Time;
 
 pub(crate) type AmplitudeSegments = Vec<(Option<(i64, i64)>, f64, f64)>;
+pub(crate) type ApproachParameters = (f64, f64, f64, f64, f64, f64, f64);
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Amplitude {
     body: Envelope,
+    initial: EnvelopeState,
 }
 
 #[derive(Clone)]
 pub(crate) struct AmplitudeState {
     state: EnvelopeState,
+    storage: EnvelopeCommandStorage,
     ordinal: u64,
 }
 
 impl Amplitude {
+    pub(crate) fn set_release_approach(
+        &mut self,
+        index: usize,
+        parameters: ApproachParameters,
+        rate: f64,
+    ) -> NativeResult<()> {
+        let (
+            asymptote,
+            time_constant,
+            threshold,
+            transition_to,
+            transition_seconds,
+            minimum_transition_distance,
+            minimum_time_constant,
+        ) = parameters;
+        let part = self
+            .body
+            .release
+            .get_mut(index)
+            .ok_or(NativeError::Message("Unknown amplitude release stage"))?;
+        part.approach = Some(ExponentialApproach {
+            clock_units_per_second: frame_time(rate)?,
+            asymptote,
+            time_constant,
+            threshold,
+            transition_to,
+            transition_seconds,
+            minimum_transition_distance,
+            minimum_time_constant,
+        });
+        self.body.validate().map_err(error)?;
+        self.initial = initial_state(&self.body)?;
+        Ok(())
+    }
+
     pub(crate) fn new(
         initial: f64,
         attack: AmplitudeSegments,
@@ -65,20 +105,23 @@ impl Amplitude {
             repeat_count: None,
         };
         body.validate().map_err(error)?;
-        Ok(Self { body })
+        let initial = initial_state(&body)?;
+        Ok(Self { body, initial })
     }
 
     pub(crate) fn start(&self) -> NativeResult<AmplitudeState> {
-        let mut state = self.body.initial(Time::ZERO).map_err(error)?;
-        self.body
-            .command(
-                &mut state,
-                Time::ZERO,
-                0,
-                EnvelopeCommand::Playback(Command::NoteOn),
-            )
-            .map_err(error)?;
-        Ok(AmplitudeState { state, ordinal: 0 })
+        let mut state = self.initial.clone();
+        let storage = self.body.prepare_commands(&mut state).map_err(error)?;
+        Ok(AmplitudeState {
+            state,
+            storage,
+            ordinal: 0,
+        })
+    }
+
+    pub(crate) fn reset(&self, state: &mut AmplitudeState) {
+        state.state.clone_from(&self.initial);
+        state.ordinal = 0;
     }
 
     pub(crate) fn settle(
@@ -146,11 +189,23 @@ impl Amplitude {
             .checked_add(1)
             .ok_or(NativeError::Message("Amplitude ordinal overflow"))?;
         self.body
-            .command(&mut state.state, at, ordinal, command)
+            .command_with_storage(&mut state.state, &mut state.storage, at, ordinal, command)
             .map_err(error)?;
         state.ordinal = ordinal;
         Ok(())
     }
+}
+
+fn initial_state(body: &Envelope) -> NativeResult<EnvelopeState> {
+    let mut state = body.initial(Time::ZERO).map_err(error)?;
+    body.command(
+        &mut state,
+        Time::ZERO,
+        0,
+        EnvelopeCommand::Playback(Command::NoteOn),
+    )
+    .map_err(error)?;
+    Ok(state)
 }
 
 fn error(value: envelfo_core::Error) -> NativeError {

@@ -628,7 +628,9 @@ class PersistentFM(synth.PersistentSynth):
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
             cast(float, operators[carrier].envelope.initial),
             synth._runtime_segments(operators[carrier].envelope.segments, rate),
-            synth._runtime_segments(operators[carrier].envelope.release, rate),
+            synth._runtime_segments(
+                operators[carrier].envelope.release, rate, captured=True
+            ),
             [
                 {
                     Waveform.sine: 0,
@@ -651,7 +653,7 @@ class PersistentFM(synth.PersistentSynth):
                 [
                     tuple(segment)
                     for segment in synth._runtime_segments(
-                        operator.envelope.release, rate
+                        operator.envelope.release, rate, captured=True
                     )
                 ]
                 for operator in operators
@@ -694,6 +696,8 @@ class PersistentFM(synth.PersistentSynth):
             context_capacity,
             template.processing.filter_order == FilterOrder.after_amplitude,
         )
+        if approaches := synth.release_approaches([o.envelope for o in operators]):
+            self.runtime.set_release_approaches(approaches)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
 

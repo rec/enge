@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "envelfo-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/rec/envelfo.git?rev=ea35332#ea3533233e3f127806938fc929779edf42e2fce0"
+source = "git+ssh://git@github.com/rec/envelfo.git?rev=181bad83532c427963948bcf19fed02aa2c22646#181bad83532c427963948bcf19fed02aa2c22646"
 dependencies = [
  "num-rational",
  "sha2",

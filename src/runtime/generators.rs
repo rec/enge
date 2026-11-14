@@ -24,7 +24,7 @@ use envelfo_core::{lfo, time::Time};
 use numpy::PyReadonlyArray2;
 use pyo3::{exceptions::PyValueError, prelude::*};
 
-type EnvelopeApproachInput = (usize, bool, usize, (f64, f64, f64, f64, f64, f64));
+type EnvelopeApproachInput = (usize, bool, usize, (f64, f64, f64, f64, f64, f64, f64));
 
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
@@ -567,6 +567,7 @@ impl GeneratorBank {
                 transition_to,
                 transition_seconds,
                 minimum_transition_distance,
+                minimum_time_constant,
             ),
         ) in stages
         {
@@ -595,6 +596,7 @@ impl GeneratorBank {
                 transition_to,
                 transition_seconds,
                 minimum_transition_distance,
+                minimum_time_constant,
             });
             definition.body.validate().map_err(core_error)?;
         }
