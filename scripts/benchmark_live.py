@@ -34,7 +34,9 @@ class Settings(BaseModel):
     reverb: bool = False
     waveshaper: bool = False
     waveshaper_curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"] = "soft"
-    nonlinear: Literal["none", "octave", "enhancer", "limiter", "transient"] = "none"
+    nonlinear: Literal[
+        "none", "octave", "enhancer", "limiter", "transient", "deesser"
+    ] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
     phaser: bool = False
@@ -203,24 +205,30 @@ def main(settings: Settings) -> None:
         processors,
         settings.block_frames,
     )
-    if settings.nonlinear == "enhancer":
-        enhancer = audio_effects.enhancer_graph(
-            "exciter", graph.scope, graph.inputs[0], settings.block_frames
+    if settings.nonlinear in {"enhancer", "deesser"}:
+        profile = (
+            audio_effects.deesser_graph(
+                "ess", graph.scope, graph.inputs[0], settings.block_frames
+            )
+            if settings.nonlinear == "deesser"
+            else audio_effects.enhancer_graph(
+                "exciter", graph.scope, graph.inputs[0], settings.block_frames
+            )
         )
         graph = audio_effects.EffectGraph(
             scope=graph.scope,
             inputs=graph.inputs,
-            processors=[*graph.processors, *enhancer.processors],
+            processors=[*graph.processors, *profile.processors],
             connections=[
                 *graph.connections,
                 *[
                     c.model_copy(update={"source": graph.output})
                     if isinstance(c.source, audio_effects.InputSource)
                     else c
-                    for c in enhancer.connections
+                    for c in profile.connections
                 ],
             ],
-            output=enhancer.output,
+            output=profile.output,
             maximum_block_frames=settings.block_frames,
         )
     if settings.delay in {"multitap", "ensemble"}:

@@ -83,8 +83,11 @@ includes half/full-wave rectifiers, the high-band harmonic enhancer and the
 envelope-scaled octave divider. The linked sample-peak look-ahead limiter is
 also implemented, including sample-rate-aware graph latency and output control
 alignment. The linked two-follower transient shaper is implemented with scoped
-attack/sustain gains and zero intrinsic latency. The next slice is de-essing,
-followed by dynamic EQ/multiband compression. See
+attack/sustain gains and zero intrinsic latency. The broadband de-esser is
+implemented as a band-pass detector plus linked compressor, with functional
+and allocation checks passing and observed timing misses documented. The next
+slice is dynamic EQ/multiband compression. See
+[the de-esser](../doc/deesser-effects.md),
 [the transient shaper](../doc/transient-shaper.md), [the limiter](../doc/limiter-effects.md),
 [the N4 profiles](../doc/rectifier-enhancer-divider.md) and
 [the nonlinear profiles](../doc/nonlinear-effects.md) for their contracts and
