@@ -9,8 +9,7 @@ from typing import Literal
 import numpy as np
 from envelfo import patch
 from pydantic import BaseModel, ConfigDict, Field
-from ufor import audio_effects, envelfo, instrument_trace, modulation
-from ufor.approach import ExponentialApproach
+from ufor import audio_effects, instrument_trace, modulation
 from ufor.control import TempoMap
 from ufor.oscillator import Waveform
 from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBinding
@@ -1562,17 +1561,6 @@ def native_live_graph(
 ]:
     """Encode a supported prepared graph for the allocation-free live owner."""
     graph = definition.definition
-    pending: list[object] = list(graph.envelfos.values())
-    while pending:
-        body = pending.pop()
-        if isinstance(body, envelfo.Patch):
-            pending.extend(body.envelfos.values())
-        elif isinstance(body, envelfo.Envelope) and any(
-            isinstance(s, ExponentialApproach) for s in body.segments + body.release
-        ):
-            raise EngineError(
-                "Native effects need bounded shared storage for captured envelopes"
-            )
     processors = {p.name: p for p in graph.processors}
     ordered = [processors[n] for n in definition.order]
     input_indices = {p.name: i for i, p in enumerate(graph.inputs)}

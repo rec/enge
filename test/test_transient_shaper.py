@@ -8,7 +8,7 @@ from test_effects import graph_input
 from test_persistent_effects import callback_audio
 from test_synth import check_audio
 from transient_oracle import transient_audio
-from ufor import audio_effects, envelfo
+from ufor import audio_effects
 
 from enge import _native, effects
 
@@ -191,8 +191,10 @@ def test_failed_transient_callbacks_silence_latch_and_restore(
     check_audio(tmp_path / "restored.wav", actual, transient_audio(source, attack, -3))
 
 
-def test_captured_envelope_modulates_numpy_transients_but_native_preparation_rejects_it(
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_captured_envelope_modulates_transients_across_backends_and_callback_replay(
     tmp_path: Path,
+    wrapped: bool,
 ) -> None:
     raw = modulated_graph("transient")[0].model_dump(mode="json")
     raw["envelfos"]["motion"] = {
@@ -208,8 +210,24 @@ def test_captured_envelope_modulates_numpy_transients_but_native_preparation_rej
                 "transition_seconds": "1 ms",
             }
         ],
-        "release": [{"duration": "50 ms", "to": 0}],
+        "release": [
+            {
+                "kind": "exponential_approach",
+                "asymptote": 0,
+                "time_constant": "20 ms",
+                "threshold": 0.1,
+                "transition_to": 0,
+                "transition_seconds": "1 ms",
+            }
+        ],
     }
+    if wrapped:
+        raw["envelfos"]["motion"] = {
+            "kind": "patch",
+            "envelfos": {"level": raw["envelfos"]["motion"]},
+            "outputs": {"out": "level"},
+        }
+        raw["bindings"][0]["output"] = "out"
     raw["modulation"]["sources"][0]["minimum"] = 0
     raw["modulation"]["routes"][0]["points"][0]["input"] = 0
     prepared = effects.prepare(audio_effects.EffectGraph.model_validate(raw), 48000)
@@ -226,19 +244,26 @@ def test_captured_envelope_modulates_numpy_transients_but_native_preparation_rej
     actions: list[audio_effects.EffectAction] = [
         audio_effects.InputEndAction(tick=36003, ordinal=0, input="main")
     ]
-    first = effects.OfflineEffects(prepared, "numpy")
-    head = first.advance({"main": source[:997]}, [], 0, 997)
-    saved = effects.EffectSnapshot.model_validate_json(
-        first.snapshot().model_dump_json()
-    )
-    second = effects.OfflineEffects(prepared, "numpy")
-    second.restore(saved)
-    tail = second.advance({"main": source[997:]}, actions, 997, 48000)
-    check_audio(tmp_path / "numpy-replay.wav", np.vstack([head, tail]), expected)
-    with pytest.raises(effects.EngineError, match="bounded shared storage"):
-        effects.native_live_graph(prepared)
-    with pytest.raises(effects.EngineError, match="bounded shared storage"):
-        effects.OfflineEffects(prepared, "native")
+    pairs: list[tuple[Literal["numpy", "native"], Literal["numpy", "native"]]] = [
+        ("numpy", "native"),
+        ("native", "numpy"),
+    ]
+    for origin, target in pairs:
+        first = effects.OfflineEffects(prepared, origin)
+        head = first.advance({"main": source[:997]}, [], 0, 997)
+        saved = effects.EffectSnapshot.model_validate_json(
+            first.snapshot().model_dump_json()
+        )
+        second = effects.OfflineEffects(prepared, target)
+        second.restore(saved)
+        tail = second.advance({"main": source[997:]}, actions, 997, 48000)
+        check_audio(
+            tmp_path / f"{origin}-{target}.wav", np.vstack([head, tail]), expected
+        )
+    actual, replay, drained = callback_audio(prepared, {"main": source}, actions)
+    assert drained
+    check_audio(tmp_path / "callback.wav", actual, expected)
+    check_audio(tmp_path / "replay.wav", replay, actual)
 
 
 def test_native_routes_reject_unused_transient_profile_fields() -> None:
@@ -257,36 +282,6 @@ def test_native_routes_reject_unused_transient_profile_fields() -> None:
         runtime.set_effect_graph(
             *plan[:12], ([(1, 4, -1.0, 1.0)], []), plan[13], 2, input_routes=[[-2]]
         )
-
-
-def test_native_effect_preparation_rejects_captured_release_inside_patch() -> None:
-    body = envelfo.Envelope.model_validate(
-        {
-            "initial": 0,
-            "segments": [{"duration": "100 ms", "to": 1}],
-            "release": [
-                {
-                    "kind": "exponential_approach",
-                    "asymptote": 0,
-                    "time_constant": "20 ms",
-                    "threshold": 0.1,
-                    "transition_to": 0,
-                    "transition_seconds": "1 ms",
-                }
-            ],
-        }
-    )
-    graph = shaper_graph().model_copy(
-        update={
-            "envelfos": {
-                "motion": envelfo.Patch(
-                    envelfos={"level": body}, outputs={"out": "level"}
-                )
-            }
-        }
-    )
-    with pytest.raises(effects.EngineError, match="bounded shared storage"):
-        effects.native_live_graph(effects.prepare(graph, 48000))
 
 
 def test_negative_detector_snapshot_is_rejected_before_replacing_state() -> None:

@@ -1,5 +1,12 @@
 # Shared persistent native effects
 
+The historical zero-heap counts below measure detached DSP only. The later
+[performance review fixes](performance-fixes.md) separately count the native
+call's array conversion and copying, exposing rust-numpy borrow-tracking
+allocations outside that DSP boundary. They also add exact coefficient caches
+and shared prepared captured-envelope storage. No whole-Python-callback or
+physical-device deadline guarantee follows from the detached counters.
+
 `OfflineEffects(..., backend="native")` and `LiveRuntime` use the persistent DSP
 core in `src/effects/runtime.rs`. The old native whole-graph function, separate
 granular function and per-frame compressor binding have been removed.

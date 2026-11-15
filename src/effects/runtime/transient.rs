@@ -5,6 +5,8 @@ use numpy::ndarray::ArrayView1;
 
 #[derive(Clone, Default)]
 pub(super) struct Transient {
+    fast_coefficients: super::follower::Coefficients,
+    slow_coefficients: super::follower::Coefficients,
     pub(super) fast: f64,
     pub(super) slow: f64,
 }
@@ -42,6 +44,7 @@ impl Transient {
             0.01,
             rate,
             1e-30,
+            &mut self.fast_coefficients,
         )?;
         super::follower::process(
             &mut self.slow,
@@ -50,6 +53,7 @@ impl Transient {
             0.1,
             rate,
             1e-30,
+            &mut self.slow_coefficients,
         )?;
         let contrast = (self.fast - self.slow) / self.fast.max(self.slow).max(1e-12);
         let gain_db = attack_db * contrast.max(0.0) + sustain_db * (-contrast).max(0.0);

@@ -51,9 +51,11 @@ the effect into broadband compression. There is no additional wrapper bypass.
 Input end silences the original signal and output immediately. The filter
 may drain its internal state afterward, without an audible output tail.
 Stop, portable cross-backend snapshots, native opaque snapshots and callback
-failures retain the constituent processors' contracts. Captured envelopes
-retain the native-effect preparation restriction documented in
-[the transient-shaper profile](transient-shaper.md).
+failures retain the constituent processors' contracts. Captured-envelope
+modulation now uses prepared shared Patch storage in both backends. See
+[the performance fixes](performance-fixes.md) for the later allocation-boundary
+and coefficient-caching changes; the measurements below remain the original
+pre-fix observations.
 
 ## Verification
 

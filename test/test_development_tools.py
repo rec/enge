@@ -23,6 +23,12 @@ def test_callback_summary_combines_reports_and_retains_nonzero_heap_counts(
                 name="native_callback_heap",
                 value=str({"successful": (3, 0, 0, 0), "failed": (1, 2, 3, 4)}),
             )
+            ElementTree.SubElement(
+                properties,
+                "property",
+                name="native_call_heap",
+                value=str({"successful": (3, 0, 0, 0), "failed": (1, 9, 0, 9)}),
+            )
         report = tmp_path / f"audit-{i}.xml"
         ElementTree.ElementTree(root).write(report)
         reports.append(report)
@@ -30,6 +36,8 @@ def test_callback_summary_combines_reports_and_retains_nonzero_heap_counts(
     assert summary.tests == 4
     assert summary.successful == [12, 0, 0, 0]
     assert summary.failed == [4, 8, 12, 16]
+    assert summary.native_call.successful == [12, 0, 0, 0]
+    assert summary.native_call.failed == [4, 36, 0, 36]
 
 
 def test_callback_summary_rejects_reports_without_heap_measurements(

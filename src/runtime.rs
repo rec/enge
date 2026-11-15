@@ -343,6 +343,7 @@ pub struct SynthRuntime {
     routes: Array2<f64>,
     route_maps: Vec<Vec<RouteMap>>,
     filter_definitions: Vec<FilterDefinition>,
+    filter_coefficients: Vec<crate::filters::Coefficients>,
     parameter_definitions: Vec<f64>,
     frequencies: Vec<f64>,
     phases: Vec<f64>,
@@ -507,6 +508,10 @@ impl SynthRuntime {
                 slots,
                 context_capacity,
             ),
+            filter_coefficients: vec![
+                crate::filters::Coefficients::default();
+                slots * filter_definitions.len()
+            ],
             filter_definitions,
             parameter_definitions: parameters,
             frequencies: vec![1.0; slots],
@@ -1524,15 +1529,8 @@ impl SynthRuntime {
                 }
                 cutoff = cutoff.clamp(filter.minimum_hz, filter.maximum_hz);
             }
-            let g = (PI * cutoff / self.rate).tan();
-            let d = q * (1.0 + g * g) + g;
-            let a1 = if q < 1.0 {
-                q / d
-            } else {
-                1.0 / (1.0 + g * (g + 1.0 / q))
-            };
-            let a2 = g * a1;
-            let a3 = g * a2;
+            let index = voice * self.filter_definitions.len() + filter_index;
+            let [g, d, a1, a2, a3] = self.filter_coefficients[index].get(cutoff, q, self.rate);
             for _ in 0..filter.stages {
                 let s1 = self.voice_filter_states[[voice, stage, 0]];
                 let s2 = self.voice_filter_states[[voice, stage, 1]];

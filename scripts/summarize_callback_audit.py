@@ -22,6 +22,7 @@ class CallbackHeap(BaseModel, frozen=True):
 
 class AuditSummary(CallbackHeap, frozen=True):
     tests: int
+    native_call: CallbackHeap
 
 
 class Options(BaseModel, frozen=True):
@@ -30,24 +31,31 @@ class Options(BaseModel, frozen=True):
 
 def summarize(reports: list[Path]) -> AuditSummary:
     tests = 0
-    totals = {n: [0, 0, 0, 0] for n in ("successful", "failed")}
+    totals = {
+        p: {n: [0, 0, 0, 0] for n in ("successful", "failed")}
+        for p in ("native_callback_heap", "native_call_heap")
+    }
     for report in reports:
         root = ElementTree.parse(report)
         tests += len(root.findall(".//testcase"))
-        properties = root.findall(".//property[@name='native_callback_heap']")
-        if not properties:
-            raise ValueError(f"No native_callback_heap properties in {report}")
-        for item in properties:
-            heap = CallbackHeap.model_validate(literal_eval(item.attrib["value"]))
-            for name, counts in (
-                ("successful", heap.successful),
-                ("failed", heap.failed),
-            ):
-                totals[name] = [
-                    a + b for a, b in zip(totals[name], counts, strict=True)
-                ]
+        for property, boundary in totals.items():
+            properties = root.findall(f".//property[@name='{property}']")
+            if not properties:
+                raise ValueError(f"No {property} properties in {report}")
+            for item in properties:
+                heap = CallbackHeap.model_validate(literal_eval(item.attrib["value"]))
+                for name, counts in (
+                    ("successful", heap.successful),
+                    ("failed", heap.failed),
+                ):
+                    boundary[name] = [
+                        a + b for a, b in zip(boundary[name], counts, strict=True)
+                    ]
     return AuditSummary(
-        tests=tests, successful=totals["successful"], failed=totals["failed"]
+        tests=tests,
+        successful=totals["native_callback_heap"]["successful"],
+        failed=totals["native_callback_heap"]["failed"],
+        native_call=CallbackHeap.model_validate(totals["native_call_heap"]),
     )
 
 

@@ -16,10 +16,35 @@ type RenderedFilters<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray3<f64>
 
 #[derive(Clone)]
 pub struct FilterBank {
+    coefficients: Vec<Coefficients>,
     responses: Vec<u8>,
     pub states: Array3<f64>,
     values: Array3<f64>,
     rate: f64,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Coefficients {
+    inputs: Option<[f64; 3]>,
+    values: [f64; 5],
+}
+
+impl Coefficients {
+    pub(crate) fn get(&mut self, cutoff: f64, q: f64, rate: f64) -> [f64; 5] {
+        let inputs = [cutoff, q, rate];
+        if self.inputs != Some(inputs) {
+            let g = (PI * cutoff / rate).tan();
+            let d = q * (1.0 + g * g) + g;
+            let a1 = if q < 1.0 {
+                q / d
+            } else {
+                1.0 / (1.0 + g * (g + 1.0 / q))
+            };
+            self.values = [g, d, a1, g * a1, g * (g * a1)];
+            self.inputs = Some(inputs);
+        }
+        self.values
+    }
 }
 
 impl FilterBank {
@@ -38,6 +63,7 @@ impl FilterBank {
         }
         let Some((responses, states, values)) = inputs else {
             return Ok(Self {
+                coefficients: vec![],
                 responses: vec![],
                 states: Array3::zeros((0, channels, 2)),
                 values: Array3::zeros((frames, 0, 2)),
@@ -69,6 +95,7 @@ impl FilterBank {
             }
         }
         Ok(Self {
+            coefficients: vec![Coefficients::default(); stages],
             responses,
             states: states.as_array().to_owned(),
             values,
@@ -98,15 +125,7 @@ impl FilterBank {
         sources: &mut [f64],
     ) -> NativeResult<()> {
         let response = self.responses[j];
-        let g = (PI * cutoff / self.rate).tan();
-        let d = q * (1.0 + g * g) + g;
-        let a1 = if q < 1.0 {
-            q / d
-        } else {
-            1.0 / (1.0 + g * (g + 1.0 / q))
-        };
-        let a2 = g * a1;
-        let a3 = g * a2;
+        let [g, d, a1, a2, a3] = self.coefficients[j].get(cutoff, q, self.rate);
         for (c, input) in sources.iter_mut().enumerate() {
             let (s1, s2) = (self.states[[j, c, 0]], self.states[[j, c, 1]]);
             let v3 = *input - s2;

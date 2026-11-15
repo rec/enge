@@ -40,6 +40,9 @@ use waveshaper::Waveshaper;
 
 #[pyclass(unsendable)]
 pub(crate) struct EffectRuntime {
+    filter_coefficients: Vec<crate::filters::Coefficients>,
+    compressor_coefficients: Vec<compressor::Coefficients>,
+    follower_coefficients: Vec<follower::Coefficients>,
     kinds: Vec<u8>,
     rate: f64,
     main_input: usize,
@@ -506,6 +509,7 @@ impl EffectRuntime {
                     ],
                     0.0,
                     rate,
+                    &mut compressor::Coefficients::default(),
                 )?;
             }
         }
@@ -1140,6 +1144,9 @@ impl EffectRuntime {
             steps: Array2::zeros(parameters.raw_dim()),
             remaining: Array2::zeros(parameters.raw_dim()),
             parameters,
+            filter_coefficients: vec![crate::filters::Coefficients::default(); filter_rows.len()],
+            compressor_coefficients: vec![compressor::Coefficients::default(); nodes],
+            follower_coefficients: vec![follower::Coefficients::default(); nodes],
             filter_states: Array3::zeros((filter_rows.len(), channels, 2)),
             filter_rows,
             granulators: prepared_granulators,
@@ -1461,6 +1468,7 @@ impl EffectRuntime {
                         ],
                         self.reductions[node],
                         rate,
+                        &mut self.compressor_coefficients[node],
                     )?;
                     self.reductions[node] = reduction;
                     for value in &mut self.wet[..channels] {
@@ -1548,6 +1556,7 @@ impl EffectRuntime {
                         self.resolved[[node, 3]],
                         rate,
                         self.resolved[[node, 4]],
+                        &mut self.follower_coefficients[node],
                     )?;
                     self.wet[0] = self.follower_levels[node];
                 }
@@ -1834,15 +1843,7 @@ impl EffectRuntime {
                 return Err(NativeError::Message("Invalid live filter cutoff/Q"));
             }
             cutoff = cutoff.clamp(filter.minimum, filter.maximum);
-            let g = (PI * cutoff / rate).tan();
-            let d = q * (1.0 + g * g) + g;
-            let a1 = if q < 1.0 {
-                q / d
-            } else {
-                1.0 / (1.0 + g * (g + 1.0 / q))
-            };
-            let a2 = g * a1;
-            let a3 = g * a2;
+            let [g, d, a1, a2, a3] = self.filter_coefficients[stage].get(cutoff, q, rate);
             for (channel, input) in self.wet[..channels].iter_mut().enumerate() {
                 let (s1, s2) = (
                     self.filter_states[[stage, channel, 0]],

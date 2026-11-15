@@ -12,8 +12,10 @@ precedence over historical proposals in the other plans.
   runtimes and retains voice lifetime, routing and audio integration.
 - Authored units use uFor and reccy's shared parser; prepared DSP stays numeric.
 - Native live mixing, bounded effect queues and sampler control/filter/generator
-  integration exist. The tested Rust callback paths pass the heap-allocation
-  gate; device deadlines and native host integration are separate boundaries.
+  integration exist. The tested detached Rust DSP paths pass the heap-allocation
+  gate. Native-call array borrowing allocates outside that boundary and is now
+  measured separately; device deadlines and native host integration remain
+  separate boundaries. See [the performance fixes](../doc/performance-fixes.md).
 - Effects include gain, filters, multiplication, granulation, oversampled
   waveshaping, delay/chorus/flanger, compression, reverb, phaser, utility routing,
   mixing, followers, gates/expanders, resonant delay, convolution and optional

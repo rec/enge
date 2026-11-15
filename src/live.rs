@@ -15,6 +15,7 @@ use numpy::ndarray::{Array2, ArrayViewMut2};
 use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PySequence;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::f64::consts::PI;
 
@@ -588,84 +589,91 @@ impl LiveRuntime {
         source.runtime.active_contexts()
     }
 
-    #[pyo3(signature = (output, inputs=Vec::new()))]
+    #[pyo3(signature = (output, inputs=None))]
     fn process_into(
         &mut self,
         py: Python<'_>,
-        mut output: PyReadwriteArray2<'_, f64>,
-        inputs: Vec<PyReadonlyArray2<'_, f64>>,
+        output: &Bound<'_, PyAny>,
+        inputs: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        if !output.is_c_contiguous()
-            || output.shape()[0] == 0
-            || output.shape()[0] > self.maximum_block_frames
-            || output.shape()[1] != self.output_scratch.ncols()
-        {
-            return Err(PyValueError::new_err("Invalid live runtime output"));
-        }
-        let frames = output.shape()[0];
-        let expected = self.effects.as_ref().map_or(0, |effects| {
-            effects
-                .input_routes
-                .iter()
-                .filter(|route| *route == &[-2])
-                .count()
-        });
-        if inputs.len() != expected {
-            return Err(PyValueError::new_err(
-                "Live host inputs do not match the prepared graph",
-            ));
-        }
-        if let Some(effects) = &mut self.effects {
-            let mut host = 0;
-            for (input, route) in effects.input_routes.iter().enumerate() {
-                if route == &[-2] {
-                    let values = inputs[host].as_array();
-                    if values.shape() != [frames, effects.widths[input]]
-                        || values.iter().any(|value| !value.is_finite())
-                    {
-                        return Err(PyValueError::new_err("Invalid live host input"));
-                    }
-                    host += 1;
-                }
+        #[cfg(feature = "allocation-audit")]
+        let call_audit = crate::heap_audit::Scope::native_call();
+        let result = (|| -> PyResult<()> {
+            let mut output = output.extract::<PyReadwriteArray2<'_, f64>>()?;
+            let inputs = inputs.map(|v| v.cast::<PySequence>()).transpose()?;
+            if !output.is_c_contiguous()
+                || output.shape()[0] == 0
+                || output.shape()[0] > self.maximum_block_frames
+                || output.shape()[1] != self.output_scratch.ncols()
+            {
+                return Err(PyValueError::new_err("Invalid live runtime output"));
             }
-            let mut host = 0;
-            for (input, route) in effects.input_routes.iter().enumerate() {
-                if route == &[-2] {
-                    for ((frame, channel), value) in inputs[host].as_array().indexed_iter() {
-                        effects.inputs[[input, frame, channel]] = *value;
-                    }
-                    host += 1;
-                } else {
-                    for frame in 0..frames {
-                        for channel in 0..effects.widths[input] {
-                            effects.inputs[[input, frame, channel]] = 0.0;
+            let frames = output.shape()[0];
+            let expected = self.effects.as_ref().map_or(0, |effects| {
+                effects
+                    .input_routes
+                    .iter()
+                    .filter(|route| *route == &[-2])
+                    .count()
+            });
+            if inputs.map_or(Ok(0), |v| v.len())? != expected {
+                return Err(PyValueError::new_err(
+                    "Live host inputs do not match the prepared graph",
+                ));
+            }
+            if let Some(effects) = &mut self.effects {
+                let mut host = 0;
+                for (input, route) in effects.input_routes.iter().enumerate() {
+                    if route == &[-2] {
+                        let array = inputs.unwrap().get_item(host)?;
+                        let array = array.extract::<PyReadonlyArray2<'_, f64>>()?;
+                        let values = array.as_array();
+                        if values.shape() != [frames, effects.widths[input]]
+                            || values.iter().any(|value| !value.is_finite())
+                        {
+                            return Err(PyValueError::new_err("Invalid live host input"));
+                        }
+                        // Only scratch changes here; validation errors leave actions
+                        // queued and all persistent DSP state unadvanced.
+                        for ((frame, channel), value) in values.indexed_iter() {
+                            effects.inputs[[input, frame, channel]] = *value;
+                        }
+                        host += 1;
+                    } else {
+                        for frame in 0..frames {
+                            for channel in 0..effects.widths[input] {
+                                effects.inputs[[input, frame, channel]] = 0.0;
+                            }
                         }
                     }
                 }
             }
-        }
-        let result = py.detach(|| {
-            #[cfg(feature = "allocation-audit")]
-            let audit = crate::heap_audit::Scope::new();
-            let result = self.process(frames);
-            #[cfg(feature = "allocation-audit")]
-            audit.finish(result.is_ok());
-            result
-        });
-        if let Err(error) = result {
-            output.as_array_mut().fill(0.0);
-            self.failed = true;
-            // Construct the Python exception only after native processing and its audit end.
-            return Err(error.into());
-        }
-        for (target, value) in output
-            .as_array_mut()
-            .iter_mut()
-            .zip(self.output_scratch.iter())
-        {
-            *target = *value;
-        }
-        Ok(())
+            let result = py.detach(|| {
+                #[cfg(feature = "allocation-audit")]
+                let audit = crate::heap_audit::Scope::new();
+                let result = self.process(frames);
+                #[cfg(feature = "allocation-audit")]
+                audit.finish(result.is_ok());
+                result
+            });
+            if let Err(error) = result {
+                output.as_array_mut().fill(0.0);
+                self.failed = true;
+                // Construct the Python exception only after native processing and its audit end.
+                return Err(error.into());
+            }
+            for (target, value) in output
+                .as_array_mut()
+                .iter_mut()
+                .zip(self.output_scratch.iter())
+            {
+                *target = *value;
+            }
+            Ok(())
+        })();
+        #[cfg(feature = "allocation-audit")]
+        call_audit.finish(result.is_ok());
+        result
     }
 
     fn snapshot(&self) -> PyResult<LiveRuntimeSnapshot> {

@@ -48,12 +48,13 @@ two finite, nonnegative scalar levels, and validate them before replacing the
 renderer. Native opaque snapshots retain the same state. Native processing
 uses prepared storage and the existing fixed-size callback error path.
 
-Captured exponential envelopes remain supported by NumPy effects. Native
-effect preparation rejects captured stages in either the body or release,
-including envelopes declared inside a Patch. Their shared Rust continuation
-currently allocates during callbacks, so accepting them would break the
-native effect allocation contract. Ordinary envelope and LFO modulation
-remain supported. This boundary does not change native synth support.
+Captured exponential envelopes are supported by NumPy and native effects,
+including bodies and releases declared inside a Patch. The original native
+preparation restriction was removed after enveLFO `0c027e2` added reusable
+Patch continuation, reset and command storage. Direct and nested captured
+modulation now has cross-backend and callback replay coverage. See
+[the allocation and caching review fixes](performance-fixes.md) for the
+separate detached-DSP and native-call measurement boundaries.
 
 ## Verification
 
@@ -66,9 +67,9 @@ upstream compensation, warm bypass, immediate stop/end, cross-backend JSON
 and native opaque replay, invalid controls, output overflow and malformed
 snapshot rejection. Audio regressions write paired 48 kHz WAVs lasting at
 least one second. Scoped enveLFO gain modulation and generator release are
-covered. A captured-envelope regression verifies NumPy modulation and portable
-replay against the analytical curve, plus explicit native preparation rejection.
-The final combined-state suite passes 3,487 tests with 29 optional skips.
+covered. A captured-envelope regression now verifies NumPy/native modulation
+and portable replay against the analytical curve, plus native callback replay.
+The original N6 combined-state suite passed 3,487 tests with 29 optional skips.
 The allocation audit records zero allocations, reallocations or frees in
 21,185 successful and 57 failed callbacks. Python lint, formatting, type checks
 and pyupgrade, plus Rust formatting, Clippy and unit tests pass.
@@ -122,9 +123,10 @@ and regression audio under `build/` are disposable generated artifacts.
 ## Additional work beyond the prompt
 
 The captured-envelope workstream landed on main as `af2c476` during this slice.
-This integration preserves its synth implementation and voice-amplitude
-rejection policy. The user approved an explicit native-effect boundary after
+The original integration preserved its synth implementation and voice-amplitude
+policy. The user approved an explicit native-effect boundary after
 the captured-envelope regression measured 48,086 allocations and frees in 74
-successful callbacks. Fixing shared captured-envelope storage is a separate
-slice; no parallel envelope renderer is introduced here. The matching enveLFO
+successful callbacks. The subsequent shared storage fix is recorded in
+[the performance review](performance-fixes.md); no parallel envelope renderer
+was introduced. The matching enveLFO
 dependency-only pin update keeps its uFor revision aligned with enge's.

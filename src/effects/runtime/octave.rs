@@ -5,6 +5,7 @@ use numpy::ndarray::ArrayView1;
 
 #[derive(Clone)]
 pub(super) struct Octave {
+    coefficients: super::follower::Coefficients,
     pub(super) levels: Vec<f64>,
     pub(super) armed: Vec<bool>,
     pub(super) positive: Vec<bool>,
@@ -14,6 +15,7 @@ pub(super) struct Octave {
 impl Octave {
     pub(super) fn new(channels: usize) -> Self {
         Self {
+            coefficients: super::follower::Coefficients::default(),
             levels: vec![0.0; channels],
             armed: vec![false; channels],
             positive: vec![false; channels],
@@ -51,6 +53,7 @@ impl Octave {
                 release,
                 rate,
                 floor,
+                &mut self.coefficients,
             )?;
             if self.levels[i] == 0.0 {
                 self.armed[i] = false;
