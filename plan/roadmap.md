@@ -94,7 +94,12 @@ heap checks pass, with zero misses in the three finite timing runs. The cut-only
 dynamic bell EQ is implemented with frequency/Q automation, a bounded target cut,
 linked dynamics and retained filter state. Functional and heap checks pass,
 including zero misses in the three finite timing runs with tuning automation.
-Named vibrato/tremolo effect profiles are the next catalogue slice. See
+Prepared vibrato/tremolo compositions are implemented with shared enveLFO sine
+motion, linear-amplitude tremolo and explicit delay-time vibrato depth. Their
+functional and allocation checks pass. All timing measurements, including vibrato
+misses, are recorded under the agreed shared-machine policy. Frequency shifting
+is the next catalogue slice. See
+[vibrato and tremolo](../doc/vibrato-tremolo.md),
 [dynamic EQ](../doc/dynamic-eq.md),
 [multiband compression](../doc/multiband-compressor.md),
 [the de-esser](../doc/deesser-effects.md),

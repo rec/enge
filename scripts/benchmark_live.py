@@ -46,6 +46,7 @@ class Settings(BaseModel):
     ] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
+    motion: Literal["none", "tremolo", "vibrato"] = "none"
     phaser: bool = False
     highpass: bool = False
     matrix: bool = False
@@ -548,6 +549,48 @@ def main(settings: Settings) -> None:
                 "output": {"kind": "processor", "processor": "room"},
             }
         )
+    if settings.motion != "none":
+        helper = (
+            audio_effects.tremolo_graph
+            if settings.motion == "tremolo"
+            else audio_effects.vibrato_graph
+        )
+        profile = helper(
+            "motion",
+            graph.scope,
+            audio_effects.GraphInput(
+                name="motion_input",
+                channels=graph.output_channels(),
+                source=audio_effects.MainStream(),
+            ),
+            settings.block_frames,
+        )
+        graph = audio_effects.EffectGraph.model_validate(
+            graph.model_dump()
+            | {
+                "processors": [*graph.processors, *profile.processors],
+                "connections": [
+                    *graph.connections,
+                    *[
+                        c.model_copy(update={"source": graph.output})
+                        if isinstance(c.source, audio_effects.InputSource)
+                        else c
+                        for c in profile.connections
+                    ],
+                ],
+                "output": profile.output,
+                "envelfos": graph.envelfos | profile.envelfos,
+                "bindings": [*graph.bindings, *profile.bindings],
+                "modulation": {
+                    "parameters": [
+                        *graph.modulation.parameters,
+                        *profile.modulation.parameters,
+                    ],
+                    "sources": [*graph.modulation.sources, *profile.modulation.sources],
+                    "routes": [*graph.modulation.routes, *profile.modulation.routes],
+                },
+            }
+        )
     engine = live.NativeLiveEngine(
         {"synth": synth.PersistentSynth(synth.prepare(document), settings.voices)},
         settings.block_frames,
@@ -628,6 +671,7 @@ def main(settings: Settings) -> None:
         f" waveshaper={settings.waveshaper}"
         f" curve={settings.waveshaper_curve} coloration={settings.coloration}"
         f" nonlinear={settings.nonlinear}"
+        f" motion={settings.motion}"
         f" bitcrusher={settings.bitcrusher}"
         f" phaser={settings.phaser}"
         f" highpass={settings.highpass}"
