@@ -87,8 +87,12 @@ also implemented, including sample-rate-aware graph latency and output control
 alignment. The linked two-follower transient shaper is implemented with scoped
 attack/sustain gains and zero intrinsic latency. The broadband de-esser is
 implemented as a band-pass detector plus linked compressor, with functional
-and allocation checks passing and observed timing misses documented. The next
-slice is dynamic EQ/multiband compression. See
+and allocation checks passing and observed timing misses documented. Three-band
+multiband compression is implemented with fixed phase-compensated LR4 crossovers,
+automated linked band dynamics and explicit external dry routing. Functional and
+heap checks pass, with zero misses in the three finite timing runs. Dynamic EQ
+is the next slice. See
+[multiband compression](../doc/multiband-compressor.md),
 [the de-esser](../doc/deesser-effects.md),
 [the transient shaper](../doc/transient-shaper.md), [the limiter](../doc/limiter-effects.md),
 [the N4 profiles](../doc/rectifier-enhancer-divider.md) and

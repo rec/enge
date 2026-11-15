@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from fractions import Fraction
 from functools import cached_property
-from math import ceil, exp, floor, fsum, isfinite, log10, pow, prod, sqrt
+from math import ceil, exp, floor, fsum, isfinite, pow, prod, sqrt
 from typing import Literal
 
 import numpy as np
@@ -17,6 +17,7 @@ from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBind
 from . import (
     _native,
     bitcrusher,
+    compressor,
     convolution,
     dynamics,
     effect_controls,
@@ -25,6 +26,7 @@ from . import (
     highpass,
     limiter,
     mixer,
+    multiband,
     octave,
     phaser,
     resonant,
@@ -40,6 +42,7 @@ from .effect_controls import EffectControlPlan
 from .highpass import HighpassState
 from .limiter import LimiterState
 from .mixer import MixerState
+from .multiband import MultibandState
 from .octave import OctaveState
 from .phaser import PhaserState
 from .synth import EngineError
@@ -157,6 +160,7 @@ class ProcessorState(BaseModel):
     octave: OctaveState | None = None
     limiter: LimiterState | None = None
     transient: TransientState | None = None
+    multiband: MultibandState | None = None
     expansion_gain: float = Field(default=1.0, ge=0, le=1)
     follower_level: float = Field(default=0.0, ge=0)
     route_delays: dict[str, ControlDelayState] = Field(default_factory=dict)
@@ -194,6 +198,16 @@ class PreparedEffects(BaseModel, frozen=True):
     tempo_map: TempoMap | None = None
     audio: dict[str, np.ndarray] = Field(default_factory=dict)
     audio_digests: dict[str, str] = Field(default_factory=dict)
+
+    @cached_property
+    def multiband_coefficients(
+        self,
+    ) -> dict[str, list[tuple[float, float, float, float, float]]]:
+        return {
+            p.name: multiband.coefficients(p, self.sample_rate)
+            for p in self.definition.processors
+            if isinstance(p, audio_effects.MultibandCompressor)
+        }
 
     @cached_property
     def convolutions(self) -> dict[str, convolution.PreparedConvolution]:
@@ -466,6 +480,12 @@ class OfflineEffects:
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
+            if isinstance(processor, audio_effects.MultibandCompressor):
+                state = snapshot.processors[processor.name].multiband
+                if state is None:
+                    raise EngineError("Missing multiband snapshot")
+                multiband.validate_state(state, len(layouts[processor.name]))
+                continue
             if isinstance(processor, audio_effects.TransientShaper):
                 state = snapshot.processors[processor.name].transient
                 if state is None:
@@ -623,6 +643,7 @@ class OfflineEffects:
                     audio_effects.Follower,
                 ),
             )
+            assert not isinstance(processor, audio_effects.MultibandCompressor)
             state.bypass = ParameterRamp(
                 at=action.tick,
                 start=state.bypass.value(action.tick),
@@ -822,6 +843,24 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.MultibandCompressor):
+            assert state.multiband is not None
+            values = [
+                [
+                    self._value(processor, f"{b}-{p}", frame)
+                    for p in audio_effects.CompressorBand.model_fields
+                ]
+                for b in ("low", "mid", "high")
+            ]
+            return multiband.process(
+                state.multiband,
+                ports["input"],
+                values,
+                self.definition.multiband_coefficients[processor.name],
+                processor,
+                self.definition.sample_rate,
+                ended["input"],
+            )
         if isinstance(processor, audio_effects.TransientShaper):
             assert state.transient is not None
             dry = ports["input"]
@@ -1028,25 +1067,9 @@ class OfflineEffects:
                     "makeup_db",
                 )
             ]
-            threshold, ratio, knee, attack, release, makeup = parameters
-            x = 20 * log10(peak) - threshold if peak else -np.inf
-            if x <= -knee / 2:
-                target = 0.0
-            elif x >= knee / 2:
-                target = (1 / ratio - 1) * x
-            else:
-                target = (0.5 * (1 / ratio - 1) * knee) * (x / knee + 0.5) ** 2
-            time = attack if target < state.reduction_db else release
-            reduction = (
-                target
-                if time == 0
-                else target
-                + exp(-1 / (self.definition.sample_rate * time))
-                * (state.reduction_db - target)
+            gain, reduction = compressor.gain(
+                peak, parameters, state.reduction_db, self.definition.sample_rate
             )
-            gain = float(np.power(10, (reduction + makeup) / 20))
-            if not np.isfinite(gain) or not np.isfinite(reduction):
-                raise ValueError("Non-finite compressor gain")
             state.reduction_db = reduction
             return _mix(dry, dry * gain, mix), ended["input"]
         if isinstance(processor, audio_effects.Reverb):
@@ -1538,6 +1561,7 @@ def prepare(
         audio_digests=digests,
     )
     _ = prepared.convolutions
+    _ = prepared.multiband_coefficients
     return prepared
 
 
@@ -1571,7 +1595,9 @@ def native_live_graph(
     ]
     connections = {(c.processor, c.port): c.source for c in graph.connections}
     widths = [
-        7
+        25
+        if isinstance(p, audio_effects.MultibandCompressor)
+        else 7
         if isinstance(p, audio_effects.Gate)
         else 6 + len(p.feedback_matrix) ** 2
         if isinstance(p, audio_effects.MatrixDelay)
@@ -1657,12 +1683,24 @@ def native_live_graph(
                     audio_effects.Mixer,
                     audio_effects.Crossfader,
                     audio_effects.Follower,
+                    audio_effects.MultibandCompressor,
                 ),
             )
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.TransientShaper):
+        if isinstance(processor, audio_effects.MultibandCompressor):
+            kinds.append(24)
+            parameters[node, [0, 3, 4]] = [
+                processor.lower_crossover_hz,
+                processor.upper_crossover_hz,
+                processor.state_floor,
+            ]
+            for b, band in enumerate((processor.low, processor.mid, processor.high)):
+                parameters[node, 7 + 6 * b : 13 + 6 * b] = list(
+                    band.model_dump().values()
+                )
+        elif isinstance(processor, audio_effects.TransientShaper):
             kinds.append(23)
             parameters[node, [0, 3]] = [
                 processor.attack_gain_db,
@@ -1932,6 +1970,7 @@ def native_live_graph(
                     audio_effects.Highpass,
                     audio_effects.Follower,
                     audio_effects.OctaveDivider,
+                    audio_effects.MultibandCompressor,
                 ),
             )
             else 0.0
@@ -2057,6 +2096,7 @@ def native_live_actions(
                     audio_effects.Follower,
                 ),
             )
+            assert not isinstance(processor, audio_effects.MultibandCompressor)
             parameter = 2
             target = 0.0 if action.bypassed else 1.0
             duration = processor.bypass_fade_frames
@@ -2152,12 +2192,21 @@ def _initial_state(
                 audio_effects.Mixer,
                 audio_effects.Crossfader,
                 audio_effects.Follower,
+                audio_effects.MultibandCompressor,
             ),
         )
         else {"mix": processor.mix}
     )
     filter_states: list[filters.FilterState] = []
-    if isinstance(processor, audio_effects.TransientShaper):
+    if isinstance(processor, audio_effects.MultibandCompressor):
+        values.update(
+            {
+                f"{b}-{p}": float(v)
+                for b in ("low", "mid", "high")
+                for p, v in getattr(processor, b).model_dump().items()
+            }
+        )
+    elif isinstance(processor, audio_effects.TransientShaper):
         values.update(
             attack_gain_db=processor.attack_gain_db,
             sustain_gain_db=processor.sustain_gain_db,
@@ -2272,6 +2321,9 @@ def _initial_state(
         },
         bypass=ParameterRamp(at=0, start=1, target=1, duration=0),
         filter_states=filter_states,
+        multiband=multiband.initial_state(channels)
+        if isinstance(processor, audio_effects.MultibandCompressor)
+        else None,
         transient=TransientState()
         if isinstance(processor, audio_effects.TransientShaper)
         else None,
@@ -2528,6 +2580,13 @@ def _reverb_coefficients(
 
 
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
+    if isinstance(processor, audio_effects.MultibandCompressor):
+        band, control = name.split("-", 1)
+        return (
+            7
+            + 6 * ["low", "mid", "high"].index(band)
+            + list(audio_effects.CompressorBand.model_fields).index(control)
+        )
     if name == "mix":
         return 1
     if isinstance(processor, audio_effects.TransientShaper):

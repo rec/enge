@@ -59,6 +59,18 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                24 => {
+                    let multiband = self.multibands[node].as_ref().expect("prepared multiband");
+                    let state = PyDict::new(py);
+                    let memory = multiband
+                        .integrators
+                        .axis_iter(Axis(0))
+                        .map(rows)
+                        .collect::<Vec<_>>();
+                    state.set_item("integrators", memory)?;
+                    state.set_item("reductions", multiband.reductions)?;
+                    value.set_item("multiband", state)?;
+                }
                 23 => {
                     let transient = self.transients[node]
                         .as_ref()
@@ -389,6 +401,27 @@ impl EffectRuntime {
                 }
             }
             match kind {
+                24 => {
+                    let state = field(value, "multiband")?;
+                    let state = state.cast::<PyDict>()?;
+                    let multiband = snapshot.multibands[node]
+                        .as_mut()
+                        .expect("prepared multiband");
+                    let memory: Vec<Vec<Vec<f64>>> = field(state, "integrators")?.extract()?;
+                    if memory.len() != 9 {
+                        return Err(PyValueError::new_err("Invalid multiband snapshot"));
+                    }
+                    for (stage, values) in memory.into_iter().enumerate() {
+                        restore_rows(multiband.integrators.index_axis_mut(Axis(0), stage), values)?;
+                    }
+                    let reductions: [f64; 3] = field(state, "reductions")?.extract()?;
+                    if reductions.iter().any(|v| !v.is_finite() || *v > 0.0) {
+                        return Err(PyValueError::new_err(
+                            "Invalid multiband reduction snapshot",
+                        ));
+                    }
+                    multiband.reductions = reductions;
+                }
                 23 => {
                     let state = field(value, "transient")?;
                     let state = state.cast::<PyDict>()?;

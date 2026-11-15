@@ -35,7 +35,7 @@ class Settings(BaseModel):
     waveshaper: bool = False
     waveshaper_curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"] = "soft"
     nonlinear: Literal[
-        "none", "octave", "enhancer", "limiter", "transient", "deesser"
+        "none", "octave", "enhancer", "limiter", "transient", "deesser", "multiband"
     ] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
@@ -193,6 +193,13 @@ def main(settings: Settings) -> None:
         processors.append(
             audio_effects.TransientShaper(
                 name="transient", attack_gain_db=12, sustain_gain_db=-6
+            )
+        )
+    if settings.nonlinear == "multiband":
+        band = audio_effects.CompressorBand(threshold_db=-24, ratio=4)
+        processors.append(
+            audio_effects.MultibandCompressor(
+                name="bands", low=band, mid=band, high=band
             )
         )
     graph = effects.serial_graph(
