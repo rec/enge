@@ -98,7 +98,11 @@ Prepared vibrato/tremolo compositions are implemented with shared enveLFO sine
 motion, linear-amplitude tremolo and explicit delay-time vibrato depth. Their
 functional and allocation checks pass. All timing measurements, including vibrato
 misses, are recorded under the agreed shared-machine policy. Frequency shifting
-is the next catalogue slice. See
+is implemented with the approved fixed FIR, signed controls and aligned dry paths;
+functional and allocation checks pass. All timing observations are retained,
+including two 64-frame misses under the agreed shared-machine policy.
+Reverse/scrub/stutter is the next catalogue slice. See
+[frequency shifting](../doc/frequency-shifter.md),
 [vibrato and tremolo](../doc/vibrato-tremolo.md),
 [dynamic EQ](../doc/dynamic-eq.md),
 [multiband compression](../doc/multiband-compressor.md),

@@ -215,6 +215,17 @@ impl EffectRuntime {
                     state.set_item("grains", grains)?;
                     value.set_item("granulator", state)?;
                 }
+                26 => {
+                    let shifter = self.frequency_shifters[node]
+                        .as_ref()
+                        .expect("prepared frequency shifter");
+                    let state = PyDict::new(py);
+                    state.set_item("history", rows(shifter.history.view()))?;
+                    state.set_item("write", shifter.write)?;
+                    state.set_item("phase", shifter.phase)?;
+                    state.set_item("remaining", shifter.remaining)?;
+                    value.set_item("frequency_shifter", state)?;
+                }
                 4 => {
                     let shaper = self.waveshapers[node]
                         .as_ref()
@@ -682,6 +693,26 @@ impl EffectRuntime {
                         )?;
                         grain.active = true;
                         granular.order[index] = index;
+                    }
+                }
+                26 => {
+                    let state = field(value, "frequency_shifter")?;
+                    let state = state.cast::<PyDict>()?;
+                    let shifter = snapshot.frequency_shifters[node]
+                        .as_mut()
+                        .expect("prepared frequency shifter");
+                    restore_rows(
+                        shifter.history.view_mut(),
+                        field(state, "history")?.extract()?,
+                    )?;
+                    shifter.write = field(state, "write")?.extract()?;
+                    shifter.phase = field(state, "phase")?.extract()?;
+                    shifter.remaining = field(state, "remaining")?.extract()?;
+                    if shifter.write >= 1025
+                        || !(0.0..1.0).contains(&shifter.phase)
+                        || shifter.remaining > 1024
+                    {
+                        return Err(PyValueError::new_err("Invalid frequency shifter clock"));
                     }
                 }
                 4 => {

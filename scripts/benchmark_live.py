@@ -46,7 +46,7 @@ class Settings(BaseModel):
     ] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
-    motion: Literal["none", "tremolo", "vibrato"] = "none"
+    motion: Literal["none", "tremolo", "vibrato", "frequency-shift"] = "none"
     phaser: bool = False
     highpass: bool = False
     matrix: bool = False
@@ -193,6 +193,8 @@ def main(settings: Settings) -> None:
         )
     if settings.bitcrusher:
         processors.append(audio_effects.Bitcrusher(name="crush", bits=8, hold_frames=1))
+    if settings.motion == "frequency-shift":
+        processors.append(audio_effects.FrequencyShifter(name="shift", shift_hz=250))
     if settings.nonlinear == "octave":
         processors.append(audio_effects.OctaveDivider(name="octave"))
     if settings.nonlinear == "limiter":
@@ -549,7 +551,7 @@ def main(settings: Settings) -> None:
                 "output": {"kind": "processor", "processor": "room"},
             }
         )
-    if settings.motion != "none":
+    if settings.motion in {"tremolo", "vibrato"}:
         helper = (
             audio_effects.tremolo_graph
             if settings.motion == "tremolo"

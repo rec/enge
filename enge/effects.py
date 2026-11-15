@@ -25,6 +25,7 @@ from . import (
     effect_controls,
     filters,
     follower,
+    frequency_shifter,
     highpass,
     limiter,
     mixer,
@@ -41,6 +42,7 @@ from .bitcrusher import BitcrusherState
 from .convolution import ConvolutionState
 from .dynamics import GateState
 from .effect_controls import EffectControlPlan
+from .frequency_shifter import FrequencyShifterState
 from .highpass import HighpassState
 from .limiter import LimiterState
 from .mixer import MixerState
@@ -153,6 +155,7 @@ class ProcessorState(BaseModel):
     resonant_delay: ResonantDelayState | None = None
     reverb: ReverbState | None = None
     waveshaper: WaveshaperState | None = None
+    frequency_shifter: FrequencyShifterState | None = None
     phaser: PhaserState | None = None
     highpass: HighpassState | None = None
     mixer: MixerState | None = None
@@ -336,6 +339,11 @@ class OfflineEffects:
                 frames = 0 if modulated else arrival
                 if isinstance(processor, audio_effects.Waveshaper):
                     frames += 24 if name in {"drive", "bias"} else 48
+                elif isinstance(processor, audio_effects.FrequencyShifter) and name in {
+                    "mix",
+                    "bypass",
+                }:
+                    frames += 512
                 elif isinstance(processor, audio_effects.Limiter):
                     frames += audio_effects.processor_latency(
                         processor, definition.sample_rate
@@ -365,6 +373,9 @@ class OfflineEffects:
                         remaining=delay,
                     )
         self.waveshaper_coefficients = np.asarray(waveshaper.halfband_coefficients())
+        self.frequency_shifter_coefficients = np.asarray(
+            frequency_shifter.coefficients()
+        )
         self.generator_graph = effect_controls.generator_graph(
             self.definition.definition
         )
@@ -1038,6 +1049,17 @@ class OfflineEffects:
             dry = ports["input"]
             wet = dry * pow(10, self._value(processor, "gain_db", frame) / 20)
             return _mix(dry, wet, mix), ended["input"]
+        if isinstance(processor, audio_effects.FrequencyShifter):
+            assert state.frequency_shifter is not None
+            dry, wet, drained = frequency_shifter.process(
+                state.frequency_shifter,
+                ports["input"],
+                self._value(processor, "shift_hz", frame),
+                self.definition.sample_rate,
+                self.frequency_shifter_coefficients,
+                ended["input"],
+            )
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, audio_effects.Waveshaper):
             assert state.waveshaper is not None
             dry, wet, drained = waveshaper.process(
@@ -1871,6 +1893,9 @@ def native_live_graph(
             parameters[node, 0] = processor.gain_db
         elif isinstance(processor, audio_effects.Multiply):
             kinds.append(1)
+        elif isinstance(processor, audio_effects.FrequencyShifter):
+            kinds.append(26)
+            parameters[node, 0] = processor.shift_hz
         elif isinstance(processor, audio_effects.Waveshaper):
             kinds.append(4)
             parameters[node, [0, 3, 4, 5]] = [
@@ -2340,6 +2365,8 @@ def _initial_state(
         values["position"] = processor.position
     elif isinstance(processor, audio_effects.Gain):
         values["gain_db"] = processor.gain_db
+    elif isinstance(processor, audio_effects.FrequencyShifter):
+        values["shift_hz"] = processor.shift_hz
     elif isinstance(processor, audio_effects.Waveshaper):
         values.update(
             drive=processor.drive,
@@ -2442,6 +2469,9 @@ def _initial_state(
         gate=GateState() if isinstance(processor, audio_effects.Gate) else None,
         waveshaper=waveshaper.initial_state(channels)
         if isinstance(processor, audio_effects.Waveshaper)
+        else None,
+        frequency_shifter=frequency_shifter.initial_state(channels)
+        if isinstance(processor, audio_effects.FrequencyShifter)
         else None,
         phaser=PhaserState(
             stages=[[0.0] * channels for _ in range(6)], feedback=[0.0] * channels
@@ -2736,6 +2766,8 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
     if isinstance(processor, audio_effects.Crossfader):
         return 0
     if isinstance(processor, audio_effects.Gain):
+        return 0
+    if isinstance(processor, audio_effects.FrequencyShifter):
         return 0
     if isinstance(processor, audio_effects.Waveshaper):
         return {"drive": 0, "bias": 3, "output_gain_db": 4}[name]

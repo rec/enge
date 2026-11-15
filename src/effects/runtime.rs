@@ -5,6 +5,7 @@ pub(crate) mod controls;
 pub(crate) mod convolution;
 mod dynamics;
 mod follower;
+mod frequency_shifter;
 mod highpass;
 mod limiter;
 mod matrix;
@@ -25,6 +26,7 @@ use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::ControlBank;
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{RouteMap, sum_partials};
+use frequency_shifter::FrequencyShifter;
 use highpass::Highpass;
 use matrix::RoutingMatrix;
 use mixer::Mixer;
@@ -72,6 +74,7 @@ pub(crate) struct EffectRuntime {
     reductions: Vec<f64>,
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
+    frequency_shifters: Vec<Option<FrequencyShifter>>,
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
@@ -140,6 +143,7 @@ pub(crate) struct EffectSnapshot {
     reductions: Vec<f64>,
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
+    frequency_shifters: Vec<Option<FrequencyShifter>>,
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
@@ -379,7 +383,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 25)
+        if kinds.iter().any(|v| *v > 26)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -528,6 +532,15 @@ impl EffectRuntime {
         let mut latencies = vec![0; nodes + inputs];
         let mut alignment = Vec::with_capacity(nodes);
         let mut waveshapers = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut frequency_shifters = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        for (node, kind) in kinds.iter().enumerate() {
+            if *kind == 26 {
+                if !(-2000.0..=2000.0).contains(&parameters.as_array()[[node, 0]]) {
+                    return Err(PyValueError::new_err("Invalid frequency shift"));
+                }
+                frequency_shifters[node] = Some(FrequencyShifter::new(widths[node + inputs]));
+            }
+        }
         let mut bitcrushers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut octaves = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut limiters = (0..nodes).map(|_| None).collect::<Vec<_>>();
@@ -1130,6 +1143,7 @@ impl EffectRuntime {
                                     23 => matches!(parameter, 0 | 3),
                                     24 => (7..25).contains(&parameter),
                                     25 => matches!(parameter, 0 | 3..=9),
+                                    26 => parameter == 0,
                                     _ => false,
                                 });
                         let modulated = controls
@@ -1139,7 +1153,9 @@ impl EffectRuntime {
                         let frames = (if modulated { 0 } else { arrival })
                             + if kinds[node] == 4 {
                                 if matches!(parameter, 0 | 3) { 24 } else { 48 }
-                            } else if kinds[node] == 22 {
+                            } else if kinds[node] == 22
+                                || (kinds[node] == 26 && matches!(parameter, 1 | 2))
+                            {
                                 intrinsic_latency(kinds[node], parameters.row(node))
                             } else {
                                 0
@@ -1166,6 +1182,7 @@ impl EffectRuntime {
             reductions: vec![0.0; nodes],
             reverbs,
             waveshapers,
+            frequency_shifters,
             phasers,
             highpasses,
             resonants,
@@ -1360,6 +1377,7 @@ impl EffectRuntime {
                 ));
             }
             let mut waveshaper_drained = false;
+            let mut frequency_shifter_drained = false;
             let mut convolution_drained = false;
             let mut bitcrusher_drained = false;
             let mut octave_drained = false;
@@ -1419,6 +1437,18 @@ impl EffectRuntime {
                             self.resolved[[node, 0]],
                             self.resolved[[node, 3]],
                             self.resolved[[node, 4]],
+                            self.port_ended[[node, 0]],
+                        )?;
+                }
+                26 => {
+                    frequency_shifter_drained = self.frequency_shifters[node]
+                        .as_mut()
+                        .expect("prepared frequency shifter")
+                        .process(
+                            &mut self.dry[..channels],
+                            &mut self.wet[..channels],
+                            self.resolved[[node, 0]],
+                            rate,
                             self.port_ended[[node, 0]],
                         )?;
                 }
@@ -1700,6 +1730,7 @@ impl EffectRuntime {
                             .as_ref()
                             .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
                         4 => waveshaper_drained,
+                        26 => frequency_shifter_drained,
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
                         19 => convolution_drained,
                         20 => bitcrusher_drained,
@@ -1826,6 +1857,11 @@ impl EffectRuntime {
         }
         if self.kinds[node] == 25 && parameter > 9 {
             return Err(NativeError::Message("Invalid dynamic EQ parameter action"));
+        }
+        if self.kinds[node] == 26
+            && (parameter > 2 || (parameter == 0 && !(-2000.0..=2000.0).contains(&action[4])))
+        {
+            return Err(NativeError::Message("Invalid frequency shift action"));
         }
         if self.kinds[node] == 18 && !matches!(parameter, 1..=3) {
             return Err(NativeError::Message(
@@ -2197,6 +2233,7 @@ impl EffectRuntime {
             reductions: self.reductions.clone(),
             reverbs: self.reverbs.clone(),
             waveshapers: self.waveshapers.clone(),
+            frequency_shifters: self.frequency_shifters.clone(),
             phasers: self.phasers.clone(),
             highpasses: self.highpasses.clone(),
             resonants: self.resonants.clone(),
@@ -2302,6 +2339,15 @@ impl EffectRuntime {
                     _ => true,
                 })
             || self
+                .frequency_shifters
+                .iter()
+                .zip(&snapshot.frequency_shifters)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
+            || self
                 .reverbs
                 .iter()
                 .zip(&snapshot.reverbs)
@@ -2395,6 +2441,8 @@ impl EffectRuntime {
         self.reductions.clone_from(&snapshot.reductions);
         self.reverbs.clone_from(&snapshot.reverbs);
         self.waveshapers.clone_from(&snapshot.waveshapers);
+        self.frequency_shifters
+            .clone_from(&snapshot.frequency_shifters);
         self.phasers.clone_from(&snapshot.phasers);
         self.highpasses.clone_from(&snapshot.highpasses);
         self.resonants.clone_from(&snapshot.resonants);
@@ -2468,6 +2516,7 @@ impl LiveTapDelay {
 fn intrinsic_latency(kind: u8, parameters: numpy::ndarray::ArrayView1<'_, f64>) -> usize {
     match kind {
         4 => 48,
+        26 => 512,
         19 => parameters[0] as usize,
         22 => parameters[4] as usize,
         _ => 0,
