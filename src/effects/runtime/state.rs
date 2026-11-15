@@ -155,7 +155,10 @@ impl EffectRuntime {
                     state.set_item("damping", damping)?;
                     value.set_item("resonant_delay", state)?;
                 }
-                2 => {
+                2 | 25 => {
+                    if *kind == 25 {
+                        value.set_item("reduction_db", self.reductions[node])?;
+                    }
                     let mut filters = Vec::new();
                     for (stage, filter) in self.filter_rows.iter().enumerate() {
                         if filter.node == node {
@@ -585,7 +588,16 @@ impl EffectRuntime {
                         .filter(|v| v.abs() >= self.tail_thresholds[node])
                         .count();
                 }
-                2 => {
+                2 | 25 => {
+                    if *kind == 25 {
+                        let reduction: f64 = field(value, "reduction_db")?.extract()?;
+                        if !reduction.is_finite() || reduction > 0.0 {
+                            return Err(PyValueError::new_err(
+                                "Invalid dynamic EQ reduction snapshot",
+                            ));
+                        }
+                        snapshot.reductions[node] = reduction;
+                    }
                     let values: Vec<Bound<'_, PyDict>> =
                         field(value, "filter_states")?.extract()?;
                     let stages = self

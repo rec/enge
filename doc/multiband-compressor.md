@@ -90,7 +90,8 @@ the full audit is `multiband-full.xml` with summary `multiband-full-heap.json`
 in the same directory. The snapshot shape follow-up is recorded in
 `multiband-snapshot-final-r2.log`.
 
-Dynamic EQ is the remaining second N8 slice. This profile does not implement
+Dynamic EQ is implemented separately in [the dynamic bell profile](dynamic-eq.md).
+This multiband profile does not implement
 moving crossovers, linear-phase filtering, external detectors or dynamic EQ.
 
 ## Reproduction

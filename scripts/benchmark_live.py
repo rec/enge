@@ -35,7 +35,14 @@ class Settings(BaseModel):
     waveshaper: bool = False
     waveshaper_curve: Literal["soft", "hard", "fold", "half_wave", "full_wave"] = "soft"
     nonlinear: Literal[
-        "none", "octave", "enhancer", "limiter", "transient", "deesser", "multiband"
+        "none",
+        "octave",
+        "enhancer",
+        "limiter",
+        "transient",
+        "deesser",
+        "multiband",
+        "dynamic-eq",
     ] = "none"
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
@@ -201,6 +208,10 @@ def main(settings: Settings) -> None:
             audio_effects.MultibandCompressor(
                 name="bands", low=band, mid=band, high=band
             )
+        )
+    if settings.nonlinear == "dynamic-eq":
+        processors.append(
+            audio_effects.DynamicEQ(name="bell", threshold_db=-24, ratio=4)
         )
     graph = effects.serial_graph(
         audio_effects.AttachmentScope.master,
@@ -695,6 +706,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
             if ordinal % 3 == 1 or not settings.granular
             else ("cloud", "density_hz", 40 + (start + ordinal) % 50)
         )
+        if settings.nonlinear == "dynamic-eq" and ordinal % 4 == 2:
+            processor, parameter, value = (
+                ("bell", "center_hz", 400 + (start + ordinal * 53) % 6000)
+                if ordinal % 8 == 2
+                else ("bell", "q", 0.5 + (start + ordinal) % 100 / 40)
+            )
         if settings.compressor and ordinal % 4 == 3:
             processor, parameter, value = (
                 "duck",

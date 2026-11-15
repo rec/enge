@@ -13,6 +13,7 @@ pub(crate) fn gain(
     reduction: f64,
     rate: f64,
     coefficients: &mut Coefficients,
+    minimum_reduction: f64,
 ) -> NativeResult<(f64, f64)> {
     let [threshold, ratio, knee, attack, release, makeup] = parameters;
     if !peak.is_finite()
@@ -26,6 +27,8 @@ pub(crate) fn gain(
         || knee < 0.0
         || attack < 0.0
         || release < 0.0
+        || minimum_reduction.is_nan()
+        || minimum_reduction > 0.0
     {
         return Err(NativeError::Message(
             "Invalid compressor parameters or state",
@@ -43,6 +46,10 @@ pub(crate) fn gain(
             (0.5 * (1.0 / ratio - 1.0) * knee) * (x / knee + 0.5).powi(2)
         }
     };
+    if !target.is_finite() {
+        return Err(NativeError::Message("Non-finite compressor target"));
+    }
+    let target = target.max(minimum_reduction);
     let increasing = target < reduction;
     let time = if increasing { attack } else { release };
     let reduction = if time == 0.0 {

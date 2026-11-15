@@ -73,7 +73,11 @@ def process(
     output = np.zeros_like(source)
     for i, band in enumerate([low, mid, high]):
         gain, state.reductions[i] = compressor.gain(
-            float(np.max(np.abs(band))), values[i], state.reductions[i], rate
+            float(np.max(np.abs(band))),
+            values[i],
+            state.reductions[i],
+            rate,
+            -float("inf"),
         )
         output += gain * band
     drained = ended and np.all(np.abs(state.integrators) < definition.tail_threshold)

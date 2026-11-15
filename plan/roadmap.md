@@ -90,8 +90,12 @@ implemented as a band-pass detector plus linked compressor, with functional
 and allocation checks passing and observed timing misses documented. Three-band
 multiband compression is implemented with fixed phase-compensated LR4 crossovers,
 automated linked band dynamics and explicit external dry routing. Functional and
-heap checks pass, with zero misses in the three finite timing runs. Dynamic EQ
-is the next slice. See
+heap checks pass, with zero misses in the three finite timing runs. The cut-only
+dynamic bell EQ is implemented with frequency/Q automation, a bounded target cut,
+linked dynamics and retained filter state. Functional and heap checks pass,
+including zero misses in the three finite timing runs with tuning automation.
+Named vibrato/tremolo effect profiles are the next catalogue slice. See
+[dynamic EQ](../doc/dynamic-eq.md),
 [multiband compression](../doc/multiband-compressor.md),
 [the de-esser](../doc/deesser-effects.md),
 [the transient shaper](../doc/transient-shaper.md), [the limiter](../doc/limiter-effects.md),

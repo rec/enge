@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ufor import audio_effects, instrument_trace, modulation
 from ufor.control import TempoMap
 from ufor.oscillator import Waveform
+from ufor.samples import processing
 from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBinding
 
 from . import (
@@ -19,6 +20,7 @@ from . import (
     bitcrusher,
     compressor,
     convolution,
+    dynamic_eq,
     dynamics,
     effect_controls,
     filters,
@@ -207,6 +209,14 @@ class PreparedEffects(BaseModel, frozen=True):
             p.name: multiband.coefficients(p, self.sample_rate)
             for p in self.definition.processors
             if isinstance(p, audio_effects.MultibandCompressor)
+        }
+
+    @cached_property
+    def dynamic_eq_bands(self) -> dict[str, processing.ResonantFilter]:
+        return {
+            p.name: dynamic_eq.band_definition(p)
+            for p in self.definition.processors
+            if isinstance(p, audio_effects.DynamicEQ)
         }
 
     @cached_property
@@ -480,6 +490,14 @@ class OfflineEffects:
             raise EngineError("Snapshot belongs to different prepared effects")
         layouts = _processor_layouts(self.definition.definition)
         for processor in self.definition.definition.processors:
+            if isinstance(processor, audio_effects.DynamicEQ):
+                state = snapshot.processors[processor.name]
+                dynamic_eq.validate_state(
+                    state.filter_states,
+                    state.reduction_db,
+                    len(layouts[processor.name]),
+                )
+                continue
             if isinstance(processor, audio_effects.MultibandCompressor):
                 state = snapshot.processors[processor.name].multiband
                 if state is None:
@@ -843,6 +861,23 @@ class OfflineEffects:
         frame: int,
     ) -> tuple[np.ndarray, bool]:
         state = self.processors[processor.name]
+        if isinstance(processor, audio_effects.DynamicEQ):
+            dry = ports["input"]
+            values = {n: self._value(processor, n, frame) for n in state.parameters}
+            wet, state.filter_states, state.reduction_db, drained = dynamic_eq.process(
+                processor,
+                self.definition.dynamic_eq_bands[processor.name],
+                state.filter_states,
+                state.reduction_db,
+                dry,
+                values,
+                self.definition.sample_rate,
+                ended["input"],
+            )
+            mix = values["mix"] * self.delayed.get(
+                (processor.name, "bypass"), state.bypass.value(frame)
+            )
+            return _mix(dry, wet, mix), drained
         if isinstance(processor, audio_effects.MultibandCompressor):
             assert state.multiband is not None
             values = [
@@ -1068,7 +1103,11 @@ class OfflineEffects:
                 )
             ]
             gain, reduction = compressor.gain(
-                peak, parameters, state.reduction_db, self.definition.sample_rate
+                peak,
+                parameters,
+                state.reduction_db,
+                self.definition.sample_rate,
+                -float("inf"),
             )
             state.reduction_db = reduction
             return _mix(dry, dry * gain, mix), ended["input"]
@@ -1483,7 +1522,22 @@ def prepare(
     ):
         raise EngineError("Beat-clock Envelfo requires a host tempo map")
     for processor in definition.processors:
-        if isinstance(processor, audio_effects.Filter):
+        if isinstance(processor, audio_effects.DynamicEQ):
+            band = dynamic_eq.band_definition(processor)
+            filters.parameters([band], sample_rate, 1)
+            for parameter in definition.modulation.parameters:
+                if (
+                    parameter.target.name == processor.name
+                    and parameter.target.parameter in {"center_hz", "q"}
+                ):
+                    for value in (parameter.minimum, parameter.maximum):
+                        row = (
+                            [value, processor.q]
+                            if parameter.target.parameter == "center_hz"
+                            else [processor.center_hz, value]
+                        )
+                        filters.parameters([band], sample_rate, 1, np.array([[row]]))
+        elif isinstance(processor, audio_effects.Filter):
             filters.parameters(processor.filters, sample_rate, 1)
         elif isinstance(processor, audio_effects.ModulatedDelay):
             _channel_phase_offsets(processor, len(layouts[processor.name]))
@@ -1595,7 +1649,9 @@ def native_live_graph(
     ]
     connections = {(c.processor, c.port): c.source for c in graph.connections}
     widths = [
-        25
+        10
+        if isinstance(p, audio_effects.DynamicEQ)
+        else 25
         if isinstance(p, audio_effects.MultibandCompressor)
         else 7
         if isinstance(p, audio_effects.Gate)
@@ -1689,7 +1745,31 @@ def native_live_graph(
             else processor.mix,
             1,
         ]
-        if isinstance(processor, audio_effects.MultibandCompressor):
+        if isinstance(processor, audio_effects.DynamicEQ):
+            kinds.append(25)
+            parameters[node, [0, 3, 4, 5, 6, 7, 8, 9]] = [
+                processor.threshold_db,
+                processor.center_hz,
+                processor.q,
+                processor.ratio,
+                processor.knee_db,
+                processor.attack_seconds,
+                processor.release_seconds,
+                processor.maximum_cut_db,
+            ]
+            band = definition.dynamic_eq_bands[processor.name]
+            filter_rows.append(
+                [
+                    node,
+                    2,
+                    3,
+                    processor.state_floor,
+                    band.minimum_hz,
+                    definition.sample_rate / 2 * band.nyquist_ratio,
+                    0,
+                ]
+            )
+        elif isinstance(processor, audio_effects.MultibandCompressor):
             kinds.append(24)
             parameters[node, [0, 3, 4]] = [
                 processor.lower_crossover_hz,
@@ -1971,6 +2051,7 @@ def native_live_graph(
                     audio_effects.Follower,
                     audio_effects.OctaveDivider,
                     audio_effects.MultibandCompressor,
+                    audio_effects.DynamicEQ,
                 ),
             )
             else 0.0
@@ -2198,7 +2279,26 @@ def _initial_state(
         else {"mix": processor.mix}
     )
     filter_states: list[filters.FilterState] = []
-    if isinstance(processor, audio_effects.MultibandCompressor):
+    if isinstance(processor, audio_effects.DynamicEQ):
+        values.update(
+            {
+                n: getattr(processor, n)
+                for n in (
+                    "center_hz",
+                    "q",
+                    "threshold_db",
+                    "ratio",
+                    "knee_db",
+                    "attack_seconds",
+                    "release_seconds",
+                    "maximum_cut_db",
+                )
+            }
+        )
+        filter_states = filters.initial_states(
+            [dynamic_eq.band_definition(processor)], channels
+        )
+    elif isinstance(processor, audio_effects.MultibandCompressor):
         values.update(
             {
                 f"{b}-{p}": float(v)
@@ -2580,6 +2680,18 @@ def _reverb_coefficients(
 
 
 def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
+    if isinstance(processor, audio_effects.DynamicEQ):
+        return {
+            "threshold_db": 0,
+            "mix": 1,
+            "center_hz": 3,
+            "q": 4,
+            "ratio": 5,
+            "knee_db": 6,
+            "attack_seconds": 7,
+            "release_seconds": 8,
+            "maximum_cut_db": 9,
+        }[name]
     if isinstance(processor, audio_effects.MultibandCompressor):
         band, control = name.split("-", 1)
         return (

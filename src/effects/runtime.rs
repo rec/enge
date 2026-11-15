@@ -379,7 +379,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 24)
+        if kinds.iter().any(|v| *v > 25)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -390,7 +390,10 @@ impl EffectRuntime {
             || tail_thresholds.len() != nodes
             || tail_thresholds.iter().enumerate().any(|(node, value)| {
                 !value.is_finite()
-                    || if matches!(kinds[node], 2 | 5 | 6 | 8 | 9 | 10 | 14 | 17 | 18 | 21 | 24) {
+                    || if matches!(
+                        kinds[node],
+                        2 | 5 | 6 | 8 | 9 | 10 | 14 | 17 | 18 | 21 | 24 | 25
+                    ) {
                         *value <= 0.0
                     } else {
                         *value != 0.0
@@ -495,8 +498,9 @@ impl EffectRuntime {
                     ));
                 }
             }
-            if kinds[node] == 7 {
-                if parameters.shape()[1] < 8 {
+            if matches!(kinds[node], 7 | 25) {
+                let dynamic = kinds[node] == 25;
+                if parameters.shape()[1] < if dynamic { 10 } else { 8 } {
                     return Err(PyValueError::new_err("Missing compressor parameters"));
                 }
                 let values = parameters.as_array();
@@ -504,15 +508,20 @@ impl EffectRuntime {
                     0.0,
                     [
                         values[[node, 0]],
-                        values[[node, 3]],
-                        values[[node, 4]],
-                        values[[node, 5]],
-                        values[[node, 6]],
-                        values[[node, 7]],
+                        values[[node, if dynamic { 5 } else { 3 }]],
+                        values[[node, if dynamic { 6 } else { 4 }]],
+                        values[[node, if dynamic { 7 } else { 5 }]],
+                        values[[node, if dynamic { 8 } else { 6 }]],
+                        if dynamic { 0.0 } else { values[[node, 7]] },
                     ],
                     0.0,
                     rate,
                     &mut compressor::Coefficients::default(),
+                    if dynamic {
+                        -values[[node, 9]]
+                    } else {
+                        f64::NEG_INFINITY
+                    },
                 )?;
             }
         }
@@ -665,7 +674,7 @@ impl EffectRuntime {
             let parameter = row[2] as usize;
             if row[0] != node as f64
                 || node >= nodes
-                || kinds[node] != 2
+                || !matches!(kinds[node], 2 | 25)
                 || row[1] != response as f64
                 || response > 3
                 || row[2] != parameter as f64
@@ -688,6 +697,26 @@ impl EffectRuntime {
                 maximum: row[5],
                 clamp: row[6] == 1.0,
             });
+        }
+        for (node, kind) in kinds.iter().enumerate() {
+            if *kind == 25 {
+                let mut rows = filter_rows.iter().filter(|f| f.node == node);
+                let filter = rows
+                    .next()
+                    .ok_or_else(|| PyValueError::new_err("Missing dynamic EQ band"))?;
+                let values = parameters.as_array();
+                if rows.next().is_some()
+                    || filter.response != 2
+                    || filter.parameter != 3
+                    || filter.clamp
+                    || filter.state_floor <= 0.0
+                    || values[[node, 3]] < filter.minimum
+                    || values[[node, 3]] > filter.maximum
+                    || values[[node, 4]] <= 0.0
+                {
+                    return Err(PyValueError::new_err("Invalid dynamic EQ band"));
+                }
+            }
         }
         let parameters = parameters.as_array().to_owned();
         let controls =
@@ -1100,6 +1129,7 @@ impl EffectRuntime {
                                     22 => matches!(parameter, 0 | 3),
                                     23 => matches!(parameter, 0 | 3),
                                     24 => (7..25).contains(&parameter),
+                                    25 => matches!(parameter, 0 | 3..=9),
                                     _ => false,
                                 });
                         let modulated = controls
@@ -1392,6 +1422,35 @@ impl EffectRuntime {
                             self.port_ended[[node, 0]],
                         )?;
                 }
+                25 => {
+                    self.process_filters(node, channels, rate)?;
+                    let peak = self.wet[..channels]
+                        .iter()
+                        .map(|v| v.abs())
+                        .fold(0.0, f64::max);
+                    let (gain, reduction) = compressor::gain(
+                        peak,
+                        [
+                            self.resolved[[node, 0]],
+                            self.resolved[[node, 5]],
+                            self.resolved[[node, 6]],
+                            self.resolved[[node, 7]],
+                            self.resolved[[node, 8]],
+                            0.0,
+                        ],
+                        self.reductions[node],
+                        rate,
+                        &mut self.compressor_coefficients[node],
+                        -self.resolved[[node, 9]],
+                    )?;
+                    self.reductions[node] = reduction;
+                    for (channel, value) in self.wet[..channels].iter_mut().enumerate() {
+                        *value = self.dry[channel] + (gain - 1.0) * *value;
+                        if !value.is_finite() {
+                            return Err(NativeError::Message("Non-finite dynamic EQ output"));
+                        }
+                    }
+                }
                 24 => self.multibands[node]
                     .as_mut()
                     .expect("prepared multiband")
@@ -1499,6 +1558,7 @@ impl EffectRuntime {
                         self.reductions[node],
                         rate,
                         &mut self.compressor_coefficients[node],
+                        f64::NEG_INFINITY,
                     )?;
                     self.reductions[node] = reduction;
                     for value in &mut self.wet[..channels] {
@@ -1623,7 +1683,7 @@ impl EffectRuntime {
             } else {
                 self.port_ended[[node, 0]]
                     && match self.kinds[node] {
-                        2 => self
+                        2 | 25 => self
                             .filter_rows
                             .iter()
                             .enumerate()
@@ -1763,6 +1823,9 @@ impl EffectRuntime {
             return Err(NativeError::Message(
                 "Multiband crossover profile is fixed and always wet",
             ));
+        }
+        if self.kinds[node] == 25 && parameter > 9 {
+            return Err(NativeError::Message("Invalid dynamic EQ parameter action"));
         }
         if self.kinds[node] == 18 && !matches!(parameter, 1..=3) {
             return Err(NativeError::Message(

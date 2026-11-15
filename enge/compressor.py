@@ -6,13 +6,18 @@ import numpy as np
 
 
 def gain(
-    peak: float, parameters: list[float], reduction: float, rate: int
+    peak: float,
+    parameters: list[float],
+    reduction: float,
+    rate: int,
+    minimum_reduction: float,
 ) -> tuple[float, float]:
     threshold, ratio, knee, attack, release, makeup = parameters
     if (
         any(not isfinite(v) for v in parameters)
         or ratio < 1
         or min(knee, attack, release) < 0
+        or not minimum_reduction <= 0
     ):
         raise ValueError("Invalid compressor parameters")
     x = 20 * log10(peak) - threshold if peak else -np.inf
@@ -22,6 +27,9 @@ def gain(
         target = (1 / ratio - 1) * x
     else:
         target = (0.5 * (1 / ratio - 1) * knee) * (x / knee + 0.5) ** 2
+    if not isfinite(target):
+        raise ValueError("Non-finite compressor target")
+    target = max(target, minimum_reduction)
     time = attack if target < reduction else release
     reduction = (
         target if time == 0 else target + exp(-1 / (rate * time)) * (reduction - target)

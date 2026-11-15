@@ -89,6 +89,7 @@ impl Multiband {
                 self.reductions[band],
                 rate,
                 &mut self.smoothing[band],
+                f64::NEG_INFINITY,
             )?;
             self.reductions[band] = reduction;
             for (value, input) in audio.iter_mut().zip(&self.bands[band]) {
