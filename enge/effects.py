@@ -18,6 +18,7 @@ from ufor.samples.processing import FilterBoundary, FilterResponse, FollowerBind
 from . import (
     _native,
     bitcrusher,
+    captured_buffer,
     compressor,
     convolution,
     dynamic_eq,
@@ -39,6 +40,7 @@ from . import (
     waveshaper,
 )
 from .bitcrusher import BitcrusherState
+from .captured_buffer import CapturedBufferState
 from .convolution import ConvolutionState
 from .dynamics import GateState
 from .effect_controls import EffectControlPlan
@@ -150,6 +152,7 @@ class ProcessorState(BaseModel):
     bypass: ParameterRamp
     filter_states: list[filters.FilterState] = Field(default_factory=list)
     granulator: GranulatorState | None = None
+    captured_buffer: CapturedBufferState | None = None
     tap_delay: TapDelayState | None = None
     modulated_delay: ModulatedDelayState | None = None
     resonant_delay: ResonantDelayState | None = None
@@ -282,6 +285,7 @@ class OfflineEffects:
             (p.target.name, p.target.parameter): p
             for p in definition.definition.modulation.parameters
         }
+        self.capture_delays: dict[str, int] = {}
         for processor in definition.definition.processors:
             ports = {
                 p: connections[(processor.name, p)]
@@ -296,6 +300,8 @@ class OfflineEffects:
             arrival = latencies[processor.name] - audio_effects.processor_latency(
                 processor, definition.sample_rate
             )
+            if isinstance(processor, audio_effects.CapturedBuffer):
+                self.capture_delays[processor.name] = arrival
             self.processors[processor.name].alignment = {
                 p: AlignmentState(
                     history=[
@@ -515,6 +521,21 @@ class OfflineEffects:
                     raise EngineError("Missing multiband snapshot")
                 multiband.validate_state(state, len(layouts[processor.name]))
                 continue
+            if isinstance(processor, audio_effects.CapturedBuffer):
+                state = snapshot.processors[processor.name].captured_buffer
+                if state is None:
+                    raise EngineError("Missing captured buffer snapshot")
+                captured_buffer.validate_state(
+                    state,
+                    captured_buffer.window_frames(
+                        processor.window_seconds, self.definition.sample_rate
+                    ),
+                    len(layouts[processor.name]),
+                    processor.mode,
+                    processor.maximum_pending_actions,
+                    snapshot.frame,
+                )
+                continue
             if isinstance(processor, audio_effects.TransientShaper):
                 state = snapshot.processors[processor.name].transient
                 if state is None:
@@ -650,6 +671,29 @@ class OfflineEffects:
                 )
         elif isinstance(action, audio_effects.StopAction):
             self.stopped_at = action.tick
+        elif isinstance(
+            action, (audio_effects.CaptureAction, audio_effects.CaptureReleaseAction)
+        ):
+            release = isinstance(action, audio_effects.CaptureReleaseAction)
+            if self.stopped_at is not None:
+                if release:
+                    return
+                raise ValueError("Capture requires live input")
+            if self.native_runtime is not None:
+                self.native_runtime.enqueue_capture(
+                    self.definition.order.index(action.processor), action.tick, release
+                )
+            else:
+                state = self.processors[action.processor].captured_buffer
+                assert state is not None
+                processor = _processor(graph, action.processor)
+                assert isinstance(processor, audio_effects.CapturedBuffer)
+                captured_buffer.enqueue(
+                    state,
+                    action.tick + self.capture_delays[action.processor],
+                    release,
+                    processor.maximum_pending_actions,
+                )
         elif isinstance(action, audio_effects.ParameterAction):
             state = self.processors[action.processor]
             current = state.parameters[action.parameter]
@@ -726,6 +770,7 @@ class OfflineEffects:
                     ] = self._value(processor, parameter, frame)
                 self.native_parameters[node, 2] = state.bypass.value(frame)
             values, drained = self.native_runtime.render_frame(
+                frame,
                 [input_audio[i.name][index] for i in graph.inputs],
                 self.native_parameters,
                 [i.name in self.ended_inputs for i in graph.inputs],
@@ -776,7 +821,9 @@ class OfflineEffects:
                         delay.remaining = max(0, delay.remaining - 1)
                     else:
                         delay.remaining = len(delay.history)
-            if not controls_ended:
+            if not controls_ended and not isinstance(
+                processor, audio_effects.CapturedBuffer
+            ):
                 port_ended = {p: False for p in port_ended}
             processor_audio[name], processor_ended[name] = self._processor_frame(
                 processor, ports, port_ended, frame
@@ -1019,6 +1066,20 @@ class OfflineEffects:
         mix = authored_mix * self.delayed.get(
             (processor.name, "bypass"), state.bypass.value(frame)
         )
+        if isinstance(processor, audio_effects.CapturedBuffer):
+            assert state.captured_buffer is not None
+            dry = ports["input"]
+            wet, drained = captured_buffer.process(
+                state.captured_buffer,
+                dry,
+                self._value(processor, "position", frame)
+                if processor.mode == "scrub"
+                else 0,
+                processor.mode,
+                frame,
+                ended["input"],
+            )
+            return (np.zeros_like(dry) if drained else _mix(dry, wet, mix), drained)
         if isinstance(processor, (audio_effects.Gate, audio_effects.Expander)):
             peak = max(abs(float(v)) for v in ports["detector"])
             if isinstance(processor, audio_effects.Gate):
@@ -1544,7 +1605,9 @@ def prepare(
     ):
         raise EngineError("Beat-clock Envelfo requires a host tempo map")
     for processor in definition.processors:
-        if isinstance(processor, audio_effects.DynamicEQ):
+        if isinstance(processor, audio_effects.CapturedBuffer):
+            captured_buffer.window_frames(processor.window_seconds, sample_rate)
+        elif isinstance(processor, audio_effects.DynamicEQ):
             band = dynamic_eq.band_definition(processor)
             filters.parameters([band], sample_rate, 1)
             for parameter in definition.modulation.parameters:
@@ -1702,7 +1765,14 @@ def native_live_graph(
         else 8
         if isinstance(p, audio_effects.Compressor)
         else 6
-        if isinstance(p, (audio_effects.TapDelay, audio_effects.OctaveDivider))
+        if isinstance(
+            p,
+            (
+                audio_effects.TapDelay,
+                audio_effects.OctaveDivider,
+                audio_effects.CapturedBuffer,
+            ),
+        )
         else 7
         if isinstance(p, (audio_effects.ModulatedDelay, audio_effects.Phaser))
         else 4
@@ -1893,6 +1963,16 @@ def native_live_graph(
             parameters[node, 0] = processor.gain_db
         elif isinstance(processor, audio_effects.Multiply):
             kinds.append(1)
+        elif isinstance(processor, audio_effects.CapturedBuffer):
+            kinds.append(27)
+            parameters[node, [0, 3, 4, 5]] = [
+                processor.position,
+                {"reverse": 0, "scrub": 1, "stutter": 2}[processor.mode],
+                captured_buffer.window_frames(
+                    processor.window_seconds, definition.sample_rate
+                ),
+                processor.maximum_pending_actions,
+            ]
         elif isinstance(processor, audio_effects.FrequencyShifter):
             kinds.append(26)
             parameters[node, 0] = processor.shift_hz
@@ -2220,6 +2300,20 @@ def native_live_actions(
                 ]
             )
             continue
+        elif isinstance(
+            action, (audio_effects.CaptureAction, audio_effects.CaptureReleaseAction)
+        ):
+            rows.append(
+                [
+                    action.tick - start,
+                    5 if isinstance(action, audio_effects.CaptureReleaseAction) else 4,
+                    nodes[action.processor],
+                    0,
+                    0,
+                    0,
+                ]
+            )
+            continue
         elif isinstance(action, audio_effects.InputEndAction):
             rows.append(
                 [
@@ -2365,6 +2459,9 @@ def _initial_state(
         values["position"] = processor.position
     elif isinstance(processor, audio_effects.Gain):
         values["gain_db"] = processor.gain_db
+    elif isinstance(processor, audio_effects.CapturedBuffer):
+        if processor.mode == "scrub":
+            values["position"] = processor.position
     elif isinstance(processor, audio_effects.FrequencyShifter):
         values["shift_hz"] = processor.shift_hz
     elif isinstance(processor, audio_effects.Waveshaper):
@@ -2472,6 +2569,12 @@ def _initial_state(
         else None,
         frequency_shifter=frequency_shifter.initial_state(channels)
         if isinstance(processor, audio_effects.FrequencyShifter)
+        else None,
+        captured_buffer=captured_buffer.initial_state(
+            captured_buffer.window_frames(processor.window_seconds, sample_rate),
+            channels,
+        )
+        if isinstance(processor, audio_effects.CapturedBuffer)
         else None,
         phaser=PhaserState(
             stages=[[0.0] * channels for _ in range(6)], feedback=[0.0] * channels
@@ -2766,6 +2869,8 @@ def _native_parameter(processor: audio_effects.Processor, name: str) -> int:
     if isinstance(processor, audio_effects.Crossfader):
         return 0
     if isinstance(processor, audio_effects.Gain):
+        return 0
+    if isinstance(processor, audio_effects.CapturedBuffer):
         return 0
     if isinstance(processor, audio_effects.FrequencyShifter):
         return 0

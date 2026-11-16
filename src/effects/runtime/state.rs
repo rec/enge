@@ -59,6 +59,37 @@ impl EffectRuntime {
             value.set_item("route_delays", routes)?;
             value.set_item("follower_level", self.follower_levels[node])?;
             match kind {
+                27 => {
+                    let buffer = self.captured_buffers[node]
+                        .as_ref()
+                        .expect("prepared captured buffer");
+                    let state = PyDict::new(py);
+                    state.set_item("history", rows(buffer.history.view()))?;
+                    state.set_item("write", buffer.write)?;
+                    state.set_item("count", buffer.count)?;
+                    let mut regions = Vec::with_capacity(2);
+                    for region in &buffer.regions {
+                        let value = PyDict::new(py);
+                        value.set_item("samples", rows(region.samples.view()))?;
+                        value.set_item("cursor", region.cursor)?;
+                        value.set_item("active", region.active)?;
+                        value.set_item("gain", region.gain)?;
+                        value.set_item("target", region.target)?;
+                        value.set_item("step", region.step)?;
+                        value.set_item("remaining", region.remaining)?;
+                        regions.push(value);
+                    }
+                    state.set_item("regions", regions)?;
+                    let mut pending = Vec::with_capacity(buffer.pending.len());
+                    for command in &buffer.pending {
+                        let value = PyDict::new(py);
+                        value.set_item("frame", command.frame)?;
+                        value.set_item("release", command.release)?;
+                        pending.push(value);
+                    }
+                    state.set_item("pending", pending)?;
+                    value.set_item("captured_buffer", state)?;
+                }
                 24 => {
                     let multiband = self.multibands[node].as_ref().expect("prepared multiband");
                     let state = PyDict::new(py);
@@ -693,6 +724,71 @@ impl EffectRuntime {
                         )?;
                         grain.active = true;
                         granular.order[index] = index;
+                    }
+                }
+                27 => {
+                    let state = field(value, "captured_buffer")?;
+                    let state = state.cast::<PyDict>()?;
+                    let buffer = snapshot.captured_buffers[node]
+                        .as_mut()
+                        .expect("prepared captured buffer");
+                    restore_rows(
+                        buffer.history.view_mut(),
+                        field(state, "history")?.extract()?,
+                    )?;
+                    buffer.write = field(state, "write")?.extract()?;
+                    buffer.count = field(state, "count")?.extract()?;
+                    let frames = buffer.history.nrows();
+                    if buffer.write >= frames || buffer.count > frames {
+                        return Err(PyValueError::new_err("Invalid capture history clock"));
+                    }
+                    let regions: Vec<Bound<'_, PyDict>> = field(state, "regions")?.extract()?;
+                    if regions.len() != 2 {
+                        return Err(PyValueError::new_err("Invalid captured regions"));
+                    }
+                    for (region, value) in buffer.regions.iter_mut().zip(regions) {
+                        restore_rows(
+                            region.samples.view_mut(),
+                            field(&value, "samples")?.extract()?,
+                        )?;
+                        region.cursor = field(&value, "cursor")?.extract()?;
+                        region.active = field(&value, "active")?.extract()?;
+                        region.gain = field(&value, "gain")?.extract()?;
+                        region.target = field(&value, "target")?.extract()?;
+                        region.step = field(&value, "step")?.extract()?;
+                        region.remaining = field(&value, "remaining")?.extract()?;
+                        if region.cursor > frames
+                            || (region.active
+                                && region.cursor
+                                    >= if buffer.mode == super::captured_buffer::Mode::Stutter {
+                                        frames - 64
+                                    } else {
+                                        frames
+                                    })
+                            || !(0.0..=1.0).contains(&region.gain)
+                            || !matches!(region.target, 0.0 | 1.0)
+                            || !region.step.is_finite()
+                            || region.remaining > 64
+                        {
+                            return Err(PyValueError::new_err("Invalid captured reader snapshot"));
+                        }
+                    }
+                    let pending: Vec<Bound<'_, PyDict>> = field(state, "pending")?.extract()?;
+                    if pending.len() > buffer.capacity {
+                        return Err(PyValueError::new_err("Captured command capacity exceeded"));
+                    }
+                    buffer.pending.clear();
+                    let mut previous = frame;
+                    for value in pending {
+                        let at: usize = field(&value, "frame")?.extract()?;
+                        if at < previous {
+                            return Err(PyValueError::new_err("Invalid capture command ordering"));
+                        }
+                        previous = at;
+                        buffer.pending.push_back(super::captured_buffer::Command {
+                            frame: at,
+                            release: field(&value, "release")?.extract()?,
+                        });
                     }
                 }
                 26 => {

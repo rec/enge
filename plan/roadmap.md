@@ -101,7 +101,11 @@ misses, are recorded under the agreed shared-machine policy. Frequency shifting
 is implemented with the approved fixed FIR, signed controls and aligned dry paths;
 functional and allocation checks pass. All timing observations are retained,
 including two 64-frame misses under the agreed shared-machine policy.
-Reverse/scrub/stutter is the next catalogue slice. See
+Triggered reverse/scrub/stutter is implemented with bounded recording/capture
+storage, 64-frame transitions, literal scrub position and aligned command queues.
+Functional and allocation checks pass, with zero misses in all twelve finite
+timing runs, including maximum-window capture. The looper is the next catalogue
+slice. See [captured-buffer effects](../doc/captured-buffer.md),
 [frequency shifting](../doc/frequency-shifter.md),
 [vibrato and tremolo](../doc/vibrato-tremolo.md),
 [dynamic EQ](../doc/dynamic-eq.md),

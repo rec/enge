@@ -10,7 +10,7 @@ import tyro
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from reccy.configuration import units
 from ufor import audio_effects
-from ufor.base import Frequency
+from ufor.base import Frequency, PositiveSeconds
 from ufor.events import PerformanceEvent, Trigger
 from ufor.instrument_trace import TraceAction
 from ufor.samples.processing import FilterResponse, ResonantFilter
@@ -47,6 +47,10 @@ class Settings(BaseModel):
     coloration: Literal["none", "tape", "tube"] = "none"
     bitcrusher: bool = False
     motion: Literal["none", "tremolo", "vibrato", "frequency-shift"] = "none"
+    capture: Literal["none", "reverse", "scrub", "stutter"] = "none"
+    capture_window_seconds: Annotated[
+        PositiveSeconds, tyro.conf.arg(constructor=str)
+    ] = Field(default=0.25, le=2)
     phaser: bool = False
     highpass: bool = False
     matrix: bool = False
@@ -195,6 +199,14 @@ def main(settings: Settings) -> None:
         processors.append(audio_effects.Bitcrusher(name="crush", bits=8, hold_frames=1))
     if settings.motion == "frequency-shift":
         processors.append(audio_effects.FrequencyShifter(name="shift", shift_hz=250))
+    if settings.capture != "none":
+        processors.append(
+            audio_effects.CapturedBuffer(
+                name="capture",
+                mode=settings.capture,
+                window_seconds=settings.capture_window_seconds,
+            )
+        )
     if settings.nonlinear == "octave":
         processors.append(audio_effects.OctaveDivider(name="octave"))
     if settings.nonlinear == "limiter":
@@ -641,6 +653,36 @@ def main(settings: Settings) -> None:
     for i in range(callbacks):
         start = i * settings.block_frames
         batch = effect_actions(settings, start)
+        if settings.capture != "none":
+            window = round(settings.capture_window_seconds * 48000)
+            commands: list[audio_effects.EffectAction] = []
+            first = ((start + window - 1) // window) * window
+            for tick in range(first, start + settings.block_frames, window):
+                phase = tick // window % 4
+                if tick and phase in {1, 2}:
+                    commands.append(
+                        audio_effects.CaptureAction(
+                            tick=tick,
+                            ordinal=settings.effect_actions,
+                            processor="capture",
+                        )
+                    )
+                elif tick and phase == 3:
+                    commands.append(
+                        audio_effects.CaptureReleaseAction(
+                            tick=tick,
+                            ordinal=settings.effect_actions,
+                            processor="capture",
+                        )
+                    )
+            if len(commands) > settings.effect_actions:
+                raise ValueError(
+                    "Capture commands exceed the selected effect action count"
+                )
+            batch = sorted(
+                [*batch[: settings.effect_actions - len(commands)], *commands],
+                key=lambda a: (a.tick, a.ordinal),
+            )
         host = {
             n: a[start : start + settings.block_frames] for n, a in extra_audio.items()
         }
@@ -674,6 +716,8 @@ def main(settings: Settings) -> None:
         f" curve={settings.waveshaper_curve} coloration={settings.coloration}"
         f" nonlinear={settings.nonlinear}"
         f" motion={settings.motion}"
+        f" capture={settings.capture}"
+        f" capture_window_seconds={settings.capture_window_seconds}"
         f" bitcrusher={settings.bitcrusher}"
         f" phaser={settings.phaser}"
         f" highpass={settings.highpass}"
@@ -757,6 +801,12 @@ def effect_actions(settings: Settings, start: int) -> list[audio_effects.EffectA
                 ("bell", "center_hz", 400 + (start + ordinal * 53) % 6000)
                 if ordinal % 8 == 2
                 else ("bell", "q", 0.5 + (start + ordinal) % 100 / 40)
+            )
+        if settings.capture == "scrub" and ordinal % 4 == 2:
+            processor, parameter, value = (
+                "capture",
+                "position",
+                0.1 + 0.8 * ((start + ordinal) % 48000) / 48000,
             )
         if settings.compressor and ordinal % 4 == 3:
             processor, parameter, value = (

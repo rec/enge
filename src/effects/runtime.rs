@@ -1,6 +1,7 @@
 //! Persistent DSP state and processing shared by effect graph owners.
 
 mod bitcrusher;
+mod captured_buffer;
 pub(crate) mod controls;
 pub(crate) mod convolution;
 mod dynamics;
@@ -26,6 +27,7 @@ use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::ControlBank;
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{RouteMap, sum_partials};
+use captured_buffer::CapturedBuffer;
 use frequency_shifter::FrequencyShifter;
 use highpass::Highpass;
 use matrix::RoutingMatrix;
@@ -75,6 +77,7 @@ pub(crate) struct EffectRuntime {
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
     frequency_shifters: Vec<Option<FrequencyShifter>>,
+    captured_buffers: Vec<Option<CapturedBuffer>>,
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
@@ -144,6 +147,7 @@ pub(crate) struct EffectSnapshot {
     reverbs: Vec<Option<Reverb>>,
     waveshapers: Vec<Option<Waveshaper>>,
     frequency_shifters: Vec<Option<FrequencyShifter>>,
+    captured_buffers: Vec<Option<CapturedBuffer>>,
     phasers: Vec<Option<Phaser>>,
     highpasses: Vec<Option<Highpass>>,
     resonants: Vec<Option<resonant::ResonantDelay>>,
@@ -292,6 +296,7 @@ impl EffectRuntime {
 
     fn render_frame(
         &mut self,
+        frame: usize,
         inputs: Vec<PyReadonlyArray1<'_, f64>>,
         parameters: PyReadonlyArray2<'_, f64>,
         ended: Vec<bool>,
@@ -329,7 +334,7 @@ impl EffectRuntime {
                 self.resolved[[node, 9]] = f64::from(frozen);
             }
         }
-        self.process_nodes(self.rate)?;
+        self.process_nodes(self.rate, frame)?;
         let width = self.widths[self.output_source];
         let drained = self.ended[self.output_source];
         let output = (0..width)
@@ -349,6 +354,23 @@ impl EffectRuntime {
 
     fn export_state<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
         self.export_processors(py)
+    }
+
+    fn enqueue_capture(&mut self, node: usize, frame: usize, release: bool) -> PyResult<()> {
+        let buffer = self
+            .captured_buffers
+            .get_mut(node)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| PyValueError::new_err("Capture requires a captured buffer"))?;
+        if self.stopped || self.ended[node + self.input_routes.len()] {
+            return if release {
+                Ok(())
+            } else {
+                Err(PyValueError::new_err("Capture requires live input"))
+            };
+        }
+        buffer.enqueue(frame, release)?;
+        Ok(())
     }
 
     fn import_state(&mut self, values: Vec<Bound<'_, PyDict>>, frame: usize) -> PyResult<()> {
@@ -383,7 +405,7 @@ impl EffectRuntime {
         let inputs = input_routes.len();
         let channels = widths.iter().copied().max().unwrap_or(0);
         let maximum_ports = port_names.iter().map(Vec::len).max().unwrap_or(0).max(2);
-        if kinds.iter().any(|v| *v > 26)
+        if kinds.iter().any(|v| *v > 27)
             || !rate.is_finite()
             || rate <= 0.0
             || maximum_block_frames == 0
@@ -546,6 +568,7 @@ impl EffectRuntime {
         let mut limiters = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut transients = (0..nodes).map(|_| None).collect::<Vec<_>>();
         let mut multibands = (0..nodes).map(|_| None).collect::<Vec<_>>();
+        let mut captured_buffers = (0..nodes).map(|_| None).collect::<Vec<_>>();
         for node in 0..nodes {
             let ports = port_names[node].len();
             let audio_arrival = (0..ports)
@@ -574,6 +597,45 @@ impl EffectRuntime {
                 }
             }
             alignment.push(delays);
+            if kinds[node] == 27 {
+                let values = parameters.as_array();
+                if values.ncols() < 6
+                    || !matches!(values[[node, 3]], 0.0 | 1.0 | 2.0)
+                    || !(0.0..=1.0).contains(&values[[node, 0]])
+                    || (values[[node, 3]] != 1.0 && values[[node, 0]] != 0.0)
+                    || values[[node, 4]] < 129.0
+                    || values[[node, 4]].fract() != 0.0
+                    || values[[node, 4]] > (rate * 2.0).round_ties_even()
+                    || values[[node, 4]] >= isize::MAX as f64
+                    || values[[node, 5]] < 1.0
+                    || values[[node, 5]].fract() != 0.0
+                    || values[[node, 5]] >= isize::MAX as f64
+                {
+                    return Err(PyValueError::new_err("Invalid captured buffer profile"));
+                }
+                let frames = values[[node, 4]] as usize;
+                let capacity = values[[node, 5]] as usize;
+                if frames
+                    .checked_mul(widths[inputs + node])
+                    .is_none_or(|n| n > isize::MAX as usize / size_of::<f64>())
+                    || capacity > isize::MAX as usize / size_of::<captured_buffer::Command>()
+                {
+                    return Err(PyValueError::new_err(
+                        "Captured buffer exceeds native storage",
+                    ));
+                }
+                captured_buffers[node] = Some(CapturedBuffer::new(
+                    frames,
+                    widths[inputs + node],
+                    match values[[node, 3]] {
+                        0.0 => captured_buffer::Mode::Reverse,
+                        1.0 => captured_buffer::Mode::Scrub,
+                        _ => captured_buffer::Mode::Stutter,
+                    },
+                    arrival,
+                    capacity,
+                ));
+            }
             if kinds[node] == 24 {
                 let parameters = parameters.as_array();
                 if parameters.ncols() < 25
@@ -1144,6 +1206,7 @@ impl EffectRuntime {
                                     24 => (7..25).contains(&parameter),
                                     25 => matches!(parameter, 0 | 3..=9),
                                     26 => parameter == 0,
+                                    27 => parameter == 0 && parameters[[node, 3]] == 1.0,
                                     _ => false,
                                 });
                         let modulated = controls
@@ -1183,6 +1246,7 @@ impl EffectRuntime {
             reverbs,
             waveshapers,
             frequency_shifters,
+            captured_buffers,
             phasers,
             highpasses,
             resonants,
@@ -1305,7 +1369,7 @@ impl EffectRuntime {
                     };
                 }
             }
-            self.process_nodes(self.rate)?;
+            self.process_nodes(self.rate, at)?;
             self.stopped = self.ended[self.output_source];
             for channel in 0..self.widths[self.output_source] {
                 output[[frame, channel]] = if self.stopped {
@@ -1320,7 +1384,7 @@ impl EffectRuntime {
         Ok(())
     }
 
-    fn process_nodes(&mut self, rate: f64) -> NativeResult<()> {
+    fn process_nodes(&mut self, rate: f64, frame: usize) -> NativeResult<()> {
         let inputs = self.input_routes.len();
         for node in 0..self.kinds.len() {
             let controls_ended = self.controls.resolve(
@@ -1363,7 +1427,9 @@ impl EffectRuntime {
                         self.port_values[[node, port, channel]] = self.values[[source, channel]];
                     }
                 }
-                self.port_ended[[node, port]] &= controls_ended;
+                if self.kinds[node] != 27 {
+                    self.port_ended[[node, port]] &= controls_ended;
+                }
             }
             let authored_mix = self.resolved[[node, 1]];
             let bypass = self.resolved[[node, 2]];
@@ -1378,6 +1444,7 @@ impl EffectRuntime {
             }
             let mut waveshaper_drained = false;
             let mut frequency_shifter_drained = false;
+            let mut captured_buffer_drained = false;
             let mut convolution_drained = false;
             let mut bitcrusher_drained = false;
             let mut octave_drained = false;
@@ -1437,6 +1504,17 @@ impl EffectRuntime {
                             self.resolved[[node, 0]],
                             self.resolved[[node, 3]],
                             self.resolved[[node, 4]],
+                            self.port_ended[[node, 0]],
+                        )?;
+                }
+                27 => {
+                    captured_buffer_drained = self.captured_buffers[node]
+                        .as_mut()
+                        .expect("prepared captured buffer")
+                        .process(
+                            &mut self.wet[..channels],
+                            self.resolved[[node, 0]],
+                            frame,
                             self.port_ended[[node, 0]],
                         )?;
                 }
@@ -1731,6 +1809,7 @@ impl EffectRuntime {
                             .is_some_and(|granular| !granular.frozen && granular.active_count == 0),
                         4 => waveshaper_drained,
                         26 => frequency_shifter_drained,
+                        27 => captured_buffer_drained,
                         14 => self.follower_levels[node] < self.tail_thresholds[node],
                         19 => convolution_drained,
                         20 => bitcrusher_drained,
@@ -1836,6 +1915,22 @@ impl EffectRuntime {
         if self.kinds[node] == 19 {
             return Err(NativeError::Message("Convolution is always wet"));
         }
+        if matches!(kind, 4 | 5) {
+            if action[3..] != [0.0, 0.0, 0.0] {
+                return Err(NativeError::Message("Invalid capture action"));
+            }
+            let buffer = self.captured_buffers[node]
+                .as_mut()
+                .ok_or(NativeError::Message("Capture requires a captured buffer"))?;
+            if self.stopped || self.ended[node + self.input_routes.len()] {
+                return if kind == 5 {
+                    Ok(())
+                } else {
+                    Err(NativeError::Message("Capture requires live input"))
+                };
+            }
+            return buffer.enqueue(frame, kind == 5);
+        }
         if kind == 1 {
             if self.kinds[node] != 3
                 || action[3] != 0.0
@@ -1862,6 +1957,13 @@ impl EffectRuntime {
             && (parameter > 2 || (parameter == 0 && !(-2000.0..=2000.0).contains(&action[4])))
         {
             return Err(NativeError::Message("Invalid frequency shift action"));
+        }
+        if self.kinds[node] == 27
+            && (parameter > 2
+                || (parameter == 0
+                    && (self.parameters[[node, 3]] != 1.0 || !(0.0..=1.0).contains(&action[4]))))
+        {
+            return Err(NativeError::Message("Invalid scrub position action"));
         }
         if self.kinds[node] == 18 && !matches!(parameter, 1..=3) {
             return Err(NativeError::Message(
@@ -2234,6 +2336,7 @@ impl EffectRuntime {
             reverbs: self.reverbs.clone(),
             waveshapers: self.waveshapers.clone(),
             frequency_shifters: self.frequency_shifters.clone(),
+            captured_buffers: self.captured_buffers.clone(),
             phasers: self.phasers.clone(),
             highpasses: self.highpasses.clone(),
             resonants: self.resonants.clone(),
@@ -2348,6 +2451,15 @@ impl EffectRuntime {
                     _ => true,
                 })
             || self
+                .captured_buffers
+                .iter()
+                .zip(&snapshot.captured_buffers)
+                .any(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => !a.same_capacity(b),
+                    (None, None) => false,
+                    _ => true,
+                })
+            || self
                 .reverbs
                 .iter()
                 .zip(&snapshot.reverbs)
@@ -2443,6 +2555,7 @@ impl EffectRuntime {
         self.waveshapers.clone_from(&snapshot.waveshapers);
         self.frequency_shifters
             .clone_from(&snapshot.frequency_shifters);
+        self.captured_buffers.clone_from(&snapshot.captured_buffers);
         self.phasers.clone_from(&snapshot.phasers);
         self.highpasses.clone_from(&snapshot.highpasses);
         self.resonants.clone_from(&snapshot.resonants);
