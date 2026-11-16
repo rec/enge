@@ -2,18 +2,16 @@
 use super::controls::ControlBank;
 use super::patch_host::{PatchHost, clock_at};
 use super::{
-    BeatClockInput, NamedEnvelopeInput, PatchEventInput, StageConnectionInput, StageStartInput,
-    StagedEnvelfoInput, initial_lfo, lfo_definitions, ratio_time, valid_envelfo_owners,
+    BeatClockInput, PatchEventInput, StageConnectionInput, StageStartInput, StagedEnvelfoInput,
+    initial_lfo, ratio_time, valid_envelfo_owners,
 };
 use super::{
     BeatPoint, EnvelfoTransformInput, EnvelfoTransformRoute, LfoDefinition, LfoPlayback,
     NamedEnvelopeDefinition, PatchEventConnection, PatchStageStartConnection, RouteMap,
     StagedConnection, StagedEnvelfoDefinition, add_partial, control_time, core_error, lfo_command,
 };
-use crate::amplitude::AmplitudeSegments;
 use crate::amplitude::{frame_position, frame_time};
 use crate::error::{NativeError, NativeResult};
-use engelfo::approach::ExponentialApproach;
 use engelfo::envelope::{
     Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
 };
@@ -23,8 +21,6 @@ use engelfo::stages;
 use engelfo::{lfo, time::Time};
 use numpy::PyReadonlyArray2;
 use pyo3::{exceptions::PyValueError, prelude::*};
-
-type EnvelopeApproachInput = (usize, bool, usize, (f64, f64, f64, f64, f64, f64, f64));
 
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
@@ -501,25 +497,32 @@ impl GeneratorBank {
     }
 
     #[new]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (rate, slots, parameter_count, lfo_routes, lfo_documents, envelope_documents, envelope_routes, *, max_records=10000))]
     fn new(
         rate: f64,
         slots: usize,
         parameter_count: usize,
-        lfos: PyReadonlyArray2<'_, f64>,
-        lfo_rationals: Vec<(u64, u64)>,
+        lfo_routes: PyReadonlyArray2<'_, f64>,
+        lfo_documents: Vec<String>,
+        envelope_documents: Vec<String>,
+        envelope_routes: Vec<(usize, usize, bool)>,
+        max_records: usize,
     ) -> PyResult<Self> {
-        let lfo_definitions = lfo_definitions(lfos, &lfo_rationals, rate)?;
         if !rate.is_finite()
             || rate <= 0.0
             || slots == 0
             || parameter_count == 0
-            || (!lfo_definitions.is_empty() && rate != rate as u64 as f64)
-            || lfo_definitions
-                .iter()
-                .any(|d| d.parameter >= parameter_count)
+            || (!lfo_documents.is_empty() && rate != rate as u64 as f64)
         {
             return Err(PyValueError::new_err("Invalid generator bank definition"));
         }
+        let (lfos, envelopes) =
+            super::preparation::definitions(&lfo_documents, &envelope_documents, max_records)?;
+        let lfo_definitions = super::preparation::lfos(&lfos, lfo_routes, rate, parameter_count)?;
+        let named_envelopes =
+            super::preparation::envelopes(&envelopes, envelope_routes, rate, parameter_count)?;
+        let named_count = named_envelopes.len();
         let lfo_states = lfo_definitions
             .iter()
             .map(|d| initial_lfo(d, Time::ZERO))
@@ -531,15 +534,15 @@ impl GeneratorBank {
             patch_host: None,
             patch_states: vec![None; slots],
             patch_storage: vec![None; slots],
-            pending_releases: vec![vec![]; slots],
+            pending_releases: vec![vec![None; named_count]; slots],
             envelfo_transforms: Vec::new(),
             envelfo_transform_routes: Vec::new(),
             envelfo_transform_values: Vec::new(),
             lfo_definitions,
             lfo_owners: (0..lfo_count).collect(),
             lfo_event_states: lfo_states,
-            named_envelopes: Vec::new(),
-            named_owners: Vec::new(),
+            named_envelopes,
+            named_owners: (0..named_count).collect(),
             patch_events: Vec::new(),
             patch_stage_starts: Vec::new(),
             envelfo_keys: vec![0; slots],
@@ -548,193 +551,6 @@ impl GeneratorBank {
             staged_owners: Vec::new(),
             staged_connections: Vec::new(),
         })
-    }
-
-    fn set_envelope_approaches(&mut self, stages: Vec<EnvelopeApproachInput>) -> PyResult<()> {
-        if self.patch_host.is_some() {
-            return Err(PyValueError::new_err(
-                "Envelope approaches must be configured before Patch preparation",
-            ));
-        }
-        for (
-            source,
-            release,
-            index,
-            (
-                asymptote,
-                time_constant,
-                threshold,
-                transition_to,
-                transition_seconds,
-                minimum_transition_distance,
-                minimum_time_constant,
-            ),
-        ) in stages
-        {
-            let definition = self
-                .named_envelopes
-                .get_mut(source)
-                .ok_or_else(|| PyValueError::new_err("Unknown captured Envelope"))?;
-            if definition.beat_clock {
-                return Err(PyValueError::new_err(
-                    "Captured envelopes require seconds clocks",
-                ));
-            }
-            let parts = if release {
-                &mut definition.body.release
-            } else {
-                &mut definition.body.segments
-            };
-            let part = parts
-                .get_mut(index)
-                .ok_or_else(|| PyValueError::new_err("Unknown captured stage"))?;
-            part.approach = Some(ExponentialApproach {
-                clock_units_per_second: Time::from_integer(self.rate as i64),
-                asymptote,
-                time_constant,
-                threshold,
-                transition_to,
-                transition_seconds,
-                minimum_transition_distance,
-                minimum_time_constant,
-            });
-            definition.body.validate().map_err(core_error)?;
-        }
-        Ok(())
-    }
-
-    fn set_named_envelopes(
-        &mut self,
-        initials: Vec<f64>,
-        attacks: Vec<AmplitudeSegments>,
-        releases: Vec<AmplitudeSegments>,
-        parameters: Vec<NamedEnvelopeInput>,
-    ) -> PyResult<()> {
-        let count = initials.len();
-        if attacks.len() != count || releases.len() != count || parameters.len() != count {
-            return Err(PyValueError::new_err("Invalid named envelope definitions"));
-        }
-        let definitions = initials
-            .into_iter()
-            .zip(attacks)
-            .zip(releases)
-            .zip(parameters)
-            .map(
-                |(
-                    ((initial, attack), release),
-                    (
-                        parameter,
-                        operation,
-                        release_with_voice,
-                        playback,
-                        loop_start,
-                        loop_end,
-                        repeat_count,
-                        event_started,
-                        (hold, retrigger, bipolar),
-                    ),
-                )| {
-                    if parameter >= self.parameter_count || operation > 1 {
-                        return Err(PyValueError::new_err("Invalid named envelope definition"));
-                    }
-                    let convert = |parts: AmplitudeSegments| -> PyResult<Vec<CoreSegment>> {
-                        parts
-                            .into_iter()
-                            .map(|(duration, to, curve)| {
-                                Ok(CoreSegment {
-                                    approach: None,
-                                    duration: duration
-                                        .map(|(n, d)| Time::new(n, d))
-                                        .transpose()
-                                        .map_err(core_error)?,
-                                    to,
-                                    curve,
-                                })
-                            })
-                            .collect()
-                    };
-                    let start = Time::new(loop_start.0, loop_start.1).map_err(core_error)?;
-                    let end = Time::new(loop_end.0, loop_end.1).map_err(core_error)?;
-                    let bounds = if start == Time::ZERO && end == Time::ONE {
-                        None
-                    } else {
-                        Some((start, end))
-                    };
-                    let mut segments = convert(attack)?;
-                    // SampleHold shares the host route slots but does not execute this body.
-                    if segments.is_empty() {
-                        segments.push(CoreSegment {
-                            approach: None,
-                            duration: Some(Time::ZERO),
-                            to: initial,
-                            curve: 0.0,
-                        });
-                    }
-                    let body = Envelope {
-                        initial: Initial::Value(initial),
-                        segments,
-                        release: convert(release)?,
-                        bipolar,
-                        hold,
-                        retrigger: match retrigger {
-                            0 => Retrigger::Current,
-                            1 => Retrigger::Initial,
-                            2 => Retrigger::Ignore,
-                            _ => {
-                                return Err(PyValueError::new_err(
-                                    "Invalid named envelope retrigger",
-                                ));
-                            }
-                        },
-                        start: if event_started {
-                            Start::Event
-                        } else {
-                            Start::Activation
-                        },
-                        playback: match playback {
-                            0 => Playback::Once,
-                            1 => Playback::Loop,
-                            2 => Playback::PingPong,
-                            _ => {
-                                return Err(PyValueError::new_err(
-                                    "Invalid named envelope playback",
-                                ));
-                            }
-                        },
-                        markers: bounds
-                            .map(|(start, end)| {
-                                vec![
-                                    Marker {
-                                        name: "loop_start".into(),
-                                        position: start,
-                                    },
-                                    Marker {
-                                        name: "loop_end".into(),
-                                        position: end,
-                                    },
-                                ]
-                            })
-                            .unwrap_or_default(),
-                        loop_bounds: bounds,
-                        repeat_count,
-                    };
-                    body.validate().map_err(core_error)?;
-                    Ok(NamedEnvelopeDefinition {
-                        sample_hold: None,
-                        body,
-                        parameter,
-                        operation,
-                        release_with_voice,
-                        beat_clock: false,
-                        event_started,
-                    })
-                },
-            )
-            .collect::<PyResult<Vec<_>>>()?;
-        self.named_envelopes = definitions;
-        self.named_owners = (0..count).collect();
-        self.pending_releases = vec![vec![None; count]; self.patch_states.len()];
-        Ok(())
     }
 
     fn set_beat_clock(&mut self, points: Vec<BeatClockInput>) -> PyResult<()> {
@@ -765,20 +581,6 @@ impl GeneratorBank {
             return Err(PyValueError::new_err("Invalid native beat clock"));
         }
         self.beat_points = points;
-        Ok(())
-    }
-
-    fn set_beat_named_envelopes(&mut self, indices: Vec<usize>) -> PyResult<()> {
-        if self.beat_points.is_empty()
-            || indices
-                .iter()
-                .any(|index| *index >= self.named_envelopes.len())
-        {
-            return Err(PyValueError::new_err("Invalid beat-clock named Envelfo"));
-        }
-        for index in indices {
-            self.named_envelopes[index].beat_clock = true;
-        }
         Ok(())
     }
 

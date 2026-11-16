@@ -186,35 +186,12 @@ class GeneratorBank:
         rate: float,
         slots: int,
         parameter_count: int,
-        lfos: np.ndarray,
-        lfo_rationals: list[tuple[int, int]],
-    ) -> None: ...
-    def set_envelope_approaches(
-        self,
-        stages: list[
-            tuple[
-                int, bool, int, tuple[float, float, float, float, float, float, float]
-            ]
-        ],
-    ) -> None: ...
-    def set_named_envelopes(
-        self,
-        initials: list[float],
-        attacks: list[list[tuple[tuple[int, int] | None, float, float]]],
-        releases: list[list[tuple[tuple[int, int] | None, float, float]]],
-        parameters: list[
-            tuple[
-                int,
-                int,
-                bool,
-                int,
-                tuple[int, int],
-                tuple[int, int],
-                int | None,
-                bool,
-                tuple[bool, int, bool],
-            ]
-        ],
+        lfo_routes: np.ndarray,
+        lfo_documents: list[str],
+        envelope_documents: list[str],
+        envelope_routes: list[tuple[int, int, bool]],
+        *,
+        max_records: int = 10000,
     ) -> None: ...
     def set_beat_clock(
         self,
@@ -222,7 +199,6 @@ class GeneratorBank:
             tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]
         ],
     ) -> None: ...
-    def set_beat_named_envelopes(self, indices: list[int]) -> None: ...
     def set_staged_envelfos(
         self,
         definitions: list[

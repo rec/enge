@@ -817,7 +817,9 @@ class PersistentSampler(OfflineSampler):
                     self.definition.sample_rate,
                     self.voice_capacity,
                     len(parameters) // 3,
-                    np.empty((0, 7)),
+                    np.empty((0, 4)),
+                    [],
+                    [],
                     [],
                 )
                 generator_maps: list[list[tuple[int, list[tuple[float, float]]]]] = [
@@ -853,14 +855,14 @@ class PersistentSampler(OfflineSampler):
                             lfo,
                         ),
                         (metadata.voice_lfos, prepared[9], lfo),
-                        (metadata.envelopes, prepared[14], envelope),
-                        (metadata.stages, prepared[18], stage),
+                        (metadata.envelopes, prepared[12], envelope),
+                        (metadata.stages, prepared[16], stage),
                     ):
                         for name, indices in sources.items():
                             target.setdefault(name, []).extend(
                                 base + i for i in indices
                             )
-                    metadata.scopes.extend(sorted(prepared[15]))
+                    metadata.scopes.extend(sorted(prepared[13]))
                     metadata.patch_targets.extend(
                         sorted(synth._patch_child_names(template))
                     )
@@ -868,7 +870,7 @@ class PersistentSampler(OfflineSampler):
                         n for n, v in template.envelfos.items() if isinstance(v, Patch)
                     )
                     for target, mappings in zip(
-                        generator_maps, [*prepared[20][1:], transforms], strict=True
+                        generator_maps, [*prepared[18][1:], transforms], strict=True
                     ):
                         target.extend(mappings)
                 runtime.set_sample_generators(source, bank, generator_maps)

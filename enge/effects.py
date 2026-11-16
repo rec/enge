@@ -2242,7 +2242,7 @@ def configure_native_generators(
     route_indices = {r.name: i for i, r in enumerate(routes)}
     runtime.set_effect_generators(
         bank,
-        [*prepared[20][1:], transforms],
+        [*prepared[18][1:], transforms],
         [route_indices[p.target.name] for p in parameters],
     )
 

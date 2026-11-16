@@ -397,12 +397,10 @@ class PersistentNoise(synth.PersistentSynth):
             self.control_scopes,
             self.source_controls,
             lfos,
-            lfo_rationals,
+            lfo_documents,
             self.lfo_sources,
             self.voice_lfo_sources,
-            envelope_initials,
-            envelope_attacks,
-            envelope_releases,
+            envelope_documents,
             envelope_parameters,
             self.named_envelfo_sources,
             self.source_scopes,
@@ -419,12 +417,12 @@ class PersistentNoise(synth.PersistentSynth):
         self.part_contexts: dict[str, int] = {}
         self.trigger_contexts: dict[tuple[str, str], int] = {}
         generators = _native.GeneratorBank(
-            rate, voices, len(parameters) // 3, lfos, lfo_rationals
-        )
-        generators.set_named_envelopes(
-            envelope_initials,
-            envelope_attacks,
-            envelope_releases,
+            rate,
+            voices,
+            len(parameters) // 3,
+            lfos,
+            lfo_documents,
+            envelope_documents,
             envelope_parameters,
         )
         synth._configure_sample_hold_envelfos(

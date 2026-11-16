@@ -1879,12 +1879,10 @@ class PersistentSynth:
             self.control_scopes,
             self.source_controls,
             lfos,
-            lfo_rationals,
+            lfo_documents,
             self.lfo_sources,
             self.voice_lfo_sources,
-            envelope_initials,
-            envelope_attacks,
-            envelope_releases,
+            envelope_documents,
             envelope_parameters,
             self.named_envelfo_sources,
             self.source_scopes,
@@ -2988,25 +2986,11 @@ PersistentModulation = tuple[
     list[str],
     list[str],
     np.ndarray,
-    list[tuple[int, int]],
+    list[str],
     dict[str, list[int]],
     dict[str, list[int]],
-    list[float],
-    list[list[tuple[tuple[int, int] | None, float, float]]],
-    list[list[tuple[tuple[int, int] | None, float, float]]],
-    list[
-        tuple[
-            int,
-            int,
-            bool,
-            int,
-            tuple[int, int],
-            tuple[int, int],
-            int | None,
-            bool,
-            tuple[bool, int, bool],
-        ]
-    ],
+    list[str],
+    list[tuple[int, int, bool]],
     dict[str, list[int]],
     set[str],
     np.ndarray,
@@ -3023,10 +3007,10 @@ def _configure_generator_owners(
 ) -> None:
     generators.set_envelfo_state_owners(
         _envelfo_state_owners(len(prepared[6]), prepared[8], prepared[9]),
-        _envelfo_state_owners(len(prepared[10]), prepared[14]),
-        _envelfo_state_owners(len(prepared[17]), prepared[18]),
+        _envelfo_state_owners(len(prepared[10]), prepared[12]),
+        _envelfo_state_owners(len(prepared[15]), prepared[16]),
     )
-    for sources in (prepared[8], prepared[9], prepared[14], prepared[18]):
+    for sources in (prepared[8], prepared[9], prepared[12], prepared[16]):
         for name, indices in sources.items():
             sources[name] = indices[:1]
 
@@ -3047,47 +3031,21 @@ def _prepare_native_generators(
         m.clock == "beats" for m in template.envelfos.values()
     ):
         raise EngineError("Beat-clock Envelfo requires a host tempo map")
-    lfos, lfo_rationals, lfo_sources, voice_lfo_sources = prepared[6:10]
+    lfos, lfo_documents, lfo_sources, voice_lfo_sources = prepared[6:10]
     (
-        envelope_initials,
-        envelope_attacks,
-        envelope_releases,
+        envelope_documents,
         envelope_parameters,
         named_envelfo_sources,
-    ) = prepared[10:15]
-    staged_envelfos, staged_envelfo_sources, event_connections = prepared[17:20]
+    ) = prepared[10:13]
+    staged_envelfos, staged_envelfo_sources, event_connections = prepared[15:18]
     generators = _native.GeneratorBank(
-        rate, voices, len(prepared[2]) // 3, lfos, lfo_rationals
-    )
-    generators.set_named_envelopes(
-        envelope_initials,
-        envelope_attacks,
-        envelope_releases,
+        rate,
+        voices,
+        len(prepared[2]) // 3,
+        lfos,
+        lfo_documents,
+        envelope_documents,
         envelope_parameters,
-    )
-    generators.set_envelope_approaches(
-        [
-            (
-                i,
-                r,
-                j,
-                (
-                    s.asymptote,
-                    s.time_constant,
-                    s.threshold,
-                    s.transition_to,
-                    s.transition_seconds,
-                    s.minimum_transition_distance,
-                    s.minimum_time_constant,
-                ),
-            )
-            for n, k in named_envelfo_sources.items()
-            if isinstance((b := template.envelfos[n]), Envelope)
-            for r, p in [(False, b.segments), (True, b.release)]
-            for j, s in enumerate(p)
-            if isinstance(s, ExponentialApproach)
-            for i in k
-        ]
     )
     _configure_sample_hold_envelfos(generators, template, named_envelfo_sources)
     if tempo_map is not None:
@@ -3111,14 +3069,6 @@ def _prepare_native_generators(
                     ),
                 )
                 for p in tempo_map.points
-            ]
-        )
-        generators.set_beat_named_envelopes(
-            [
-                i
-                for name, indices in named_envelfo_sources.items()
-                if template.envelfos[name].clock == "beats"
-                for i in indices
             ]
         )
     generators.set_staged_envelfos(staged_envelfos, event_connections)
@@ -3408,25 +3358,11 @@ def _persistent_modulation(
     source_controls: list[str] = []
     event_bindings: dict[int, str] = {}
     lfo_rows: list[list[float]] = []
-    lfo_rationals: list[tuple[int, int]] = []
+    lfo_documents: list[str] = []
     lfo_sources: dict[str, list[int]] = {}
     voice_lfo_sources: dict[str, list[int]] = {}
-    envelope_initials: list[float] = []
-    envelope_attacks: list[list[tuple[tuple[int, int] | None, float, float]]] = []
-    envelope_releases: list[list[tuple[tuple[int, int] | None, float, float]]] = []
-    envelope_parameters: list[
-        tuple[
-            int,
-            int,
-            bool,
-            int,
-            tuple[int, int],
-            tuple[int, int],
-            int | None,
-            bool,
-            tuple[bool, int, bool],
-        ]
-    ] = []
+    envelope_documents: list[str] = []
+    envelope_parameters: list[tuple[int, int, bool]] = []
     named_envelfo_sources: dict[str, list[int]] = {}
     staged_envelfos: list[StagedRuntimeDefinition] = []
     staged_bindings: dict[str, int] = {}
@@ -3504,22 +3440,14 @@ def _persistent_modulation(
             if isinstance(envelfo, SampleHold):
                 route_maps[2].append(mapping)
                 named_envelfo_sources.setdefault(binding.reference, []).append(
-                    len(envelope_initials)
+                    len(envelope_documents)
                 )
-                envelope_initials.append(0.0)
-                envelope_attacks.append([])
-                envelope_releases.append([])
+                envelope_documents.append(envelfo.model_dump_json())
                 envelope_parameters.append(
                     (
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
                         False,
-                        0,
-                        (0, 1),
-                        (1, 1),
-                        None,
-                        True,
-                        (True, 0, True),
                     )
                 )
                 continue
@@ -3530,22 +3458,14 @@ def _persistent_modulation(
                 if source.scope != "voice":
                     raise EngineError("Persistent named envelopes require voice scope")
                 named_envelfo_sources.setdefault(binding.reference, []).append(
-                    len(envelope_initials)
+                    len(envelope_documents)
                 )
-                envelope_initials.append(generator.initial)
-                duration_scale = 1 if envelfo.clock == "beats" else sample_rate
-                envelope_attacks.append(
-                    _runtime_segments(generator.segments, duration_scale, captured=True)
-                )
-                envelope_releases.append(
-                    _runtime_segments(generator.release, duration_scale, captured=True)
-                )
+                envelope_documents.append(generator.model_dump_json())
                 envelope_parameters.append(
                     (
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
                         binding.release_timing == ReleaseTiming.voice,
-                        *_runtime_named_envelope_options(generator),
                     )
                 )
                 continue
@@ -3573,30 +3493,13 @@ def _persistent_modulation(
             index = len(lfo_rows)
             lfo_rows.append(
                 [
-                    ["instrument", "part", "trigger", "voice"].index(source.scope),
-                    [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                        generator.shape
-                    ),
                     parameter,
                     0 if operation == modulation.Operation.add else 1,
                     intercept,
                     slope,
-                    2.0
-                    if envelfo.position_driver == "transport"
-                    else 1.0
-                    if envelfo.clock == "beats"
-                    else 0.0,
                 ]
             )
-            for value in (
-                generator.duty_cycle,
-                generator.rate,
-                generator.phase,
-                generator.delay * (1 if envelfo.clock == "beats" else sample_rate),
-                generator.fade_in * (1 if envelfo.clock == "beats" else sample_rate),
-            ):
-                assert isinstance(value, Fraction)
-                lfo_rationals.append((value.numerator, value.denominator))
+            lfo_documents.append(generator.model_dump_json())
             if source.scope == "instrument":
                 lfo_sources.setdefault(binding.reference, []).append(index)
             elif source.scope == "voice":
@@ -3610,14 +3513,10 @@ def _persistent_modulation(
             continue
         if isinstance(envelfo, SampleHold):
             named_envelfo_sources.setdefault(binding.reference, []).append(
-                len(envelope_initials)
+                len(envelope_documents)
             )
-            envelope_initials.append(0.0)
-            envelope_attacks.append([])
-            envelope_releases.append([])
-            envelope_parameters.append(
-                (0, 1, False, 0, (0, 1), (1, 1), None, True, (True, 0, True))
-            )
+            envelope_documents.append(envelfo.model_dump_json())
+            envelope_parameters.append((0, 1, False))
             continue
         if isinstance(envelfo, LFO):
             generator = envelfo
@@ -3630,49 +3529,28 @@ def _persistent_modulation(
                 )
             lfo_rows.append(
                 [
-                    ["instrument", "part", "trigger", "voice"].index(envelfo.scope),
-                    [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                        generator.shape
-                    ),
                     0,
                     1,
                     1,
                     0,
-                    1 if envelfo.clock == "beats" else 0,
                 ]
             )
-            for value in (
-                generator.duty_cycle,
-                generator.rate,
-                generator.phase,
-                generator.delay * (1 if envelfo.clock == "beats" else sample_rate),
-                generator.fade_in * (1 if envelfo.clock == "beats" else sample_rate),
-            ):
-                assert isinstance(value, Fraction)
-                lfo_rationals.append((value.numerator, value.denominator))
+            lfo_documents.append(generator.model_dump_json())
             continue
         if isinstance(envelfo, Envelope):
             generator = envelfo
             assert isinstance(generator.initial, float)
             if envelfo.scope != "voice":
                 raise EngineError("Persistent named envelopes require voice scope")
-            duration_scale = 1 if envelfo.clock == "beats" else sample_rate
             named_envelfo_sources.setdefault(binding.reference, []).append(
-                len(envelope_initials)
+                len(envelope_documents)
             )
-            envelope_initials.append(generator.initial)
-            envelope_attacks.append(
-                _runtime_segments(generator.segments, duration_scale, captured=True)
-            )
-            envelope_releases.append(
-                _runtime_segments(generator.release, duration_scale, captured=True)
-            )
+            envelope_documents.append(generator.model_dump_json())
             envelope_parameters.append(
                 (
                     0,
                     1,
                     binding.release_timing == ReleaseTiming.voice,
-                    *_runtime_named_envelope_options(generator),
                 )
             )
             continue
@@ -3716,7 +3594,7 @@ def _persistent_modulation(
             ]
     for mappings, count in zip(
         route_maps,
-        (len(rows), len(lfo_rows), len(envelope_initials), len(staged_envelfos)),
+        (len(rows), len(lfo_rows), len(envelope_documents), len(staged_envelfos)),
         strict=True,
     ):
         mappings.extend((0, [(0.0, 1.0)]) for _ in range(count - len(mappings)))
@@ -3727,13 +3605,11 @@ def _persistent_modulation(
         control_sources,
         control_scopes,
         source_controls,
-        np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 7),
-        lfo_rationals,
+        np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 4),
+        lfo_documents,
         lfo_sources,
         voice_lfo_sources,
-        envelope_initials,
-        envelope_attacks,
-        envelope_releases,
+        envelope_documents,
         envelope_parameters,
         named_envelfo_sources,
         source_scopes,

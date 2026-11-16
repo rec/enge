@@ -43,7 +43,7 @@ rather than replace, shared standalone conformance.
 
 | Capability | Python owner | Rust owner | Evidence / host boundary |
 | --- | --- | --- | --- |
-| Definitions, units and references | uFor canonical EnveLFO models | Host-normalized native definitions | uFor schema/codec/unit tests; Rust validates normalized definitions |
+| Definitions, units and references | uFor canonical EnveLFO models | Rust uFor validates LFO/named-Envelope preparation; other definitions retain host normalization | uFor conformance and enge preparation/audio tests |
 | LFO playback, rate, reset, phase and onset | enveLFO runtime | Core LFO state | Shared body traces and LFO tests; enge retains event-free sampling acceleration |
 | Finite/indefinite Envelopes, curved release and repeats | enveLFO runtime | Core Envelope state | Shared runtime/host traces and focused Envelope tests |
 | Stage transitions, cue events and entry capture | enveLFO runtime | Core Stages state | Shared body traces, command-preemption and partition tests |
@@ -60,6 +60,46 @@ initializer/query/command functions have been removed, with no aliases. enge
 block sampling consumes canonical LFO definitions and EnvelfoState directly.
 Lighting also uses that definition; stateless shape and activation mathematics
 remain in uFor without a runtime dependency cycle.
+
+## Native uFor preparation boundary
+
+The native dependency is now the single Git-distributed `engelfo` crate. Rust
+uFor parses canonical JSON LFO and named-Envelope definitions during preparation,
+then enge converts them to the existing execution definitions. Python dependency
+pins remain unchanged for this slice; their canonical generator serialization is
+accepted by the native adapter. Python authoring syntax is normalized before
+crossing that boundary. Runtime execution remains in engelfo.
+
+The internal `GeneratorBank` constructor takes sample rate, slot and parameter
+counts, LFO routing metadata, JSON LFO definitions, JSON named-Envelope definitions
+and Envelope routing metadata, plus keyword `max_records=10000`.
+LFO routing rows contain parameter index, add/multiply operation, intercept and
+slope. Envelope routing tuples contain parameter index, operation and voice-release
+policy. Definitions follow route-slot order; existing owner maps retain shared
+source identity. SampleHold retains its established bank slots and host seed setup.
+
+The budget counts one preparation root, each route record, and uFor's definition,
+segment and marker records for every supplied occurrence. Raising it permits
+larger prepared banks. Aggregate JSON text is capped at 16,777,216 characters;
+each definition also passes uFor's document-value/depth checks. These limits cover
+this constructor operation; Stages/Patch configuration is still a later slice.
+Portable counters are signed i64, including Envelope repeat counts. Invalid
+definitions, unresolved public rates, out-of-range counters, route mismatches
+and frame-conversion overflow fail before constructing the executable bank.
+
+Exact seconds convert to frame coordinates once, while beat quantities retain
+their clock. Existing scope/reset policy and normalized named loop bounds remain
+host-owned. Authored reset retriggering now maps to engelfo's Initial policy.
+Named captured approaches are prepared in the same pass for synth, FM, noise and
+sampler consumers. The old LFO rational-array encoder and named-Envelope segment,
+approach and beat-flag setters are removed. Main amplitude and Stages encoders
+still have separate consumers and remain pending in the
+[integration plan](../plan/rust-ufor-integration.md).
+
+JSON parsing, validation and conversion allocate only during preparation. They
+are not called from audio processing. `test/test_generator_preparation.py`
+checks rejection/budget boundaries, independently calculated gain curves and
+partitioned native snapshot continuation with two-second 48 kHz WAV regressions.
 
 enge's named Envelope, LFO, Stages and retained Patch scheduling all consume
 the extracted library in both languages. NumPy spans, audio interpolation and

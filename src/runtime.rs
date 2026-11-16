@@ -1,8 +1,6 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
-use crate::amplitude::{
-    Amplitude, AmplitudeSegments, AmplitudeState, ApproachParameters, frame_time,
-};
+use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, ApproachParameters};
 use crate::error::{NativeError, NativeResult};
 use engelfo::envelope::Envelope;
 use engelfo::lfo::Command;
@@ -22,6 +20,7 @@ use patch_host::PatchHost;
 pub(crate) mod controls;
 pub(crate) mod generators;
 mod patch_host;
+mod preparation;
 use controls::{ControlBank, ControlDefinition, ControlState, control_definitions};
 
 #[derive(Clone, PartialEq)]
@@ -204,17 +203,6 @@ type StageInput = (
     (i64, i64),
     (i64, i64),
     Option<u64>,
-);
-type NamedEnvelopeInput = (
-    usize,
-    usize,
-    bool,
-    usize,
-    (i64, i64),
-    (i64, i64),
-    Option<u64>,
-    bool,
-    (bool, usize, bool),
 );
 type BeatClockInput = ((i64, i64), (i64, i64), (i64, i64), (i64, i64));
 type StagedEnvelfoInput = (
@@ -1600,93 +1588,6 @@ pub(crate) fn sum_partials(partials: &[f64]) -> f64 {
         }
     }
     total
-}
-
-fn lfo_definitions(
-    values: PyReadonlyArray2<'_, f64>,
-    rationals: &[(u64, u64)],
-    sample_rate: f64,
-) -> PyResult<Vec<LfoDefinition>> {
-    if values.shape()[1] != 7
-        || rationals.len() != values.shape()[0] * 5
-        || rationals.iter().any(|(_, denominator)| *denominator == 0)
-        || values.as_array().iter().any(|v| !v.is_finite())
-    {
-        return Err(PyValueError::new_err("Invalid synth runtime LFOs"));
-    }
-    let mut definitions = Vec::with_capacity(values.shape()[0]);
-    for (index, row) in values.as_array().rows().into_iter().enumerate() {
-        let scope = row[0] as usize;
-        let waveform = row[1] as usize;
-        let parameter = row[2] as usize;
-        let operation = row[3] as usize;
-        let exact = &rationals[index * 5..index * 5 + 5];
-        if row[0] != scope as f64
-            || ![0, 1, 3].contains(&scope)
-            || row[1] != waveform as f64
-            || waveform > 2
-            || row[2] != parameter as f64
-            || row[3] != operation as f64
-            || operation > 1
-            || ![0.0, 1.0, 2.0].contains(&row[6])
-            || exact[0].0 > exact[0].1
-            || exact[2].0 >= exact[2].1
-        {
-            return Err(PyValueError::new_err("Invalid synth runtime LFO"));
-        }
-        let exact = exact
-            .iter()
-            .map(|(n, d)| {
-                Time::new(
-                    i64::try_from(*n).map_err(|_| core_error(engelfo::Error::Overflow))?,
-                    i64::try_from(*d).map_err(|_| core_error(engelfo::Error::Overflow))?,
-                )
-                .map_err(core_error)
-            })
-            .collect::<NativeResult<Vec<_>>>()?;
-        let beat_clock = row[6] != 0.0;
-        let mut body = lfo::LFO::new(if beat_clock {
-            exact[1]
-        } else {
-            exact[1]
-                .checked_div(frame_time(sample_rate)?)
-                .map_err(core_error)?
-        })
-        .map_err(core_error)?;
-        body.shape = match waveform {
-            0 => lfo::Shape::Sine,
-            1 => lfo::Shape::Square,
-            _ => lfo::Shape::Triangle,
-        };
-        body.duty = exact[0];
-        body.phase = exact[2];
-        body.delay = exact[3];
-        body.fade = exact[4];
-        body.clock = if beat_clock {
-            lfo::Clock::Beats
-        } else {
-            lfo::Clock::Seconds
-        };
-        body.reset = if scope == 3 {
-            lfo::Reset::Trigger
-        } else {
-            lfo::Reset::Free
-        };
-        if row[6] == 2.0 {
-            body.driver = lfo::Driver::Transport;
-            body.reset = lfo::Reset::Transport;
-        }
-        body.validate().map_err(core_error)?;
-        definitions.push(LfoDefinition {
-            scope,
-            body,
-            parameter,
-            operation,
-            intercept: row[4],
-            slope: row[5],
-        });
-    }
-    Ok(definitions)
 }
 
 fn filter_definitions(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<FilterDefinition>> {

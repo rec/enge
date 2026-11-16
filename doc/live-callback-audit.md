@@ -83,11 +83,11 @@ Reproduce the measurement with the locked environment already installed:
 
 ```sh
 mkdir -p build
-uv pip install --no-deps --reinstall --editable . --config-settings 'build-args=--features allocation-audit'
+uv sync --frozen --no-editable --reinstall-package enge --config-settings-package enge:build-args=--features=allocation-audit
 cargo test --locked --features allocation-audit
 uv run --no-sync pytest --require-callback-no-allocations --junitxml=build/enge-callback-heap.xml
 uv run --no-sync python scripts/summarize_callback_audit.py --reports build/enge-callback-heap.xml
-uv sync --frozen --reinstall-package enge
+uv sync --frozen --no-editable --reinstall-package enge
 ```
 
 The last command restores the ordinary extension. Instrumentation is absent from

@@ -8,7 +8,9 @@ from test_noise import trigger as noise_trigger
 from test_synth import check_audio
 from test_synth import score as synth_score
 from ufor import audio_effects
+from ufor.envelfo import LFO, Envelope, SampleHold
 from ufor.samples import processing
+from ufor.segments import Segment
 from ufor.synth_trace import prepare as prepare_trace
 
 from enge import _native, effects, live, noise, synth
@@ -34,7 +36,7 @@ def native_oscillator_runtime(
     generators: _native.GeneratorBank | None = None,
 ) -> _native.SynthRuntime:
     if generators is None:
-        generators = _native.GeneratorBank(48000, 1, 2, np.empty((0, 7)), [])
+        generators = _native.GeneratorBank(48000, 1, 2, np.empty((0, 4)), [], [], [])
     return _native.SynthRuntime(
         48000,
         0,
@@ -63,7 +65,7 @@ def native_noise_runtime() -> _native.SynthRuntime:
         (0, 1),
         np.empty((0, 6), dtype=np.float64),
         [],
-        _native.GeneratorBank(48000, 1, 2, np.empty((0, 7)), []),
+        _native.GeneratorBank(48000, 1, 2, np.empty((0, 4)), [], [], []),
         np.empty((0, 7), dtype=np.float64),
         [1, 0, 1e300, 0, -120000, 120000],
         1,
@@ -233,8 +235,10 @@ def test_native_live_runtime_latches_failure_and_zeros_later_blocks(
         48000,
         1,
         2,
-        np.array([[0, 0, 0, 1, 0.5, 0.5, 0]], dtype=np.float64),
-        [(1, 2), (3, 1), (0, 1), (0, 1), (0, 1)],
+        np.array([[0, 1, 0.5, 0.5]], dtype=np.float64),
+        [LFO(rate=3, scope="instrument").model_dump_json()],
+        [],
+        [],
     )
     runtime = _native.LiveRuntime([native_oscillator_runtime(generators)], 64, 64, 2)
     actions = np.array([[64, 0, 0, 220, 0.2, 0]], dtype=np.float64)
@@ -635,14 +639,16 @@ def test_native_sample_generators_follow_audible_start_and_snapshot(
         48000,
         1,
         4,
-        np.array([[3, 0, 0, 1, 0.5, 0.5, 0]], dtype=np.float64),
-        [(1, 2), (3, 1), (0, 1), (0, 1), (0, 1)],
-    )
-    generators.set_named_envelopes(
-        [0, 1],
-        [[((12000, 1), 1.0, 0.0)], []],
-        [[((6000, 1), 0.0, 0.0)], []],
-        [(0, 1, False, 0, (0, 1), (1, 1), None, False, (True, 0, False))] * 2,
+        np.array([[0, 1, 0.5, 0.5]], dtype=np.float64),
+        [LFO(rate=3).model_dump_json()],
+        [
+            Envelope(
+                segments=[Segment(duration="1/4s", to=1.0)],
+                release=[Segment(duration="1/8s", to=0.0)],
+            ).model_dump_json(),
+            SampleHold(minimum=0.5, maximum=1.0).model_dump_json(),
+        ],
+        [(0, 1, False)] * 2,
     )
     generators.set_sample_hold_envelfos([(1, 123, 0.5, 1.0)])
     identity = (0, [(0.0, 0.0), (1.0, 1.0)])

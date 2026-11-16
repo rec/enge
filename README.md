@@ -335,8 +335,7 @@ partially consumed batches from the abandoned timeline. Rejected restoration
 leaves both state and queued actions untouched. Hosts must resubmit any events
 they want to apply after restoration.
 
-Build with `uv sync`; Rust/Cargo 1.87 or newer is required for meedee (enge's own
-Rust code retains its 1.85 minimum). Python packaging uses
+Build with `uv sync`. Python packaging uses
 [maturin](https://www.maturin.rs/project_layout.html),
 [PyO3](https://pyo3.rs/v0.29.0/), and
 [rust-numpy](https://docs.rs/numpy/0.29.0/numpy/).

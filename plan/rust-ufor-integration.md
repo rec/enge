@@ -70,27 +70,51 @@ regressions for these two approved alignment fixes.
 
 ### 1. Contract inventory and first preparation slice
 
-Inventory the exact generator fields and transformations crossing the current
-PyO3 boundary: rates, phase, curves, held/release segments, markers, scope,
-ownership, onset, origins, indices and preparation capacities. Identify the
-callers and old encoders that the first slice will replace. Keep audio-host
-restrictions separate from portable-format validity.
+The inventory and approved boundary above are implemented. `fa6ea68` migrates
+the native dependency/imports to `engelfo`; the baseline passed 3,570 Python tests
+with 29 optional skips. `137773a` separately adds the pinned Rust uFor and JSON
+preparation dependencies.
 
-Add a Rust uFor dependency pinned to a reviewed commit, in a separate dependency
-commit. Use the repository's declared setup, with no editable or sibling-path
-dependencies. Keep the prerequisite `engelfo` migration separate from adding
-uFor, and avoid unrelated package upgrades.
+`src/runtime/preparation.rs` validates canonical definitions with uFor and
+constructs the existing engelfo bodies. `_persistent_modulation` carries JSON
+definitions alongside enge routing metadata. Synth, FM, noise, effects and sampler
+bank construction use the new interface; the old LFO rational encoder and named
+Envelope/approach/beat-flag setters are removed. Stages still use their existing
+encoder. Native stubs and callers have been updated together.
 
-Implement preparation of literal seconds-clock LFOs and explicit-initial
-Envelopes for the already supported host profiles. Validate canonical definitions
-through uFor, translate them into existing core types, and populate the existing
-bank. Check main amplitude preparation separately from named modulation
-Envelopes; migrate each supported caller when its contract is covered.
+The first slice retains existing seconds/beat clocks, scope/reset policy,
+SampleHold slots, shared ownership and normalized loop bounds. Named captured
+approaches are prepared directly, including the approved FM/noise correction;
+reset retriggering is mapped to Initial. The user approved signed-i64 portable
+repeat counts, rejecting values above `2**63 - 1` during preparation.
 
-Keep decoding, validation, graph work, strings and allocation in preparation.
-Preserve prepared indices and callback storage contracts. Replace each migrated
-encoder completely, updating its callers and removing obsolete code. Do not
-introduce a production fallback that retries the old encoder after rejection.
+Preparation tests cover invalid definitions, aggregate record overrides, exact
+frame overflow, repeat-count boundaries, independent gain equations and native
+partitioned snapshot continuation. Existing audio/ownership tests use the new
+constructor. JSON decoding stays outside callback execution. Python dependency
+pins are unchanged; tests use installed non-editable enge and locked Cargo inputs.
+
+Verification on 2026-11-16 passed: 3,583 Python tests with 29 optional skips under
+`--require-callback-no-allocations`, including the new preparation regressions.
+The audit recorded 24,703 successful and 68 failed callbacks with zero callback
+allocations, reallocations or frees. The broader native-call boundary still
+records allocations outside callbacks; this is not an allocation-free API claim.
+Both Rust allocation-audit unit tests, Clippy, Ruff, formatting, ty and pyupgrade
+passed. The ordinary extension is restored after qualification. Hosted
+Windows/Linux evidence and hardware deadlines remain outside these local checks.
+
+Reproduce the audited run with:
+
+```sh
+uv sync --frozen --no-editable --reinstall-package enge --config-settings-package enge:build-args=--features=allocation-audit
+uv run --no-sync pytest -q --require-callback-no-allocations --junitxml=build/rust-ufor-callback-audit.xml
+uv run --no-sync python scripts/summarize_callback_audit.py --reports build/rust-ufor-callback-audit.xml
+uv sync --frozen --no-editable --reinstall-package enge
+```
+
+Main voice-amplitude conversion remains a separate follow-on slice. Its latched
+duration/gain and lifetime rules need an inventory before replacing its still-used
+segment and captured-release arrays. Retain these encoders until that migration.
 
 ### 2. Stages, Patch and generator-aware bindings
 
