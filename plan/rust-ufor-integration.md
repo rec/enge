@@ -7,14 +7,16 @@ enge's native preparation. Replace the corresponding Python-to-native conversion
 code incrementally, preserving supported audio behavior and the existing
 prepared runtime representation.
 
-This document authorizes no implementation or dependency changes. Begin with
-literal LFOs and Envelopes after the decisions below are confirmed. No further
+Implementation and all four recommendations below were approved on 2026-11-16.
+Begin with literal LFOs and Envelopes. No further
 large uFor port is a prerequisite. Record concrete API gaps discovered during
 integration before proposing additional shared-library work.
 
 ## Current boundary and ownership
 
-The current Cargo manifest depends on `envelfo-core`, but not Rust uFor.
+The initial Cargo manifest depended on `envelfo-core`, but not Rust uFor.
+The first prerequisite migrates that dependency and imports to the consolidated
+Git-distributed `engelfo` crate, which includes MIDI mapping and depends on middy.
 `enge/synth.py::_persistent_modulation` compiles parameter/source/route metadata;
 `_prepare_native_generators` configures the shared native `GeneratorBank`.
 `enge/envelfo_graph.py::prepare_graph` builds the standalone scheduling graph.
@@ -40,6 +42,32 @@ enge must discharge applicable requirements before building an executable plan.
 
 ## Implementation stages
 
+### Approved first-slice boundary and inventory
+
+On 2026-11-16 the user approved replacing the native GeneratorBank constructor
+and named-Envelope setters with one constructor taking canonical JSON LFO and
+named-Envelope definitions, separate host routing/index metadata, and keyword
+`max_records=10000`. The limit covers these supplied definitions and route
+records together. Canonical per-definition text keeps uFor's validated parser;
+aggregate preparation text is also bounded. Existing beat-clock profiles and
+SampleHold route slots remain supported. Main voice-amplitude conversion is a
+separate follow-on slice, as are Stages/Patch graph and modulation conversion.
+
+The current LFO encoder combines waveform/clock and rational body fields with
+scope/parameter/operation/affine route metadata. Named Envelopes combine exact
+frame-scaled segment arrays with release/loop/retrigger options, and attach
+captured approaches through a later setter. The replacement reads authored
+quantities in Rust, converts exact seconds to frames once, and retains enge's
+scope/reset policy and prepared state ownership. Named loop bounds retain the
+existing normalized native representation. Main amplitude arrays and Stages
+encoders still have consumers and must not be removed by this slice.
+
+The user also approved mapping uFor's valid `retrigger='reset'` to the native
+Initial policy, fixing the old encoder's lookup of the nonexistent value
+`initial`. Native FM/noise named captured approaches must retain their authored
+parameters instead of losing them as placeholder segments. Add focused consumer
+regressions for these two approved alignment fixes.
+
 ### 1. Contract inventory and first preparation slice
 
 Inventory the exact generator fields and transformations crossing the current
@@ -50,8 +78,8 @@ restrictions separate from portable-format validity.
 
 Add a Rust uFor dependency pinned to a reviewed commit, in a separate dependency
 commit. Use the repository's declared setup, with no editable or sibling-path
-dependencies. Avoid upgrading `envelfo-core` or unrelated packages as part of
-that dependency change.
+dependencies. Keep the prerequisite `engelfo` migration separate from adding
+uFor, and avoid unrelated package upgrades.
 
 Implement preparation of literal seconds-clock LFOs and explicit-initial
 Envelopes for the already supported host profiles. Validate canonical definitions
@@ -104,7 +132,7 @@ uFor port would be `SoundSettings`, processing declarations and target resolutio
 if the integration confirms these are the next blocker. Full instrument/effect
 documents and TempoMap are separate milestones.
 
-## Decisions before implementation
+## Approved decisions
 
 1. **Preparation input.** Recommend canonical JSON text at the preparation-only
    PyO3 boundary, decoded by Rust uFor. It reuses the portable format and ordered
@@ -162,7 +190,8 @@ affected by the migration. Preparation may allocate; callback behavior must reta
 the existing zero-heap-operation guarantees for the qualified paths.
 
 Test declared, non-editable Python installation and locked Cargo dependencies.
-Preserve Python 3.13, Rust 1.85 and macOS/Windows/Linux compatibility. Hosted
+Preserve Python 3.13 and macOS/Windows/Linux compatibility. Specific Rust-version
+targets are not a project requirement. Hosted
 platform evidence comes from the existing workflows; do not launch release
 workflows for every commit. Local tests do not establish hardware deadlines or
 qualify unavailable platforms.

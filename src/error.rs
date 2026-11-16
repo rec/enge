@@ -5,8 +5,8 @@ use pyo3::exceptions::PyValueError;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NativeError {
     Message(&'static str),
-    Core(envelfo_core::Error),
-    Amplitude(envelfo_core::Error),
+    Core(engelfo::Error),
+    Amplitude(engelfo::Error),
     FilterOutput(usize),
     CallbackCapacity(&'static str),
 }

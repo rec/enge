@@ -1,14 +1,14 @@
 //! Voice-owned amplitude policy over the standalone Envelope core.
 
 use crate::error::{NativeError, NativeResult};
-use envelfo_core::Status;
-use envelfo_core::approach::ExponentialApproach;
-use envelfo_core::envelope::{
+use engelfo::Status;
+use engelfo::approach::ExponentialApproach;
+use engelfo::envelope::{
     Envelope, EnvelopeCommand, EnvelopeCommandStorage, EnvelopeState, Initial, Phase, Playback,
     Retrigger, Segment, Start,
 };
-use envelfo_core::lfo::{Command, Value};
-use envelfo_core::time::Time;
+use engelfo::lfo::{Command, Value};
+use engelfo::time::Time;
 
 pub(crate) type AmplitudeSegments = Vec<(Option<(i64, i64)>, f64, f64)>;
 pub(crate) type ApproachParameters = (f64, f64, f64, f64, f64, f64, f64);
@@ -208,7 +208,7 @@ fn initial_state(body: &Envelope) -> NativeResult<EnvelopeState> {
     Ok(state)
 }
 
-fn error(value: envelfo_core::Error) -> NativeError {
+fn error(value: engelfo::Error) -> NativeError {
     NativeError::Amplitude(value)
 }
 

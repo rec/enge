@@ -2,7 +2,6 @@
 name = "enge-native"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
 publish = false
 
 [workspace]
@@ -17,7 +16,7 @@ allocation-audit = []
 rubberband = ["dep:enge-rubberband"]
 
 [dependencies]
-envelfo-core = { git = "ssh://git@github.com/rec/envelfo.git", rev = "0c027e2" }
+engelfo = { git = "ssh://git@github.com/rec/envelfo.git", rev = "c287217" }
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module"] }
 rtrb = "0.4.0"

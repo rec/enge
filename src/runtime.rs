@@ -4,11 +4,11 @@ use crate::amplitude::{
     Amplitude, AmplitudeSegments, AmplitudeState, ApproachParameters, frame_time,
 };
 use crate::error::{NativeError, NativeResult};
-use envelfo_core::envelope::Envelope;
-use envelfo_core::lfo::Command;
-use envelfo_core::patch::PatchState;
-use envelfo_core::time::Time;
-use envelfo_core::{lfo, stages};
+use engelfo::envelope::Envelope;
+use engelfo::lfo::Command;
+use engelfo::patch::PatchState;
+use engelfo::time::Time;
+use engelfo::{lfo, stages};
 use numpy::ndarray::{Array2, Array3, ArrayViewMut2};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -1638,8 +1638,8 @@ fn lfo_definitions(
             .iter()
             .map(|(n, d)| {
                 Time::new(
-                    i64::try_from(*n).map_err(|_| core_error(envelfo_core::Error::Overflow))?,
-                    i64::try_from(*d).map_err(|_| core_error(envelfo_core::Error::Overflow))?,
+                    i64::try_from(*n).map_err(|_| core_error(engelfo::Error::Overflow))?,
+                    i64::try_from(*d).map_err(|_| core_error(engelfo::Error::Overflow))?,
                 )
                 .map_err(core_error)
             })
@@ -1745,7 +1745,7 @@ fn lfo_command(
     let ordinal = state
         .ordinal
         .checked_add(1)
-        .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
+        .ok_or_else(|| core_error(engelfo::Error::Overflow))?;
     definition
         .body
         .command(&mut state.core, at, ordinal, command)
@@ -1758,22 +1758,22 @@ fn control_time(value: f64) -> NativeResult<Time> {
     // Public numeric commands use the same decimal value as Python Fraction(str(value)).
     let mut bytes = [0; 512];
     let mut output = Cursor::new(bytes.as_mut_slice());
-    write!(&mut output, "{value}").map_err(|_| core_error(envelfo_core::Error::Overflow))?;
+    write!(&mut output, "{value}").map_err(|_| core_error(engelfo::Error::Overflow))?;
     let length = output.position() as usize;
     let text = std::str::from_utf8(&bytes[..length]).expect("ASCII numeric formatting");
     let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
     let denominator = 10_i64
         .checked_pow(fraction.len() as u32)
-        .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
+        .ok_or_else(|| core_error(engelfo::Error::Overflow))?;
     let whole = whole
         .parse::<i64>()
-        .map_err(|_| core_error(envelfo_core::Error::Overflow))?;
+        .map_err(|_| core_error(engelfo::Error::Overflow))?;
     let fraction = if fraction.is_empty() {
         0
     } else {
         fraction
             .parse::<i64>()
-            .map_err(|_| core_error(envelfo_core::Error::Overflow))?
+            .map_err(|_| core_error(engelfo::Error::Overflow))?
     };
     let numerator = whole
         .checked_mul(denominator)
@@ -1784,11 +1784,11 @@ fn control_time(value: f64) -> NativeResult<Time> {
                 n.checked_add(fraction)
             }
         })
-        .ok_or_else(|| core_error(envelfo_core::Error::Overflow))?;
+        .ok_or_else(|| core_error(engelfo::Error::Overflow))?;
     Time::new(numerator, denominator).map_err(core_error)
 }
 
-fn core_error(error: envelfo_core::Error) -> NativeError {
+fn core_error(error: engelfo::Error) -> NativeError {
     NativeError::Core(error)
 }
 

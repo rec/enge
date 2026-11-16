@@ -13,14 +13,14 @@ use super::{
 use crate::amplitude::AmplitudeSegments;
 use crate::amplitude::{frame_position, frame_time};
 use crate::error::{NativeError, NativeResult};
-use envelfo_core::approach::ExponentialApproach;
-use envelfo_core::envelope::{
+use engelfo::approach::ExponentialApproach;
+use engelfo::envelope::{
     Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
 };
-use envelfo_core::lfo::Command;
-use envelfo_core::patch::{ChildCommand, PatchState, PatchStorage};
-use envelfo_core::stages;
-use envelfo_core::{lfo, time::Time};
+use engelfo::lfo::Command;
+use engelfo::patch::{ChildCommand, PatchState, PatchStorage};
+use engelfo::stages;
+use engelfo::{lfo, time::Time};
 use numpy::PyReadonlyArray2;
 use pyo3::{exceptions::PyValueError, prelude::*};
 

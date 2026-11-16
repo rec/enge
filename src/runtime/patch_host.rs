@@ -5,16 +5,16 @@ use super::generators::GeneratorBank;
 use super::{BeatPoint, core_error};
 use crate::amplitude::frame_position;
 use crate::error::NativeResult;
-use envelfo_core::envelope::Marker;
-use envelfo_core::lfo;
-use envelfo_core::lfo::Command;
-use envelfo_core::patch::{
+use engelfo::envelope::Marker;
+use engelfo::lfo;
+use engelfo::lfo::Command;
+use engelfo::patch::{
     Child, ChildCommand, ChildEvent, Connection, ConnectionAction, Node, Output, Patch, Port,
     StreamKeys,
 };
-use envelfo_core::sample_hold::SampleHold;
-use envelfo_core::signal::Operator;
-use envelfo_core::time::Time;
+use engelfo::sample_hold::SampleHold;
+use engelfo::signal::Operator;
+use engelfo::time::Time;
 use std::collections::BTreeMap;
 
 #[derive(Clone, PartialEq)]
@@ -34,12 +34,12 @@ pub(super) struct Clocks<'a> {
     kinds: &'a BTreeMap<String, u8>,
 }
 
-impl envelfo_core::patch::ClockMapping for Clocks<'_> {
-    fn local_time(&self, child: &str, at: Time) -> Result<Time, envelfo_core::Error> {
+impl engelfo::patch::ClockMapping for Clocks<'_> {
+    fn local_time(&self, child: &str, at: Time) -> Result<Time, engelfo::Error> {
         clock_at(self.points, self.kinds.get(child).copied().unwrap_or(0), at)
     }
 
-    fn host_time(&self, child: &str, at: Time) -> Result<Option<Time>, envelfo_core::Error> {
+    fn host_time(&self, child: &str, at: Time) -> Result<Option<Time>, engelfo::Error> {
         if self.kinds.get(child).copied().unwrap_or(0) == 0 {
             return Ok(Some(at));
         }
@@ -591,18 +591,14 @@ impl GeneratorBank {
     }
 }
 
-pub(super) fn clock_at(
-    points: &[BeatPoint],
-    kind: u8,
-    at: Time,
-) -> Result<Time, envelfo_core::Error> {
+pub(super) fn clock_at(points: &[BeatPoint], kind: u8, at: Time) -> Result<Time, engelfo::Error> {
     if kind == 0 {
         return Ok(at);
     }
     let index = points.partition_point(|p| p.clock_frame <= at);
     let point = points
         .get(index.wrapping_sub(1))
-        .ok_or(envelfo_core::Error::InvalidDefinition(
+        .ok_or(engelfo::Error::InvalidDefinition(
             "beat clock requires a tempo map",
         ))?;
     let origin = if kind == 2 {
