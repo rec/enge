@@ -8,8 +8,8 @@ use super::{
 };
 use super::{
     BeatPoint, EnvelfoTransformInput, EnvelfoTransformRoute, LfoDefinition, LfoPlayback,
-    NamedEnvelopeDefinition, PatchEventConnection, PatchStageStartConnection, RouteMap,
-    StagedConnection, StagedEnvelfoDefinition, add_partial, control_time, core_error, lfo_command,
+    NamedEnvelopeDefinition, PatchEventConnection, PatchStageStartConnection, StagedConnection,
+    StagedEnvelfoDefinition, control_time, core_error, lfo_command, route_map,
 };
 use crate::amplitude::{frame_position, frame_time};
 use crate::error::{NativeError, NativeResult};
@@ -18,6 +18,7 @@ use engelfo::patch::{ChildCommand, PatchState, PatchStorage};
 use engelfo::{lfo, time::Time};
 use numpy::PyReadonlyArray2;
 use pyo3::{exceptions::PyValueError, prelude::*};
+use ufor::modulation::math::{Mapping, add_partial};
 
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
@@ -50,7 +51,7 @@ impl GeneratorBank {
         &self,
         kind: usize,
         maps: Vec<(usize, Vec<(f64, f64)>)>,
-    ) -> PyResult<Vec<RouteMap>> {
+    ) -> PyResult<Vec<Mapping>> {
         let count = match kind {
             1 => self.lfo_definitions.len(),
             2 => self.named_envelopes.len(),
@@ -62,7 +63,7 @@ impl GeneratorBank {
             return Err(PyValueError::new_err("Invalid generator mapping count"));
         }
         maps.into_iter()
-            .map(|(kind, points)| RouteMap::new(kind, points))
+            .map(|(kind, points)| route_map(kind, points))
             .collect()
     }
 
@@ -327,7 +328,7 @@ impl GeneratorBank {
         mut product: f64,
         frame: usize,
         controls: &ControlBank,
-        maps: &[Vec<RouteMap>],
+        maps: &[Vec<Mapping>],
         partials: &mut [f64],
         count: &mut usize,
     ) -> NativeResult<f64> {
@@ -343,7 +344,7 @@ impl GeneratorBank {
                 definition.intercept + definition.slope * value,
             )?;
             if definition.operation == 0 {
-                add_partial(partials, count, weight * amount);
+                add_partial(partials, count, weight * amount)?;
             } else {
                 product *= 1.0 + weight * (amount - 1.0);
             }
@@ -355,7 +356,7 @@ impl GeneratorBank {
             let value = self.patch_value(voice, 1, source, frame)?.value;
             let amount = mapped(maps, 2, source, value)?;
             if definition.operation == 0 {
-                add_partial(partials, count, amount);
+                add_partial(partials, count, amount)?;
             } else {
                 product *= amount;
             }
@@ -367,7 +368,7 @@ impl GeneratorBank {
             let value = self.patch_value(voice, 2, source, frame)?.value;
             let amount = mapped(maps, 3, source, value)?;
             if definition.operation == 0 {
-                add_partial(partials, count, amount);
+                add_partial(partials, count, amount)?;
             } else {
                 product *= amount;
             }
@@ -384,7 +385,7 @@ impl GeneratorBank {
                 self.envelfo_transform_values[voice * self.envelfo_transforms.len() + source],
             )?;
             if *operation == 0 {
-                add_partial(partials, count, amount);
+                add_partial(partials, count, amount)?;
             } else {
                 product *= amount;
             }
@@ -393,11 +394,12 @@ impl GeneratorBank {
     }
 }
 
-fn mapped(maps: &[Vec<RouteMap>], kind: usize, source: usize, value: f64) -> NativeResult<f64> {
+fn mapped(maps: &[Vec<Mapping>], kind: usize, source: usize, value: f64) -> NativeResult<f64> {
     maps[kind]
         .get(source)
         .ok_or(NativeError::Message("Unprepared modulation mapping"))?
         .value(value)
+        .map_err(NativeError::Calculation)
 }
 
 #[pymethods]

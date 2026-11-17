@@ -1,8 +1,8 @@
 //! Prepared multi-input mixing and continuously retimed selector fades.
 
 use crate::error::{NativeError, NativeResult};
-use crate::runtime::{add_partial, sum_partials};
 use numpy::ndarray::{ArrayView1, ArrayView2};
+use ufor::modulation::math::{add_partial, sum_partials};
 
 #[derive(Clone)]
 pub(super) struct InputFade {
@@ -94,12 +94,11 @@ impl Mixer {
                 if !product.is_finite() {
                     return Err(NativeError::Message("Non-finite mixer product"));
                 }
-                add_partial(&mut self.partials, &mut count, product);
+                add_partial(&mut self.partials, &mut count, product)
+                    .map_err(|_| NativeError::Message("Non-finite mixer sum"))?;
             }
-            *target = sum_partials(&self.partials[..count]);
-            if !target.is_finite() {
-                return Err(NativeError::Message("Non-finite mixer sum"));
-            }
+            *target = sum_partials(&self.partials[..count])
+                .map_err(|_| NativeError::Message("Non-finite mixer sum"))?;
         }
         for fade in &mut self.fades {
             if fade.remaining > 0 {

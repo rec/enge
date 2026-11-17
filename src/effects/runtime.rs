@@ -26,7 +26,6 @@ use crate::error::{NativeError, NativeResult};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::ControlBank;
 use crate::runtime::generators::GeneratorBank;
-use crate::runtime::{RouteMap, sum_partials};
 use captured_buffer::CapturedBuffer;
 use frequency_shifter::FrequencyShifter;
 use highpass::Highpass;
@@ -41,6 +40,7 @@ use pyo3::types::PyDict;
 use reverb::Reverb;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::f64::consts::PI;
+use ufor::modulation::math::{Mapping, add_partial, sum_partials};
 use waveshaper::Waveshaper;
 
 #[pyclass(unsendable)]
@@ -181,7 +181,7 @@ struct Alignment {
 pub(crate) struct EffectGenerators {
     pub(crate) bank: GeneratorBank,
     pub(crate) controls: ControlBank,
-    pub(crate) maps: Vec<Vec<RouteMap>>,
+    pub(crate) maps: Vec<Vec<Mapping>>,
     pub(crate) targets: Vec<usize>,
     pub(crate) partials: Vec<f64>,
 }
@@ -1081,10 +1081,14 @@ impl EffectRuntime {
                 for row in coefficients.rows() {
                     let mut count = 0;
                     for value in row {
-                        crate::runtime::add_partial(&mut partials, &mut count, value.abs());
+                        add_partial(&mut partials, &mut count, value.abs()).map_err(|_| {
+                            PyValueError::new_err("Delay feedback matrix row exceeds one")
+                        })?;
                     }
-                    let total = sum_partials(&partials[..count]);
-                    if !total.is_finite() || total > 1.0 {
+                    let total = sum_partials(&partials[..count]).map_err(|_| {
+                        PyValueError::new_err("Delay feedback matrix row exceeds one")
+                    })?;
+                    if total > 1.0 {
                         return Err(PyValueError::new_err(
                             "Delay feedback matrix row exceeds one",
                         ));
@@ -1353,7 +1357,7 @@ impl EffectRuntime {
                         &mut count,
                     )?;
                     self.controls.signals[*route] = if self.controls.definitions.1[*route].2 == 0 {
-                        sum_partials(&generators.partials[..count])
+                        sum_partials(&generators.partials[..count])?
                     } else {
                         product
                     };

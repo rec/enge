@@ -79,6 +79,19 @@ routes, retained Patch/Slew state, beat clocks, automation composition, native
 snapshot replay and a deliberately rejected modulation range. See
 [effect modulation](effect-modulation.md) for the supported profile.
 
+The 2026-11-17 Rust uFor modulation migration passed **3,641 tests with 29 optional
+skips**. Prepared mapping and accurate-sum kernels are now shared with uFor;
+callbacks retain caller-owned scratch and fixed-size errors. The full run recorded
+**24,704 successful and 71 failed callbacks**, with zero Rust allocations,
+reallocations or frees in either category. New failure cases cover mapping
+intermediate overflow, additive overflow and routing-matrix sum overflow, including
+zeroed output and matrix snapshot recovery. Existing mapping, mixer, generator
+ownership and continuation regressions also passed. Preparation and the broader
+native-call boundary retain heap operations outside the callback. The generated
+report is `build/rust-ufor-modulation-audit.xml`. Qualification was local to macOS;
+it does not establish Windows/Linux execution or hardware deadlines. The ordinary
+extension is restored after the audit.
+
 Reproduce the measurement with the locked environment already installed:
 
 ```sh

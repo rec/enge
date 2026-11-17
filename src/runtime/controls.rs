@@ -1,7 +1,7 @@
 //! Shared bounded control ramps, addressed contexts and voice bindings.
-use super::{RouteMap, add_partial};
 use crate::error::{NativeError, NativeResult};
 use numpy::{PyReadonlyArray2, PyUntypedArrayMethods};
+use ufor::modulation::math::{Mapping, add_partial};
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct ControlDefinition {
@@ -46,7 +46,7 @@ impl ControlBank {
         &self,
         voice: usize,
         parameter: usize,
-        maps: &[RouteMap],
+        maps: &[Mapping],
         partials: &mut [f64],
         count: &mut usize,
     ) -> NativeResult<f64> {
@@ -60,7 +60,7 @@ impl ControlBank {
                 .ok_or(NativeError::Message("Missing modulation mapping"))?;
             let amount = mapping.value(self.value(voice, source)?)?;
             if definition.operation == 0 {
-                add_partial(partials, count, amount);
+                add_partial(partials, count, amount)?;
             } else {
                 product *= amount;
             }

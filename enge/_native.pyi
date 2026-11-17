@@ -8,12 +8,39 @@ from .effect_controls import EffectControlPlan
 
 class SynthRuntimeSnapshot: ...
 
-def validate_generator_bindings(
+def prepare_modulation(
+    sample_rate: float,
     context: str,
     generators: list[tuple[str, str]],
+    targets: list[tuple[str, str, int, float, float, float]],
+    filters: np.ndarray,
     *,
     max_records: int = 10000,
-) -> None: ...
+) -> tuple[
+    np.ndarray,
+    list[tuple[int, int]],
+    list[float],
+    dict[str, list[int]],
+    list[str],
+    list[str],
+    np.ndarray,
+    list[str],
+    dict[str, list[int]],
+    dict[str, list[int]],
+    list[str],
+    list[tuple[int, int, bool]],
+    dict[str, list[int]],
+    set[str],
+    np.ndarray,
+    list[tuple[str, int | None, int]],
+    dict[str, list[int]],
+    list[tuple[int, str, int, str, int, int, int, int, tuple[int, int]]],
+    list[list[tuple[int, list[tuple[float, float]]]]],
+    dict[int, str],
+    str,
+    list[tuple[str, str]],
+    list[tuple[str, str, int]],
+]: ...
 
 class RubberBandLiveShifter:
     def __init__(self, sample_rate: int, channels: int, pitch: float) -> None: ...

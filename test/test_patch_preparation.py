@@ -31,7 +31,13 @@ def test_binding_preparation_rejects_incomplete_or_unresolved_declarations(
     else:
         del context["controls"]
     with pytest.raises(ValueError):
-        _native.validate_generator_bindings(json.dumps(context), documents)
+        _native.prepare_modulation(
+            48000,
+            json.dumps(context),
+            documents,
+            [(n, p, i, 1, 0, 2) for n, p, i in TARGETS],
+            np.empty((0, 7)),
+        )
 
 
 def test_follower_requirements_cannot_become_an_executable_bank() -> None:
@@ -50,7 +56,7 @@ def test_follower_requirements_cannot_become_an_executable_bank() -> None:
         }
     )
     with pytest.raises(ValueError, match="Unresolved"):
-        _native.validate_generator_bindings(context, [])
+        _native.prepare_modulation(48000, context, [], [], np.empty((0, 7)))
 
 
 def test_patch_preparation_retains_the_host_layout_and_rejects_invalid_orders() -> None:

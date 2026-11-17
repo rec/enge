@@ -137,7 +137,7 @@ def test_named_routing_presets_match_explicit_channel_transforms(
     check_audio(tmp_path / f"{kind}-replay.wav", replay, callback)
 
 
-@pytest.mark.parametrize("failure", ["product", "action"])
+@pytest.mark.parametrize("failure", ["product", "sum", "action"])
 def test_matrix_callback_failure_zeros_the_block_and_restores(
     tmp_path: Path, failure: str
 ) -> None:
@@ -145,7 +145,7 @@ def test_matrix_callback_failure_zeros_the_block_and_restores(
         name="route",
         input_channels=["left", "right"],
         output_channels=["left", "right"],
-        coefficients=[[2, 0], [0, 2]],
+        coefficients=[[1, 1], [1, 1]] if failure == "sum" else [[2, 0], [0, 2]],
     )
     prepared = effects.prepare(matrix_graph([matrix]), 48000)
     runtime = _native.LiveRuntime.empty(48000, 2, 48000, 64)
@@ -153,7 +153,7 @@ def test_matrix_callback_failure_zeros_the_block_and_restores(
         *effects.native_live_graph(prepared), 2, input_routes=[[-2]]
     )
     saved = runtime.snapshot()
-    source = np.full((48000, 2), 1e308 if failure == "product" else 0.1)
+    source = np.full((48000, 2), 1e308 if failure in ("product", "sum") else 0.1)
     if failure == "action":
         runtime.submit_effects(np.asarray([[12003, 0, 0, 1, 0, 0]], dtype=np.float64))
     actual = np.ones_like(source)

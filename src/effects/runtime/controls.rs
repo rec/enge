@@ -1,10 +1,11 @@
 //! Aligned route contributions resolved in audio/control dependency order.
 
 use crate::error::{NativeError, NativeResult};
-use crate::runtime::{RouteMap, add_partial, sum_partials};
+use crate::runtime::route_map;
 use numpy::ndarray::{Array2, ArrayView2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use ufor::modulation::math::{Mapping, add_partial, sum_partials};
 
 pub(crate) type Definitions = (
     Vec<(usize, usize, f64, f64)>,
@@ -49,7 +50,7 @@ pub(super) struct Route {
     pub(super) target: usize,
     source: Option<usize>,
     multiply: bool,
-    mapping: RouteMap,
+    mapping: Mapping,
     minimum: f64,
     maximum: f64,
     pub(super) name: String,
@@ -136,7 +137,7 @@ impl Controls {
                 target: *target,
                 source: origin,
                 multiply: *operation == 1,
-                mapping: RouteMap::new(*interpolation, points.clone())?,
+                mapping: route_map(*interpolation, points.clone())?,
                 minimum: *minimum,
                 maximum: *maximum,
                 name: name.clone(),
@@ -210,10 +211,10 @@ impl Controls {
                 if route.multiply {
                     product *= amount;
                 } else {
-                    add_partial(&mut self.partials, &mut count, amount);
+                    add_partial(&mut self.partials, &mut count, amount)?;
                 }
             }
-            let value = (base + sum_partials(&self.partials[..count])) * product;
+            let value = (base + sum_partials(&self.partials[..count])?) * product;
             if !value.is_finite() || value < target.minimum || value > target.maximum {
                 return Err(NativeError::Message(
                     "Modulated effect parameter is outside its domain",

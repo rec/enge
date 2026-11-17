@@ -177,6 +177,44 @@ host layout order, combined budgets and failure without mutation; the existing
 audio and continuation suites cover the consumers. The generated report is
 `build/rust-ufor-patch-audit.xml`; see the integration plan for reproduction.
 
+### Modulation route preparation and shared mathematics
+
+`_native.prepare_modulation` consumes canonical modulation/binding/control/event
+declarations, ordered generator JSON and separate host target/default/filter
+metadata. It returns the existing indexed tables and source maps. Python retains
+DSP discovery, full target validation, Patch-output materialization, ownership
+orchestration and the offline graph adapter. The old Python control/route/smoothing
+and generic Stage-event delay encoders are removed.
+
+Its `max_records=10000` budget combines shared declarations, supplied generators,
+host target/filter records and expanded generator slots/bodies. An override
+reaches embedded modulation and generator validation. Expanded JSON text is also
+bounded, alongside existing per-document limits. Exact seconds convert to frame
+ratios with checked signed-64-bit components. Source-map insertion order, sorted
+routes within categories, scopes, latched events and deterministic stream keys
+retain the existing host layout.
+
+Prepared runtimes use uFor's `modulation::math::Mapping`, `add_partial` and
+`sum_partials`; the duplicate enge kernels are removed. Accurate-sum scratch is
+allocated during preparation and reused. Mapping/sum errors are fixed-size inside
+callbacks, including nonfinite intermediate rejection. Effect matrices and mixers
+share the same accurate-sum implementation. The general uFor scalar evaluator
+remains an allocating reference API, not a callback implementation.
+
+Enge retains its controls/events, LFO, named-generator, Stages and Patch-transform
+contribution order and direct full-weight shortcuts. These differ from the
+reference evaluator's global ordering and universal weighting expression; tiny
+multiplier rounding can therefore differ. Changing those policies is separate
+work, not an implied consequence of sharing the numerical kernels. Callback state
+ownership, execution profiles and snapshot representation are unchanged.
+
+Modulation qualification passed 3,641 Python tests with 29 optional skips. The
+24,704 successful and 71 failed callbacks recorded zero Rust allocations,
+reallocations or frees. The generated report is
+`build/rust-ufor-modulation-audit.xml`; the integration plan records reproduction
+and the local macOS qualification boundary. The broader native-call boundary
+still performs heap operations outside callbacks.
+
 JSON parsing, validation and conversion allocate only during preparation. They
 are not called from audio processing. `test/test_generator_preparation.py`
 checks rejection/budget boundaries, independently calculated gain curves and

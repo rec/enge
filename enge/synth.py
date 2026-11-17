@@ -2644,15 +2644,6 @@ def _duration(
     return sum((s.duration for s in segments if isinstance(s, Segment)), Fraction(0))
 
 
-def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> tuple[int, int]:
-    frames = seconds * sample_rate
-    if not -(1 << 63) <= frames.numerator < (1 << 63) or frames.denominator >= (
-        1 << 63
-    ):
-        raise EngineError("Delayed Envelfo event time is not representable")
-    return frames.numerator, frames.denominator
-
-
 def _configure_sample_hold_keys(
     runtime: _native.GeneratorBank,
     settings: processing.ModulationSettings,
@@ -2794,20 +2785,6 @@ def _persistent_modulation(
     ]
     | None = None,
 ) -> PersistentModulation:
-    bindings = {b.name: b for b in template.bindings}
-    if any(
-        not isinstance(b, ControlBinding)
-        and not isinstance(b, processing.GeneratorBinding)
-        and not isinstance(b, processing.EventBinding)
-        for b in bindings.values()
-    ):
-        raise EngineError("Persistent runtime has an unsupported binding")
-    sources = {s.name: s for s in template.modulation.sources}
-    if bindings.keys() != sources.keys():
-        raise EngineError("Persistent synth modulation sources require bindings")
-    parameters = {
-        (p.target.name, p.target.parameter): p for p in template.modulation.parameters
-    }
     if source_parameters is None:
         if not isinstance(template, SoundSettings):
             raise EngineError(
@@ -2831,364 +2808,47 @@ def _persistent_modulation(
                 120000,
             ),
         ]
-    supported = {
-        target: (index, operation)
-        for target, index, operation, _, _, _ in source_parameters
-    }
-    parameter_values = [0.0] * (3 * len(source_parameters))
-    for _, index, _, default, minimum, maximum in source_parameters:
-        parameter_values[index * 3 : index * 3 + 3] = [default, minimum, maximum]
+    targets = [(n, p, i, d, m, x) for (n, p), i, _, d, m, x in source_parameters]
     runtime_filters: list[list[float]] = []
-    for filter_definition in (
+    for definition in (
         template.processing.filters if isinstance(template, SoundSettings) else []
     ):
-        cutoff_maximum = sample_rate / 2 * filter_definition.nyquist_ratio
-        cutoff_default = min(
-            max(filter_definition.cutoff_hz, filter_definition.minimum_hz),
-            cutoff_maximum,
+        maximum = sample_rate / 2 * definition.nyquist_ratio
+        cutoff = len(targets)
+        q = cutoff + 1
+        targets.extend(
+            [
+                (
+                    f"filter-{definition.name}",
+                    "cutoff_hz",
+                    cutoff,
+                    min(max(definition.cutoff_hz, definition.minimum_hz), maximum),
+                    definition.minimum_hz,
+                    maximum,
+                ),
+                (
+                    f"filter-{definition.name}",
+                    "q",
+                    q,
+                    definition.q,
+                    np.finfo(np.float64).tiny,
+                    1e300,
+                ),
+            ]
         )
-        cutoff_index = len(parameter_values) // 3
-        q_index = cutoff_index + 1
-        supported[f"filter-{filter_definition.name}", "cutoff_hz"] = (
-            cutoff_index,
-            modulation.Operation.add,
-        )
-        supported[f"filter-{filter_definition.name}", "q"] = (
-            q_index,
-            modulation.Operation.add,
-        )
-        for target, default, minimum, maximum in (
-            (
-                (f"filter-{filter_definition.name}", "cutoff_hz"),
-                cutoff_default,
-                filter_definition.minimum_hz,
-                cutoff_maximum,
-            ),
-            (
-                (f"filter-{filter_definition.name}", "q"),
-                filter_definition.q,
-                np.finfo(np.float64).tiny,
-                1e300,
-            ),
-        ):
-            parameter = parameters.get(target)
-            parameter_values.extend(
-                [
-                    default if parameter is None else parameter.default,
-                    minimum if parameter is None else parameter.minimum,
-                    maximum if parameter is None else parameter.maximum,
-                ]
-            )
         runtime_filters.append(
             [
-                list(processing.FilterResponse).index(filter_definition.response),
-                filter_definition.stages,
-                list(processing.FilterBoundary).index(filter_definition.boundary),
-                filter_definition.minimum_hz,
-                cutoff_maximum,
-                cutoff_index,
-                q_index,
+                list(processing.FilterResponse).index(definition.response),
+                definition.stages,
+                list(processing.FilterBoundary).index(definition.boundary),
+                definition.minimum_hz,
+                maximum,
+                cutoff,
+                q,
             ]
         )
-    if parameters.keys() - supported.keys():
-        raise EngineError("Persistent runtime has an unsupported modulation target")
-    routes = sorted(template.modulation.routes, key=lambda r: (r.source, r.name))
-    event_sources = {
-        name
-        for connection in template.event_connections
-        for name in (connection.source, connection.destination)
-    }
-    patch_children = {
-        f"patch-{parent_name}-{child}"
-        for parent_name, parent in template.envelfos.items()
-        if isinstance(parent, Patch)
-        for child in (
-            {
-                name
-                for connection in parent.events
-                for name in (connection.source.partition(".")[0], connection.target)
-            }
-            | {source.partition(".")[0] for source in parent.event_outputs.values()}
-        )
-    }
-    event_only_patch_outputs = {
-        f"patch-{parent_name}-{child}"
-        for parent_name, parent in template.envelfos.items()
-        if isinstance(parent, Patch) and parent.event_outputs
-        for child in parent.outputs.values()
-    }
-    patch_children.update(_patch_child_names(template))
-    event_sources.update(
-        binding.name
-        for binding in template.bindings
-        if isinstance(binding, processing.GeneratorBinding)
-        and binding.reference in patch_children | event_only_patch_outputs
-    )
-    routed_sources = {route.source for route in routes}
-    if sources.keys() - routed_sources != event_sources - routed_sources:
-        raise EngineError("Persistent synth requires routes for modulation sources")
-    rows: list[list[float]] = []
-    smoothing: list[tuple[int, int]] = []
-    control_sources: dict[str, list[int]] = {}
-    control_scopes: list[str] = []
-    source_controls: list[str] = []
-    event_bindings: dict[int, str] = {}
-    lfo_rows: list[list[float]] = []
-    lfo_documents: list[str] = []
-    lfo_sources: dict[str, list[int]] = {}
-    voice_lfo_sources: dict[str, list[int]] = {}
-    envelope_documents: list[str] = []
-    envelope_parameters: list[tuple[int, int, bool]] = []
-    named_envelfo_sources: dict[str, list[int]] = {}
-    staged_envelfos: list[tuple[str, int | None, int]] = []
-    staged_bindings: dict[str, int] = {}
-    staged_envelfo_sources: dict[str, list[int]] = {}
-    source_scopes: set[str] = set()
-    route_maps: list[list[tuple[int, list[tuple[float, float]]]]] = [[], [], [], []]
-    for route in routes:
-        source = sources.get(route.source)
-        binding = bindings.get(route.source)
-        target = (route.target.name, route.target.parameter)
-        if source is None or binding is None or target not in supported:
-            raise EngineError("Persistent synth modulation route is unresolved")
-        parameter, _ = supported[target]
-        operation = route.operation
-        source_scopes.add(source.scope)
-        declaration = (
-            declarations[binding.control]
-            if isinstance(binding, ControlBinding)
-            else None
-        )
-        mapping = (
-            [
-                modulation.Interpolation.linear,
-                modulation.Interpolation.step,
-                modulation.Interpolation.exponential,
-            ].index(route.interpolation),
-            [(float(p.input), float(p.amount)) for p in route.points],
-        )
-        if isinstance(binding, processing.EventBinding):
-            index = len(rows)
-            rows.append(
-                [
-                    source.minimum,
-                    3,
-                    parameter,
-                    0 if operation == modulation.Operation.add else 1,
-                    source.minimum,
-                    source.maximum,
-                ]
-            )
-            smoothing.append((0, 1))
-            control_scopes.append("voice")
-            source_controls.append("")
-            route_maps[0].append(mapping)
-            event_bindings[index] = binding.kind
-        elif isinstance(binding, ControlBinding):
-            assert declaration is not None
-            control_minimum = -1 if declaration.polarity == "bipolar" else 0
-            if source.minimum > control_minimum or source.maximum < 1:
-                raise EngineError(
-                    "Persistent synth source must cover its control declaration"
-                )
-            route_maps[0].append(mapping)
-            index = len(rows)
-            rows.append(
-                [
-                    declaration.default,
-                    ["instrument", "part", "trigger"].index(source.scope),
-                    parameter,
-                    0 if operation == modulation.Operation.add else 1,
-                    source.minimum,
-                    source.maximum,
-                ]
-            )
-            duration = binding.smoothing * sample_rate
-            smoothing.append((duration.numerator, duration.denominator))
-            control_sources.setdefault(binding.control, []).append(index)
-            control_scopes.append(source.scope)
-            source_controls.append(binding.control)
-        else:
-            assert isinstance(binding, processing.GeneratorBinding)
-            envelfo = template.envelfos[binding.reference]
-            if isinstance(envelfo, Patch):
-                continue
-            if isinstance(envelfo, SampleHold):
-                route_maps[2].append(mapping)
-                named_envelfo_sources.setdefault(binding.reference, []).append(
-                    len(envelope_documents)
-                )
-                envelope_documents.append(envelfo.model_dump_json())
-                envelope_parameters.append(
-                    (
-                        parameter,
-                        0 if operation == modulation.Operation.add else 1,
-                        False,
-                    )
-                )
-                continue
-            if isinstance(envelfo, Envelope):
-                route_maps[2].append(mapping)
-                generator = envelfo
-                assert isinstance(generator.initial, float)
-                if source.scope != "voice":
-                    raise EngineError("Persistent named envelopes require voice scope")
-                named_envelfo_sources.setdefault(binding.reference, []).append(
-                    len(envelope_documents)
-                )
-                envelope_documents.append(generator.model_dump_json())
-                envelope_parameters.append(
-                    (
-                        parameter,
-                        0 if operation == modulation.Operation.add else 1,
-                        binding.release_timing == ReleaseTiming.voice,
-                    )
-                )
-                continue
-            if isinstance(envelfo, Stages):
-                route_maps[3].append(mapping)
-                staged_bindings.setdefault(binding.name, len(staged_envelfos))
-                staged_envelfo_sources.setdefault(binding.reference, []).append(
-                    len(staged_envelfos)
-                )
-                staged_envelfos.append(
-                    (
-                        envelfo.model_dump_json(),
-                        parameter,
-                        0 if operation == modulation.Operation.add else 1,
-                    )
-                )
-                continue
-            assert isinstance(envelfo, LFO)
-            route_maps[1].append(mapping)
-            intercept = envelfo.center
-            slope = envelfo.depth
-            generator = envelfo
-            index = len(lfo_rows)
-            lfo_rows.append(
-                [
-                    parameter,
-                    0 if operation == modulation.Operation.add else 1,
-                    intercept,
-                    slope,
-                ]
-            )
-            lfo_documents.append(generator.model_dump_json())
-            if source.scope == "instrument":
-                lfo_sources.setdefault(binding.reference, []).append(index)
-            elif source.scope == "voice":
-                voice_lfo_sources.setdefault(binding.reference, []).append(index)
-    for binding in template.bindings:
-        if binding.name not in event_sources or binding.name in routed_sources:
-            continue
-        assert isinstance(binding, processing.GeneratorBinding)
-        envelfo = template.envelfos[binding.reference]
-        if isinstance(envelfo, Patch):
-            continue
-        if isinstance(envelfo, SampleHold):
-            named_envelfo_sources.setdefault(binding.reference, []).append(
-                len(envelope_documents)
-            )
-            envelope_documents.append(envelfo.model_dump_json())
-            envelope_parameters.append((0, 1, False))
-            continue
-        if isinstance(envelfo, LFO):
-            generator = envelfo
-            source_scopes.add(envelfo.scope)
-            if envelfo.scope != "voice":
-                lfo_sources.setdefault(binding.reference, []).append(len(lfo_rows))
-            else:
-                voice_lfo_sources.setdefault(binding.reference, []).append(
-                    len(lfo_rows)
-                )
-            lfo_rows.append(
-                [
-                    0,
-                    1,
-                    1,
-                    0,
-                ]
-            )
-            lfo_documents.append(generator.model_dump_json())
-            continue
-        if isinstance(envelfo, Envelope):
-            generator = envelfo
-            assert isinstance(generator.initial, float)
-            if envelfo.scope != "voice":
-                raise EngineError("Persistent named envelopes require voice scope")
-            named_envelfo_sources.setdefault(binding.reference, []).append(
-                len(envelope_documents)
-            )
-            envelope_documents.append(generator.model_dump_json())
-            envelope_parameters.append(
-                (
-                    0,
-                    1,
-                    binding.release_timing == ReleaseTiming.voice,
-                )
-            )
-            continue
-        assert isinstance(envelfo, Stages)
-        source_scopes.add(envelfo.scope)
-        staged_bindings[binding.name] = len(staged_envelfos)
-        staged_envelfo_sources.setdefault(binding.reference, []).append(
-            len(staged_envelfos)
-        )
-        staged_envelfos.append((envelfo.model_dump_json(), None, 0))
-    event_connections = [
-        (
-            staged_bindings[c.source],
-            c.port,
-            staged_bindings[c.destination],
-            c.cue,
-            c.every,
-            c.offset,
-            int(c.probability * 2**53),
-            envelfo_random.stream_key(
-                0,
-                cast(processing.GeneratorBinding, bindings[c.destination]).reference
-                + f":cue-{order}",
-            ),
-            _runtime_event_delay(c.delay, sample_rate),
-        )
-        for order, c in enumerate(template.event_connections)
-        if isinstance((binding := bindings[c.source]), processing.GeneratorBinding)
-        if isinstance(template.envelfos[binding.reference], Stages)
-    ]
-    for target, index, _, _, _, _ in source_parameters:
-        if (parameter := parameters.get(target)) is not None:
-            parameter_values[index * 3 : index * 3 + 3] = [
-                parameter.default,
-                parameter.minimum,
-                parameter.maximum,
-            ]
-    for mappings, count in zip(
-        route_maps,
-        (len(rows), len(lfo_rows), len(envelope_documents), len(staged_envelfos)),
-        strict=True,
-    ):
-        mappings.extend((0, [(0.0, 1.0)]) for _ in range(count - len(mappings)))
-    return (
-        np.asarray(rows, dtype=np.float64).reshape(-1, 6),
-        smoothing,
-        parameter_values,
-        control_sources,
-        control_scopes,
-        source_controls,
-        np.asarray(lfo_rows, dtype=np.float64).reshape(-1, 4),
-        lfo_documents,
-        lfo_sources,
-        voice_lfo_sources,
-        envelope_documents,
-        envelope_parameters,
-        named_envelfo_sources,
-        source_scopes,
-        np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
-        staged_envelfos,
-        staged_envelfo_sources,
-        event_connections,
-        route_maps,
-        event_bindings,
+    return _native.prepare_modulation(
+        sample_rate,
         json.dumps(
             {
                 "modulation": template.modulation.model_dump(mode="json"),
@@ -3202,7 +2862,8 @@ def _persistent_modulation(
             }
         ),
         [(n, v.model_dump_json()) for n, v in template.envelfos.items()],
-        [(n, p, i) for (n, p), (i, _) in supported.items()],
+        targets,
+        np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
     )
 
 

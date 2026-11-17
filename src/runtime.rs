@@ -13,6 +13,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::{PI, TAU};
 use std::io::{Cursor, Write};
+use ufor::modulation::math::{Mapping, sum_partials};
+use ufor::modulation::{Interpolation, Point};
 
 use generators::GeneratorBank;
 use patch_host::PatchHost;
@@ -23,49 +25,19 @@ mod patch_host;
 pub(crate) mod preparation;
 use controls::{ControlBank, ControlDefinition, ControlState, control_definitions};
 
-#[derive(Clone, PartialEq)]
-pub(crate) struct RouteMap {
-    interpolation: usize,
-    points: Vec<(f64, f64)>,
-}
-
-impl RouteMap {
-    pub(crate) fn new(interpolation: usize, points: Vec<(f64, f64)>) -> PyResult<Self> {
-        if interpolation > 2
-            || points.is_empty()
-            || points
-                .iter()
-                .any(|(x, y)| !x.is_finite() || !y.is_finite() || (interpolation == 2 && *y <= 0.0))
-            || points.windows(2).any(|p| p[0].0 >= p[1].0)
-        {
-            return Err(PyValueError::new_err("Invalid modulation mapping points"));
-        }
-        Ok(Self {
-            interpolation,
-            points,
-        })
-    }
-
-    pub(crate) fn value(&self, value: f64) -> NativeResult<f64> {
-        if !value.is_finite() {
-            return Err(NativeError::Message("Non-finite modulation source"));
-        }
-        let index = self.points.partition_point(|(input, _)| *input <= value);
-        if index == 0 {
-            return Ok(self.points[0].1);
-        }
-        let (input, amount) = self.points[index - 1];
-        if index == self.points.len() || self.interpolation == 1 {
-            return Ok(amount);
-        }
-        let (next_input, next_amount) = self.points[index];
-        let progress = (value - input) / (next_input - input);
-        Ok(if self.interpolation == 2 {
-            ((1.0 - progress) * amount.ln() + progress * next_amount.ln()).exp()
-        } else {
-            amount + progress * (next_amount - amount)
-        })
-    }
+pub(crate) fn route_map(interpolation: usize, points: Vec<(f64, f64)>) -> PyResult<Mapping> {
+    let interpolation = match interpolation {
+        0 => Interpolation::Linear,
+        1 => Interpolation::Step,
+        2 => Interpolation::Exponential,
+        _ => return Err(PyValueError::new_err("Invalid modulation interpolation")),
+    };
+    let points = points
+        .into_iter()
+        .map(|(x, y)| Point::new(x, y))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(preparation::invalid)?;
+    Mapping::new(interpolation, points).map_err(preparation::invalid)
 }
 
 #[derive(Clone, PartialEq)]
@@ -241,7 +213,7 @@ pub struct SynthRuntimeSnapshot {
     graph_carrier_parameter: usize,
     minimum_hold_frames: Time,
     routes: Array2<f64>,
-    route_maps: Vec<Vec<RouteMap>>,
+    route_maps: Vec<Vec<Mapping>>,
     control_definitions: Vec<ControlDefinition>,
     control_states: Vec<ControlState>,
     voice_control_values: Vec<f64>,
@@ -309,7 +281,7 @@ pub struct SynthRuntime {
     graph_carrier_parameter: usize,
     minimum_hold_frames: Time,
     routes: Array2<f64>,
-    route_maps: Vec<Vec<RouteMap>>,
+    route_maps: Vec<Vec<Mapping>>,
     filter_definitions: Vec<FilterDefinition>,
     filter_coefficients: Vec<crate::filters::Coefficients>,
     parameter_definitions: Vec<f64>,
@@ -467,7 +439,7 @@ impl SynthRuntime {
                 return Err(PyValueError::new_err("Invalid control mapping count"));
             }
             maps.into_iter()
-                .map(|(kind, points)| RouteMap::new(kind, points))
+                .map(|(kind, points)| route_map(kind, points))
                 .collect::<PyResult<Vec<_>>>()?
         } else {
             self.generators.prepare_route_maps(kind, maps)?
@@ -1452,7 +1424,7 @@ impl SynthRuntime {
             &mut partial_count,
         )?;
         let definition = &self.parameter_definitions[parameter * 3..parameter * 3 + 3];
-        let addition = sum_partials(&self.parameter_partials[..partial_count]);
+        let addition = sum_partials(&self.parameter_partials[..partial_count])?;
         let value = (definition[0] + addition) * product;
         if !value.is_finite() || value < definition[1] || value > definition[2] {
             return Err(NativeError::Message(
@@ -1513,43 +1485,6 @@ impl SynthRuntime {
         }
         Ok(sample)
     }
-}
-
-pub(crate) fn add_partial(partials: &mut [f64], count: &mut usize, mut value: f64) {
-    // Error-free two-sum expansions, matching the offline route accumulator.
-    // Storage is prepared once, with at most one partial per route.
-    for partial in &mut partials[..*count] {
-        let (large, small) = if value.abs() >= partial.abs() {
-            (value, *partial)
-        } else {
-            (*partial, value)
-        };
-        value = large + small;
-        *partial = small - (value - large);
-    }
-    partials[*count] = value;
-    *count += 1;
-}
-
-pub(crate) fn sum_partials(partials: &[f64]) -> f64 {
-    let mut total = 0.0;
-    for (index, partial) in partials.iter().enumerate().rev() {
-        let combined = total + partial;
-        let error = partial - (combined - total);
-        total = combined;
-        if error != 0.0 {
-            let tail = partials[..index].iter().rev().find(|v| **v != 0.0);
-            if tail.is_some_and(|v| (error > 0.0 && *v > 0.0) || (error < 0.0 && *v < 0.0)) {
-                let adjustment = 2.0 * error;
-                let adjusted = total + adjustment;
-                if adjusted - total == adjustment {
-                    total = adjusted;
-                }
-            }
-            break;
-        }
-    }
-    total
 }
 
 fn filter_definitions(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<FilterDefinition>> {

@@ -8,7 +8,7 @@ use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::{ControlBank, control_definitions};
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::preparation;
-use crate::runtime::{RouteMap, SynthRuntime, SynthRuntimeSnapshot, sum_partials};
+use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot, route_map};
 use crate::sampler::{Cursor, SampleBuffer, Selection, State};
 use numpy::ndarray::{Array2, ArrayViewMut2};
 use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
@@ -17,6 +17,7 @@ use pyo3::prelude::*;
 use pyo3::types::PySequence;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::f64::consts::PI;
+use ufor::modulation::math::{Mapping, sum_partials};
 
 struct Source {
     runtime: SourceRuntime,
@@ -35,7 +36,7 @@ enum SourceRuntime {
 #[derive(Clone)]
 struct SampleRuntime {
     controls: ControlBank,
-    route_maps: Vec<Vec<RouteMap>>,
+    route_maps: Vec<Vec<Mapping>>,
     generators: Option<GeneratorBank>,
     generator_active: Vec<bool>,
     crossfades: Vec<(bool, bool)>,
@@ -481,7 +482,7 @@ impl LiveRuntime {
         }
         let maps = maps
             .into_iter()
-            .map(|(kind, points)| RouteMap::new(kind, points))
+            .map(|(kind, points)| route_map(kind, points))
             .collect::<PyResult<Vec<_>>>()?;
         if runtime.generators.is_some() {
             return Err(PyValueError::new_err(
@@ -976,7 +977,7 @@ impl SampleRuntime {
             product
         };
         let domain = &self.parameters[parameter * 3..parameter * 3 + 3];
-        let value = (domain[0] + sum_partials(&self.parameter_partials[..count])) * product;
+        let value = (domain[0] + sum_partials(&self.parameter_partials[..count])?) * product;
         if !value.is_finite() || value < domain[1] || value > domain[2] {
             return Err(NativeError::Message(
                 "Modulated sample parameter is outside its domain",

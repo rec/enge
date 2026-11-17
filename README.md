@@ -53,7 +53,7 @@ support the shared normalized exponential curve in NumPy, native block rendering
 and persistent runtimes; zero-duration segments remain instantaneous.
 
 Persistent LFOs, named Envelopes, Stages and Patch graphs execute through
-`envelfo-core`.
+`engelfo`.
 Their prepared timing, beat-clock observations and routed event queues use
 checked rational times, including cues between audio frames and fractional
 delays. Snapshots retain that exact continuation. enge still owns audio routing,
@@ -79,6 +79,15 @@ Generated sources and the native sampler adapter use that bank. Common and slot
 sampler generators retain separate routes and command targets, including when
 their names match. Existing native snapshot fields and route evaluation order are
 preserved.
+
+Native modulation preparation uses Rust uFor's validated declarations to compile
+the existing indexed routes, scoped controls, exact smoothing and event slots.
+Python retains DSP target/default discovery and host orchestration. Mapping and
+accurate summation share uFor's allocation-free kernels with fixed-size errors;
+enge retains its existing contribution category order and activation weighting.
+Nonfinite intermediate arithmetic fails explicitly. See the
+[integration plan](plan/rust-ufor-integration.md) for the preparation budget and
+the remaining policy differences from uFor's scalar reference evaluator.
 
 Python graph playback now uses the standalone `envelfo.patch` scheduler too.
 enge prepares bindings, supplies host-owned signals, samples event-free spans

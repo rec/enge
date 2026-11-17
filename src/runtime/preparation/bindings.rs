@@ -17,18 +17,8 @@ pub(super) struct Context {
     pub(super) connections: Vec<EnvelfoEventConnection>,
     pub(super) generators: BTreeMap<Identifier, Generator>,
     pub(super) order: Vec<Identifier>,
-}
-
-/// Validate the supplied generator facts; Python retains processor-target checks.
-#[pyfunction]
-#[pyo3(signature = (context, generators, *, max_records=10000))]
-pub(crate) fn validate_generator_bindings(
-    context: String,
-    generators: Vec<(String, String)>,
-    max_records: usize,
-) -> PyResult<()> {
-    Context::parse(&context, &generators, max_records)?;
-    Ok(())
+    pub(super) controls: BTreeMap<Identifier, ControlDeclaration>,
+    pub(super) records: usize,
 }
 
 impl Context {
@@ -130,6 +120,8 @@ impl Context {
             connections,
             generators,
             order,
+            controls,
+            records,
         })
     }
 }

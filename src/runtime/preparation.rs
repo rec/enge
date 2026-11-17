@@ -1,5 +1,6 @@
 //! Preparation-only conversion from validated uFor definitions to engine plans.
 pub(crate) mod bindings;
+pub(crate) mod modulation;
 pub(crate) mod patch;
 
 use super::{LfoDefinition, NamedEnvelopeDefinition, StagedEnvelfoDefinition, core_error};
@@ -480,6 +481,6 @@ fn exact(value: ufor::number::Rational) -> PyResult<Time> {
     Time::new(value.numerator(), value.denominator()).map_err(|e| core_error(e).into())
 }
 
-fn invalid(error: impl std::fmt::Display) -> PyErr {
+pub(super) fn invalid(error: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(format!("Generator preparation: {error}"))
 }

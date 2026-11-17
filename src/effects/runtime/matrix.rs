@@ -1,8 +1,8 @@
 //! Stateless routing with one compensated partial per authored input channel.
 
 use crate::error::{NativeError, NativeResult};
-use crate::runtime::{add_partial, sum_partials};
 use numpy::ndarray::{Array2, ArrayView1};
+use ufor::modulation::math::{add_partial, sum_partials};
 
 #[derive(Clone)]
 pub(super) struct RoutingMatrix {
@@ -45,12 +45,11 @@ impl RoutingMatrix {
                 if !product.is_finite() {
                     return Err(NativeError::Message("Non-finite routing matrix product"));
                 }
-                add_partial(&mut self.partials, &mut count, product);
+                add_partial(&mut self.partials, &mut count, product)
+                    .map_err(|_| NativeError::Message("Non-finite routing matrix sum"))?;
             }
-            *target = sum_partials(&self.partials[..count]);
-            if !target.is_finite() {
-                return Err(NativeError::Message("Non-finite routing matrix sum"));
-            }
+            *target = sum_partials(&self.partials[..count])
+                .map_err(|_| NativeError::Message("Non-finite routing matrix sum"))?;
         }
         Ok(())
     }

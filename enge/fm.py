@@ -580,7 +580,6 @@ class PersistentFM(synth.PersistentSynth):
         prepared = synth._persistent_modulation(
             shared.sample_rate, shared.instrument.controls, template, source_parameters
         )
-        _native.validate_generator_bindings(prepared[20], prepared[21])
         (
             controls,
             smoothing,

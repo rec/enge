@@ -17,7 +17,8 @@ integration before proposing additional shared-library work.
 The initial Cargo manifest depended on `envelfo-core`, but not Rust uFor.
 The first prerequisite migrates that dependency and imports to the consolidated
 Git-distributed `engelfo` crate, which includes MIDI mapping and depends on middy.
-`enge/synth.py::_persistent_modulation` compiles parameter/source/route metadata;
+`enge/synth.py::_persistent_modulation` discovers host parameter/filter metadata
+and calls native `prepare_modulation` to compile the indexed source/route tables;
 `_prepare_native_generators` configures the shared native `GeneratorBank`.
 `enge/envelfo_graph.py::prepare_graph` builds the standalone scheduling graph.
 Native definitions, route maps and execution adapters live in `src/runtime.rs`,
@@ -264,11 +265,11 @@ construction. SampleHold ranges come only from canonical definitions;
 The old Python Patch operator/event encoders and their public native setters are
 removed. The single Python host parameter-index map is reused for Patch routes.
 
-`envelfo_graph.py`, Patch-output materialization, source/owner indices and the
-generic Stage-to-Stage connection metadata remain Python host work with live
-offline/FM/noise consumers. They are not parallel native Patch decoders and are
-not removed by this slice. Full target/settings validation, modulation-route
-preparation and tuning adoption remain in their later stages.
+At this slice's boundary `envelfo_graph.py`, Patch-output materialization,
+source/owner indices and generic Stage-to-Stage connection metadata retained
+Python consumers. The modulation slice below moves the indexed source maps and
+generic Stage connection encoding into native preparation. The offline graph
+adapter, Patch-output materialization and owner orchestration remain host work.
 
 New preparation cases cover unresolved declarations, explicit layout order,
 aggregate budget boundaries and overrides through both generator and modulation
@@ -289,14 +290,74 @@ SampleHold continuation and bank-ownership tests passed again.
 
 ### 3. Modulation preparation and mathematics
 
-Use uFor definitions and validation while compiling routes into enge's existing
-indexed tables. Preserve source scopes, key/velocity latching, control smoothing,
-activation weights, target defaults/domains and mapping/composition order.
+On 2026-11-17 the user approved shared allocation-free mapping and accurate-sum
+kernels, preserving enge's current contribution category order and full-weight
+shortcuts. Nonfinite intermediate mapping/sum arithmetic must fail explicitly,
+including mappings that formerly returned finite results after overflow.
+The user also approved replacing the Python route/control/smoothing encoder with
+one native preparation operation, retaining Python's DSP target/default/filter
+discovery and orchestration.
 
-Adopt shared mapping/composition calculations where their interface fits the
-runtime's allocation and error contracts. Measure before substituting a general
-evaluator in callbacks; an allocating API can remain a preparation/reference
-tool. Keep frame observations, controls and retained execution state in enge.
+uFor `1296471` provides `modulation::math::{Mapping, add_partial, sum_partials}`
+and fixed-size `CalculationError`. Both uFor's allocating scalar reference
+evaluator and enge's prepared runtimes use these kernels. Enge's separate
+dependency commit `4b0bd5b` pins that implementation. No dependency package
+versions or Python pins change.
+
+`prepare_modulation(sample_rate, context, generators, targets, filters,
+max_records=10000)` compiles canonical declarations and separate host metadata
+into the existing 23-field prepared tuple. Source maps retain insertion order;
+routes within each category retain `(source, route)` order. Control scopes,
+key/velocity slots, exact frame smoothing, generator sharing, neutral event-only
+slots, generic Stage connection delays and stream keys keep their existing
+meaning. Canonical parameter declarations override the discovered host defaults
+and domains as before. Full processor validation and supported renderer profiles
+remain host-owned; FM/noise do not gain the full Patch path.
+
+The operation counts declaration and generator records, host targets/filters,
+and each expanded generator slot/body against one configurable budget. Expanded
+generator text also has a combined document character cap, preventing repeated
+routes from multiplying preparation work without a bound. Existing per-document
+value/depth limits apply. The override reaches nested bodies and modulation.
+Exact smoothing/frame conversion rejects overflow in signed 64-bit components.
+Native stubs and callers use the same boundary; the old Python encoder and
+Stage-event delay converter are removed. FM/noise's former standalone binding
+validation call and its native export are also removed: route preparation now
+performs those shared checks for every consumer.
+
+Enge's old mapping and summation implementations are removed. Synth, FM, noise,
+sampler and effect modulation use prepared shared mappings and caller-owned sum
+storage. Effect routing matrices, mixers and feedback-row preparation also used
+the old sum helper and now reuse the shared kernel. Callback errors retain a
+copyable payload; Python exception construction stays outside the callback.
+
+Sharing these kernels does not make enge's composition policy identical to the
+reference evaluator: enge retains controls/events, LFOs, named generators,
+Stages and Patch-transform category order. It also retains direct full-weight
+contributions where the reference computes `1 + weight * (amount - 1)`, which can
+round differently for tiny multipliers. Global route interleaving and removal of
+these shortcuts are deferred behavior changes requiring explicit qualification
+and, for global ordering, route-order metadata in prepared runtimes/snapshots.
+The general uFor evaluator remains an allocating reference API outside callbacks.
+
+`test/test_modulation_preparation.py` covers scope/event layout, exact smoothing,
+host facts, combined/expanded limits and overrides, frame overflow and shared
+mapping/sum failures with zeroed callback output. Existing mapping/audio,
+generator ownership, effect matrix/mixer and continuation regressions cover
+the migrated consumers. Matrix sum-overflow rejection also retains its contextual
+diagnostic, zeroed output and snapshot recovery.
+
+Qualification on 2026-11-17 passed 3,641 Python tests with 29 optional skips under
+`--require-callback-no-allocations`. The generated report
+`build/rust-ufor-modulation-audit.xml` records 24,704 successful and 71 failed
+callbacks with zero callback allocations, reallocations or frees. The broader
+native-call boundary retains heap operations outside callbacks. Reproduce this
+run with the installed-build commands above and this report path. Both Rust
+allocation-audit tests, Clippy, Ruff, formatting, ty, pyupgrade and diff checks
+passed. Local qualification used macOS; Windows/Linux and hardware deadlines
+were not tested here. The ordinary extension is restored after qualification.
+All 50 focused preparation, mapping and feedback-limit cases passed again with
+that ordinary extension.
 
 ### 4. Tuning integration and closeout
 
