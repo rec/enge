@@ -3,7 +3,7 @@
 from fractions import Fraction
 from hashlib import sha256
 from math import ceil, isfinite, pi
-from typing import Literal, cast
+from typing import Literal
 
 import numpy as np
 from envelfo import patch
@@ -688,11 +688,7 @@ class PersistentSampler(OfflineSampler):
                 state,
                 self.definition.sample_rate,
                 routes,
-                cast(float, envelope.initial),
-                synth._runtime_segments(envelope.segments, self.definition.sample_rate),
-                synth._runtime_segments(
-                    envelope.release, self.definition.sample_rate, captured=True
-                ),
+                envelope.model_dump_json(),
                 0,
                 self.voice_capacity,
                 batch_capacity,
@@ -700,10 +696,6 @@ class PersistentSampler(OfflineSampler):
                 filter_order == processing.FilterOrder.after_amplitude,
                 sample.end_fade_seconds * sample.sample_rate,
             )
-            if approaches := synth.release_approaches([envelope]):
-                runtime.set_sample_release_approaches(
-                    self.native_sources[slot.name], [(j, p) for _, j, p in approaches]
-                )
             rows = []
             smoothing = []
             parameters = [0.0] * 12

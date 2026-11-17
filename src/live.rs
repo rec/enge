@@ -1,14 +1,13 @@
 //! One native owner for persistent generated sources and callback scratch.
 
-use crate::amplitude::{
-    Amplitude, AmplitudeSegments, AmplitudeState, ApproachParameters, frame_time,
-};
+use crate::amplitude::{Amplitude, AmplitudeState, frame_time};
 use crate::effects::runtime::{EffectGenerators, EffectRuntime, EffectSnapshot};
 use crate::error::{NativeError, NativeResult};
 use crate::filters::{FilterBank, Inputs};
 use crate::queue::{ActionBatch, BATCH_ACTIONS};
 use crate::runtime::controls::{ControlBank, control_definitions};
 use crate::runtime::generators::GeneratorBank;
+use crate::runtime::preparation;
 use crate::runtime::{RouteMap, SynthRuntime, SynthRuntimeSnapshot, sum_partials};
 use crate::sampler::{Cursor, SampleBuffer, Selection, State};
 use numpy::ndarray::{Array2, ArrayViewMut2};
@@ -321,7 +320,7 @@ impl LiveRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (buffer, selection, state, rate, routes, initial, attack, release, minimum_hold_frames, voices, batch_capacity, filters, filter_after_amplitude, end_fade_frames=0.0))]
+    #[pyo3(signature = (buffer, selection, state, rate, routes, envelope, minimum_hold_frames, voices, batch_capacity, filters, filter_after_amplitude, end_fade_frames=0.0, *, max_records=10000))]
     fn add_sample(
         &mut self,
         py: Python<'_>,
@@ -330,15 +329,14 @@ impl LiveRuntime {
         state: State,
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
-        initial: f64,
-        attack: AmplitudeSegments,
-        release: AmplitudeSegments,
+        envelope: String,
         minimum_hold_frames: f64,
         voices: usize,
         batch_capacity: usize,
         filters: Inputs<'_>,
         filter_after_amplitude: bool,
         end_fade_frames: f64,
+        max_records: usize,
     ) -> PyResult<usize> {
         if self.frame != 0
             || !end_fade_frames.is_finite()
@@ -348,7 +346,6 @@ impl LiveRuntime {
             || rate != self.rate
             || routes.shape() != [buffer.borrow(py).audio.ncols(), self.channels]
             || routes.as_array().iter().any(|v| !v.is_finite())
-            || !initial.is_finite()
             || !minimum_hold_frames.is_finite()
             || minimum_hold_frames < 0.0
         {
@@ -362,7 +359,7 @@ impl LiveRuntime {
         }
         let source_channels = buffer.audio.ncols();
         let filters = FilterBank::new(Some(filters), rate, 1, source_channels)?;
-        let amplitude = Amplitude::new(initial, attack, release)?;
+        let amplitude = preparation::amplitudes(&[envelope], rate, max_records)?.remove(0);
         let amplitude_states = (0..voices)
             .map(|_| amplitude.start())
             .collect::<NativeResult<_>>()?;
@@ -415,34 +412,6 @@ impl LiveRuntime {
             return Err(PyValueError::new_err("Unknown live runtime source"));
         };
         push_batch(&mut source.producer, actions, "source")
-    }
-
-    fn set_sample_release_approaches(
-        &mut self,
-        source: usize,
-        stages: Vec<(usize, ApproachParameters)>,
-    ) -> PyResult<()> {
-        let Some(Source {
-            runtime: SourceRuntime::Sample(runtime),
-            ..
-        }) = self.sources.get_mut(source)
-        else {
-            return Err(PyValueError::new_err("Invalid live sample source"));
-        };
-        if self.frame != 0 {
-            return Err(PyValueError::new_err(
-                "Release approaches require an unused runtime",
-            ));
-        }
-        for (index, parameters) in stages {
-            runtime
-                .amplitude
-                .set_release_approach(index, parameters, self.rate)?;
-        }
-        runtime.amplitude_states = (0..runtime.active.len())
-            .map(|_| runtime.amplitude.start())
-            .collect::<NativeResult<_>>()?;
-        Ok(())
     }
 
     fn active_slots(&self, source: usize) -> PyResult<Vec<bool>> {

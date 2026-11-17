@@ -5,8 +5,10 @@ import pytest
 from test_dynamic_synth import change, dynamic_score, onset
 from test_sample_instrument import sample_score
 from test_synth import check_audio
+from ufor.envelfo import Envelope
 from ufor.events import Release
 from ufor.samples import instrument, trace
+from ufor.segments import Segment
 
 from enge import _native, live, sample_instrument
 from enge.synth import EngineError
@@ -129,9 +131,11 @@ def test_sample_controls_follow_scopes_delays_and_snapshot_continuation(
         (0, 0, 0, 1, False, False, False, None, None, 0, None),
         48000,
         np.ones((1, 1)),
-        1,
-        [((0, 1), 1.0, 0.0)],
-        [((0, 1), 0.0, 0.0)],
+        Envelope(
+            initial=1,
+            segments=[Segment(duration=0, to=1)],
+            release=[Segment(duration=0, to=0)],
+        ).model_dump_json(),
         0,
         1,
         4,

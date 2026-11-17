@@ -1908,9 +1908,7 @@ class PersistentSynth:
             ),
             float(template.oscillator.duty_cycle),
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            cast(float, template.envelope.initial),
-            _runtime_segments(template.envelope.segments, rate),
-            _runtime_segments(template.envelope.release, rate, captured=True),
+            template.envelope.model_dump_json(),
             (
                 (hold := template.minimum_hold_seconds * rate).numerator,
                 hold.denominator,
@@ -1923,8 +1921,6 @@ class PersistentSynth:
             context_capacity,
             template.processing.filter_order == processing.FilterOrder.after_amplitude,
         )
-        if approaches := release_approaches([template.envelope]):
-            self.runtime.set_release_approaches(approaches)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
         self.runtime.set_route_maps(4, transform_maps)
@@ -2527,30 +2523,6 @@ def validate_envelope(envelope: Envelope) -> None:
         raise EngineError("Only held envelopes are implemented")
 
 
-def release_approaches(
-    envelopes: list[Envelope],
-) -> list[tuple[int, int, tuple[float, float, float, float, float, float, float]]]:
-    """Encode authored release stages for native amplitude preparation."""
-    return [
-        (
-            i,
-            j,
-            (
-                s.asymptote,
-                s.time_constant,
-                s.threshold,
-                s.transition_to,
-                s.transition_seconds,
-                s.minimum_transition_distance,
-                s.minimum_time_constant,
-            ),
-        )
-        for i, e in enumerate(envelopes)
-        for j, s in enumerate(e.release)
-        if isinstance(s, ExponentialApproach)
-    ]
-
-
 def validate_generators(
     settings: SoundSettings,
     allow_beat_envelfos: bool = False,
@@ -2697,10 +2669,8 @@ def _duration(
 def _runtime_segments(
     segments: list[Segment | IndefiniteSegment | ExponentialApproach],
     sample_rate: int,
-    *,
-    captured: bool = False,
 ) -> list[tuple[tuple[int, int] | None, float, float]]:
-    if any(isinstance(s, ExponentialApproach) for s in segments) and not captured:
+    if any(isinstance(s, ExponentialApproach) for s in segments):
         raise EngineError(
             "Captured stages currently require a named modulation Envelope"
         )
@@ -2711,8 +2681,6 @@ def _runtime_segments(
             s.curve,
         )
         if isinstance(s, Segment)
-        else ((0, 1), s.transition_to, 0.0)
-        if isinstance(s, ExponentialApproach)
         else (None, 0.0, 0.0)
         for s in segments
     ]

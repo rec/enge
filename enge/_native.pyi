@@ -72,13 +72,6 @@ class EffectRuntime:
     def import_state(self, values: list[dict[str, object]], frame: int) -> None: ...
 
 class LiveRuntime:
-    def set_sample_release_approaches(
-        self,
-        source: int,
-        stages: list[
-            tuple[int, tuple[float, float, float, float, float, float, float]]
-        ],
-    ) -> None: ...
     def __init__(
         self,
         runtimes: list[SynthRuntime],
@@ -159,15 +152,15 @@ class LiveRuntime:
         ],
         rate: float,
         routes: np.ndarray,
-        initial: float,
-        attack: list[tuple[tuple[int, int] | None, float, float]],
-        release: list[tuple[tuple[int, int] | None, float, float]],
+        envelope: str,
         minimum_hold_frames: float,
         voices: int,
         batch_capacity: int,
         filters: tuple[list[int], np.ndarray, np.ndarray],
         filter_after_amplitude: bool,
         end_fade_frames: float = 0,
+        *,
+        max_records: int = 10000,
     ) -> int: ...
     def submit(self, source: int, actions: np.ndarray) -> None: ...
     def process_into(
@@ -285,12 +278,6 @@ class GeneratorBank:
     ) -> None: ...
 
 class SynthRuntime:
-    def set_release_approaches(
-        self,
-        stages: list[
-            tuple[int, int, tuple[float, float, float, float, float, float, float]]
-        ],
-    ) -> None: ...
     def set_route_maps(
         self, kind: int, maps: list[tuple[int, list[tuple[float, float]]]]
     ) -> None: ...
@@ -300,9 +287,7 @@ class SynthRuntime:
         waveform: int,
         duty: float,
         routes: np.ndarray,
-        initial: float,
-        attack: list[tuple[tuple[int, int] | None, float, float]],
-        release: list[tuple[tuple[int, int] | None, float, float]],
+        envelope: str,
         minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
@@ -311,17 +296,15 @@ class SynthRuntime:
         parameters: list[float],
         context_capacity: int,
         filter_after_amplitude: bool = False,
+        *,
+        max_records: int = 10000,
     ) -> None: ...
     @staticmethod
     def fm(
         rate: float,
         routes: np.ndarray,
-        carrier_initial: float,
-        carrier_attack: list[tuple[tuple[int, int] | None, float, float]],
-        carrier_release: list[tuple[tuple[int, int] | None, float, float]],
-        mod_initial: float,
-        mod_attack: list[tuple[tuple[int, int] | None, float, float]],
-        mod_release: list[tuple[tuple[int, int] | None, float, float]],
+        carrier_envelope: str,
+        mod_envelope: str,
         phase_offsets: list[float],
         minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
@@ -331,18 +314,15 @@ class SynthRuntime:
         parameters: list[float],
         context_capacity: int,
         filter_after_amplitude: bool = False,
+        *,
+        max_records: int = 10000,
     ) -> SynthRuntime: ...
     @staticmethod
     def fm_graph(
         rate: float,
         routes: np.ndarray,
-        carrier_initial: float,
-        carrier_attack: list[tuple[tuple[int, int] | None, float, float]],
-        carrier_release: list[tuple[tuple[int, int] | None, float, float]],
         waveforms: list[int],
-        initials: list[float],
-        attacks: list[list[tuple[tuple[int, int] | None, float, float]]],
-        releases: list[list[tuple[tuple[int, int] | None, float, float]]],
+        envelopes: list[str],
         phase_offsets: list[float],
         parameters: list[tuple[int, int]],
         edges: list[tuple[int, int, bool, int]],
@@ -357,14 +337,14 @@ class SynthRuntime:
         parameter_definitions: list[float],
         context_capacity: int,
         filter_after_amplitude: bool = False,
+        *,
+        max_records: int = 10000,
     ) -> SynthRuntime: ...
     @staticmethod
     def noise(
         rate: float,
         routes: np.ndarray,
-        initial: float,
-        attack: list[tuple[tuple[int, int] | None, float, float]],
-        release: list[tuple[tuple[int, int] | None, float, float]],
+        envelope: str,
         minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
@@ -373,6 +353,8 @@ class SynthRuntime:
         parameters: list[float],
         context_capacity: int,
         filter_after_amplitude: bool = False,
+        *,
+        max_records: int = 10000,
     ) -> SynthRuntime: ...
     def process(
         self, frames: int, cutoff_hz: float, q: float, gain_db: float

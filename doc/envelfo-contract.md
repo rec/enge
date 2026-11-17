@@ -1,6 +1,6 @@
 # enveLFO extraction contract and closeout evidence
 
-Updated 2026-10-15 after the final extraction audit. The original inventory and
+Updated 2026-11-17 for native uFor amplitude preparation. The original inventory and
 implementation history are retained in [the plan](https://github.com/rec/enge/blob/main/plan/envelfo.md).
 The standalone capability matrix, distribution checks and explicit exclusions
 are maintained in [enveLFO's audit](https://github.com/rec/envelfo/blob/main/doc/extraction-audit.md).
@@ -43,7 +43,7 @@ rather than replace, shared standalone conformance.
 
 | Capability | Python owner | Rust owner | Evidence / host boundary |
 | --- | --- | --- | --- |
-| Definitions, units and references | uFor canonical EnveLFO models | Rust uFor validates LFO/named-Envelope preparation; other definitions retain host normalization | uFor conformance and enge preparation/audio tests |
+| Definitions, units and references | uFor canonical EnveLFO models | Rust uFor validates LFO, named-Envelope and main-amplitude preparation; other definitions retain host normalization | uFor conformance and enge preparation/audio tests |
 | LFO playback, rate, reset, phase and onset | enveLFO runtime | Core LFO state | Shared body traces and LFO tests; enge retains event-free sampling acceleration |
 | Finite/indefinite Envelopes, curved release and repeats | enveLFO runtime | Core Envelope state | Shared runtime/host traces and focused Envelope tests |
 | Stage transitions, cue events and entry capture | enveLFO runtime | Core Stages state | Shared body traces, command-preemption and partition tests |
@@ -64,8 +64,8 @@ remain in uFor without a runtime dependency cycle.
 ## Native uFor preparation boundary
 
 The native dependency is now the single Git-distributed `engelfo` crate. Rust
-uFor parses canonical JSON LFO and named-Envelope definitions during preparation,
-then enge converts them to the existing execution definitions. Python dependency
+uFor parses canonical JSON LFO, named-Envelope and main-amplitude definitions
+during preparation, then enge converts them to the existing execution definitions. Python dependency
 pins remain unchanged for this slice; their canonical generator serialization is
 accepted by the native adapter. Python authoring syntax is normalized before
 crossing that boundary. Runtime execution remains in engelfo.
@@ -92,9 +92,33 @@ their clock. Existing scope/reset policy and normalized named loop bounds remain
 host-owned. Authored reset retriggering now maps to engelfo's Initial policy.
 Named captured approaches are prepared in the same pass for synth, FM, noise and
 sampler consumers. The old LFO rational-array encoder and named-Envelope segment,
-approach and beat-flag setters are removed. Main amplitude and Stages encoders
-still have separate consumers and remain pending in the
+approach and beat-flag setters are removed. Stages encoders remain pending in the
 [integration plan](../plan/rust-ufor-integration.md).
+
+Main amplitude constructors (`SynthRuntime`, its FM/noise variants, and
+`LiveRuntime.add_sample`) take canonical Envelope JSON instead of initial/segment
+arrays. Graph FM takes one definition per operator, including its carrier. Each
+constructor has keyword `max_records=10000`, counting one root and each amplitude
+slot, definition and segment, with the same text and portable validation bounds.
+All FM operators share one budget; it is independent of a separately prepared
+GeneratorBank. Captured releases are prepared directly, and their old setters and
+Python encoder are removed.
+
+Main amplitude retains the existing voice/seconds/held/once profile, numeric
+initial, activation start, no markers and explicit release. Captured approaches
+remain release-only. A fresh voice activation uses enge's Current retrigger policy;
+authored retrigger settings still govern named generators. Scalar voice gain,
+minimum hold, sample exhaustion, retirement, command storage and snapshots remain
+host-owned. Empty segment arrays that previously bypassed Python profile
+validation are no longer accepted at the native boundary.
+
+The 2026-11-17 amplitude-preparation qualification passed 3,604 Python tests with
+29 optional skips. Its 24,703 successful and 68 failed callbacks recorded zero
+allocations, reallocations or frees inside the callback boundary. The broader
+native-call boundary retains allocations outside callbacks. Preparation limits
+and profile rejection tests are in `test/test_amplitude_preparation.py`; existing
+amplitude, runtime and live regressions cover audio and snapshot continuation.
+See the integration plan for the installed-build audit reproduction commands.
 
 JSON parsing, validation and conversion allocate only during preparation. They
 are not called from audio processing. `test/test_generator_preparation.py`

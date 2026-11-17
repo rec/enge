@@ -7,8 +7,10 @@ import pytest
 from test_synth import check_audio
 from test_synth_demo import publish_flac
 from ufor import synth_trace
+from ufor.envelfo import Envelope
 from ufor.events import ControlChange, LFOChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
+from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 
 from enge import _native, fm, synth
@@ -69,13 +71,15 @@ def test_native_graph_runtime_rejects_invalid_execution_order(order: list[int]) 
         _native.SynthRuntime.fm_graph(
             48000,
             np.ones((1, 1)),
-            1,
-            [((0, 1), 1.0, 0.0)],
-            [((0, 1), 0.0, 0.0)],
             [0, 0],
-            [1, 1],
-            [[], []],
-            [[], []],
+            [
+                Envelope(
+                    initial=1,
+                    segments=[Segment(duration=0, to=1)],
+                    release=[Segment(duration=0, to=0)],
+                ).model_dump_json()
+            ]
+            * 2,
             [0, 0],
             [(0, 1), (0, 1)],
             [(0, 1, False, 0)],

@@ -112,9 +112,51 @@ uv run --no-sync python scripts/summarize_callback_audit.py --reports build/rust
 uv sync --frozen --no-editable --reinstall-package enge
 ```
 
-Main voice-amplitude conversion remains a separate follow-on slice. Its latched
-duration/gain and lifetime rules need an inventory before replacing its still-used
-segment and captured-release arrays. Retain these encoders until that migration.
+### Main voice-amplitude preparation
+
+On 2026-11-17 the user approved canonical Envelope JSON at each native amplitude
+constructor, replacing the initial/segment-array arguments and captured-release
+setters. Each operation has keyword `max_records=10000`; FM combines all supplied
+operator definitions under one budget. Graph FM receives one Envelope per operator,
+without a duplicate carrier definition. The bank and amplitude constructors are
+separate preparation operations with independent budgets.
+
+The inventory found that main amplitude already uses normalized uFor Envelope
+levels. Public parameter materialization, scalar voice gain, minimum-hold timing,
+release timing and sample exhaustion remain host-owned. The supported profile is
+a voice-scoped, seconds-clock, held, once Envelope with numeric initial,
+activation start, no markers and an explicit release. Captured approaches are
+supported only in release. Finite curves and indefinite holds retain their
+existing behavior. Voice reuse owns fresh activation and keeps the native Current
+retrigger policy regardless of the authored named-generator retrigger setting.
+
+`src/runtime/preparation.rs` reuses the validated generator decoder and Envelope
+converter for synth, two-operator FM, graph FM, noise and live sampler construction.
+Exact durations convert to frames once; captured releases are present before
+initial state and command storage are prepared. Runtime commands, continuation
+state, snapshot identity checks and retirement are unchanged. Raw native arrays
+that bypassed the supported profile now fail during definition validation.
+
+The Python amplitude and captured-release encoders and native setters are removed.
+`_runtime_segments` remains only for Stages, whose migration is still pending.
+Python dependency pins and the Rust dependency set are unchanged.
+
+`test/test_amplitude_preparation.py` covers unsupported profiles, invalid portable
+types and ratios, exact frame overflow, every FM operator, and combined record
+limits with explicit overrides. Existing amplitude, runtime and live tests cover
+minimum hold, captured release interruption, voice reuse, all four audio consumers
+and partitioned snapshot continuation.
+
+Verification on 2026-11-17 passed: 3,604 Python tests with 29 optional skips under
+`--require-callback-no-allocations`. The audit recorded 24,703 successful and 68
+failed callbacks with zero callback allocations, reallocations or frees. Both
+Rust allocation-audit unit tests, Clippy, Ruff, formatting, ty, pyupgrade and
+`git diff --check` passed. The broader native-call boundary retains allocations
+outside callbacks. The generated report is `build/rust-ufor-amplitude-audit.xml`;
+reproduce it with the commands above, substituting that report path. Local
+qualification used macOS; Windows/Linux and hardware deadlines were not tested
+here. The ordinary extension was restored afterwards and all 39 focused amplitude
+preparation/release tests passed again.
 
 ### 2. Stages, Patch and generator-aware bindings
 

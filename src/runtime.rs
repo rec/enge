@@ -1,6 +1,6 @@
 //! Persistent oscillator runtime with sample-accurate voice actions.
 
-use crate::amplitude::{Amplitude, AmplitudeSegments, AmplitudeState, ApproachParameters};
+use crate::amplitude::{Amplitude, AmplitudeState};
 use crate::error::{NativeError, NativeResult};
 use engelfo::envelope::Envelope;
 use engelfo::lfo::Command;
@@ -20,7 +20,7 @@ use patch_host::PatchHost;
 pub(crate) mod controls;
 pub(crate) mod generators;
 mod patch_host;
-mod preparation;
+pub(crate) mod preparation;
 use controls::{ControlBank, ControlDefinition, ControlState, control_definitions};
 
 #[derive(Clone, PartialEq)]
@@ -196,7 +196,7 @@ type StageInput = (
     u8,
     f64,
     bool,
-    AmplitudeSegments,
+    Vec<(Option<(i64, i64)>, f64, f64)>,
     Option<(usize, Vec<(i64, i64)>, f64, f64)>,
     Vec<((i64, i64), String)>,
     usize,
@@ -360,67 +360,14 @@ pub struct SynthRuntime {
     amplitude_states: Vec<Vec<AmplitudeState>>,
 }
 
-#[pymethods]
 impl SynthRuntime {
-    fn set_release_approaches(
-        &mut self,
-        stages: Vec<(usize, usize, ApproachParameters)>,
-    ) -> PyResult<()> {
-        if self.frame != 0 || self.active.iter().any(|v| *v) {
-            return Err(PyValueError::new_err(
-                "Release approaches require an unused runtime",
-            ));
-        }
-        for (operator, index, parameters) in stages {
-            self.amplitude_definitions
-                .get_mut(operator)
-                .ok_or_else(|| PyValueError::new_err("Unknown amplitude operator"))?
-                .set_release_approach(index, parameters, self.rate)?;
-        }
-        self.amplitude_states = (0..self.active.len())
-            .map(|_| {
-                self.amplitude_definitions
-                    .iter()
-                    .map(|a| a.start())
-                    .collect()
-            })
-            .collect::<NativeResult<_>>()?;
-        Ok(())
-    }
-
-    fn set_route_maps(&mut self, kind: usize, maps: Vec<(usize, Vec<(f64, f64)>)>) -> PyResult<()> {
-        if self.frame != 0 || self.active.iter().any(|v| *v) {
-            return Err(PyValueError::new_err(
-                "Invalid modulation mapping count or state",
-            ));
-        }
-        let maps = if kind == 0 {
-            if maps.len() != self.controls.control_definitions.len() {
-                return Err(PyValueError::new_err("Invalid control mapping count"));
-            }
-            maps.into_iter()
-                .map(|(kind, points)| RouteMap::new(kind, points))
-                .collect::<PyResult<Vec<_>>>()?
-        } else {
-            self.generators.prepare_route_maps(kind, maps)?
-        };
-        self.route_maps[kind] = maps;
-        self.parameter_partials
-            .resize(self.route_maps.iter().map(Vec::len).sum(), 0.0);
-        Ok(())
-    }
-
-    #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, waveform, duty, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false))]
-    fn new(
+    fn prepared(
         rate: f64,
         waveform: u8,
         duty: f64,
         routes: PyReadonlyArray2<'_, f64>,
-        initial: f64,
-        attack: AmplitudeSegments,
-        release: AmplitudeSegments,
+        amplitude: Amplitude,
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
@@ -431,7 +378,6 @@ impl SynthRuntime {
         filter_after_amplitude: bool,
     ) -> PyResult<Self> {
         let minimum_hold_frames = ratio_time(minimum_hold_frames)?;
-        let amplitude = Amplitude::new(initial, attack, release)?;
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
         let filter_definitions = filter_definitions(filters)?;
@@ -443,7 +389,6 @@ impl SynthRuntime {
             || routes.shape()[0] == 0
             || routes.shape()[1] == 0
             || routes.as_array().iter().any(|v| !v.is_finite())
-            || !initial.is_finite()
             || minimum_hold_frames < Time::ZERO
             || parameters.len() < 6
             || parameters.len() % 3 != 0
@@ -527,19 +472,77 @@ impl SynthRuntime {
             frame: 0,
         })
     }
+}
+
+#[pymethods]
+impl SynthRuntime {
+    fn set_route_maps(&mut self, kind: usize, maps: Vec<(usize, Vec<(f64, f64)>)>) -> PyResult<()> {
+        if self.frame != 0 || self.active.iter().any(|v| *v) {
+            return Err(PyValueError::new_err(
+                "Invalid modulation mapping count or state",
+            ));
+        }
+        let maps = if kind == 0 {
+            if maps.len() != self.controls.control_definitions.len() {
+                return Err(PyValueError::new_err("Invalid control mapping count"));
+            }
+            maps.into_iter()
+                .map(|(kind, points)| RouteMap::new(kind, points))
+                .collect::<PyResult<Vec<_>>>()?
+        } else {
+            self.generators.prepare_route_maps(kind, maps)?
+        };
+        self.route_maps[kind] = maps;
+        self.parameter_partials
+            .resize(self.route_maps.iter().map(Vec::len).sum(), 0.0);
+        Ok(())
+    }
+
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (rate, waveform, duty, routes, envelope, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false, *, max_records=10000))]
+    fn new(
+        rate: f64,
+        waveform: u8,
+        duty: f64,
+        routes: PyReadonlyArray2<'_, f64>,
+        envelope: String,
+        minimum_hold_frames: (i64, i64),
+        controls: PyReadonlyArray2<'_, f64>,
+        control_smoothing: Vec<(u64, u64)>,
+        generators: &GeneratorBank,
+        filters: PyReadonlyArray2<'_, f64>,
+        parameters: Vec<f64>,
+        context_capacity: usize,
+        filter_after_amplitude: bool,
+        max_records: usize,
+    ) -> PyResult<Self> {
+        let amplitude = preparation::amplitudes(&[envelope], rate, max_records)?.remove(0);
+        Self::prepared(
+            rate,
+            waveform,
+            duty,
+            routes,
+            amplitude,
+            minimum_hold_frames,
+            controls,
+            control_smoothing,
+            generators,
+            filters,
+            parameters,
+            context_capacity,
+            filter_after_amplitude,
+        )
+    }
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, mod_initial, mod_attack, mod_release, phase_offsets, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false))]
+    #[pyo3(signature = (rate, routes, carrier_envelope, mod_envelope, phase_offsets, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false, *, max_records=10000))]
     fn fm(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
-        carrier_initial: f64,
-        carrier_attack: AmplitudeSegments,
-        carrier_release: AmplitudeSegments,
-        mod_initial: f64,
-        mod_attack: AmplitudeSegments,
-        mod_release: AmplitudeSegments,
+        carrier_envelope: String,
+        mod_envelope: String,
         phase_offsets: Vec<f64>,
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
@@ -549,22 +552,20 @@ impl SynthRuntime {
         parameters: Vec<f64>,
         context_capacity: usize,
         filter_after_amplitude: bool,
+        max_records: usize,
     ) -> PyResult<Self> {
-        if phase_offsets.len() != 2
-            || phase_offsets.iter().any(|v| !v.is_finite())
-            || !mod_initial.is_finite()
-        {
+        if phase_offsets.len() != 2 || phase_offsets.iter().any(|v| !v.is_finite()) {
             return Err(PyValueError::new_err("Invalid FM runtime definition"));
         }
-        let mod_envelope = Amplitude::new(mod_initial, mod_attack, mod_release)?;
-        let mut runtime = Self::new(
+        let mut amplitudes =
+            preparation::amplitudes(&[carrier_envelope, mod_envelope], rate, max_records)?;
+        let mod_envelope = amplitudes.remove(1);
+        let mut runtime = Self::prepared(
             rate,
             0,
             0.5,
             routes,
-            carrier_initial,
-            carrier_attack,
-            carrier_release,
+            amplitudes.remove(0),
             minimum_hold_frames,
             controls,
             control_smoothing,
@@ -591,17 +592,12 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, routes, carrier_initial, carrier_attack, carrier_release, waveforms, initials, attacks, releases, phase_offsets, parameters, edges, order, carrier, carrier_parameter, minimum_hold_frames, controls, control_smoothing, generators, filters, parameter_definitions, context_capacity, filter_after_amplitude=false))]
+    #[pyo3(signature = (rate, routes, waveforms, envelopes, phase_offsets, parameters, edges, order, carrier, carrier_parameter, minimum_hold_frames, controls, control_smoothing, generators, filters, parameter_definitions, context_capacity, filter_after_amplitude=false, *, max_records=10000))]
     fn fm_graph(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
-        carrier_initial: f64,
-        carrier_attack: AmplitudeSegments,
-        carrier_release: AmplitudeSegments,
         waveforms: Vec<u8>,
-        initials: Vec<f64>,
-        attacks: Vec<AmplitudeSegments>,
-        releases: Vec<AmplitudeSegments>,
+        envelopes: Vec<String>,
         phase_offsets: Vec<f64>,
         parameters: Vec<(usize, usize)>,
         edges: Vec<(usize, usize, bool, usize)>,
@@ -616,21 +612,17 @@ impl SynthRuntime {
         parameter_definitions: Vec<f64>,
         context_capacity: usize,
         filter_after_amplitude: bool,
+        max_records: usize,
     ) -> PyResult<Self> {
         let operators = waveforms.len();
         if !(2..=6).contains(&operators)
-            || initials.len() != operators
-            || attacks.len() != operators
-            || releases.len() != operators
+            || envelopes.len() != operators
             || phase_offsets.len() != operators
             || parameters.len() != operators
             || carrier >= operators
             || carrier_parameter >= parameter_definitions.len() / 3
             || waveforms.iter().any(|v| *v > 2)
-            || initials
-                .iter()
-                .chain(&phase_offsets)
-                .any(|v| !v.is_finite())
+            || phase_offsets.iter().any(|v| !v.is_finite())
             || order.len() != operators
             || order.iter().any(|v| *v >= operators)
         {
@@ -643,30 +635,24 @@ impl SynthRuntime {
             }
             positions[*operator] = position;
         }
-        let mut amplitude_definitions = Vec::with_capacity(operators);
+        let amplitude_definitions = preparation::amplitudes(&envelopes, rate, max_records)?;
         let graph_operators: Vec<GraphOperator> = waveforms
             .into_iter()
-            .zip(initials)
-            .zip(attacks)
-            .zip(releases)
             .zip(phase_offsets)
             .zip(parameters)
-            .map(
-                |(((((waveform, initial), attack), release), phase_offset), parameters)| {
-                    if parameters.0 >= parameter_definitions.len() / 3
-                        || parameters.1 >= parameter_definitions.len() / 3
-                    {
-                        return Err(PyValueError::new_err("Invalid graph FM operator"));
-                    }
-                    amplitude_definitions.push(Amplitude::new(initial, attack, release)?);
-                    Ok(GraphOperator {
-                        waveform,
-                        phase_offset,
-                        ratio_parameter: parameters.0,
-                        tuning_parameter: parameters.1,
-                    })
-                },
-            )
+            .map(|((waveform, phase_offset), parameters)| {
+                if parameters.0 >= parameter_definitions.len() / 3
+                    || parameters.1 >= parameter_definitions.len() / 3
+                {
+                    return Err(PyValueError::new_err("Invalid graph FM operator"));
+                }
+                Ok(GraphOperator {
+                    waveform,
+                    phase_offset,
+                    ratio_parameter: parameters.0,
+                    tuning_parameter: parameters.1,
+                })
+            })
             .collect::<PyResult<_>>()?;
         let graph_edges: Vec<GraphEdge> = edges
             .into_iter()
@@ -688,14 +674,12 @@ impl SynthRuntime {
                 })
             })
             .collect::<PyResult<_>>()?;
-        let mut runtime = Self::new(
+        let mut runtime = Self::prepared(
             rate,
             0,
             0.5,
             routes,
-            carrier_initial,
-            carrier_attack,
-            carrier_release,
+            amplitude_definitions[carrier].clone(),
             minimum_hold_frames,
             controls,
             control_smoothing,
@@ -731,13 +715,11 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, routes, initial, attack, release, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false))]
+    #[pyo3(signature = (rate, routes, envelope, minimum_hold_frames, controls, control_smoothing, generators, filters, parameters, context_capacity, filter_after_amplitude=false, *, max_records=10000))]
     fn noise(
         rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
-        initial: f64,
-        attack: AmplitudeSegments,
-        release: AmplitudeSegments,
+        envelope: String,
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
@@ -746,15 +728,14 @@ impl SynthRuntime {
         parameters: Vec<f64>,
         context_capacity: usize,
         filter_after_amplitude: bool,
+        max_records: usize,
     ) -> PyResult<Self> {
         let mut runtime = Self::new(
             rate,
             0,
             0.5,
             routes,
-            initial,
-            attack,
-            release,
+            envelope,
             minimum_hold_frames,
             controls,
             control_smoothing,
@@ -763,6 +744,7 @@ impl SynthRuntime {
             parameters,
             context_capacity,
             filter_after_amplitude,
+            max_records,
         )?;
         runtime.source_kind = 2;
         Ok(runtime)

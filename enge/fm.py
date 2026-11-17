@@ -624,11 +624,6 @@ class PersistentFM(synth.PersistentSynth):
         self.runtime = _native.SynthRuntime.fm_graph(
             rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            cast(float, operators[carrier].envelope.initial),
-            synth._runtime_segments(operators[carrier].envelope.segments, rate),
-            synth._runtime_segments(
-                operators[carrier].envelope.release, rate, captured=True
-            ),
             [
                 {
                     Waveform.sine: 0,
@@ -637,25 +632,7 @@ class PersistentFM(synth.PersistentSynth):
                 }[operator.waveform]
                 for operator in operators
             ],
-            [cast(float, o.envelope.initial) for o in operators],
-            [
-                [
-                    tuple(segment)
-                    for segment in synth._runtime_segments(
-                        operator.envelope.segments, rate
-                    )
-                ]
-                for operator in operators
-            ],
-            [
-                [
-                    tuple(segment)
-                    for segment in synth._runtime_segments(
-                        operator.envelope.release, rate, captured=True
-                    )
-                ]
-                for operator in operators
-            ],
+            [o.envelope.model_dump_json() for o in operators],
             [float(operator.phase_cycles) for operator in operators],
             operator_parameters,
             [
@@ -694,8 +671,6 @@ class PersistentFM(synth.PersistentSynth):
             context_capacity,
             template.processing.filter_order == FilterOrder.after_amplitude,
         )
-        if approaches := synth.release_approaches([o.envelope for o in operators]):
-            self.runtime.set_release_approaches(approaches)
         for kind, mappings in enumerate(route_maps):
             self.runtime.set_route_maps(kind, mappings)
 

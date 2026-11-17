@@ -2,16 +2,11 @@
 
 use crate::error::{NativeError, NativeResult};
 use engelfo::Status;
-use engelfo::approach::ExponentialApproach;
 use engelfo::envelope::{
-    Envelope, EnvelopeCommand, EnvelopeCommandStorage, EnvelopeState, Initial, Phase, Playback,
-    Retrigger, Segment, Start,
+    Envelope, EnvelopeCommand, EnvelopeCommandStorage, EnvelopeState, Phase, Retrigger,
 };
 use engelfo::lfo::{Command, Value};
 use engelfo::time::Time;
-
-pub(crate) type AmplitudeSegments = Vec<(Option<(i64, i64)>, f64, f64)>;
-pub(crate) type ApproachParameters = (f64, f64, f64, f64, f64, f64, f64);
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Amplitude {
@@ -27,83 +22,11 @@ pub(crate) struct AmplitudeState {
 }
 
 impl Amplitude {
-    pub(crate) fn set_release_approach(
-        &mut self,
-        index: usize,
-        parameters: ApproachParameters,
-        rate: f64,
-    ) -> NativeResult<()> {
-        let (
-            asymptote,
-            time_constant,
-            threshold,
-            transition_to,
-            transition_seconds,
-            minimum_transition_distance,
-            minimum_time_constant,
-        ) = parameters;
-        let part = self
-            .body
-            .release
-            .get_mut(index)
-            .ok_or(NativeError::Message("Unknown amplitude release stage"))?;
-        part.approach = Some(ExponentialApproach {
-            clock_units_per_second: frame_time(rate)?,
-            asymptote,
-            time_constant,
-            threshold,
-            transition_to,
-            transition_seconds,
-            minimum_transition_distance,
-            minimum_time_constant,
-        });
-        self.body.validate().map_err(error)?;
-        self.initial = initial_state(&self.body)?;
-        Ok(())
-    }
-
-    pub(crate) fn new(
-        initial: f64,
-        attack: AmplitudeSegments,
-        release: AmplitudeSegments,
-    ) -> NativeResult<Self> {
-        let convert = |parts: AmplitudeSegments, level: f64| -> NativeResult<Vec<Segment>> {
-            if parts.is_empty() {
-                return Ok(vec![Segment {
-                    approach: None,
-                    duration: Some(Time::ZERO),
-                    to: level,
-                    curve: 0.0,
-                }]);
-            }
-            parts
-                .into_iter()
-                .map(|(duration, to, curve)| {
-                    Ok(Segment {
-                        approach: None,
-                        duration: duration
-                            .map(|(n, d)| Time::new(n, d))
-                            .transpose()
-                            .map_err(error)?,
-                        to,
-                        curve,
-                    })
-                })
-                .collect()
-        };
-        let body = Envelope {
-            initial: Initial::Value(initial),
-            segments: convert(attack, initial)?,
-            release: convert(release, 0.0)?,
-            bipolar: true,
-            hold: true,
-            retrigger: Retrigger::Current,
-            start: Start::Activation,
-            playback: Playback::Once,
-            markers: vec![],
-            loop_bounds: None,
-            repeat_count: None,
-        };
+    pub(crate) fn new(mut body: Envelope) -> NativeResult<Self> {
+        // Each voice owns a fresh activation; authored retrigger policy applies
+        // to named generators, not amplitude voice reuse.
+        body.retrigger = Retrigger::Current;
+        body.bipolar = true;
         body.validate().map_err(error)?;
         let initial = initial_state(&body)?;
         Ok(Self { body, initial })

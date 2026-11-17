@@ -1,6 +1,6 @@
 //! Preparation-only conversion from validated uFor definitions to engine plans.
 use super::{LfoDefinition, NamedEnvelopeDefinition, core_error};
-use crate::amplitude::frame_time;
+use crate::amplitude::{Amplitude, frame_time};
 use engelfo::envelope;
 use engelfo::lfo;
 use engelfo::time::Time;
@@ -58,6 +58,38 @@ pub(super) fn definitions(
         return Err(invalid("Generator preparation exceeds record limit"));
     }
     Ok((lfos, envelopes))
+}
+
+pub(crate) fn amplitudes(
+    documents: &[String],
+    sample_rate: f64,
+    maximum: usize,
+) -> PyResult<Vec<Amplitude>> {
+    let (_, values) = definitions(&[], documents, maximum)?;
+    values
+        .iter()
+        .map(|generator| {
+            let Body::Envelope(value) = generator.body() else {
+                return Err(invalid("Voice amplitude requires an Envelope"));
+            };
+            if generator.settings().scope() != Scope::Voice
+                || generator.settings().clock() != Clock::Seconds
+                || value.start() != envelfo::Start::Activation
+                || !matches!(value.initial(), envelfo::Initial::Number(_))
+                || !value.hold()
+                || value.playback() != envelfo::PlaybackMode::Once
+                || !value.markers().is_empty()
+                || value.release().is_empty()
+                || value
+                    .segments()
+                    .iter()
+                    .any(|s| matches!(s, envelfo::EnvelopeSegment::Approach(_)))
+            {
+                return Err(invalid("Unsupported voice amplitude Envelope profile"));
+            }
+            Ok(Amplitude::new(envelope(value, false, sample_rate)?)?)
+        })
+        .collect()
 }
 
 pub(super) fn lfos(
