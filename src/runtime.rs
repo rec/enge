@@ -192,27 +192,7 @@ type StageStartInput = (
 type EnvelfoTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64, Option<f64>);
 type EnvelfoTransformRoute = (usize, usize, usize);
 
-type StageInput = (
-    u8,
-    f64,
-    bool,
-    Vec<(Option<(i64, i64)>, f64, f64)>,
-    Option<(usize, Vec<(i64, i64)>, f64, f64)>,
-    Vec<((i64, i64), String)>,
-    usize,
-    (i64, i64),
-    (i64, i64),
-    Option<u64>,
-);
 type BeatClockInput = ((i64, i64), (i64, i64), (i64, i64), (i64, i64));
-type StagedEnvelfoInput = (
-    Vec<StageInput>,
-    Vec<(usize, String, usize)>,
-    usize,
-    Option<usize>,
-    usize,
-    bool,
-);
 
 #[derive(Clone, PartialEq)]
 struct FilterDefinition {

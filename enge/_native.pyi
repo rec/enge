@@ -194,32 +194,12 @@ class GeneratorBank:
     ) -> None: ...
     def set_staged_envelfos(
         self,
-        definitions: list[
-            tuple[
-                list[
-                    tuple[
-                        int,
-                        float,
-                        bool,
-                        list[tuple[tuple[int, int] | None, float, float]],
-                        tuple[int, list[tuple[int, int]], float, float] | None,
-                        list[tuple[tuple[int, int], str]],
-                        int,
-                        tuple[int, int],
-                        tuple[int, int],
-                        int | None,
-                    ]
-                ],
-                list[tuple[int, str, int]],
-                int,
-                int | None,
-                int,
-                bool,
-            ]
-        ],
+        inputs: list[tuple[str, int | None, int]],
         connections: list[
             tuple[int, str, int, str, int, int, int, int, tuple[int, int]]
         ],
+        *,
+        max_records: int = 10000,
     ) -> None: ...
     def set_sample_hold_envelfos(
         self, definitions: list[tuple[int, int, float, float]]

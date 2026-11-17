@@ -23,7 +23,6 @@ from ufor.control import TempoMap
 from ufor.envelfo import (
     LFO,
     Affine,
-    EnterStage,
     EnveLFO,
     EnvelfoEvent,
     EnveLFOReference,
@@ -70,28 +69,6 @@ from .lfo import lfo_samples
 
 class EngineError(ValueError):
     """The requested input is invalid or outside Enge's implemented profile."""
-
-
-StagedRuntimeStage = tuple[
-    int,
-    float,
-    bool,
-    list[tuple[tuple[int, int] | None, float, float]],
-    tuple[int, list[tuple[int, int]], float, float] | None,
-    list[tuple[tuple[int, int], str]],
-    int,
-    tuple[int, int],
-    tuple[int, int],
-    int | None,
-]
-StagedRuntimeDefinition = tuple[
-    list[StagedRuntimeStage],
-    list[tuple[int, str, int]],
-    int,
-    int | None,
-    int,
-    bool,
-]
 
 
 class PreparedSynth(Model, frozen=True):
@@ -2666,26 +2643,6 @@ def _duration(
     return sum((s.duration for s in segments if isinstance(s, Segment)), Fraction(0))
 
 
-def _runtime_segments(
-    segments: list[Segment | IndefiniteSegment | ExponentialApproach],
-    sample_rate: int,
-) -> list[tuple[tuple[int, int] | None, float, float]]:
-    if any(isinstance(s, ExponentialApproach) for s in segments):
-        raise EngineError(
-            "Captured stages currently require a named modulation Envelope"
-        )
-    return [
-        (
-            ((d := s.duration * sample_rate).numerator, d.denominator),
-            float(s.to),
-            s.curve,
-        )
-        if isinstance(s, Segment)
-        else (None, 0.0, 0.0)
-        for s in segments
-    ]
-
-
 def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> tuple[int, int]:
     frames = seconds * sample_rate
     if not -(1 << 63) <= frames.numerator < (1 << 63) or frames.denominator >= (
@@ -2962,7 +2919,7 @@ PersistentModulation = tuple[
     dict[str, list[int]],
     set[str],
     np.ndarray,
-    list[StagedRuntimeDefinition],
+    list[tuple[str, int | None, int]],
     dict[str, list[int]],
     list[tuple[int, str, int, str, int, int, int, int, tuple[int, int]]],
     list[list[tuple[int, list[tuple[float, float]]]]],
@@ -3332,7 +3289,7 @@ def _persistent_modulation(
     envelope_documents: list[str] = []
     envelope_parameters: list[tuple[int, int, bool]] = []
     named_envelfo_sources: dict[str, list[int]] = {}
-    staged_envelfos: list[StagedRuntimeDefinition] = []
+    staged_envelfos: list[tuple[str, int | None, int]] = []
     staged_bindings: dict[str, int] = {}
     staged_envelfo_sources: dict[str, list[int]] = {}
     source_scopes: set[str] = set()
@@ -3444,12 +3401,10 @@ def _persistent_modulation(
                     len(staged_envelfos)
                 )
                 staged_envelfos.append(
-                    _runtime_staged_envelfo(
-                        envelfo,
-                        sample_rate,
+                    (
+                        envelfo.model_dump_json(),
                         parameter,
                         0 if operation == modulation.Operation.add else 1,
-                        envelfo.clock == "beats",
                     )
                 )
                 continue
@@ -3528,11 +3483,7 @@ def _persistent_modulation(
         staged_envelfo_sources.setdefault(binding.reference, []).append(
             len(staged_envelfos)
         )
-        staged_envelfos.append(
-            _runtime_staged_envelfo(
-                envelfo, sample_rate, None, 0, envelfo.clock == "beats"
-            )
-        )
+        staged_envelfos.append((envelfo.model_dump_json(), None, 0))
     event_connections = [
         (
             staged_bindings[c.source],
@@ -3597,116 +3548,6 @@ def _envelfo_state_owners(count: int, *source_maps: dict[str, list[int]]) -> lis
             for index in indices[1:]:
                 owners[index] = indices[0]
     return owners
-
-
-def _runtime_named_envelope_options(
-    generator: Envelope,
-) -> tuple[
-    int, tuple[int, int], tuple[int, int], int | None, bool, tuple[bool, int, bool]
-]:
-    bounds = [
-        next(m.position for m in generator.markers if m.name == n)
-        if n is not None
-        else f
-        for n, f in (
-            (generator.loop_start, Fraction(0)),
-            (generator.loop_end, Fraction(1)),
-        )
-    ]
-    return (
-        list(PlaybackMode).index(generator.playback),
-        (bounds[0].numerator, bounds[0].denominator),
-        (bounds[1].numerator, bounds[1].denominator),
-        generator.repeat_count,
-        generator.start == "event",
-        (
-            generator.hold,
-            ("current", "initial", "ignore").index(generator.retrigger),
-            generator.polarity == "bipolar",
-        ),
-    )
-
-
-def _runtime_staged_envelfo(
-    body: Stages,
-    sample_rate: int,
-    parameter: int | None,
-    operation: int,
-    beat_clock: bool,
-) -> StagedRuntimeDefinition:
-    names = {stage.name: index for index, stage in enumerate(body.stages)}
-    stages: list[StagedRuntimeStage] = []
-    scale = 1 if beat_clock else sample_rate
-    for stage in body.stages:
-        envelfo = stage.envelfo
-        markers = [
-            ((m.position.numerator, m.position.denominator), m.name)
-            for m in envelfo.markers
-        ]
-        if isinstance(envelfo, Envelope):
-            options = _runtime_named_envelope_options(envelfo)
-            stages.append(
-                (
-                    1,
-                    0.0 if envelfo.initial == "current" else envelfo.initial,
-                    envelfo.initial == "current",
-                    _runtime_segments(envelfo.segments, scale),
-                    None,
-                    markers,
-                    options[0],
-                    options[1],
-                    options[2],
-                    envelfo.repeat_count,
-                )
-            )
-        else:
-            assert isinstance(envelfo, LFO)
-            assert isinstance(envelfo.rate, Fraction)
-            times = [
-                envelfo.rate / scale,
-                envelfo.phase,
-                envelfo.duty_cycle,
-                envelfo.delay * scale,
-                envelfo.fade_in * scale,
-            ]
-            stages.append(
-                (
-                    2,
-                    0.0,
-                    False,
-                    [],
-                    (
-                        [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                            envelfo.shape
-                        ),
-                        [(t.numerator, t.denominator) for t in times],
-                        envelfo.center,
-                        envelfo.depth,
-                    ),
-                    markers,
-                    0,
-                    (0, 1),
-                    (1, 1),
-                    None,
-                )
-            )
-    transitions: list[tuple[int, str, int]] = []
-    for transition in body.transitions:
-        target = (
-            names[transition.action.stage]
-            if isinstance(transition.action, EnterStage)
-            else len(stages)
-        )
-        for source in transition.from_stages:
-            transitions.append((names[source], transition.event, target))
-    return (
-        stages,
-        transitions,
-        names[body.initial_stage],
-        parameter,
-        operation,
-        beat_clock,
-    )
 
 
 def _waveform_angles(oscillator: Oscillator, angles: np.ndarray) -> np.ndarray:

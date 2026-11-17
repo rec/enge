@@ -2,8 +2,8 @@
 use super::controls::ControlBank;
 use super::patch_host::{PatchHost, clock_at};
 use super::{
-    BeatClockInput, PatchEventInput, StageConnectionInput, StageStartInput, StagedEnvelfoInput,
-    initial_lfo, ratio_time, valid_envelfo_owners,
+    BeatClockInput, PatchEventInput, StageConnectionInput, StageStartInput, initial_lfo,
+    ratio_time, valid_envelfo_owners,
 };
 use super::{
     BeatPoint, EnvelfoTransformInput, EnvelfoTransformRoute, LfoDefinition, LfoPlayback,
@@ -12,12 +12,8 @@ use super::{
 };
 use crate::amplitude::{frame_position, frame_time};
 use crate::error::{NativeError, NativeResult};
-use engelfo::envelope::{
-    Envelope, Initial, Marker, Playback, Retrigger, Segment as CoreSegment, Start,
-};
 use engelfo::lfo::Command;
 use engelfo::patch::{ChildCommand, PatchState, PatchStorage};
-use engelfo::stages;
 use engelfo::{lfo, time::Time};
 use numpy::PyReadonlyArray2;
 use pyo3::{exceptions::PyValueError, prelude::*};
@@ -584,149 +580,23 @@ impl GeneratorBank {
         Ok(())
     }
 
+    #[pyo3(signature = (inputs, connections, *, max_records=10000))]
     fn set_staged_envelfos(
         &mut self,
-        inputs: Vec<StagedEnvelfoInput>,
+        inputs: Vec<(String, Option<usize>, usize)>,
         connections: Vec<StageConnectionInput>,
+        max_records: usize,
     ) -> PyResult<()> {
-        let mut definitions = Vec::with_capacity(inputs.len());
-        for (inputs, transitions, initial_stage, parameter, operation, beat_clock) in inputs {
-            if inputs.is_empty()
-                || initial_stage >= inputs.len()
-                || (beat_clock && self.beat_points.is_empty())
-                || parameter.is_some_and(|p| p >= self.parameter_count)
-                || operation > 1
-                || transitions
-                    .iter()
-                    .any(|(source, _, target)| *source >= inputs.len() || *target > inputs.len())
-            {
-                return Err(PyValueError::new_err("Invalid staged Envelfo definition"));
-            }
-            let mut bodies = Vec::with_capacity(inputs.len());
-            for (
-                index,
-                (kind, initial, current, parts, lfo, markers, playback, start, end, repeats),
-            ) in inputs.into_iter().enumerate()
-            {
-                let markers = markers
-                    .into_iter()
-                    .map(|(position, name)| {
-                        Ok(Marker {
-                            name,
-                            position: ratio_time(position)?,
-                        })
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                let body = match kind {
-                    1 => {
-                        if lfo.is_some() {
-                            return Err(PyValueError::new_err("Invalid staged Envelope"));
-                        }
-                        let start = ratio_time(start)?;
-                        let end = ratio_time(end)?;
-                        stages::Body::Envelope(Envelope {
-                            initial: if current {
-                                Initial::Current
-                            } else {
-                                Initial::Value(initial)
-                            },
-                            segments: parts
-                                .into_iter()
-                                .map(|(duration, to, curve)| {
-                                    Ok(CoreSegment {
-                                        approach: None,
-                                        duration: duration.map(ratio_time).transpose()?,
-                                        to,
-                                        curve,
-                                    })
-                                })
-                                .collect::<PyResult<_>>()?,
-                            release: vec![],
-                            bipolar: true,
-                            hold: true,
-                            retrigger: Retrigger::Current,
-                            start: Start::Activation,
-                            playback: match playback {
-                                0 => Playback::Once,
-                                1 => Playback::Loop,
-                                2 => Playback::PingPong,
-                                _ => {
-                                    return Err(PyValueError::new_err(
-                                        "Invalid staged Envelope playback",
-                                    ));
-                                }
-                            },
-                            loop_bounds: if start == Time::ZERO && end == Time::ONE {
-                                None
-                            } else {
-                                Some((start, end))
-                            },
-                            repeat_count: repeats,
-                            markers: markers.clone(),
-                        })
-                    }
-                    2 => {
-                        if current || !parts.is_empty() || playback != 0 || repeats.is_some() {
-                            return Err(PyValueError::new_err("Invalid staged LFO"));
-                        }
-                        let Some((shape, times, center, depth)) = lfo else {
-                            return Err(PyValueError::new_err("Invalid staged LFO"));
-                        };
-                        let times = times
-                            .into_iter()
-                            .map(ratio_time)
-                            .collect::<NativeResult<Vec<_>>>()?;
-                        if times.len() != 5 {
-                            return Err(PyValueError::new_err("Invalid staged LFO timing"));
-                        }
-                        let mut body = lfo::LFO::new(times[0]).map_err(core_error)?;
-                        body.shape = match shape {
-                            0 => lfo::Shape::Sine,
-                            1 => lfo::Shape::Square,
-                            2 => lfo::Shape::Triangle,
-                            _ => return Err(PyValueError::new_err("Invalid staged LFO shape")),
-                        };
-                        body.phase = times[1];
-                        body.duty = times[2];
-                        body.delay = times[3];
-                        body.fade = times[4];
-                        body.center = center;
-                        body.depth = depth;
-                        stages::Body::LFO(body)
-                    }
-                    _ => return Err(PyValueError::new_err("Invalid staged Envelfo stage")),
-                };
-                bodies.push(stages::Stage {
-                    name: index.to_string(),
-                    markers: if kind == 2 { markers } else { vec![] },
-                    body,
-                });
-            }
-            let count = bodies.len();
-            let body = stages::Stages {
-                initial_stage: initial_stage.to_string(),
-                stages: bodies,
-                transitions: transitions
-                    .into_iter()
-                    .map(|(source, event, target)| stages::Transition {
-                        from: vec![source.to_string()],
-                        event,
-                        action: if target == count {
-                            stages::Action::Finish
-                        } else {
-                            stages::Action::Enter(target.to_string())
-                        },
-                    })
-                    .collect(),
-            };
-            body.validate().map_err(core_error)?;
-            definitions.push(StagedEnvelfoDefinition {
-                body,
-                parameter,
-                operation,
-                beat_clock,
-            });
-        }
+        let maximum = max_records
+            .checked_sub(connections.len())
+            .ok_or_else(|| PyValueError::new_err("Stages preparation exceeds record limit"))?;
+        let definitions = super::preparation::staged(
+            inputs,
+            self.rate,
+            self.parameter_count,
+            !self.beat_points.is_empty(),
+            maximum,
+        )?;
         let connections = connections
             .into_iter()
             .map(

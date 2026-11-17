@@ -60,7 +60,8 @@ captured approaches through a later setter. The replacement reads authored
 quantities in Rust, converts exact seconds to frames once, and retains enge's
 scope/reset policy and prepared state ownership. Named loop bounds retain the
 existing normalized native representation. Main amplitude arrays and Stages
-encoders still have consumers and must not be removed by this slice.
+encoders retained consumers at this boundary; the follow-on slices below replace
+them.
 
 The user also approved mapping uFor's valid `retrigger='reset'` to the native
 Initial policy, fixing the old encoder's lookup of the nonexistent value
@@ -79,8 +80,9 @@ preparation dependencies.
 constructs the existing engelfo bodies. `_persistent_modulation` carries JSON
 definitions alongside enge routing metadata. Synth, FM, noise, effects and sampler
 bank construction use the new interface; the old LFO rational encoder and named
-Envelope/approach/beat-flag setters are removed. Stages still use their existing
-encoder. Native stubs and callers have been updated together.
+Envelope/approach/beat-flag setters are removed. Stages initially retained their
+existing encoder and are migrated by the later slice below. Native stubs and
+callers have been updated together.
 
 The first slice retains existing seconds/beat clocks, scope/reset policy,
 SampleHold slots, shared ownership and normalized loop bounds. Named captured
@@ -138,7 +140,8 @@ state, snapshot identity checks and retirement are unchanged. Raw native arrays
 that bypassed the supported profile now fail during definition validation.
 
 The Python amplitude and captured-release encoders and native setters are removed.
-`_runtime_segments` remains only for Stages, whose migration is still pending.
+At this boundary `_runtime_segments` remained only for Stages; the subsequent
+Stages slice removes it.
 Python dependency pins and the Rust dependency set are unchanged.
 
 `test/test_amplitude_preparation.py` covers unsupported profiles, invalid portable
@@ -160,7 +163,57 @@ preparation/release tests passed again.
 
 ### 2. Stages, Patch and generator-aware bindings
 
-Extend the same boundary to Stages, SampleHold, Patch signal nodes, output
+#### Stages preparation slice
+
+The Stages body encoder is replaced by canonical JSON during native preparation.
+`GeneratorBank.set_staged_envelfos` takes `(document, optional parameter index,
+operation)` tuples plus the existing host connection records, with keyword
+`max_records=10000`. One operation counts the preparation root, route slots,
+all nested uFor records and each host connection. The existing document bounds
+also apply to the supplied JSON. This is independent of the bank constructor's
+LFO/Envelope budget.
+
+Rust uFor validates concrete Stages definitions and enge converts their child
+LFOs/Envelopes, markers, loop bounds and transitions into the existing runtime.
+Stages remain voice-scoped; beat clocks still require a prepared host clock.
+Exact quantities convert once. Public rates must already be materialized.
+Stage names remain numeric indices in native bodies, declaration and transition
+order are retained, and the host's held/Current Envelope-entry policy is preserved.
+Commands, connection scheduling, continuation storage and snapshot layout are
+unchanged. Noninitial current-value indefinite holds are supported by the shared
+model; the initial stage still cannot capture a current value.
+
+The user approved accepting valid child `retrigger='reset'` on 2026-11-17. The old
+Python encoder rejected it by looking for `initial`. This corrects acceptance;
+stage-entry playback keeps its existing fresh state and Current policy. Portable
+repeat counters use signed i64, consistently with the preceding migrations.
+
+The nested Python stage, segment and Envelope-option encoders, tuple aliases and
+old native stage-array decoder are removed. All native consumers use the new
+setter through their existing prepared bank. Python offline graph preparation
+still has live consumers and remains in place. Dependency pins are unchanged.
+
+Preparation tests cover child/schema failures, unknown transition targets,
+route metadata, time overflow, aggregate limits and overrides. The existing
+Stages playback regression now also exercises reset acceptance, named loop
+bounds, release and snapshot replay. Focused native Patch, sampler, indefinite,
+clock and mapping regressions cover the surrounding callers.
+
+Qualification on 2026-11-17 passed 3,619 Python tests with 29 optional skips under
+`--require-callback-no-allocations`. The report
+`build/rust-ufor-stages-audit.xml` records 24,703 successful and 68 failed callbacks
+with zero callback allocations, reallocations or frees. The broader native-call
+boundary retains allocations outside callbacks. Reproduce this report using the
+installed-build commands above with its path substituted. Both Rust
+allocation-audit unit tests, Clippy, Ruff, formatting, ty, pyupgrade and diff
+checks passed. Verification was local to macOS; Windows/Linux and hardware
+deadlines were not tested here.
+The ordinary extension was restored after qualification; all 19 focused Stages
+preparation/playback tests passed again.
+
+#### Remaining graph and binding work
+
+Extend the same boundary to the remaining SampleHold host setup, Patch signal nodes, output
 selection and event connections. Preserve declaration order, authored arithmetic
 order, shared-child identity, random stream identities and connection identities.
 Retain the current host's supported profiles and explicit rejection behavior.

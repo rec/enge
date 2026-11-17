@@ -1,6 +1,6 @@
 # enveLFO extraction contract and closeout evidence
 
-Updated 2026-11-17 for native uFor amplitude preparation. The original inventory and
+Updated 2026-11-17 for native uFor generator preparation. The original inventory and
 implementation history are retained in [the plan](https://github.com/rec/enge/blob/main/plan/envelfo.md).
 The standalone capability matrix, distribution checks and explicit exclusions
 are maintained in [enveLFO's audit](https://github.com/rec/envelfo/blob/main/doc/extraction-audit.md).
@@ -43,7 +43,7 @@ rather than replace, shared standalone conformance.
 
 | Capability | Python owner | Rust owner | Evidence / host boundary |
 | --- | --- | --- | --- |
-| Definitions, units and references | uFor canonical EnveLFO models | Rust uFor validates LFO, named-Envelope and main-amplitude preparation; other definitions retain host normalization | uFor conformance and enge preparation/audio tests |
+| Definitions, units and references | uFor canonical EnveLFO models | Rust uFor validates LFO, Envelope and Stages preparation; Patch host configuration retains its existing encoder | uFor conformance and enge preparation/audio tests |
 | LFO playback, rate, reset, phase and onset | enveLFO runtime | Core LFO state | Shared body traces and LFO tests; enge retains event-free sampling acceleration |
 | Finite/indefinite Envelopes, curved release and repeats | enveLFO runtime | Core Envelope state | Shared runtime/host traces and focused Envelope tests |
 | Stage transitions, cue events and entry capture | enveLFO runtime | Core Stages state | Shared body traces, command-preemption and partition tests |
@@ -64,7 +64,7 @@ remain in uFor without a runtime dependency cycle.
 ## Native uFor preparation boundary
 
 The native dependency is now the single Git-distributed `engelfo` crate. Rust
-uFor parses canonical JSON LFO, named-Envelope and main-amplitude definitions
+uFor parses canonical JSON LFO, Envelope and Stages definitions
 during preparation, then enge converts them to the existing execution definitions. Python dependency
 pins remain unchanged for this slice; their canonical generator serialization is
 accepted by the native adapter. Python authoring syntax is normalized before
@@ -92,8 +92,7 @@ their clock. Existing scope/reset policy and normalized named loop bounds remain
 host-owned. Authored reset retriggering now maps to engelfo's Initial policy.
 Named captured approaches are prepared in the same pass for synth, FM, noise and
 sampler consumers. The old LFO rational-array encoder and named-Envelope segment,
-approach and beat-flag setters are removed. Stages encoders remain pending in the
-[integration plan](../plan/rust-ufor-integration.md).
+approach and beat-flag setters are removed.
 
 Main amplitude constructors (`SynthRuntime`, its FM/noise variants, and
 `LiveRuntime.add_sample`) take canonical Envelope JSON instead of initial/segment
@@ -119,6 +118,29 @@ native-call boundary retains allocations outside callbacks. Preparation limits
 and profile rejection tests are in `test/test_amplitude_preparation.py`; existing
 amplitude, runtime and live regressions cover audio and snapshot continuation.
 See the integration plan for the installed-build audit reproduction commands.
+
+`GeneratorBank.set_staged_envelfos` takes `(JSON Stages definition, optional
+parameter index, operation)` tuples and the existing connection metadata, plus
+keyword `max_records=10000`. Its budget combines one root, route slots, all nested
+definition/stage/segment/marker/transition/reference records and each host
+connection. Document text/value/depth bounds apply as at the other preparation
+boundaries. Beat-clock Stages still require a prepared host clock.
+
+The converter preserves numeric native stage identities, transition expansion
+order, marker order, normalized loop bounds, child LFO affine values and the
+held/Current Envelope-entry policy. Valid `reset` retrigger input is now accepted;
+the old encoder looked for the nonexistent spelling `initial`. The old stage
+tuples, Python segment/option encoders and native array decoder are removed.
+Connection scheduling, commands, retained state and snapshot layout remain
+unchanged. Patch and generator-aware binding integration remain in the
+[integration plan](../plan/rust-ufor-integration.md).
+
+Stages preparation qualification passed 3,619 Python tests with 29 optional
+skips. The 24,703 successful and 68 failed callbacks recorded zero callback heap
+operations. The generated report is `build/rust-ufor-stages-audit.xml`.
+`test/test_stages_preparation.py` covers portable preparation boundaries; the
+expanded runtime regression covers reset acceptance with loop bounds, release
+and snapshot replay. Local qualification used macOS.
 
 JSON parsing, validation and conversion allocate only during preparation. They
 are not called from audio processing. `test/test_generator_preparation.py`

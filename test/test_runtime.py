@@ -656,8 +656,9 @@ def test_envelope_playback_and_immediate_release_match_persistent_native(
 
 @pytest.mark.parametrize("playback", ["loop", "ping_pong"])
 @pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize("retrigger", ["current", "reset"])
 def test_staged_envelope_playback_and_release_match_persistent_native(
-    tmp_path: Path, playback: str, named: bool
+    tmp_path: Path, playback: str, named: bool, retrigger: str
 ) -> None:
     raw = lfo_score("synth", "voice").model_dump(mode="json")
     raw["body"]["voices"][0]["envelfos"]["envelfo"] = {
@@ -669,6 +670,7 @@ def test_staged_envelope_playback_and_release_match_persistent_native(
                 "envelfo": {
                     "kind": "envelope",
                     "playback": playback,
+                    "retrigger": retrigger,
                     "segments": [{"duration": "1/4 s", "to": 1, "curve": 5}],
                     "markers": [{"name": "quarter", "position": "1/4"}],
                 },
