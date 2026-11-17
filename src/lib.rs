@@ -196,6 +196,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fm::render_fm, module)?)?;
     module.add_function(wrap_pyfunction!(fm::render_graph_fm, module)?)?;
     module.add_function(wrap_pyfunction!(noise::render_noise, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        runtime::preparation::bindings::validate_generator_bindings,
+        module
+    )?)?;
     module.add_class::<live::LiveRuntime>()?;
     module.add_class::<effects::runtime::EffectRuntime>()?;
     module.add_class::<live::LiveRuntimeSnapshot>()?;

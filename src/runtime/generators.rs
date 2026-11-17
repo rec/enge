@@ -1,6 +1,7 @@
 //! Shared prepared generator state and modulation for native source engines.
 use super::controls::ControlBank;
 use super::patch_host::{PatchHost, clock_at};
+use super::preparation::patch::{Detectors, GeneratorSlots, PreparedPatch, TransformMaps};
 use super::{
     BeatClockInput, PatchEventInput, StageConnectionInput, StageStartInput, initial_lfo,
     ratio_time, valid_envelfo_owners,
@@ -632,22 +633,19 @@ impl GeneratorBank {
         Ok(())
     }
 
-    fn set_sample_hold_envelfos(
-        &mut self,
-        definitions: Vec<(usize, u64, f64, f64)>,
-    ) -> PyResult<()> {
-        if definitions.iter().any(|(source, _, minimum, maximum)| {
+    fn set_sample_hold_keys(&mut self, definitions: Vec<(usize, u64)>) -> PyResult<()> {
+        if definitions.iter().any(|(source, _)| {
             *source >= self.named_envelopes.len()
-                || !minimum.is_finite()
-                || !maximum.is_finite()
-                || !(-1.0..=1.0).contains(minimum)
-                || !(-1.0..=1.0).contains(maximum)
-                || minimum > maximum
+                || self.named_envelopes[*source].sample_hold.is_none()
         }) {
             return Err(PyValueError::new_err("Invalid sample-and-hold definition"));
         }
-        for (source, key, minimum, maximum) in definitions {
-            self.named_envelopes[source].sample_hold = Some((key, minimum, maximum));
+        for (source, key) in definitions {
+            self.named_envelopes[source]
+                .sample_hold
+                .as_mut()
+                .expect("validated SampleHold slot")
+                .0 = key;
         }
         Ok(())
     }
@@ -673,7 +671,45 @@ impl GeneratorBank {
         Ok(())
     }
 
-    fn set_envelfo_transforms(
+    #[pyo3(signature = (context, generators, slots, targets, orders, *, max_records=10000))]
+    fn configure_patches(
+        &mut self,
+        context: String,
+        generators: Vec<(String, String)>,
+        slots: GeneratorSlots,
+        targets: Vec<(String, String, usize)>,
+        orders: Vec<(String, Vec<String>)>,
+        max_records: usize,
+    ) -> PyResult<(Detectors, TransformMaps)> {
+        let PreparedPatch {
+            nodes,
+            routes,
+            events,
+            starts,
+            thresholds,
+            detectors,
+            mappings,
+        } = PreparedPatch::prepare(
+            self,
+            &context,
+            &generators,
+            slots,
+            targets,
+            orders,
+            max_records,
+        )?;
+        let mut prepared = self.clone();
+        prepared.configure_transforms(nodes, routes)?;
+        prepared.configure_events(events)?;
+        prepared.configure_stage_starts(starts)?;
+        prepared.configure_thresholds(thresholds)?;
+        *self = prepared;
+        Ok((detectors, mappings))
+    }
+}
+
+impl GeneratorBank {
+    fn configure_transforms(
         &mut self,
         nodes: Vec<EnvelfoTransformInput>,
         routes: Vec<EnvelfoTransformRoute>,
@@ -715,7 +751,7 @@ impl GeneratorBank {
         Ok(())
     }
 
-    fn set_patch_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
+    fn configure_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
         if connections.iter().any(
             |(source, marker, destination, cue, _, every, _, probability, _, delay, capture)| {
                 *every == 0
@@ -784,7 +820,7 @@ impl GeneratorBank {
         Ok(())
     }
 
-    fn set_patch_stage_starts(&mut self, connections: Vec<StageStartInput>) -> PyResult<()> {
+    fn configure_stage_starts(&mut self, connections: Vec<StageStartInput>) -> PyResult<()> {
         if connections.iter().any(
             |(source, port, destination, _, every, _, probability, _, delay, capture)| {
                 *source >= self.staged_envelfos.len()
@@ -842,7 +878,7 @@ impl GeneratorBank {
         Ok(())
     }
 
-    fn set_threshold_events(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
+    fn configure_thresholds(&mut self, connections: Vec<PatchEventInput>) -> PyResult<()> {
         if connections.iter().any(
             |(source, marker, destination, cue, _, every, _, probability, _, delay, capture)| {
                 *source >= self.envelfo_transforms.len()

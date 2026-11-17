@@ -736,7 +736,7 @@ class PersistentSampler(OfflineSampler):
                     controls[:, 2] + filter_offset - 2,
                 )
                 rows.append(controls)
-                events.update({len(names) + i: k for i, k in prepared[-1].items()})
+                events.update({len(names) + i: k for i, k in prepared[19].items()})
                 smoothing.extend(prepared[1])
                 parameters[group * 6 : group * 6 + 6] = prepared[2][:6]
                 parameters.extend(prepared[2][6:])
@@ -755,7 +755,7 @@ class PersistentSampler(OfflineSampler):
                 )
                 scopes.extend(prepared[4])
                 names.extend(prepared[5])
-                maps.extend(prepared[-2][0])
+                maps.extend(prepared[18][0])
             source = self.native_sources[slot.name]
             fades = []
             for fade in slot.crossfades:

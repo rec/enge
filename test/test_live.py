@@ -656,7 +656,7 @@ def test_native_sample_generators_follow_audible_start_and_snapshot(
         ],
         [(0, 1, False)] * 2,
     )
-    generators.set_sample_hold_envelfos([(1, 123, 0.5, 1.0)])
+    generators.set_sample_hold_keys([(1, 123)])
     identity = (0, [(0.0, 0.0), (1.0, 1.0)])
     maps = [[identity], [identity, identity], [], []]
     controls = np.array([[0.25, 0, 0, 0, 0, 1]], dtype=np.float64)
@@ -762,7 +762,7 @@ def test_native_sample_generators_follow_audible_start_and_snapshot(
         restored.restore(snapshot)
         replay = render(restored, source, frame, 48000, 257)
         np.testing.assert_array_equal(replay, actual[frame:])
-    generators.set_sample_hold_envelfos([(1, 123, 0.25, 0.75)])
+    generators.set_sample_hold_keys([(1, 124)])
     incompatible, _ = make_runtime()
     with pytest.raises(ValueError, match="different live sample source"):
         incompatible.restore(sounding)

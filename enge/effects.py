@@ -2211,7 +2211,6 @@ def configure_native_generators(
     if not graph.bindings:
         return
     parameters = graph.modulation.parameters
-    indices = {(p.target.name, p.target.parameter): i for i, p in enumerate(parameters)}
     prepared = synth._persistent_modulation(
         definition.sample_rate,
         {},
@@ -2234,7 +2233,6 @@ def configure_native_generators(
         graph,
         prepared,
         definition.tempo_map,
-        indices,
     )
     routes = sorted(
         definition.definition.modulation.routes, key=lambda r: (r.source, r.name)

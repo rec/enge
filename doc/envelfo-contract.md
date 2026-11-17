@@ -43,7 +43,7 @@ rather than replace, shared standalone conformance.
 
 | Capability | Python owner | Rust owner | Evidence / host boundary |
 | --- | --- | --- | --- |
-| Definitions, units and references | uFor canonical EnveLFO models | Rust uFor validates LFO, Envelope and Stages preparation; Patch host configuration retains its existing encoder | uFor conformance and enge preparation/audio tests |
+| Definitions, units and references | uFor canonical EnveLFO models | Rust uFor validates generator and binding declarations; enge compiles Patch configuration from those typed definitions | uFor conformance and enge preparation/audio tests |
 | LFO playback, rate, reset, phase and onset | enveLFO runtime | Core LFO state | Shared body traces and LFO tests; enge retains event-free sampling acceleration |
 | Finite/indefinite Envelopes, curved release and repeats | enveLFO runtime | Core Envelope state | Shared runtime/host traces and focused Envelope tests |
 | Stage transitions, cue events and entry capture | enveLFO runtime | Core Stages state | Shared body traces, command-preemption and partition tests |
@@ -132,8 +132,7 @@ held/Current Envelope-entry policy. Valid `reset` retrigger input is now accepte
 the old encoder looked for the nonexistent spelling `initial`. The old stage
 tuples, Python segment/option encoders and native array decoder are removed.
 Connection scheduling, commands, retained state and snapshot layout remain
-unchanged. Patch and generator-aware binding integration remain in the
-[integration plan](../plan/rust-ufor-integration.md).
+unchanged.
 
 Stages preparation qualification passed 3,619 Python tests with 29 optional
 skips. The 24,703 successful and 68 failed callbacks recorded zero callback heap
@@ -141,6 +140,42 @@ operations. The generated report is `build/rust-ufor-stages-audit.xml`.
 `test/test_stages_preparation.py` covers portable preparation boundaries; the
 expanded runtime regression covers reset acceptance with loop bounds, release
 and snapshot replay. Local qualification used macOS.
+
+`GeneratorBank.configure_patches` prepares Patch operators, selected output routes
+and marker/stage/threshold events from canonical generator documents and the real
+modulation/binding/control/event declarations. Separate metadata supplies bank
+slots, parameter indices and the legacy node order. This private preparation
+context is not a full SoundSettings/ModulationSettings decoder or a score format.
+Named generator text remains ordered and uses the typed parser; other declarations
+reuse uFor's bounded `codec::parse_value` adapter.
+
+`max_records=10000` covers shared declarations, generator occurrences and host
+layout/index references together. The override reaches embedded modulation and
+generator bodies. Aggregate text and per-document value/depth bounds also apply.
+Generator-aware checks reject unresolved generator, follower and event facts.
+Python retains processor-target validation; an available native parameter index
+does not establish full processor capability/domain compatibility.
+
+Node and input order, event-category order, stream identities, frame delays,
+threshold offsets and shared owner maps retain their previous meaning. Native
+configuration commits only after all indexed-plan/profile checks succeed.
+SampleHold ranges come from its canonical definition; its host setter now accepts
+only stream keys. Old Python Patch operator/event encoders and public native
+transform/event setters are removed. The Python offline graph adapter and host
+Patch-output/source/index materialization retain their consumers.
+
+Synth, effects and sampler use the full configuration operation. FM/noise keep
+their current supported profiles and run the same generator-aware checks before
+their existing native preparation. Further integration work is tracked in the
+[integration plan](../plan/rust-ufor-integration.md).
+
+Patch/binding qualification passed 3,628 Python tests with 29 optional skips. The
+24,703 successful and 68 failed callbacks recorded zero callback allocations,
+reallocations or frees. The broader native-call boundary retains allocations
+outside callbacks. `test/test_patch_preparation.py` checks unresolved requirements,
+host layout order, combined budgets and failure without mutation; the existing
+audio and continuation suites cover the consumers. The generated report is
+`build/rust-ufor-patch-audit.xml`; see the integration plan for reproduction.
 
 JSON parsing, validation and conversion allocate only during preparation. They
 are not called from audio processing. `test/test_generator_preparation.py`

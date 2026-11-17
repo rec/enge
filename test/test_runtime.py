@@ -35,10 +35,13 @@ def test_native_generator_configuration_is_owned_by_each_runtime(
             [],
             [
                 envelfo.Envelope(
+                    segments=[Segment(duration=0, to=0)]
+                ).model_dump_json(),
+                envelfo.Envelope(
                     initial=gain, segments=[Segment(duration=0, to=gain)]
-                ).model_dump_json()
+                ).model_dump_json(),
             ],
-            [(0, 1, False)],
+            [(1, 0, False), (0, 1, False)],
         )
         runtimes.append(
             _native.SynthRuntime(
@@ -60,8 +63,8 @@ def test_native_generator_configuration_is_owned_by_each_runtime(
                 1,
             )
         )
-        runtimes[-1].set_route_maps(2, [(0, [(0.0, 0.0), (1.0, 1.0)])])
-        generators.set_sample_hold_envelfos([(0, 0, 0.0, 0.0)])
+        runtimes[-1].set_route_maps(2, [(0, [(0.0, 0.0), (1.0, 1.0)])] * 2)
+        generators.set_envelfo_state_owners([], [0, 0], [])
     starts = np.array([[0, 0, 0, 220, 1, 0]], dtype=np.float64)
     actual = np.concatenate(
         [r.process_actions(48000, 0, 1, 0, starts) for r in runtimes], axis=1

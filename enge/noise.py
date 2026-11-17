@@ -389,6 +389,7 @@ class PersistentNoise(synth.PersistentSynth):
         prepared = synth._persistent_modulation(
             shared.sample_rate, shared.instrument.controls, template, source_parameters
         )
+        _native.validate_generator_bindings(prepared[20], prepared[21])
         (
             controls,
             smoothing,
@@ -410,7 +411,7 @@ class PersistentNoise(synth.PersistentSynth):
             event_connections,
             route_maps,
             self.event_bindings,
-        ) = prepared
+        ) = prepared[:20]
         if "velocity" in self.event_bindings.values():
             self.source_scopes.add("trigger")
         self.trigger_velocities: dict[int, float | None] = {}
@@ -425,7 +426,7 @@ class PersistentNoise(synth.PersistentSynth):
             envelope_documents,
             envelope_parameters,
         )
-        synth._configure_sample_hold_envelfos(
+        synth._configure_sample_hold_keys(
             generators, template, self.named_envelfo_sources
         )
         generators.set_staged_envelfos(staged_envelfos, event_connections)

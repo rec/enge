@@ -1,4 +1,7 @@
 //! Preparation-only conversion from validated uFor definitions to engine plans.
+pub(crate) mod bindings;
+pub(crate) mod patch;
+
 use super::{LfoDefinition, NamedEnvelopeDefinition, StagedEnvelfoDefinition, core_error};
 use crate::amplitude::{Amplitude, frame_time};
 use engelfo::envelope;

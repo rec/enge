@@ -8,6 +8,13 @@ from .effect_controls import EffectControlPlan
 
 class SynthRuntimeSnapshot: ...
 
+def validate_generator_bindings(
+    context: str,
+    generators: list[tuple[str, str]],
+    *,
+    max_records: int = 10000,
+) -> None: ...
+
 class RubberBandLiveShifter:
     def __init__(self, sample_rate: int, channels: int, pitch: float) -> None: ...
     @property
@@ -201,61 +208,25 @@ class GeneratorBank:
         *,
         max_records: int = 10000,
     ) -> None: ...
-    def set_sample_hold_envelfos(
-        self, definitions: list[tuple[int, int, float, float]]
-    ) -> None: ...
+    def set_sample_hold_keys(self, definitions: list[tuple[int, int]]) -> None: ...
     def set_envelfo_state_owners(
         self, lfos: list[int], envelopes: list[int], stages: list[int]
     ) -> None: ...
-    def set_envelfo_transforms(
+    def configure_patches(
         self,
-        nodes: list[
-            tuple[int, list[tuple[int, int, float, float]], float, float, float | None]
+        context: str,
+        generators: list[tuple[str, str]],
+        slots: tuple[
+            list[tuple[str, int]], list[tuple[str, int]], list[tuple[str, int]]
         ],
-        routes: list[tuple[int, int, int]],
-    ) -> None: ...
-    def set_patch_events(
-        self,
-        connections: list[
-            tuple[
-                int,
-                tuple[int, int],
-                int,
-                str | None,
-                int,
-                int,
-                int,
-                int,
-                int,
-                tuple[int, int],
-                bool,
-            ]
-        ],
-    ) -> None: ...
-    def set_patch_stage_starts(
-        self,
-        connections: list[
-            tuple[int, str, int, int, int, int, int, int, tuple[int, int], bool]
-        ],
-    ) -> None: ...
-    def set_threshold_events(
-        self,
-        connections: list[
-            tuple[
-                int,
-                tuple[int, int],
-                int,
-                str | None,
-                int,
-                int,
-                int,
-                int,
-                int,
-                tuple[int, int],
-                bool,
-            ]
-        ],
-    ) -> None: ...
+        targets: list[tuple[str, str, int]],
+        orders: list[tuple[str, list[str]]],
+        *,
+        max_records: int = 10000,
+    ) -> tuple[
+        list[tuple[tuple[str, str], int]],
+        list[tuple[int, list[tuple[float, float]]]],
+    ]: ...
 
 class SynthRuntime:
     def set_route_maps(

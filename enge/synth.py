@@ -1,5 +1,6 @@
 """Offline rendering for Ufor's oscillator synth profile."""
 
+import json
 from collections.abc import Callable, Collection, Iterable
 from fractions import Fraction
 from functools import cached_property
@@ -1869,7 +1870,7 @@ class PersistentSynth:
             event_connections,
             route_maps,
             self.event_bindings,
-        ) = prepared
+        ) = prepared[:20]
         if "velocity" in self.event_bindings.values():
             self.source_scopes.add("trigger")
         self.trigger_velocities: dict[int, float | None] = {}
@@ -2652,7 +2653,7 @@ def _runtime_event_delay(seconds: Fraction, sample_rate: int) -> tuple[int, int]
     return frames.numerator, frames.denominator
 
 
-def _configure_sample_hold_envelfos(
+def _configure_sample_hold_keys(
     runtime: _native.GeneratorBank,
     settings: processing.ModulationSettings,
     sources: dict[str, list[int]],
@@ -2661,246 +2662,12 @@ def _configure_sample_hold_envelfos(
         (
             i,
             envelfo_random.stream_key(0, name + ":sample-hold"),
-            body.minimum,
-            body.maximum,
         )
         for name, indices in sources.items()
-        if isinstance((body := settings.envelfos[name]), SampleHold)
+        if isinstance(settings.envelfos[name], SampleHold)
         for i in indices
     ]
-    runtime.set_sample_hold_envelfos(definitions)
-
-
-def _configure_patch_transforms(
-    runtime: _native.GeneratorBank,
-    template: processing.ModulationSettings,
-    lfos: dict[str, list[int]],
-    envelopes: dict[str, list[int]],
-    stages: dict[str, list[int]],
-    rate: int,
-    parameter_indices: dict[tuple[str, str], int] | None = None,
-) -> tuple[dict[tuple[str, str], int], list[tuple[int, list[tuple[float, float]]]]]:
-    nodes: list[
-        tuple[int, list[tuple[int, int, float, float]], float, float, float | None]
-    ] = []
-    outputs: dict[tuple[str, str], int] = {}
-    detectors: dict[tuple[str, str], int] = {}
-    for parent_name, parent in template.envelfos.items():
-        if not isinstance(parent, Patch):
-            continue
-        children: dict[str, tuple[int, int, float, float]] = {}
-        for name in parent.signal_order:
-            body = parent.envelfos[name]
-            reference = f"patch-{parent_name}-{name}"
-            if isinstance(body, LFO) and reference in lfos:
-                children[name] = (0, lfos[reference][0], body.center, body.depth)
-            elif isinstance(body, (Envelope, SampleHold)) and reference in envelopes:
-                children[name] = (1, envelopes[reference][0], 0.0, 1.0)
-            elif isinstance(body, Stages) and reference in stages:
-                children[name] = (2, stages[reference][0], 0.0, 1.0)
-            elif isinstance(
-                body, (Sum, Product, Affine, Quantize, Latch, Threshold, Slew)
-            ):
-                inputs = (
-                    [body.input]
-                    if isinstance(body, (Affine, Quantize, Latch, Threshold, Slew))
-                    else body.inputs
-                )
-                if any(n not in children for n in inputs):
-                    continue
-                children[name] = (3, len(nodes), 0.0, 1.0)
-                if isinstance(body, (Threshold, Latch)):
-                    detectors[parent_name, name] = len(nodes)
-                nodes.append(
-                    (
-                        6
-                        if isinstance(body, Latch)
-                        else 5
-                        if isinstance(body, Quantize)
-                        else 4
-                        if isinstance(body, Slew)
-                        else 3
-                        if isinstance(body, Threshold)
-                        else 2
-                        if isinstance(body, Affine)
-                        else 0
-                        if isinstance(body, Sum)
-                        else 1,
-                        [children[n] for n in inputs],
-                        body.step
-                        if isinstance(body, Quantize)
-                        else body.rise * float(Fraction(1, rate))
-                        if isinstance(body, Slew)
-                        else body.lower
-                        if isinstance(body, Threshold)
-                        else body.scale
-                        if isinstance(body, Affine)
-                        else 1.0,
-                        body.origin
-                        if isinstance(body, Quantize)
-                        else body.fall * float(Fraction(1, rate))
-                        if isinstance(body, Slew)
-                        else body.upper
-                        if isinstance(body, Threshold)
-                        else body.offset
-                        if isinstance(body, Affine)
-                        else 0.0,
-                        body.initial if isinstance(body, Slew) else None,
-                    )
-                )
-        for output, name in parent.outputs.items():
-            if (
-                name in children
-                and children[name][0] != 3
-                and any(
-                    isinstance(b, (Latch, Threshold, Slew))
-                    for b in parent.envelfos.values()
-                )
-            ):
-                nodes.append((2, [children[name]], 1.0, 0.0, None))
-                outputs[parent_name, output] = len(nodes) - 1
-            if name in children and children[name][0] == 3:
-                outputs[parent_name, output] = children[name][1]
-    parameters = {("processing", "amplitude"): 0, ("processing", "tuning_cents"): 1}
-    if parameter_indices is not None:
-        parameters = parameter_indices.copy()
-    for i, body in enumerate(
-        template.processing.filters if isinstance(template, SoundSettings) else []
-    ):
-        parameters[f"filter-{body.name}", "cutoff_hz"] = 2 + 2 * i
-        parameters[f"filter-{body.name}", "q"] = 3 + 2 * i
-    routes: list[tuple[int, int, int]] = []
-    bindings = {b.name: b for b in template.bindings}
-    mappings: list[tuple[int, list[tuple[float, float]]]] = []
-    for route in sorted(template.modulation.routes, key=lambda r: (r.source, r.name)):
-        binding = bindings[route.source]
-        if (
-            not isinstance(binding, processing.GeneratorBinding)
-            or binding.output is None
-        ):
-            continue
-        routes.append(
-            (
-                outputs[binding.reference, binding.output],
-                parameters[route.target.name, route.target.parameter],
-                0 if route.operation == modulation.Operation.add else 1,
-            )
-        )
-        mappings.append(
-            (
-                [
-                    modulation.Interpolation.linear,
-                    modulation.Interpolation.step,
-                    modulation.Interpolation.exponential,
-                ].index(route.interpolation),
-                [(float(p.input), float(p.amount)) for p in route.points],
-            )
-        )
-    runtime.set_envelfo_transforms(nodes, routes)
-    return detectors, mappings
-
-
-def _threshold_runtime_connections(
-    template: processing.ModulationSettings,
-    envelopes: dict[str, list[int]],
-    stages: dict[str, list[int]],
-    nodes: dict[tuple[str, str], int],
-    rate: int,
-) -> list[
-    tuple[
-        int,
-        tuple[int, int],
-        int,
-        str | None,
-        int,
-        int,
-        int,
-        int,
-        int,
-        tuple[int, int],
-        bool,
-    ]
-]:
-    result: list[
-        tuple[
-            int,
-            tuple[int, int],
-            int,
-            str | None,
-            int,
-            int,
-            int,
-            int,
-            int,
-            tuple[int, int],
-            bool,
-        ]
-    ] = []
-    bindings = {b.name: b for b in template.bindings}
-    for (parent_name, child), node in nodes.items():
-        parent = template.envelfos[parent_name]
-        assert isinstance(parent, Patch)
-        if not isinstance(parent.envelfos[child], Threshold):
-            continue
-        for order, connection in enumerate(parent.events):
-            origin, _, port = connection.source.partition(".")
-            if origin != child:
-                continue
-            target = f"patch-{parent_name}-{connection.target}"
-            cue = connection.cue
-            capture = connection.action == "capture"
-            result.append(
-                (
-                    node,
-                    (int(port == "rising"), 1),
-                    nodes[parent_name, connection.target]
-                    if capture
-                    else (stages if cue is not None else envelopes)[target][0],
-                    cue,
-                    order,
-                    connection.every,
-                    connection.offset,
-                    int(connection.probability * 2**53),
-                    envelfo_random.stream_key(
-                        0,
-                        f"{parent_name}:capture-{connection.target}-{order}"
-                        if capture
-                        else f"{target}:"
-                        f"{'cue' if cue is not None else 'start'}-{order}",
-                    ),
-                    _runtime_event_delay(connection.delay + Fraction(1, rate), rate),
-                    capture,
-                )
-            )
-        for order, connection in enumerate(template.event_connections):
-            binding = bindings[connection.source]
-            if (
-                not isinstance(binding, processing.GeneratorBinding)
-                or binding.reference != parent_name
-            ):
-                continue
-            origin, _, port = parent.event_outputs[connection.port].partition(".")
-            if origin != child:
-                continue
-            target_binding = bindings[connection.destination]
-            assert isinstance(target_binding, processing.GeneratorBinding)
-            target = target_binding.reference
-            result.append(
-                (
-                    node,
-                    (int(port == "rising"), 1),
-                    stages[target][0],
-                    connection.cue,
-                    order,
-                    connection.every,
-                    connection.offset,
-                    int(connection.probability * 2**53),
-                    envelfo_random.stream_key(0, f"{target}:cue-{order}"),
-                    _runtime_event_delay(connection.delay + Fraction(1, rate), rate),
-                    False,
-                )
-            )
-    return result
+    runtime.set_sample_hold_keys(definitions)
 
 
 PersistentModulation = tuple[
@@ -2924,6 +2691,9 @@ PersistentModulation = tuple[
     list[tuple[int, str, int, str, int, int, int, int, tuple[int, int]]],
     list[list[tuple[int, list[tuple[float, float]]]]],
     dict[int, str],
+    str,
+    list[tuple[str, str]],
+    list[tuple[str, str, int]],
 ]
 
 
@@ -2946,7 +2716,6 @@ def _prepare_native_generators(
     template: processing.ModulationSettings,
     prepared: PersistentModulation,
     tempo_map: TempoMap | None = None,
-    parameter_indices: dict[tuple[str, str], int] | None = None,
 ) -> tuple[
     _native.GeneratorBank,
     dict[tuple[str, str], int],
@@ -2972,7 +2741,7 @@ def _prepare_native_generators(
         envelope_documents,
         envelope_parameters,
     )
-    _configure_sample_hold_envelfos(generators, template, named_envelfo_sources)
+    _configure_sample_hold_keys(generators, template, named_envelfo_sources)
     if tempo_map is not None:
         generators.set_beat_clock(
             [
@@ -2998,140 +2767,22 @@ def _prepare_native_generators(
         )
     generators.set_staged_envelfos(staged_envelfos, event_connections)
     _configure_generator_owners(generators, prepared)
-    patch_events: list[
-        tuple[
-            int,
-            tuple[int, int],
-            int,
-            str | None,
-            int,
-            int,
-            int,
-            int,
-            int,
-            tuple[int, int],
-            bool,
-        ]
-    ] = []
-    transform_nodes, transform_maps = _configure_patch_transforms(
-        generators,
-        template,
-        lfo_sources | voice_lfo_sources,
-        named_envelfo_sources,
-        staged_envelfo_sources,
-        rate,
-        parameter_indices,
+    transform_nodes, transform_maps = generators.configure_patches(
+        prepared[20],
+        prepared[21],
+        (
+            [(n, v[0]) for n, v in (lfo_sources | voice_lfo_sources).items()],
+            [(n, v[0]) for n, v in named_envelfo_sources.items()],
+            [(n, v[0]) for n, v in staged_envelfo_sources.items()],
+        ),
+        prepared[22],
+        [
+            (n, v.signal_order)
+            for n, v in template.envelfos.items()
+            if isinstance(v, Patch)
+        ],
     )
-    patch_stage_starts: list[
-        tuple[int, str, int, int, int, int, int, int, tuple[int, int], bool]
-    ] = []
-    for parent_name, parent in template.envelfos.items():
-        if not isinstance(parent, Patch):
-            continue
-        if (
-            parent.events
-            and f"patch-{parent_name}-{parent.events[0].target}"
-            not in template.envelfos
-            and not any(
-                isinstance(b, processing.GeneratorBinding)
-                and b.reference == parent_name
-                for b in template.bindings
-            )
-        ):
-            continue
-        for order, connection in enumerate(parent.events):
-            if connection.action not in ("start", "sample", "capture"):
-                continue
-            child_name, _, port = connection.source.partition(".")
-            child = parent.envelfos[child_name]
-            if isinstance(child, Threshold):
-                continue
-            capture = connection.action == "capture"
-            destination = (
-                transform_nodes[parent_name, connection.target]
-                if capture
-                else named_envelfo_sources[f"patch-{parent_name}-{connection.target}"][
-                    0
-                ]
-            )
-            key = envelfo_random.stream_key(
-                0,
-                f"{parent_name}:capture-{connection.target}-{order}"
-                if capture
-                else f"patch-{parent_name}-{connection.target}:start-{order}",
-            )
-            if isinstance(child, LFO):
-                marker = next(m.position for m in child.markers if m.name == port)
-                patch_events.append(
-                    (
-                        voice_lfo_sources[f"patch-{parent_name}-{child_name}"][0],
-                        (marker.numerator, marker.denominator),
-                        destination,
-                        None,
-                        order,
-                        connection.every,
-                        connection.offset,
-                        int(connection.probability * 2**53),
-                        key,
-                        _runtime_event_delay(connection.delay, rate),
-                        capture,
-                    )
-                )
-            else:
-                assert isinstance(child, Stages)
-                patch_stage_starts.append(
-                    (
-                        staged_envelfo_sources[f"patch-{parent_name}-{child_name}"][0],
-                        port,
-                        destination,
-                        order,
-                        connection.every,
-                        connection.offset,
-                        int(connection.probability * 2**53),
-                        key,
-                        _runtime_event_delay(connection.delay, rate),
-                        capture,
-                    )
-                )
-    bindings = {binding.name: binding for binding in template.bindings}
-    for order, connection in enumerate(template.event_connections):
-        source_binding = bindings[connection.source]
-        assert isinstance(source_binding, processing.GeneratorBinding)
-        source_envelfo = template.envelfos[source_binding.reference]
-        if not isinstance(source_envelfo, LFO):
-            continue
-        marker = next(
-            m.position for m in source_envelfo.markers if m.name == connection.port
-        )
-        target_binding = bindings[connection.destination]
-        assert isinstance(target_binding, processing.GeneratorBinding)
-        patch_events.append(
-            (
-                voice_lfo_sources[source_binding.reference][0],
-                (marker.numerator, marker.denominator),
-                staged_envelfo_sources[target_binding.reference][0],
-                connection.cue,
-                len(patch_events),
-                connection.every,
-                connection.offset,
-                int(connection.probability * 2**53),
-                envelfo_random.stream_key(0, f"{target_binding.reference}:cue-{order}"),
-                _runtime_event_delay(connection.delay, rate),
-                False,
-            )
-        )
-    generators.set_patch_events(patch_events)
-    generators.set_patch_stage_starts(patch_stage_starts)
-    generators.set_threshold_events(
-        _threshold_runtime_connections(
-            template,
-            named_envelfo_sources,
-            staged_envelfo_sources,
-            transform_nodes,
-            rate,
-        )
-    )
-    return generators, transform_nodes, transform_maps
+    return generators, dict(transform_nodes), transform_maps
 
 
 def _persistent_modulation(
@@ -3538,6 +3189,20 @@ def _persistent_modulation(
         event_connections,
         route_maps,
         event_bindings,
+        json.dumps(
+            {
+                "modulation": template.modulation.model_dump(mode="json"),
+                "bindings": [b.model_dump(mode="json") for b in template.bindings],
+                "controls": {
+                    n: v.model_dump(mode="json") for n, v in declarations.items()
+                },
+                "event_connections": [
+                    c.model_dump(mode="json") for c in template.event_connections
+                ],
+            }
+        ),
+        [(n, v.model_dump_json()) for n, v in template.envelfos.items()],
+        [(n, p, i) for (n, p), (i, _) in supported.items()],
     )
 
 

@@ -211,21 +211,81 @@ deadlines were not tested here.
 The ordinary extension was restored after qualification; all 19 focused Stages
 preparation/playback tests passed again.
 
-#### Remaining graph and binding work
+#### Patch configuration and generator-aware binding preparation
 
-Extend the same boundary to the remaining SampleHold host setup, Patch signal nodes, output
-selection and event connections. Preserve declaration order, authored arithmetic
-order, shared-child identity, random stream identities and connection identities.
-Retain the current host's supported profiles and explicit rejection behavior.
+On 2026-11-17 the user approved one native Patch configuration operation with
+canonical generator JSON, existing modulation/binding/control/event declarations,
+and separate host slot/index/seed metadata. Its configurable record budget defaults
+to 10,000. Unresolved generator/follower/event requirements must fail before
+executable preparation. Full processor-target validation remains in Python.
+The user also approved preserving FM/noise's existing supported profiles, while
+applying the same generator-aware checks to them; this slice does not add their
+missing full Patch configuration path.
 
-Use uFor's generator-aware checks for supplied definitions. Resolve references
-before executable preparation; retain Python's full target/follower checks until
-the required definitions are available natively. Never treat an empty subset of
-outstanding checks as proof of complete instrument validation.
+The approved shared API prerequisite is implemented in uFor `bcef1e7`:
+`codec::parse_value` exposes the existing document-budget decoder without claiming
+domain validation or object-order retention. Enge's dependency-only commit
+`cab3a53` pins that revision. No dependency package versions or Python pins change.
+Generator bodies still pass through `parse_generator` on their original text.
+Delays outside the portable numeric domain now fail during shared declaration
+decoding with its 64-bit-domain error, before the host frame-conversion check.
+The existing overflow regressions use that shared error wording.
 
-Replace the migrated native graph encoders. Review `envelfo_graph.py` by caller:
-Python offline execution may still need its graph adapter, even after native
-preparation moves. Remove code only when all its consumers have migrated.
+`GeneratorBank.configure_patches(context, generators, slots, targets, orders,
+max_records=10000)` validates a private preparation context containing only the
+existing `modulation`, `bindings`, `controls` and `event_connections` fields.
+Named generator documents are separate ordered `(name, JSON)` entries. Slot
+metadata maps names to LFO/Envelope/Stages bank indices, target metadata supplies
+host parameter indices, and Patch child-order metadata retains the current native
+layout. The context is not a score kind, a full ModulationSettings model, or a
+new persisted document format.
+
+The operation counts all shared declaration/reference records, supplied generator
+occurrences and host layout/index records. Aggregate text and per-document
+character/value/depth bounds apply. The override reaches embedded modulation and
+generator validation. Rust checks real generator/output/range/release/port facts
+using `validate_generator_bindings`; remaining generator/follower/event checks
+are rejected. Processor targets remain checked by Python settings and the host
+profile, with native target-index lookup establishing only the prepared address.
+
+The Rust compiler constructs the existing Sum/Product/Affine/Quantize/Slew/Latch/
+Threshold plans, selected outputs, marker events, stage starts and threshold
+events. Authored input order, legacy host node order, event-category ordering,
+stream-key identities, exact frame delays and threshold frame offsets are
+retained. Host order is validated against actual dependencies rather than
+replaced with another valid topological order. Existing internal native indexed
+plan/profile checks remain; configuration uses a prepared copy and replaces the
+bank only after all checks pass. Callback execution and snapshots are unchanged.
+
+Synth, effects and sampler use this operation. Persistent FM/noise use the same
+declaration decoder and generator-aware validator before their existing bank
+construction. SampleHold ranges come only from canonical definitions;
+`set_sample_hold_keys` supplies host stream keys without duplicating range input.
+The old Python Patch operator/event encoders and their public native setters are
+removed. The single Python host parameter-index map is reused for Patch routes.
+
+`envelfo_graph.py`, Patch-output materialization, source/owner indices and the
+generic Stage-to-Stage connection metadata remain Python host work with live
+offline/FM/noise consumers. They are not parallel native Patch decoders and are
+not removed by this slice. Full target/settings validation, modulation-route
+preparation and tuning adoption remain in their later stages.
+
+New preparation cases cover unresolved declarations, explicit layout order,
+aggregate budget boundaries and overrides through both generator and modulation
+bodies, plus rejected configuration without mutation. Existing Patch/Threshold/
+Latch/SampleHold, sample, effect and continuation regressions qualify the migrated
+consumers.
+
+Qualification on 2026-11-17 passed 3,628 Python tests with 29 optional skips under
+`--require-callback-no-allocations`. The generated report
+`build/rust-ufor-patch-audit.xml` records 24,703 successful and 68 failed callbacks
+with zero callback allocations, reallocations or frees. The broader native-call
+boundary retains allocations outside callbacks. Reproduce this run with the
+installed-build commands above and this report path. Both Rust allocation-audit
+tests, Clippy, Ruff, formatting, ty, pyupgrade and diff checks passed. Verification
+was local to macOS; Windows/Linux and hardware deadlines were not tested here.
+The ordinary extension was restored and all 20 focused preparation, delay-limit,
+SampleHold continuation and bank-ownership tests passed again.
 
 ### 3. Modulation preparation and mathematics
 
