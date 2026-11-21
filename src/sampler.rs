@@ -7,9 +7,63 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use ufor::codec::{self, Format};
+use ufor::identifier::Identifier;
 use ufor::samples::crossfade::Crossfade;
 use ufor::samples::eligibility::Eligibility;
 use ufor::samples::playback::{Direction, LoopMode, Mapping, ResolvedSlotPlayback};
+use ufor::samples::variation::DrawEvent;
+
+#[pyfunction]
+#[pyo3(signature = (seed, part, trigger_id, tick, ordinal))]
+pub(crate) fn draw_sample_range(
+    seed: u64,
+    part: String,
+    trigger_id: Option<String>,
+    tick: i64,
+    ordinal: u64,
+) -> PyResult<f64> {
+    let event = sample_draw_event(seed, part, trigger_id, tick, ordinal)?;
+    Ok(event.random_range_value())
+}
+
+#[pyfunction]
+#[pyo3(signature = (document, seed, part, trigger_id, tick, ordinal, identity))]
+pub(crate) fn resolve_sample_variation(
+    document: &str,
+    seed: u64,
+    part: String,
+    trigger_id: Option<String>,
+    tick: i64,
+    ordinal: u64,
+    identity: String,
+) -> PyResult<String> {
+    let event = sample_draw_event(seed, part, trigger_id, tick, ordinal)?;
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let variation = codec::parse_sample_variation(document, Format::Json).map_err(invalid)?;
+    let identity = Identifier::new(identity).map_err(invalid)?;
+    let variation = variation.resolve(&event, &identity).map_err(invalid)?;
+    serde_json::to_string(&variation).map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+fn sample_draw_event(
+    seed: u64,
+    part: String,
+    trigger_id: Option<String>,
+    tick: i64,
+    ordinal: u64,
+) -> PyResult<DrawEvent> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    Ok(DrawEvent {
+        seed,
+        part: Identifier::new(part).map_err(invalid)?,
+        trigger_id: trigger_id
+            .map(Identifier::new)
+            .transpose()
+            .map_err(invalid)?,
+        tick,
+        ordinal,
+    })
+}
 
 #[pyfunction]
 pub(crate) fn advance_sample_selection(

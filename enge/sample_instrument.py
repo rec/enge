@@ -21,6 +21,7 @@ from ufor.samples import (
     processing,
     selection,
     trace,
+    variation,
 )
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
@@ -114,7 +115,7 @@ def prepare_trace(
     *,
     max_records: int = 10_000,
 ) -> trace.SampleTrace:
-    """Prepare sampler actions with Rust uFor slot filtering and take selection."""
+    """Prepare sampler actions with Rust uFor selection and variation."""
     fields = {
         "name",
         "mapping",
@@ -141,6 +142,8 @@ def prepare_trace(
         seed,
         eligible_slots=matching_slots,
         advance_selection=_advance_selection,
+        draw_random_range=_native.draw_sample_range,
+        resolve_variation=_resolve_variation,
     )
 
 
@@ -151,6 +154,28 @@ def _advance_selection(
         definition.mode, seed, sequence.model_dump_json()
     )
     return choice, selection.SelectionSequence.model_validate_json(state)
+
+
+def _resolve_variation(
+    definition: variation.Variation,
+    seed: int,
+    part: str,
+    trigger_id: str | None,
+    tick: int,
+    ordinal: int,
+    identity: str,
+) -> variation.ResolvedVariation:
+    return variation.ResolvedVariation.model_validate_json(
+        _native.resolve_sample_variation(
+            definition.model_dump_json(),
+            seed,
+            part,
+            trigger_id,
+            tick,
+            ordinal,
+            identity,
+        )
+    )
 
 
 def prepare(

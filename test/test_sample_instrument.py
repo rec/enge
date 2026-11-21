@@ -103,6 +103,35 @@ def test_native_sample_trace_matches_take_choices_and_snapshots(mode: str) -> No
     assert sum(isinstance(a, trace.VoiceStart) for a in prepared.actions) == 10
 
 
+def test_native_sample_trace_matches_random_range_boundary_and_voice_variation() -> (
+    None
+):
+    raw = sample_score(frames=32).model_dump(mode="json")
+    boundary = 0.5724765121713156
+    slot = raw["body"]["slots"][0]
+    slot["variation"] = {
+        "delay_seconds": 0.5,
+        "offset_frames": 9,
+        "pitch_cents": 12,
+        "gain_db": 3,
+    }
+    raw["body"]["slots"] = [
+        slot | {"name": "lower", "random_range": {"maximum": boundary}},
+        slot | {"name": "upper", "random_range": {"minimum": boundary}},
+    ]
+    definition = instrument.SampleInstrumentScore.model_validate(raw).body
+    events: list[PerformanceEvent] = [
+        onset(48000, "note-a", part="piano").model_copy(
+            update={"ordinal": 7, "controls": {}}
+        )
+    ]
+    prepared = sample_instrument.prepare_trace(definition, events, seed=42)
+    assert prepared == trace.prepare(definition, events, seed=42)
+    starts = [a for a in prepared.actions if isinstance(a, trace.VoiceStart)]
+    assert [a.template for a in starts] == ["upper"]
+    assert starts[0].variation.delay_seconds > 0
+
+
 @pytest.mark.parametrize("location", ["instrument", "slot"])
 @pytest.mark.parametrize("delay", [0, 6001])
 def test_sample_patch_signal_survives_partitioned_snapshot_restore(

@@ -402,6 +402,18 @@ class SampleEligibility:
 def advance_sample_selection(
     mode: str, seed: int, document: str
 ) -> tuple[str, str]: ...
+def draw_sample_range(
+    seed: int, part: str, trigger_id: str | None, tick: int, ordinal: int
+) -> float: ...
+def resolve_sample_variation(
+    document: str,
+    seed: int,
+    part: str,
+    trigger_id: str | None,
+    tick: int,
+    ordinal: int,
+    identity: str,
+) -> str: ...
 
 class PreparedSlotPlayback:
     def __init__(self, document: str, defaults: str) -> None: ...
