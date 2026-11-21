@@ -1,5 +1,6 @@
 //! Compile canonical declarations into the host's existing indexed route tables.
 use super::bindings::Context;
+use super::fm::PreparedFm;
 use super::{exact, invalid};
 use crate::amplitude::frame_time;
 use crate::runtime::core_error;
@@ -19,7 +20,7 @@ use ufor::samples::processing::{
     SoundSettings, TargetMinimum, TargetResolution,
 };
 
-type TargetInput = (String, String, usize, Option<f64>, f64, f64);
+pub(super) type TargetInput = (String, String, usize, Option<f64>, f64, f64);
 type RouteMaps = Vec<Vec<(usize, Vec<(f64, f64)>)>>;
 type StageConnection = (
     usize,
@@ -35,7 +36,8 @@ type StageConnection = (
 
 /// Resolve authored defaults before applying renderer profile bounds and indices.
 #[pyfunction]
-#[pyo3(signature = (sample_rate, context, generators, targets, *, sound_settings=None, max_records=10000))]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (sample_rate, context, generators, targets, *, sound_settings=None, fm=None, max_records=10000))]
 pub(crate) fn prepare_modulation(
     py: Python<'_>,
     sample_rate: f64,
@@ -43,6 +45,7 @@ pub(crate) fn prepare_modulation(
     generators: Vec<(String, String)>,
     mut targets: Vec<TargetInput>,
     sound_settings: Option<&str>,
+    fm: Option<&PreparedFm>,
     max_records: usize,
 ) -> PyResult<Py<PyTuple>> {
     let rate = frame_time(sample_rate)?;
@@ -50,7 +53,28 @@ pub(crate) fn prepare_modulation(
         return Err(invalid("Invalid modulation host metadata"));
     }
     let limits = PreparationLimits::new(max_records).map_err(invalid)?;
-    let mut records = 0;
+    let mut records = fm.map_or(0, |graph| graph.records);
+    if let Some(graph) = fm {
+        if graph.rate != sample_rate
+            || sound_settings.is_none()
+            || targets.len() != 2
+            || !targets
+                .iter()
+                .zip(["amplitude", "tuning_cents"])
+                .enumerate()
+                .all(|(index, ((name, parameter, slot, default, _, _), field))| {
+                    name == "processing"
+                        && parameter == field
+                        && *slot == index
+                        && default.is_none()
+                })
+        {
+            return Err(invalid(
+                "FM requires its prepared sample rate and processing slots",
+            ));
+        }
+        targets.extend(graph.targets.iter().cloned());
+    }
     let sound = if let Some(text) = sound_settings {
         let length = generators
             .iter()
@@ -59,15 +83,19 @@ pub(crate) fn prepare_modulation(
             .flat_map(str::chars)
             .take(codec::MAX_SCORE_CHARACTERS + 1)
             .count();
-        if length > codec::MAX_SCORE_CHARACTERS {
+        if length > codec::MAX_SCORE_CHARACTERS - fm.map_or(0, |graph| graph.characters) {
             return Err(invalid("Preparation exceeds document character limit"));
         }
         let settings = codec::parse_sound_settings(text, Format::Json, limits).map_err(invalid)?;
-        records = envelfo::preparation_records(
-            &serde_json::to_value(&settings).map_err(invalid)?,
-            limits,
-        )
-        .map_err(invalid)?;
+        records = records
+            .checked_add(
+                envelfo::preparation_records(
+                    &serde_json::to_value(&settings).map_err(invalid)?,
+                    limits,
+                )
+                .map_err(invalid)?,
+            )
+            .ok_or_else(|| invalid("Preparation size overflow"))?;
         Some(settings)
     } else {
         None
@@ -120,11 +148,17 @@ pub(crate) fn prepare_modulation(
                 let settings = sound
                     .as_ref()
                     .ok_or_else(|| invalid("Missing SoundSettings for shared modulation target"))?;
-                let TargetResolution::Resolved(facts) =
-                    settings.resolve_target(&target).map_err(invalid)?
-                else {
-                    return Err(invalid("Unresolved SoundSettings target"));
-                };
+                let facts =
+                    if let Some(facts) = fm.and_then(|graph| graph.graph.resolve_target(&target)) {
+                        facts
+                    } else {
+                        let TargetResolution::Resolved(facts) =
+                            settings.resolve_target(&target).map_err(invalid)?
+                        else {
+                            return Err(invalid("Unresolved SoundSettings target"));
+                        };
+                        facts
+                    };
                 shared[*index] = Some(facts);
                 if *index >= first_filter && parameter == "cutoff_hz" {
                     facts.default_value.clamp(*minimum, *maximum)
@@ -149,7 +183,7 @@ pub(crate) fn prepare_modulation(
         if let Some(facts) = shared[*index] {
             if parameter.unit() != facts.unit || parameter.default_value() != facts.default_value {
                 return Err(invalid(
-                    "Modulation unit and default must match SoundSettings",
+                    "Modulation unit and default must match the authored setting",
                 ));
             }
             if match facts.minimum {
@@ -157,7 +191,9 @@ pub(crate) fn prepare_modulation(
                 TargetMinimum::Nonnegative => parameter.minimum() < 0.0,
                 TargetMinimum::Positive => parameter.minimum() <= 0.0,
             } {
-                return Err(invalid("Modulation domain conflicts with SoundSettings"));
+                return Err(invalid(
+                    "Modulation domain conflicts with the authored setting",
+                ));
             }
         }
         values[3 * index..3 * index + 3].copy_from_slice(&[

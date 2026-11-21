@@ -7,7 +7,7 @@ from typing import Literal, Self, cast
 import numpy as np
 from envelfo import patch
 from pydantic import ConfigDict, Field, model_validator
-from ufor import instrument_trace, modulation
+from ufor import instrument_trace
 from ufor.base import Model
 from ufor.envelfo import Envelope
 from ufor.fm import FM, edge_target_name
@@ -483,11 +483,6 @@ class PersistentFM(synth.PersistentSynth):
             raise synth.EngineError(
                 "Persistent FM spatial processing is not implemented"
             )
-        operators = template.fm.operators
-        operator_indices = {
-            operator.name: index for index, operator in enumerate(operators)
-        }
-        carrier = operator_indices[template.fm.carrier]
         route = [
             sum(r.gain for r in template.channels if r.output == c)
             for c in definition.channels
@@ -498,78 +493,7 @@ class PersistentFM(synth.PersistentSynth):
             channels=definition.channels,
             instrument=definition.score.body,
         )
-        source_parameters: list[
-            tuple[
-                tuple[str, str], int, modulation.Operation, float | None, float, float
-            ]
-        ] = [
-            (
-                ("processing", "amplitude"),
-                0,
-                modulation.Operation.multiply,
-                None,
-                0,
-                1e300,
-            ),
-            (
-                ("processing", "tuning_cents"),
-                1,
-                modulation.Operation.add,
-                None,
-                -120000,
-                120000,
-            ),
-        ]
-        operator_parameters: list[tuple[int, int]] = []
-        for operator in operators:
-            ratio = len(source_parameters)
-            source_parameters.append(
-                (
-                    (f"operator-{operator.name}", "ratio"),
-                    ratio,
-                    modulation.Operation.add,
-                    operator.ratio,
-                    np.finfo(np.float64).tiny,
-                    1e300,
-                )
-            )
-            tuning = len(source_parameters)
-            source_parameters.append(
-                (
-                    (f"operator-{operator.name}", "tuning_cents"),
-                    tuning,
-                    modulation.Operation.add,
-                    operator.tuning_cents,
-                    -120000,
-                    120000,
-                )
-            )
-            operator_parameters.append((ratio, tuning))
-        edge_parameters: list[int] = []
-        for edge in template.fm.edges:
-            parameter = len(source_parameters)
-            source_parameters.append(
-                (
-                    (f"edge-{edge_target_name(edge)}", "index"),
-                    parameter,
-                    modulation.Operation.add,
-                    edge.index,
-                    0,
-                    1e300,
-                )
-            )
-            edge_parameters.append(parameter)
-        carrier_parameter = len(source_parameters)
-        source_parameters.append(
-            (
-                ("fm", "carrier_level"),
-                carrier_parameter,
-                modulation.Operation.add,
-                template.fm.carrier_level,
-                0,
-                1e300,
-            )
-        )
+        graph = _native.PreparedFm(template.fm.model_dump_json(), rate)
         self.definition = definition.model_copy(deep=True)
         self.instrument = self.definition.score.body
         self.template = template
@@ -580,7 +504,7 @@ class PersistentFM(synth.PersistentSynth):
         self.context_capacity = context_capacity
         self._action_buffer = np.empty((action_capacity, 6), dtype=np.float64)
         prepared = synth._persistent_modulation(
-            shared.sample_rate, shared.instrument.controls, template, source_parameters
+            shared.sample_rate, shared.instrument.controls, template, fm=graph
         )
         (
             controls,
@@ -624,43 +548,8 @@ class PersistentFM(synth.PersistentSynth):
         generators.set_staged_envelfos(staged_envelfos, event_connections)
         synth._configure_generator_owners(generators, prepared)
         self.runtime = _native.SynthRuntime.fm_graph(
-            rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
-            [
-                {
-                    Waveform.sine: 0,
-                    Waveform.square: 1,
-                    Waveform.triangle: 2,
-                }[operator.waveform]
-                for operator in operators
-            ],
-            [o.envelope.model_dump_json() for o in operators],
-            [float(operator.phase_cycles) for operator in operators],
-            operator_parameters,
-            [
-                (
-                    operator_indices[edge.source],
-                    operator_indices[edge.destination],
-                    edge.delayed,
-                    parameter,
-                )
-                for edge, parameter in zip(
-                    template.fm.edges, edge_parameters, strict=True
-                )
-            ],
-            _operator_order(
-                len(operators),
-                [
-                    (
-                        operator_indices[edge.source],
-                        operator_indices[edge.destination],
-                        edge.delayed,
-                    )
-                    for edge in template.fm.edges
-                ],
-            ),
-            carrier,
-            carrier_parameter,
+            graph,
             (
                 (hold := template.minimum_hold_seconds * rate).numerator,
                 hold.denominator,

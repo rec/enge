@@ -544,18 +544,10 @@ impl SynthRuntime {
 
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (rate, routes, waveforms, envelopes, phase_offsets, parameters, edges, order, carrier, carrier_parameter, minimum_hold_frames, controls, control_smoothing, generators, filters, parameter_definitions, context_capacity, filter_after_amplitude=false, *, max_records=10000))]
+    #[pyo3(signature = (routes, graph, minimum_hold_frames, controls, control_smoothing, generators, filters, parameter_definitions, context_capacity, filter_after_amplitude=false))]
     fn fm_graph(
-        rate: f64,
         routes: PyReadonlyArray2<'_, f64>,
-        waveforms: Vec<u8>,
-        envelopes: Vec<String>,
-        phase_offsets: Vec<f64>,
-        parameters: Vec<(usize, usize)>,
-        edges: Vec<(usize, usize, bool, usize)>,
-        order: Vec<usize>,
-        carrier: usize,
-        carrier_parameter: usize,
+        graph: &preparation::fm::PreparedFm,
         minimum_hold_frames: (i64, i64),
         controls: PyReadonlyArray2<'_, f64>,
         control_smoothing: Vec<(u64, u64)>,
@@ -564,74 +556,17 @@ impl SynthRuntime {
         parameter_definitions: Vec<f64>,
         context_capacity: usize,
         filter_after_amplitude: bool,
-        max_records: usize,
     ) -> PyResult<Self> {
-        let operators = waveforms.len();
-        if !(2..=6).contains(&operators)
-            || envelopes.len() != operators
-            || phase_offsets.len() != operators
-            || parameters.len() != operators
-            || carrier >= operators
-            || carrier_parameter >= parameter_definitions.len() / 3
-            || waveforms.iter().any(|v| *v > 2)
-            || phase_offsets.iter().any(|v| !v.is_finite())
-            || order.len() != operators
-            || order.iter().any(|v| *v >= operators)
-        {
+        let operators = graph.operators.len();
+        if graph.carrier_parameter >= parameter_definitions.len() / 3 {
             return Err(PyValueError::new_err("Invalid graph FM runtime definition"));
         }
-        let mut positions = vec![usize::MAX; operators];
-        for (position, operator) in order.iter().enumerate() {
-            if positions[*operator] != usize::MAX {
-                return Err(PyValueError::new_err("Invalid graph FM execution order"));
-            }
-            positions[*operator] = position;
-        }
-        let amplitude_definitions = preparation::amplitudes(&envelopes, rate, max_records)?;
-        let graph_operators: Vec<GraphOperator> = waveforms
-            .into_iter()
-            .zip(phase_offsets)
-            .zip(parameters)
-            .map(|((waveform, phase_offset), parameters)| {
-                if parameters.0 >= parameter_definitions.len() / 3
-                    || parameters.1 >= parameter_definitions.len() / 3
-                {
-                    return Err(PyValueError::new_err("Invalid graph FM operator"));
-                }
-                Ok(GraphOperator {
-                    waveform,
-                    phase_offset,
-                    ratio_parameter: parameters.0,
-                    tuning_parameter: parameters.1,
-                })
-            })
-            .collect::<PyResult<_>>()?;
-        let graph_edges: Vec<GraphEdge> = edges
-            .into_iter()
-            .map(|(source, destination, delayed, parameter)| {
-                if source >= operators
-                    || destination >= operators
-                    || parameter >= parameter_definitions.len() / 3
-                {
-                    return Err(PyValueError::new_err("Invalid graph FM edge"));
-                }
-                if !delayed && positions[source] >= positions[destination] {
-                    return Err(PyValueError::new_err("Invalid graph FM execution order"));
-                }
-                Ok(GraphEdge {
-                    source,
-                    destination,
-                    delayed,
-                    parameter,
-                })
-            })
-            .collect::<PyResult<_>>()?;
         let mut runtime = Self::prepared(
-            rate,
+            graph.rate,
             0,
             0.5,
             routes,
-            amplitude_definitions[carrier].clone(),
+            graph.amplitudes[graph.carrier].clone(),
             minimum_hold_frames,
             controls,
             control_smoothing,
@@ -643,16 +578,16 @@ impl SynthRuntime {
         )?;
         let slots = runtime.frequencies.len();
         runtime.source_kind = 3;
-        runtime.graph_operators = graph_operators;
-        runtime.graph_edges = graph_edges;
-        runtime.graph_order = order;
-        runtime.graph_carrier = carrier;
-        runtime.graph_carrier_parameter = carrier_parameter;
+        runtime.graph_operators = graph.operators.clone();
+        runtime.graph_edges = graph.edges.clone();
+        runtime.graph_order = graph.graph.order().to_vec();
+        runtime.graph_carrier = graph.carrier;
+        runtime.graph_carrier_parameter = graph.carrier_parameter;
         runtime.graph_phases = vec![0.0; slots * operators];
         runtime.graph_errors = vec![0.0; slots * operators];
         runtime.graph_outputs = vec![0.0; slots * operators];
         runtime.graph_history = vec![0.0; slots * runtime.graph_edges.len()];
-        runtime.amplitude_definitions = amplitude_definitions;
+        runtime.amplitude_definitions = graph.amplitudes.clone();
         runtime.amplitude_states = (0..slots)
             .map(|_| {
                 runtime

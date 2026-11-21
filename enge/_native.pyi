@@ -12,6 +12,11 @@ class PreparedTuning:
     def __init__(self, document: str) -> None: ...
     def frequency_hz(self, note: int) -> float: ...
 
+class PreparedFm:
+    def __init__(
+        self, document: str, rate: float, *, max_records: int = 10000
+    ) -> None: ...
+
 def prepare_modulation(
     sample_rate: float,
     context: str,
@@ -19,6 +24,7 @@ def prepare_modulation(
     targets: Sequence[tuple[str, str, int, float | None, float, float]],
     *,
     sound_settings: str | None = None,
+    fm: PreparedFm | None = None,
     max_records: int = 10000,
 ) -> tuple[
     np.ndarray,
@@ -301,16 +307,8 @@ class SynthRuntime:
     ) -> SynthRuntime: ...
     @staticmethod
     def fm_graph(
-        rate: float,
         routes: np.ndarray,
-        waveforms: list[int],
-        envelopes: list[str],
-        phase_offsets: list[float],
-        parameters: list[tuple[int, int]],
-        edges: list[tuple[int, int, bool, int]],
-        order: list[int],
-        carrier: int,
-        carrier_parameter: int,
+        graph: PreparedFm,
         minimum_hold_frames: tuple[int, int],
         controls: np.ndarray,
         control_smoothing: list[tuple[int, int]],
@@ -319,8 +317,6 @@ class SynthRuntime:
         parameter_definitions: list[float],
         context_capacity: int,
         filter_after_amplitude: bool = False,
-        *,
-        max_records: int = 10000,
     ) -> SynthRuntime: ...
     @staticmethod
     def noise(

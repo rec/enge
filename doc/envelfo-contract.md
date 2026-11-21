@@ -184,8 +184,22 @@ declarations, ordered generator JSON and host target metadata. Synth, FM, noise
 and sampler also supply the processing portion of a canonical SoundSettings
 body. Rust uFor resolves the authored amplitude, tuning cents, cutoff and Q
 facts for the shared native slots, and enge checks authored parameter units,
-defaults and minimum rules against those facts. The host still supplies the
-FM operator, edge and carrier targets and effect processor targets.
+defaults and minimum rules against those facts. Effect processor targets
+still come from the Python effect graph.
+
+Persistent FM prepares a canonical uFor FM body once. Rust validates the
+operator Envelopes and current-sample topology, then compiles the ordered
+indexed graph for enge. Native modulation uses the same prepared graph to
+resolve operator ratios and tuning, edge indices and carrier level. Slots
+follow the existing order: amplitude and tuning, operator pairs, edges,
+carrier level, then shared filters. The constructor consumes the prepared
+graph and retains enge's voice-time Envelope profile and renderer state.
+
+The FM integration passed 184 focused macOS tests with allocation auditing
+enabled, covering FM, amplitude and modulation preparation, live rendering
+and MIDI rendering. The run recorded 1,870 successful and eight failed
+callbacks with zero Rust heap operations. The generated report is
+`build/rust-ufor-fm-audit.xml`.
 
 Enge's native preparation assigns filter slots in authored order and applies
 the sample-rate and Nyquist bounds. The authored cutoff remains the default
@@ -195,8 +209,9 @@ which targets get slots. Python retains owner validation, Patch-output
 materialization, orchestration and the offline graph adapter.
 
 Its `max_records=10000` budget combines shared declarations, supplied generators,
-the SoundSettings processing body, host target/filter records and expanded
-generator slots/bodies. An override
+the SoundSettings processing body, any prepared FM graph (including default
+operator Envelopes), host target/filter records and expanded generator
+slots/bodies. An override
 reaches embedded modulation and generator validation. Expanded JSON text is also
 bounded, alongside existing per-document limits. Exact seconds convert to frame
 ratios with checked signed-64-bit components. Source-map insertion order, sorted

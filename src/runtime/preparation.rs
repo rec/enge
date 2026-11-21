@@ -1,5 +1,6 @@
 //! Preparation-only conversion from validated uFor definitions to engine plans.
 pub(crate) mod bindings;
+pub(crate) mod fm;
 pub(crate) mod modulation;
 pub(crate) mod patch;
 
@@ -73,28 +74,30 @@ pub(crate) fn amplitudes(
     let (_, values) = definitions(&[], documents, maximum)?;
     values
         .iter()
-        .map(|generator| {
-            let Body::Envelope(value) = generator.body() else {
-                return Err(invalid("Voice amplitude requires an Envelope"));
-            };
-            if generator.settings().scope() != Scope::Voice
-                || generator.settings().clock() != Clock::Seconds
-                || value.start() != envelfo::Start::Activation
-                || !matches!(value.initial(), envelfo::Initial::Number(_))
-                || !value.hold()
-                || value.playback() != envelfo::PlaybackMode::Once
-                || !value.markers().is_empty()
-                || value.release().is_empty()
-                || value
-                    .segments()
-                    .iter()
-                    .any(|s| matches!(s, envelfo::EnvelopeSegment::Approach(_)))
-            {
-                return Err(invalid("Unsupported voice amplitude Envelope profile"));
-            }
-            Ok(Amplitude::new(envelope(value, false, sample_rate)?)?)
-        })
+        .map(|generator| amplitude_definition(generator, sample_rate))
         .collect()
+}
+
+fn amplitude_definition(generator: &Generator, sample_rate: f64) -> PyResult<Amplitude> {
+    let Body::Envelope(value) = generator.body() else {
+        return Err(invalid("Voice amplitude requires an Envelope"));
+    };
+    if generator.settings().scope() != Scope::Voice
+        || generator.settings().clock() != Clock::Seconds
+        || value.start() != envelfo::Start::Activation
+        || !matches!(value.initial(), envelfo::Initial::Number(_))
+        || !value.hold()
+        || value.playback() != envelfo::PlaybackMode::Once
+        || !value.markers().is_empty()
+        || value.release().is_empty()
+        || value
+            .segments()
+            .iter()
+            .any(|s| matches!(s, envelfo::EnvelopeSegment::Approach(_)))
+    {
+        return Err(invalid("Unsupported voice amplitude Envelope profile"));
+    }
+    Ok(Amplitude::new(envelope(value, false, sample_rate)?)?)
 }
 
 pub(super) fn lfos(

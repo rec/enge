@@ -257,6 +257,61 @@ def test_shared_target_validation_uses_authored_facts_before_filter_bounds(
         assert prepared[14][0, 4] == 12000
 
 
+@pytest.mark.parametrize("default", [2, 1])
+def test_fm_targets_use_graph_defaults_and_keep_filter_slots_after_the_carrier(
+    default: float,
+) -> None:
+    graph = _native.PreparedFm(
+        json.dumps(
+            {
+                "operators": [{"name": "a", "ratio": 2}, {"name": "b"}],
+                "edges": [{"source": "a", "destination": "b", "index": 3}],
+                "carrier": "b",
+                "carrier_level": 0.75,
+            }
+        ),
+        48000,
+    )
+    context = json.dumps(
+        {
+            "modulation": {
+                "parameters": [
+                    {
+                        "target": {"name": "operator-a", "parameter": "ratio"},
+                        "scope": "voice",
+                        "unit": "ratio",
+                        "default": default,
+                        "minimum": 0.5,
+                        "maximum": 4,
+                    }
+                ]
+            },
+            "bindings": [],
+            "controls": {},
+            "event_connections": [],
+        }
+    )
+    slots = [
+        ("processing", "amplitude", 0, None, 0, 2),
+        ("processing", "tuning_cents", 1, None, -120000, 120000),
+    ]
+    if default != 2:
+        with pytest.raises(ValueError, match="unit and default must match"):
+            _native.prepare_modulation(
+                48000, context, [], slots, sound_settings=SOUND_SETTINGS, fm=graph
+            )
+        return
+    prepared = _native.prepare_modulation(
+        48000, context, [], slots, sound_settings=SOUND_SETTINGS, fm=graph
+    )
+    assert prepared[2][::3] == [1, 25, 2, 0, 1, 0, 3, 0.75, 12000, 2, 200, 1]
+    assert prepared[22][6:9] == [
+        ("edge-a-b", "index", 6),
+        ("fm", "carrier_level", 7),
+        ("filter-z", "cutoff_hz", 8),
+    ]
+
+
 def control_context(scope: str) -> dict:
     target = {"name": "processing", "parameter": "amplitude"}
     return {

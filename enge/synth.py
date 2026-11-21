@@ -2784,6 +2784,8 @@ def _persistent_modulation(
         tuple[tuple[str, str], int, modulation.Operation, float | None, float, float]
     ]
     | None = None,
+    *,
+    fm: _native.PreparedFm | None = None,
 ) -> PersistentModulation:
     if source_parameters is None:
         if not isinstance(template, SoundSettings):
@@ -2796,7 +2798,7 @@ def _persistent_modulation(
                 0,
                 modulation.Operation.multiply,
                 None,
-                -1e300,
+                0 if fm is not None else -1e300,
                 1e300,
             ),
             (
@@ -2830,6 +2832,7 @@ def _persistent_modulation(
             if isinstance(template, SoundSettings)
             else None
         ),
+        fm=fm,
     )
 
 

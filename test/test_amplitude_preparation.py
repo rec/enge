@@ -90,7 +90,8 @@ def amplitude_runtime(
 ) -> _native.SynthRuntime | _native.LiveRuntime:
     routes = np.ones((1, 1))
     controls = np.empty((0, 6))
-    generators = _native.GeneratorBank(48000, 1, 2, np.empty((0, 4)), [], [], [])
+    slots = 7 if kind == "fm_graph" else 2
+    generators = _native.GeneratorBank(48000, 1, slots, np.empty((0, 4)), [], [], [])
     filters = np.empty((0, 7))
     parameters = [1, 0, 1e300, 0, -120000, 120000]
     if kind == "sampler":
@@ -127,17 +128,23 @@ def amplitude_runtime(
             max_records=max_records,
         )
     if kind == "fm_graph":
-        return _native.SynthRuntime.fm_graph(
+        graph = _native.PreparedFm(
+            json.dumps(
+                {
+                    "operators": [
+                        {"name": "a", "envelope": json.loads(documents[0])},
+                        {"name": "b", "envelope": json.loads(documents[-1])},
+                    ],
+                    "carrier": "b",
+                }
+            ),
             48000,
+            max_records=max_records,
+        )
+        parameters.extend([1, 0, 1e300, 0, -120000, 120000] * 2 + [1, 0, 1e300])
+        return _native.SynthRuntime.fm_graph(
             routes,
-            [0, 0],
-            [documents[0], documents[-1]],
-            [0, 0],
-            [(0, 1), (0, 1)],
-            [],
-            [0, 1],
-            1,
-            0,
+            graph,
             (0, 1),
             controls,
             [],
@@ -145,7 +152,6 @@ def amplitude_runtime(
             filters,
             parameters,
             1,
-            max_records=max_records,
         )
     if kind == "noise":
         return _native.SynthRuntime.noise(

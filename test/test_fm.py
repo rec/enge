@@ -1,3 +1,4 @@
+import json
 import math
 from pathlib import Path
 from typing import Literal
@@ -7,10 +8,8 @@ import pytest
 from test_synth import check_audio
 from test_synth_demo import publish_flac
 from ufor import synth_trace
-from ufor.envelfo import Envelope
 from ufor.events import ControlChange, LFOChange, Release, Trigger
 from ufor.instrument_trace import VoiceRetirement
-from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 
 from enge import _native, fm, synth
@@ -65,34 +64,20 @@ def test_native_graph_fm_rejects_invalid_edges(column: int, value: float) -> Non
         )
 
 
-@pytest.mark.parametrize("order", [[0, 0], [1, 0]])
-def test_native_graph_runtime_rejects_invalid_execution_order(order: list[int]) -> None:
-    with pytest.raises(ValueError, match="Invalid graph FM execution order"):
-        _native.SynthRuntime.fm_graph(
+def test_native_graph_preparation_rejects_current_sample_cycles() -> None:
+    with pytest.raises(ValueError, match="current-sample FM edges must be acyclic"):
+        _native.PreparedFm(
+            json.dumps(
+                {
+                    "operators": [{"name": "a"}, {"name": "b"}],
+                    "edges": [
+                        {"source": "a", "destination": "b"},
+                        {"source": "b", "destination": "a"},
+                    ],
+                    "carrier": "b",
+                }
+            ),
             48000,
-            np.ones((1, 1)),
-            [0, 0],
-            [
-                Envelope(
-                    initial=1,
-                    segments=[Segment(duration=0, to=1)],
-                    release=[Segment(duration=0, to=0)],
-                ).model_dump_json()
-            ]
-            * 2,
-            [0, 0],
-            [(0, 1), (0, 1)],
-            [(0, 1, False, 0)],
-            order,
-            1,
-            0,
-            (0, 1),
-            np.empty((0, 6)),
-            [],
-            _native.GeneratorBank(48000, 1, 2, np.empty((0, 4)), [], [], []),
-            np.empty((0, 7)),
-            [1, 0, 1e300, 0, -120000, 120000],
-            1,
         )
 
 
