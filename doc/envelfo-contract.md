@@ -331,6 +331,16 @@ Voice-start and graph stream preparation passed 640 focused macOS tests
 with zero heap operations inside 3,537 successful and six failed callbacks.
 The generated report is `build/rust-ufor-voice-start-audit.xml`.
 
+When a host supplies a tempo map and sample rate, `synth.prepare_trace`
+schedules quantized EnveLFO commands with Rust uFor. It uses exact beat
+arithmetic, rounds up to the dispatch frame, and assigns moved commands
+ordinals after the authored events at that frame. A seek or unreachable
+target cancels a pending command. Python applies the scheduled coordinates
+to the existing trace actions.
+Command scheduling passed 113 focused macOS tests with zero heap operations
+inside 2,119 successful and six failed callbacks. The generated report is
+`build/rust-ufor-command-schedule-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

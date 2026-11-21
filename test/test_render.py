@@ -1,4 +1,5 @@
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 
@@ -7,8 +8,9 @@ import pytest
 from meedee import messages, smf
 from test_synth import check_audio
 from ufor import performance_binding, synth_trace
-from ufor.events import PerformanceEvent, Release, Trigger
-from ufor.instrument_trace import TraceAction
+from ufor.control import TempoMap
+from ufor.events import EnvelfoChange, PerformanceEvent, Release, Trigger
+from ufor.instrument_trace import EnvelfoObservation, TraceAction
 from ufor.samples import instrument, trace
 from ufor.samples.enums import TriggerKind
 
@@ -96,6 +98,57 @@ def test_native_synth_family_trace_matches_layers_and_release_mapping(
         (1, "a-layer", 220),
         (2, "tail", 220 if engine == "noise" else 207.5),
     ]
+
+
+def test_native_trace_orders_quantized_commands_and_cancels_pending_seek() -> None:
+    score, _ = Patch(engine="synth").prepare_score(48000)
+    assert not isinstance(score, instrument.SampleInstrumentScore)
+    clock = TempoMap.model_validate(
+        {
+            "points": [
+                {"at_seconds": "0", "beat": "0", "bpm": "120"},
+                {"at_seconds": "1/4", "beat": "1/2", "bpm": "60"},
+                {"at_seconds": "1", "beat": "8", "bpm": "60"},
+            ]
+        }
+    )
+    queued = EnvelfoChange(
+        tick=12000,
+        ordinal=0,
+        part="main",
+        trigger_id="note",
+        name="swell",
+        action="pause",
+        quantize_beats=Fraction(1),
+    )
+    events: list[PerformanceEvent] = [
+        queued.model_copy(
+            update={
+                "tick": 36000,
+                "ordinal": 4,
+                "action": "resume",
+                "quantize_beats": None,
+            }
+        ),
+        queued,
+        queued.model_copy(update={"tick": 6000, "action": "reverse"}),
+        queued.model_copy(update={"tick": 9000, "quantize_beats": Fraction(4)}),
+    ]
+    native = synth.prepare_trace(
+        score.body, events, seed=0, tempo_map=clock, sample_rate=48000
+    )
+    assert native == synth_trace.prepare(
+        score.body,
+        events,
+        seed=0,
+        tempo_map=clock,
+        sample_rate=48000,
+    )
+    assert [
+        (a.tick, a.ordinal, a.action)
+        for a in native.actions
+        if isinstance(a, EnvelfoObservation)
+    ] == [(36000, 4, "resume"), (36000, 5, "reverse"), (36000, 6, "pause")]
 
 
 def test_mixed_engine_render_preserves_notes_tails_and_block_boundaries(

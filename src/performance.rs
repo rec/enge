@@ -3,10 +3,44 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use ufor::codec::{self, Format};
+use ufor::control::schedule::{EventCoordinate, schedule_commands};
+use ufor::envelfo::PreparationLimits;
 use ufor::identifier::Identifier;
+use ufor::number::Rational;
 use ufor::samples::eligibility::VoiceEligibility;
 use ufor::tuning::Tuning;
 use ufor::voice_start;
+
+type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
+
+#[pyfunction]
+#[pyo3(signature = (tempo, sample_rate, events, *, max_records=10_000))]
+pub(crate) fn schedule_envelfo_commands(
+    tempo: &str,
+    sample_rate: i64,
+    events: Vec<CommandCoordinate>,
+    max_records: usize,
+) -> PyResult<Vec<(usize, i64, u64)>> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let limits = PreparationLimits::new(max_records).map_err(invalid)?;
+    let tempo = codec::parse_tempo_map(tempo, Format::Json, limits).map_err(invalid)?;
+    let events = events
+        .into_iter()
+        .map(|(tick, ordinal, division)| {
+            Ok(EventCoordinate {
+                tick,
+                ordinal,
+                quantize_beats: division.map(|(n, d)| Rational::new(n, d)).transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>, ufor::error::Error>>()
+        .map_err(invalid)?;
+    Ok(schedule_commands(&tempo, sample_rate, &events)
+        .map_err(invalid)?
+        .into_iter()
+        .map(|event| (event.index, event.tick, event.ordinal))
+        .collect())
+}
 
 #[pyfunction]
 #[pyo3(signature = (seed, voice_id, pitch_hz, frequency_offset_hz, is_noise))]

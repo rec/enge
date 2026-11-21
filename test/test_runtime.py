@@ -18,7 +18,7 @@ from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
-from enge import _native, filters, fm, noise
+from enge import _native, filters, fm, noise, synth
 from enge.synth import EngineError, OfflineSynth, PersistentSynth, prepare
 
 
@@ -1027,7 +1027,7 @@ def test_host_tempo_quantizes_envelfo_change_for_both_renderers(tmp_path: Path) 
         action="pause",
         quantize_beats=Fraction(1),
     )
-    actions = prepare_trace(
+    actions = synth.prepare_trace(
         document.body,
         [start, command],
         seed=0,

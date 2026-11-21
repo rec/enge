@@ -530,6 +530,20 @@ def prepare_trace(
         ),
         max_records=max_records,
     )
+
+    def schedule(
+        tempo: TempoMap, rate: int, coordinates: list[tuple[int, int, Fraction | None]]
+    ) -> list[tuple[int, int, int]]:
+        return _native.schedule_envelfo_commands(
+            tempo.model_dump_json(),
+            rate,
+            [
+                (t, o, (d.numerator, d.denominator) if d is not None else None)
+                for t, o, d in coordinates
+            ],
+            max_records=max_records,
+        )
+
     return synth_trace.prepare(
         definition,
         events,
@@ -540,6 +554,7 @@ def prepare_trace(
         release_plan=voice_release.native_release_plan,
         eligible_voices=eligibility.matching_voices,
         prepare_start=_native.prepare_voice_start,
+        schedule=schedule,
     )
 
 

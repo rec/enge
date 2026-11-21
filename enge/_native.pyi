@@ -406,6 +406,13 @@ class PreparedVoiceEligibility:
     def __init__(self, document: str, *, max_records: int = 10000) -> None: ...
     def matching_voices(self, trigger: str, key: int, velocity: float) -> list[str]: ...
 
+def schedule_envelfo_commands(
+    tempo: str,
+    sample_rate: int,
+    events: list[tuple[int, int, tuple[int, int] | None]],
+    *,
+    max_records: int = 10000,
+) -> list[tuple[int, int, int]]: ...
 def prepare_voice_start(
     seed: int,
     voice_id: str,
