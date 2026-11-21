@@ -195,22 +195,7 @@ class LiveRuntime:
     ) -> None: ...
     def add_sample(
         self,
-        buffer: SampleBuffer,
-        selection: tuple[int, int, bool, tuple[int, int, int, bool] | None],
-        state: tuple[
-            int,
-            float,
-            float,
-            int,
-            bool,
-            bool,
-            bool,
-            int | None,
-            int | None,
-            int,
-            int | None,
-        ],
-        rate: float,
+        traversal: SampleTraversal,
         routes: np.ndarray,
         envelope: str,
         minimum_hold_frames: float,
@@ -218,7 +203,6 @@ class LiveRuntime:
         batch_capacity: int,
         filters: tuple[list[int], np.ndarray, np.ndarray],
         filter_after_amplitude: bool,
-        end_fade_frames: float = 0,
         *,
         max_records: int = 10000,
     ) -> int: ...
@@ -399,6 +383,17 @@ def render(
 class SampleBuffer:
     def __init__(self, samples: np.ndarray) -> None: ...
 
+class SampleTraversal:
+    def __init__(
+        self,
+        buffer: SampleBuffer,
+        slice: str,
+        playback: str,
+        rate: float,
+        additional_plays: int = 0,
+        end_fade_seconds: float = 0,
+    ) -> None: ...
+
 type SampleState = tuple[
     int,
     float,
@@ -414,11 +409,9 @@ type SampleState = tuple[
 ]
 
 def render_sample(
-    buffer: SampleBuffer,
-    selection: tuple[int, int, bool, tuple[int, int, int, bool] | None],
+    traversal: SampleTraversal,
     state: SampleState,
     frame: int,
-    rate: float,
     steps: np.ndarray,
     release: tuple[int, bool, float, float] | None,
     prepared_gain: float,
@@ -428,7 +421,6 @@ def render_sample(
     frames: int,
     filters: tuple[list[int], np.ndarray, np.ndarray] | None = None,
     filter_after_amplitude: bool = False,
-    end_fade_frames: float = 0,
 ) -> tuple[np.ndarray, SampleState, np.ndarray]: ...
 def render_fm(
     rate: float,

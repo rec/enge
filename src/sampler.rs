@@ -6,6 +6,8 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
+use ufor::codec::{self, Format};
+use ufor::samples::playback::{Direction, LoopMode};
 
 // Integers stay integers across the binding, including frames beyond 2**53.
 pub(crate) type State = (
@@ -40,6 +42,93 @@ impl SampleBuffer {
         Ok(Self {
             audio: Arc::new(samples.as_array().to_owned()),
         })
+    }
+}
+
+#[pyclass(frozen)]
+pub(crate) struct SampleTraversal {
+    pub(crate) buffer: SampleBuffer,
+    selection: Selection,
+    rate: f64,
+    end_fade_frames: f64,
+    initial_state: State,
+}
+
+#[pymethods]
+impl SampleTraversal {
+    #[new]
+    #[pyo3(signature = (buffer, slice, playback, rate, additional_plays=0, end_fade_seconds=0.0))]
+    fn new(
+        buffer: &SampleBuffer,
+        slice: &str,
+        playback: &str,
+        rate: f64,
+        additional_plays: u64,
+        end_fade_seconds: f64,
+    ) -> PyResult<Self> {
+        let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+        let slice = codec::parse_sample_slice(slice, Format::Json).map_err(invalid)?;
+        let playback = codec::parse_sample_playback(playback, Format::Json).map_err(invalid)?;
+        let frames = i64::try_from(buffer.audio.nrows())
+            .map_err(|_| PyValueError::new_err("Decoded sample frame count exceeds i64"))?;
+        slice
+            .validate_playback(playback, frames, additional_plays)
+            .map_err(invalid)?;
+        let end_fade_frames = end_fade_seconds * rate;
+        if !rate.is_finite() || rate <= 0.0 || !end_fade_frames.is_finite() || end_fade_frames < 0.0
+        {
+            return Err(PyValueError::new_err("Invalid sample rate or end fade"));
+        }
+        let backward = playback.direction == Direction::Backward;
+        let loop_settings = slice.loop_settings();
+        let selection = (
+            slice.start_frame(),
+            slice.end_frame(),
+            playback.direction == Direction::Mirror,
+            loop_settings.map(|settings| {
+                (
+                    settings.start_frame(),
+                    settings.end_frame(),
+                    settings.crossfade_frames(),
+                    settings.mode() == LoopMode::UntilRelease,
+                )
+            }),
+        );
+        let initial_state = (
+            if backward {
+                slice.end_frame() - 1
+            } else {
+                slice.start_frame()
+            },
+            0.0,
+            0.0,
+            if backward { -1 } else { 1 },
+            loop_settings.is_some(),
+            false,
+            false,
+            None,
+            loop_settings.and_then(|settings| settings.repeat_count()),
+            additional_plays,
+            None,
+        );
+        Ok(Self {
+            buffer: buffer.clone(),
+            selection,
+            rate,
+            end_fade_frames,
+            initial_state,
+        })
+    }
+}
+
+impl SampleTraversal {
+    pub(crate) fn start(&self) -> Cursor {
+        Cursor::new(
+            self.selection,
+            self.rate,
+            self.initial_state,
+            self.end_fade_frames,
+        )
     }
 }
 
@@ -370,15 +459,13 @@ impl Cursor {
 }
 
 #[pyfunction]
-#[pyo3(signature = (buffer, selection, state, frame, rate, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None, filter_after_amplitude=false, end_fade_frames=0.0))]
+#[pyo3(signature = (traversal, state, frame, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None, filter_after_amplitude=false))]
 #[allow(clippy::too_many_arguments)]
-pub fn render_sample<'py>(
+pub(crate) fn render_sample<'py>(
     py: Python<'py>,
-    buffer: &SampleBuffer,
-    selection: Selection,
+    traversal: &SampleTraversal,
     state: State,
     frame: i64,
-    rate: f64,
     steps: PyReadonlyArray1<'py, f64>,
     release: Option<(usize, bool, f64, f64)>,
     prepared_gain: f64,
@@ -388,55 +475,33 @@ pub fn render_sample<'py>(
     frames: usize,
     filters: Option<super::filters::Inputs<'py>>,
     filter_after_amplitude: bool,
-    end_fade_frames: f64,
 ) -> PyResult<RenderedSample<'py>> {
     let count = steps.len();
     let channels = routes.shape()[1];
+    let SampleTraversal {
+        buffer,
+        selection,
+        rate,
+        end_fade_frames,
+        ..
+    } = traversal;
+    let (selection, rate, end_fade_frames) = (*selection, *rate, *end_fade_frames);
     let (start, end, mirror, loop_) = selection;
-    let (
-        index,
-        position,
-        error,
-        direction,
-        looping,
-        overlap,
-        released,
-        exhausted,
-        repeats_remaining,
-        plays_remaining,
-        end_fade_at,
-    ) = state;
-    if start < 0 || end <= start || end as u64 > buffer.audio.nrows() as u64 {
-        return Err(PyValueError::new_err("Invalid native sample slice"));
-    }
-    let invalid_loop = loop_.is_some_and(|(a, b, m, _)| {
-        a < start
-            || a >= end
-            || b <= a
-            || b > end
-            || b - a < 2
-            || (m != 0 && (m < 2 || m >= (b - a + 1) / 2 || mirror))
+    let (index, position, error, direction, looping, overlap, _, _, _, _, end_fade_at) = state;
+    let valid_overlap = loop_.is_some_and(|(a, b, m, _)| {
+        m >= 2
+            && !mirror
+            && if direction == 1 {
+                (b - m..=b).contains(&index)
+            } else {
+                (a - 1..a + m).contains(&index)
+            }
     });
-    let valid_overlap = !invalid_loop
-        && loop_.is_some_and(|(a, b, m, _)| {
-            m >= 2
-                && !mirror
-                && if direction == 1 {
-                    (b - m..=b).contains(&index)
-                } else {
-                    (a - 1..a + m).contains(&index)
-                }
-        });
-    if invalid_loop
-        || !end_fade_frames.is_finite()
-        || end_fade_frames < 0.0
-        || end_fade_at.is_some_and(|at| at < 0 || at > frame)
+    if end_fade_at.is_some_and(|at| at < 0 || at > frame)
         || (looping && loop_.is_none())
         || (overlap && !valid_overlap)
         || ![-1, 1].contains(&direction)
         || !(start - 1..=end).contains(&index)
-        || !rate.is_finite()
-        || rate <= 0.0
         || !position.is_finite()
         || !(0.0..rate).contains(&position)
         || !error.is_finite()
@@ -461,22 +526,7 @@ pub fn render_sample<'py>(
             "Invalid native sample settings, state, or buffers",
         ));
     }
-    let initial = Cursor {
-        selection,
-        rate,
-        index,
-        position,
-        error,
-        direction,
-        looping,
-        overlap,
-        released,
-        exhausted,
-        repeats_remaining,
-        plays_remaining,
-        end_fade_at,
-        end_fade_frames,
-    };
+    let initial = Cursor::new(selection, rate, state, end_fade_frames);
     let mut settled = initial;
     settled.settle(frame);
     if settled.exhausted.is_none() && settled.direction * (settled.boundary().0 - settled.index) < 0

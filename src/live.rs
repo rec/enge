@@ -9,7 +9,7 @@ use crate::runtime::controls::{ControlBank, control_definitions};
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::preparation;
 use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot, route_map};
-use crate::sampler::{Cursor, SampleBuffer, Selection, State};
+use crate::sampler::{Cursor, SampleBuffer, SampleTraversal};
 use numpy::ndarray::{Array2, ArrayViewMut2};
 use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -321,14 +321,10 @@ impl LiveRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (buffer, selection, state, rate, routes, envelope, minimum_hold_frames, voices, batch_capacity, filters, filter_after_amplitude, end_fade_frames=0.0, *, max_records=10000))]
+    #[pyo3(signature = (traversal, routes, envelope, minimum_hold_frames, voices, batch_capacity, filters, filter_after_amplitude, *, max_records=10000))]
     fn add_sample(
         &mut self,
-        py: Python<'_>,
-        buffer: Py<SampleBuffer>,
-        selection: Selection,
-        state: State,
-        rate: f64,
+        traversal: &SampleTraversal,
         routes: PyReadonlyArray2<'_, f64>,
         envelope: String,
         minimum_hold_frames: f64,
@@ -336,24 +332,22 @@ impl LiveRuntime {
         batch_capacity: usize,
         filters: Inputs<'_>,
         filter_after_amplitude: bool,
-        end_fade_frames: f64,
         max_records: usize,
     ) -> PyResult<usize> {
+        let mut cursor = traversal.start();
+        let rate = cursor.rate;
         if self.frame != 0
-            || !end_fade_frames.is_finite()
-            || end_fade_frames < 0.0
             || voices == 0
             || batch_capacity == 0
             || rate != self.rate
-            || routes.shape() != [buffer.borrow(py).audio.ncols(), self.channels]
+            || routes.shape() != [traversal.buffer.audio.ncols(), self.channels]
             || routes.as_array().iter().any(|v| !v.is_finite())
             || !minimum_hold_frames.is_finite()
             || minimum_hold_frames < 0.0
         {
             return Err(PyValueError::new_err("Invalid live sample source"));
         }
-        let buffer = buffer.borrow(py).clone();
-        let mut cursor = Cursor::new(selection, rate, state, end_fade_frames);
+        let buffer = traversal.buffer.clone();
         cursor.settle(0);
         if cursor.exhausted.is_some() {
             return Err(PyValueError::new_err("Live sample starts exhausted"));

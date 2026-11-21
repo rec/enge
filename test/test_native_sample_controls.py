@@ -8,6 +8,7 @@ from test_synth import check_audio
 from ufor.envelfo import Envelope
 from ufor.events import Release
 from ufor.samples import instrument, trace
+from ufor.samples.playback import Slice
 from ufor.segments import Segment
 
 from enge import _native, live, sample_instrument
@@ -126,10 +127,12 @@ def test_sample_controls_follow_scopes_delays_and_snapshot_continuation(
     audio = (np.arange(192000, dtype=np.float64) / 192000)[:, None]
     runtime = _native.LiveRuntime.empty(48000, 1, 48000, 64)
     source = runtime.add_sample(
-        _native.SampleBuffer(audio),
-        (0, len(audio), False, None),
-        (0, 0, 0, 1, False, False, False, None, None, 0, None),
-        48000,
+        _native.SampleTraversal(
+            _native.SampleBuffer(audio),
+            Slice(name="slice", asset="audio", end_frame=len(audio)).model_dump_json(),
+            "{}",
+            48000,
+        ),
         np.ones((1, 1)),
         Envelope(
             initial=1,

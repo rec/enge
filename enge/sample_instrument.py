@@ -635,34 +635,6 @@ class PersistentSampler(OfflineSampler):
             settings = self.definition.settings[slot.name]
             envelope = settings.envelope or common.envelope
             assert envelope is not None
-            loop = sample.slice.loop
-            selection = (
-                sample.slice.start_frame,
-                sample.slice.end_frame,
-                sample.playback.direction == Direction.mirror,
-                None
-                if loop is None
-                else (
-                    loop.start_frame,
-                    loop.end_frame,
-                    loop.crossfade_frames,
-                    loop.mode == LoopMode.until_release,
-                ),
-            )
-            backward = sample.playback.direction == Direction.backward
-            state = (
-                sample.slice.end_frame - 1 if backward else sample.slice.start_frame,
-                0,
-                0,
-                -1 if backward else 1,
-                loop is not None,
-                False,
-                False,
-                None,
-                None if loop is None else loop.repeat_count,
-                sample.play_count - 1,
-                None,
-            )
             routes = np.array(
                 self.definition.routes[slot.name],
                 dtype=np.float64,
@@ -683,10 +655,7 @@ class PersistentSampler(OfflineSampler):
                 else common.processing.filter_order
             )
             self.native_sources[slot.name] = runtime.add_sample(
-                sample.native_buffer,
-                selection,
-                state,
-                self.definition.sample_rate,
+                sample.native_traversal,
                 routes,
                 envelope.model_dump_json(),
                 0,
@@ -694,7 +663,6 @@ class PersistentSampler(OfflineSampler):
                 batch_capacity,
                 filters.native_inputs(filter_definitions, filter_states, filter_values),
                 filter_order == processing.FilterOrder.after_amplitude,
-                sample.end_fade_seconds * sample.sample_rate,
             )
             rows = []
             smoothing = []

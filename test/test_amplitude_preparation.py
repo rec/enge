@@ -97,10 +97,12 @@ def amplitude_runtime(
     if kind == "sampler":
         runtime = _native.LiveRuntime.empty(48000, 1, 997, 64)
         runtime.add_sample(
-            _native.SampleBuffer(np.ones((48000, 1))),
-            (0, 48000, False, None),
-            (0, 0, 0, 1, False, False, False, None, None, 0, None),
-            48000,
+            _native.SampleTraversal(
+                _native.SampleBuffer(np.ones((48000, 1))),
+                '{"name":"slice","asset":"audio","end_frame":48000}',
+                "{}",
+                48000,
+            ),
             routes,
             documents[0],
             0,

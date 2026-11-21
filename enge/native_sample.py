@@ -3,7 +3,6 @@
 from fractions import Fraction
 
 import numpy as np
-from ufor.samples.enums import Direction, LoopMode
 
 from . import sampler
 
@@ -37,23 +36,8 @@ def render(
             float(before),
             float(Fraction(float(steps[index])) - before),
         )
-    selection = definition.slice
-    loop = selection.loop
     audio, values, filter_states = _native.render_sample(
-        definition.native_buffer,
-        (
-            selection.start_frame,
-            selection.end_frame,
-            definition.playback.direction == Direction.mirror,
-            None
-            if loop is None
-            else (
-                loop.start_frame,
-                loop.end_frame,
-                loop.crossfade_frames,
-                loop.mode == LoopMode.until_release,
-            ),
-        ),
+        definition.native_traversal,
         (
             state.index,
             state.position,
@@ -68,7 +52,6 @@ def render(
             state.end_fade_at,
         ),
         state.frame,
-        definition.sample_rate,
         np.ascontiguousarray(steps),
         release,
         gain,
@@ -78,7 +61,6 @@ def render(
         frames,
         filters,
         filter_after_amplitude,
-        definition.end_fade_seconds * definition.sample_rate,
     )
     (
         index,

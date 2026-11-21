@@ -1,3 +1,4 @@
+import json
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
@@ -113,14 +114,15 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
     source = original[:, ::-1]
     expected = source.copy()
     buffer = _native.SampleBuffer(source)
+    traversal = _native.SampleTraversal(
+        buffer, '{"name":"slice","asset":"audio","end_frame":48000}', "{}", 48000
+    )
     original[:] = -1
     origin = 2**53 + 125
     actual, state, _ = _native.render_sample(
-        buffer,
-        (0, 48000, False, None),
+        traversal,
         (0, 0, 0, 1, False, False, False, None, None, 0, None),
         origin,
-        48000,
         np.full(48000, 48000.0),
         (123, False, 0, 48000),
         1,
@@ -132,11 +134,9 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
     check_audio(tmp_path / "owned-sample.wav", actual, expected)
     assert state == (48000, 0, 0, 1, False, False, True, None, None, 0, None)
     tail, ended, _ = _native.render_sample(
-        buffer,
-        (0, 48000, False, None),
+        traversal,
         state,
         origin + 48000,
-        48000,
         np.ones(1),
         None,
         1,
@@ -168,9 +168,15 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
 )
 def test_native_sample_rejects_invalid_inputs(invalid: str) -> None:
     buffer = _native.SampleBuffer(np.ones((8, 1)))
-    selection = (0, 9 if invalid == "slice" else 8, False, (1, 4, 0, True))
-    if invalid == "loop":
-        selection = (0, 8, False, (2**63 - 1, -(2**63), 0, True))
+    selection = {
+        "name": "slice",
+        "asset": "audio",
+        "end_frame": 9 if invalid == "slice" else 8,
+        "loop": {
+            "start_frame": 2**63 - 1 if invalid == "loop" else 1,
+            "end_frame": -(2**63) if invalid == "loop" else 4,
+        },
+    }
     state = (
         5 if invalid == "direction" else 0,
         float("nan") if invalid == "position" else 0,
@@ -187,11 +193,9 @@ def test_native_sample_rejects_invalid_inputs(invalid: str) -> None:
     steps = np.array([float("inf") if invalid == "steps" else 48000], dtype=np.float64)
     with pytest.raises(ValueError):
         _native.render_sample(
-            buffer,
-            selection,
+            _native.SampleTraversal(buffer, json.dumps(selection), "{}", 48000),
             state,
             2**63 - 1 if invalid == "frame" else 0,
-            48000,
             steps,
             (1, False, 0, 48000) if invalid == "release" else None,
             1,

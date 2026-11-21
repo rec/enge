@@ -241,6 +241,15 @@ TempoMap preparation passed 510 focused macOS tests with zero heap operations
 inside 2,227 successful and one failed callback. The generated report is
 `build/rust-ufor-tempo-map-audit.xml`.
 
+The offline native sampler and the live sampler share a prepared traversal
+from Rust uFor's authored slice, loop and resolved playback declarations.
+Preparation checks the decoded frame bounds and keeps the existing cursor and
+snapshot representation. Enge resolves slot settings, loads assets, and owns
+sample execution.
+Traversal preparation passed 670 focused macOS tests with zero heap
+operations inside 6,755 successful and seven failed callbacks. The generated
+report is `build/rust-ufor-sample-traversal-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

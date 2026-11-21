@@ -598,10 +598,12 @@ def test_native_live_runtime_owns_sample_asset_and_traversal(tmp_path: Path) -> 
     def make_runtime() -> tuple[_native.LiveRuntime, int]:
         runtime = _native.LiveRuntime([native_oscillator_runtime()], 997, 64, 4)
         source = runtime.add_sample(
-            buffer,
-            (0, 96000, False, None),
-            (0, 0, 0, 1, False, False, False, None, None, 0, None),
-            48000,
+            _native.SampleTraversal(
+                buffer,
+                '{"name":"slice","asset":"audio","end_frame":96000}',
+                "{}",
+                48000,
+            ),
             np.array([[1.0, 0.5]]),
             Envelope(
                 initial=1,
@@ -665,10 +667,12 @@ def test_native_sample_generators_follow_audible_start_and_snapshot(
     def make_runtime() -> tuple[_native.LiveRuntime, int]:
         runtime = _native.LiveRuntime.empty(48000, 1, 997, 64)
         source = runtime.add_sample(
-            buffer,
-            (0, 96000, False, None),
-            (0, 0, 0, 1, False, False, False, None, None, 0, None),
-            48000,
+            _native.SampleTraversal(
+                buffer,
+                '{"name":"slice","asset":"audio","end_frame":96000}',
+                "{}",
+                48000,
+            ),
             np.ones((1, 1)),
             Envelope(
                 initial=1,

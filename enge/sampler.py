@@ -17,7 +17,7 @@ from . import filters, synth
 from .synth import EngineError
 
 if TYPE_CHECKING:
-    from ._native import SampleBuffer
+    from ._native import SampleBuffer, SampleTraversal
 
 
 class PreparedSample(Model, frozen=True):
@@ -37,6 +37,19 @@ class PreparedSample(Model, frozen=True):
         from . import _native
 
         return _native.SampleBuffer(self.samples)
+
+    @cached_property
+    def native_traversal(self) -> "SampleTraversal":
+        from . import _native
+
+        return _native.SampleTraversal(
+            self.native_buffer,
+            self.slice.model_dump_json(),
+            self.playback.model_dump_json(),
+            self.sample_rate,
+            self.play_count - 1,
+            self.end_fade_seconds,
+        )
 
     @field_validator("samples")
     @classmethod
