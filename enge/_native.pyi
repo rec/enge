@@ -8,9 +8,13 @@ from .effect_controls import EffectControlPlan
 
 class SynthRuntimeSnapshot: ...
 
-def prepare_effect_topology(
-    document: str, sample_rate: int, *, max_records: int = 10000
-) -> tuple[list[str], dict[str, list[str]], list[str], dict[str, int]]: ...
+class PreparedEffectGraph:
+    def __init__(self, document: str, *, max_records: int = 10000) -> None: ...
+    def topology(
+        self, sample_rate: int
+    ) -> tuple[list[str], dict[str, list[str]], list[str], dict[str, int]]: ...
+    def validate_actions(self, documents: list[str]) -> None: ...
+
 def prepare_effect_controls(
     document: str,
     processors: list[tuple[int, str]],

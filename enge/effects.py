@@ -199,6 +199,7 @@ class EffectSnapshot(BaseModel, frozen=True):
 
 class PreparedEffects(BaseModel, frozen=True):
     definition: audio_effects.EffectGraph
+    native_graph: _native.PreparedEffectGraph = Field(exclude=True)
     sample_rate: int = Field(gt=0)
     order: list[str]
     layouts: dict[str, list[str]]
@@ -650,7 +651,7 @@ class OfflineEffects:
 
     def _apply(self, action: audio_effects.EffectAction) -> None:
         graph = self.definition.definition
-        audio_effects.validate_action(graph, action)
+        self.definition.native_graph.validate_actions([action.model_dump_json()])
         if isinstance(action, audio_effects.InputEndAction):
             if action.input in self.ended_inputs:
                 raise ValueError(f"Effect input {action.input} already ended")
@@ -1601,7 +1602,7 @@ def prepare(
     if sample_rate <= 0:
         raise EngineError("Effect sample rate must be positive")
     definition = synth.expand_patch_outputs(definition)
-    order, layouts, channels, latencies = _native.prepare_effect_topology(
+    native_graph = _native.PreparedEffectGraph(
         definition.model_dump_json(
             include={
                 "scope",
@@ -1614,8 +1615,8 @@ def prepare(
                 "bindings",
             }
         ),
-        sample_rate,
     )
+    order, layouts, channels, latencies = native_graph.topology(sample_rate)
     if tempo_map is None and any(
         g.clock == "beats" for g in definition.envelfos.values()
     ):
@@ -1703,6 +1704,7 @@ def prepare(
     buffers, digests = convolution.prepare_audio(definition, sample_rate, audio)
     prepared = PreparedEffects(
         definition=definition,
+        native_graph=native_graph,
         sample_rate=sample_rate,
         order=order,
         layouts=layouts,
@@ -2267,12 +2269,16 @@ def native_live_actions(
     ordered_actions = sorted(actions, key=lambda a: (a.tick, a.ordinal))
     if any(a.tick < start or a.tick >= end for a in ordered_actions):
         raise EngineError("Effect action is outside the native live interval")
+    if not ordered_actions:
+        return np.empty((0, 6), dtype=np.float64)
+    definition.native_graph.validate_actions(
+        [a.model_dump_json() for a in ordered_actions]
+    )
     graph = definition.definition
     processors = {p.name: p for p in graph.processors}
     nodes = {name: i for i, name in enumerate(definition.order)}
     rows: list[list[float]] = []
     for action in ordered_actions:
-        audio_effects.validate_action(graph, action)
         if isinstance(action, audio_effects.ParameterAction):
             processor = processors[action.processor]
             parameter = _native_parameter(processor, action.parameter)

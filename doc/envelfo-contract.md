@@ -195,8 +195,11 @@ delays and admits fixed-delay damping targets when the processor declares
 damping. Rust also validates input and processor connections, and provides
 the layered execution order, named channel layouts, and cumulative frame
 latencies used during offline and live preparation. Follower dependencies
-participate in both ordering and alignment. Python retains asset resolution,
-action validation, and the mapping from processor addresses to native slots.
+participate in both ordering and alignment. The prepared Rust graph also
+validates authored actions before offline application and live queue encoding,
+including processor capabilities, parameter bounds, discrete controls, and
+input names. Python retains asset resolution, frame windows, and native slot
+assignment. Enge owns queue admission and runtime state.
 Topology preparation uses the shared codec limits and the default 10,000-record
 budget. Cumulative latencies use checked signed 64-bit frame counts.
 The compiler preserves declaration order for target slots and sorts route
@@ -225,6 +228,9 @@ heap operations inside 18,719 successful and 68 failed callbacks. Follower
 tests compared order and cumulative latencies to Python's authoring graph
 and checked named channel layouts, playback, and snapshot replay.
 The generated report is `build/rust-ufor-effect-topology-audit.xml`.
+Action validation passed 457 focused macOS tests. The audit recorded zero
+heap operations inside 18,719 successful and 68 failed callbacks. The
+generated report is `build/rust-ufor-effect-actions-audit.xml`.
 
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered

@@ -333,6 +333,26 @@ def test_effect_advance_enforces_prepared_blocks_and_allows_noop() -> None:
         renderer.advance({"main": np.zeros((4097, 2))}, [], 0, 4097)
 
 
+def test_effect_preparation_rejects_out_of_domain_actions_in_both_paths() -> None:
+    graph = gain_graph(maximum_block_frames=48000)
+    prepared = effects.prepare(graph, 48000)
+    action = audio_effects.ParameterAction(
+        tick=0,
+        ordinal=0,
+        processor=graph.processors[0].name,
+        parameter="mix",
+        value=1.5,
+    )
+    with pytest.raises(ValueError, match="outside its domain"):
+        effects.native_live_actions(prepared, [action], 0, 48000)
+    with pytest.raises(effects.EngineError, match="Effect processing failed") as error:
+        effects.OfflineEffects(prepared).advance(
+            {"main": np.zeros((48000, 2))}, [action], 0, 48000
+        )
+    assert isinstance(error.value.__cause__, ValueError)
+    assert "outside its domain" in str(error.value.__cause__)
+
+
 def test_serial_shorthand_rejects_multi_input_processor() -> None:
     with pytest.raises(effects.EngineError, match="one-input"):
         effects.serial_graph(
