@@ -4,14 +4,43 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use ufor::codec::{self, Format};
 use ufor::control::schedule::{EventCoordinate, schedule_commands};
-use ufor::envelfo::PreparationLimits;
+use ufor::envelfo::{PreparationLimits, Waveform};
 use ufor::identifier::Identifier;
 use ufor::number::Rational;
+use ufor::oscillator::Oscillator;
 use ufor::samples::eligibility::VoiceEligibility;
 use ufor::tuning::Tuning;
 use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
+
+#[pyclass(frozen, skip_from_py_object)]
+pub(crate) struct PreparedOscillator(Oscillator);
+
+#[pymethods]
+impl PreparedOscillator {
+    #[new]
+    fn new(document: &str) -> PyResult<Self> {
+        codec::parse_oscillator(document, Format::Json)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn shape(&self) -> (u8, f64) {
+        let waveform = match self.0.waveform() {
+            Waveform::Sine => 0,
+            Waveform::Square => 1,
+            Waveform::Triangle => 2,
+        };
+        (waveform, self.0.duty_cycle_f64())
+    }
+
+    fn gain(&self, note: i64) -> PyResult<f64> {
+        self.0
+            .gain(note)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
 
 #[pyfunction]
 #[pyo3(signature = (tempo, sample_rate, events, *, max_records=10_000))]

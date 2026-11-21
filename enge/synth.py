@@ -1809,7 +1809,11 @@ class OfflineSynth:
                     oscillator=template.oscillator,
                     envelope=template.envelope,
                     frequencies=[action.pitch_hz],
-                    gain=template.oscillator.gain(action.key),
+                    gain=(
+                        native.prepare_oscillator(template.oscillator).gain(action.key)
+                        if self.backend == "native"
+                        else template.oscillator.gain(action.key)
+                    ),
                     filters=template.processing.filters,
                     filter_order=template.processing.filter_order,
                     minimum_hold_seconds=template.minimum_hold_seconds,
@@ -1933,12 +1937,12 @@ class PersistentSynth:
         generators, self.transform_nodes, transform_maps = _prepare_native_generators(
             rate, voices, template, prepared, tempo_map
         )
+        self._oscillator = native.prepare_oscillator(template.oscillator)
+        waveform, duty = self._oscillator.shape()
         self.runtime = _native.SynthRuntime(
             rate,
-            [Waveform.sine, Waveform.square, Waveform.triangle].index(
-                template.oscillator.waveform
-            ),
-            float(template.oscillator.duty_cycle),
+            waveform,
+            duty,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
             template.envelope.model_dump_json(),
             (
@@ -2373,6 +2377,7 @@ class PersistentSynth:
         slot = next((i for i, value in enumerate(active) if not value), None)
         if slot is None:
             raise EngineError("Persistent synth voice capacity exceeded")
+        gain = self._oscillator.gain(action.key)
         active[slot] = True
         self.voices[action.voice_id] = slot
         self.voice_triggers[action.voice_id] = VoiceAddress(
@@ -2389,7 +2394,7 @@ class PersistentSynth:
         return (
             slot,
             action.pitch_hz,
-            self.template.oscillator.gain(action.key),
+            gain,
             phase,
         )
 

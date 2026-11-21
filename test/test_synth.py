@@ -10,7 +10,13 @@ from ufor.segments import Segment
 from ufor.synth import SynthInstrumentScore
 from ufor.synth_trace import prepare as prepare_trace
 
-from enge.synth import EngineError, OfflineSynth, prepare, waveform_samples
+from enge.synth import (
+    EngineError,
+    OfflineSynth,
+    PersistentSynth,
+    prepare,
+    waveform_samples,
+)
 
 
 def score() -> SynthInstrumentScore:
@@ -93,6 +99,37 @@ def test_offline_synth_renders_one_second_with_explicit_channel_routes(
     expected = np.zeros_like(output)
     expected[:, 0] = np.where(phase < 0.5, 4 * phase - 1, 3 - 4 * phase)
     check_audio(tmp_path / "triangle.wav", output, expected)
+
+
+def test_native_synth_renders_exact_duty_and_key_scaled_gain(tmp_path: Path) -> None:
+    raw = score().model_dump(mode="json")
+    raw["body"]["voices"][0]["oscillator"] = {
+        "waveform": "square",
+        "duty_cycle": "4503599627370497/9007199254740993",
+        "key_scale_db_per_12_steps": -20,
+    }
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = prepare_trace(
+        document.body,
+        [
+            Trigger(
+                tick=0,
+                ordinal=0,
+                part="main",
+                trigger_id="note",
+                key=76,
+                pitch_hz=12000,
+            )
+        ],
+        seed=0,
+    ).actions
+    expected = np.zeros((48000, 2))
+    expected[:, 0] = np.tile([0.1, 0.1, -0.1, -0.1], 12000)
+    definition = prepare(document)
+    offline = OfflineSynth(definition, "native").advance(actions, 0, 48000)
+    persistent = PersistentSynth(definition, voices=1).advance(actions, 0, 48000)
+    check_audio(tmp_path / "offline-key-scaled-square.wav", offline, expected)
+    check_audio(tmp_path / "persistent-key-scaled-square.wav", persistent, expected)
 
 
 def test_offline_synth_is_partition_invariant_and_restorable(

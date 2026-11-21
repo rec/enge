@@ -1,14 +1,23 @@
 """Prepare exact envelope boundaries and owned buffers for the native kernel."""
 
 from fractions import Fraction
+from functools import lru_cache
 from math import ceil
 
 import numpy as np
 from envelfo.runtime import envelfo_at, resolved_envelope
 from ufor.approach import ExponentialApproach
 from ufor.envelfo import EnvelfoState, Envelope, EnvelopeState
-from ufor.oscillator import Oscillator, Waveform
+from ufor.oscillator import Oscillator
 from ufor.segments import IndefiniteSegment, Segment
+
+from . import _native
+
+
+@lru_cache
+def prepare_oscillator(oscillator: Oscillator) -> _native.PreparedOscillator:
+    """Reuse the portable declaration across repeat voice starts and blocks."""
+    return _native.PreparedOscillator(oscillator.model_dump_json())
 
 
 def render(
@@ -25,11 +34,10 @@ def render(
     filter_after_amplitude: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return owned audio and next-state buffers without changing the inputs."""
-    from . import _native
-
+    waveform, duty = prepare_oscillator(oscillator).shape()
     return _native.render(
-        [Waveform.sine, Waveform.square, Waveform.triangle].index(oscillator.waveform),
-        float(oscillator.duty_cycle),
+        waveform,
+        duty,
         sample_rate,
         gain,
         np.ascontiguousarray(frequencies, dtype=np.float64),
