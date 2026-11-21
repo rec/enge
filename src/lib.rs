@@ -40,6 +40,16 @@ fn plan_voice_retirements(document: &str) -> PyResult<String> {
     serde_json::to_string(&actions).map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
+#[pyfunction]
+fn plan_voice_release(document: &str) -> PyResult<String> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    // The host's accumulated trigger state can exceed the score document limits.
+    let request: ufor::voice_release::ReleaseRequest =
+        serde_json::from_str(document).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let plan = request.plan().map_err(invalid)?;
+    serde_json::to_string(&plan).map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
 fn envelope_spans(envelope: PyReadonlyArray2<'_, f64>, count: usize) -> PyResult<Vec<f64>> {
     if envelope.shape()[1] != 8 || !envelope.is_c_contiguous() {
         return Err(PyValueError::new_err("Invalid native envelope layout"));
@@ -232,6 +242,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<sampler::SampleTraversal>()?;
     module.add_function(wrap_pyfunction!(sampler::advance_sample_selection, module)?)?;
     module.add_function(wrap_pyfunction!(plan_voice_retirements, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_voice_release, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::draw_sample_range, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::resolve_sample_variation, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::render_sample, module)?)?;

@@ -10,15 +10,39 @@ from test_synth import check_audio, score
 from ufor import synth_trace
 from ufor.envelfo import Envelope
 from ufor.events import ControlChange, PerformanceEvent, Release
-from ufor.instrument_trace import RetirementCause, VoiceRetirement
+from ufor.instrument_trace import ActiveTrigger, RetirementCause, VoiceRetirement
 from ufor.samples import instrument, trace
 from ufor.samples.enums import LoopMode
 from ufor.samples.playback import Loop, Playback, Slice
 from ufor.segments import Segment
 from ufor.synth import SynthInstrument
+from ufor.voice_release import KeyRelease, ReleaseRequest
 
-from enge import live, sample_instrument, sampler, voice_admission
+from enge import live, sample_instrument, sampler, voice_admission, voice_release
 from enge.synth import EngineError
+
+
+def test_native_release_plan_accepts_accumulated_trigger_history() -> None:
+    completed = [
+        ActiveTrigger(
+            part="main",
+            trigger_id=f"past-{i}",
+            key=60,
+            velocity=1,
+            physically_released=True,
+            logical_released=True,
+        )
+        for i in range(25_000)
+    ]
+    held = ActiveTrigger(part="main", trigger_id="held", key=60, velocity=1)
+    plan = voice_release.native_release_plan(
+        ReleaseRequest(
+            triggers=[*completed, held],
+            event=KeyRelease(part="main", trigger_id="held", sustain_pressed=False),
+        )
+    )
+    assert plan.physical_index == len(completed)
+    assert plan.logical_indices == [len(completed)]
 
 
 def sample_score(
@@ -162,6 +186,50 @@ def test_native_trace_retires_oldest_then_retires_repeated_key(kind: str) -> Non
     ] == [
         ("voice-0", RetirementCause.voice_limit, "release"),
         ("voice-1", RetirementCause.same_key, "stop"),
+    ]
+
+
+@pytest.mark.parametrize("kind", ["sample", "synth"])
+def test_native_trace_defers_releases_by_part_and_preserves_onset_order(
+    kind: str,
+) -> None:
+    settings = {
+        "controls": {"pedal": {"default": 1.0}},
+        "sustain": {"control": "pedal"},
+    }
+    events: list[PerformanceEvent] = [
+        onset(0, "first", part="left").model_copy(update={"controls": {}}),
+        onset(1, "first", part="right").model_copy(update={"controls": {}}),
+        onset(2, "last", part="left").model_copy(update={"controls": {}}),
+        Release(tick=3, ordinal=0, part="left", trigger_id="last"),
+        Release(tick=4, ordinal=0, part="right", trigger_id="first"),
+        Release(tick=5, ordinal=0, part="left", trigger_id="first"),
+        Release(tick=6, ordinal=0, part="left", trigger_id="first"),
+        change(7, 0.4, "pedal", scope="part", part="left"),
+        change(8, 0.4, "pedal", scope="part", part="right"),
+    ]
+    if kind == "sample":
+        raw = sample_score(frames=32).body.model_dump(mode="json")
+        raw["settings"].update(settings)
+        samples = instrument.SampleInstrument.model_validate(raw)
+        prepared = sample_instrument.prepare_trace(samples, events, seed=0)
+        assert prepared == trace.prepare(samples, events, seed=0)
+    else:
+        raw = score().body.model_dump(mode="json")
+        raw.update(settings)
+        synth = SynthInstrument.model_validate(raw)
+        prepared = synth_trace.prepare(
+            synth, events, seed=0, release_plan=voice_release.native_release_plan
+        )
+        assert prepared == synth_trace.prepare(synth, events, seed=0)
+    assert [
+        (a.tick, a.voice_id, a.cause)
+        for a in prepared.actions
+        if isinstance(a, VoiceRetirement)
+    ] == [
+        (7, "voice-0", RetirementCause.logical_release),
+        (7, "voice-2", RetirementCause.logical_release),
+        (8, "voice-1", RetirementCause.logical_release),
     ]
 
 

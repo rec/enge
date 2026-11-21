@@ -23,8 +23,17 @@ from ufor.synth import (
     YamahaVoiceTemplate,
 )
 from ufor.voice_admission import plan_retirements
+from ufor.voice_release import plan_release
 
-from . import fm, noise, sample_instrument, synth, voice_admission, yamaha_instrument
+from . import (
+    fm,
+    noise,
+    sample_instrument,
+    synth,
+    voice_admission,
+    voice_release,
+    yamaha_instrument,
+)
 from .midi import MidiPerformance
 
 
@@ -118,6 +127,11 @@ def render_midi(
                     voice_admission.native_retirements
                     if backend == "native"
                     else plan_retirements
+                ),
+                release_plan=(
+                    voice_release.native_release_plan
+                    if backend == "native"
+                    else plan_release
                 ),
             ).actions
         if (

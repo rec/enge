@@ -302,6 +302,16 @@ Voice admission passed 201 focused macOS tests with zero heap operations
 inside 3,421 successful and six failed callbacks. The generated report is
 `build/rust-ufor-voice-admission-audit.xml`.
 
+Native MIDI trace preparation also uses Rust uFor to classify key releases
+and sustain transitions for sampler, synth, FM and noise. The planner
+keeps sustain scoped to each part and returns deferred releases in onset
+order. Python applies release layers against the current voice state and
+records the actions and snapshots. The bridge reads the host's accumulated
+trigger history without applying score document limits to that state.
+Release planning passed 204 focused macOS tests with zero heap operations
+inside 3,421 successful and six failed callbacks. The generated report is
+`build/rust-ufor-voice-release-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

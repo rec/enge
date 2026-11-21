@@ -26,7 +26,7 @@ from ufor.samples import (
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
 
-from . import _native, control, filters, sampler, synth, voice_admission
+from . import _native, control, filters, sampler, synth, voice_admission, voice_release
 
 
 class PreparedSampler(Model, frozen=True):
@@ -143,6 +143,7 @@ def prepare_trace(
         eligible_slots=matching_slots,
         advance_selection=_advance_selection,
         admit_voices=voice_admission.native_retirements,
+        release_plan=voice_release.native_release_plan,
         draw_random_range=_native.draw_sample_range,
         resolve_variation=_resolve_variation,
     )
