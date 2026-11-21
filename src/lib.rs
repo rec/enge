@@ -207,6 +207,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<live::LiveRuntimeSnapshot>()?;
     module.add_class::<queue::ActionQueue>()?;
     module.add_class::<runtime::generators::GeneratorBank>()?;
+    module.add_function(wrap_pyfunction!(
+        effects::preparation::prepare_effect_controls,
+        module
+    )?)?;
     module.add_class::<runtime::preparation::fm::PreparedFm>()?;
     module.add_class::<runtime::SynthRuntime>()?;
     module.add_class::<runtime::SynthRuntimeSnapshot>()?;

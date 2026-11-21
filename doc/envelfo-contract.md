@@ -184,8 +184,23 @@ declarations, ordered generator JSON and host target metadata. Synth, FM, noise
 and sampler also supply the processing portion of a canonical SoundSettings
 body. Rust uFor resolves the authored amplitude, tuning cents, cutoff and Q
 facts for the shared native slots, and enge checks authored parameter units,
-defaults and minimum rules against those facts. Effect processor targets
-still come from the Python effect graph.
+defaults and minimum rules against those facts.
+
+Effect graph preparation compiles canonical modulation declarations into
+native control tables. Rust uFor checks Gain, Multiply, FrequencyShifter,
+and Filter target units, defaults, and bounds against the authored processors.
+Python retains the graph topology, other processor definitions and their
+validation, and the mapping from processor addresses to native slots.
+The compiler preserves declaration order for target slots and sorts route
+contributions by source and route name. Follower assignments and individual
+generator contribution slots retain their existing meaning. The preparation
+budget covers modulation, supplied processor declarations, and host slot and
+follower metadata.
+
+The focused macOS audit passed 162 tests covering effect controls, persistent
+effects, followers, frequency shifting, routing, mixing, and matrix delay.
+It recorded zero heap operations in 6,627 successful and 12 failed callbacks.
+The generated report is `build/rust-ufor-effect-targets-audit.xml`.
 
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered

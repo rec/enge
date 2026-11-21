@@ -8,6 +8,15 @@ from .effect_controls import EffectControlPlan
 
 class SynthRuntimeSnapshot: ...
 
+def prepare_effect_controls(
+    document: str,
+    processors: list[tuple[int, str]],
+    slots: list[tuple[int, int]],
+    followers: list[tuple[str, int]],
+    *,
+    max_records: int = 10000,
+) -> EffectControlPlan: ...
+
 class PreparedTuning:
     def __init__(self, document: str) -> None: ...
     def frequency_hz(self, note: int) -> float: ...

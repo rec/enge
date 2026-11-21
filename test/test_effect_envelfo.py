@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -147,6 +148,25 @@ def modulated_graph(kind: str) -> tuple[audio_effects.EffectGraph, str, float, f
         },
     }
     return audio_effects.EffectGraph.model_validate(raw), parameter, default, depth
+
+
+def test_native_effect_controls_check_authored_processor_identity_and_defaults() -> (
+    None
+):
+    graph, _, _, _ = modulated_graph("gain")
+    document = graph.modulation.model_dump_json()
+    processors = [(0, graph.processors[0].model_dump_json())]
+    targets, routes = _native.prepare_effect_controls(
+        document, processors, [(0, 0)], []
+    )
+    assert targets == [(0, 0, -12, 0)]
+    assert routes == [(0, -1, 0, 0, [(-1, -3), (1, 3)], -1, 1, "motion")]
+    with pytest.raises(ValueError, match="node does not match processor"):
+        _native.prepare_effect_controls(document, processors, [(1, 0)], [])
+    data = json.loads(document)
+    data["parameters"][0]["default"] = -3
+    with pytest.raises(ValueError, match="default must match the processor"):
+        _native.prepare_effect_controls(json.dumps(data), processors, [(0, 0)], [])
 
 
 @pytest.mark.parametrize(

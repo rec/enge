@@ -392,10 +392,11 @@ covering converter and MIDI file behavior, synth pitch admission, persistent FM,
 pitch-independent noise, and sampler pitch and continuation. All passed.
 
 Python continues to resolve resources and references, build performance traces,
-discover DSP targets and validate complete instrument and effect settings.
-Any future port of `SoundSettings`, processing declarations, target resolution,
-instrument/effect documents or TempoMap is a separate milestone. Global
-modulation ordering and weighting alignment also remain separate behavior changes.
+and validate complete instrument and effect settings. The
+[native modulation contract](envelfo-contract.md#modulation-route-preparation-and-shared-mathematics)
+describes the later SoundSettings, FM, and initial effect target integration.
+Complete instrument and effect document loading and TempoMap remain separate
+milestones, as do changes to global modulation ordering and weighting.
 
 ## Approved decisions
 

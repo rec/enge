@@ -2172,35 +2172,36 @@ def _native_control_plan(definition: PreparedEffects) -> EffectControlPlan:
     graph = definition.definition
     nodes = {n: i for i, n in enumerate(definition.order)}
     processors = {p.name: p for p in graph.processors}
-    targets = [
-        (
-            nodes[p.target.name],
-            _native_parameter(processors[p.target.name], p.target.parameter),
-            p.minimum,
-            p.maximum,
-        )
-        for p in graph.modulation.parameters
-    ]
-    indices = {p.target: i for i, p in enumerate(graph.modulation.parameters)}
-    followers = {
-        b.name: nodes[b.processor]
-        for b in graph.bindings
-        if isinstance(b, FollowerBinding)
-    }
-    sources = {s.name: s for s in graph.modulation.sources}
-    return targets, [
-        (
-            indices[r.target],
-            followers.get(r.source, -1),
-            0 if r.operation == modulation.Operation.add else 1,
-            list(modulation.Interpolation).index(r.interpolation),
-            [(p.input, p.amount) for p in r.points],
-            sources[r.source].minimum,
-            sources[r.source].maximum,
-            r.name,
-        )
-        for r in sorted(graph.modulation.routes, key=lambda r: (r.source, r.name))
-    ]
+    target_owners = {p.target.name for p in graph.modulation.parameters}
+    return _native.prepare_effect_controls(
+        graph.modulation.model_dump_json(),
+        [
+            (nodes[p.name], p.model_dump_json())
+            for p in graph.processors
+            if p.name in target_owners
+            and isinstance(
+                p,
+                (
+                    audio_effects.Gain,
+                    audio_effects.Multiply,
+                    audio_effects.FrequencyShifter,
+                    audio_effects.Filter,
+                ),
+            )
+        ],
+        [
+            (
+                nodes[p.target.name],
+                _native_parameter(processors[p.target.name], p.target.parameter),
+            )
+            for p in graph.modulation.parameters
+        ],
+        [
+            (b.name, nodes[b.processor])
+            for b in graph.bindings
+            if isinstance(b, FollowerBinding)
+        ],
+    )
 
 
 def configure_native_generators(
