@@ -16,8 +16,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PySequence;
 use rtrb::{Consumer, Producer, RingBuffer};
-use std::f64::consts::PI;
 use ufor::modulation::math::{Mapping, sum_partials};
+use ufor::samples::crossfade::weight_at_position;
 
 struct Source {
     runtime: SourceRuntime,
@@ -1069,22 +1069,10 @@ impl SampleRuntime {
                     * self.parameter(voice, 0, frame)?
                     * self.parameter(voice, 2, frame)?;
                 for index in 0..self.crossfades.len() {
-                    let position = self
-                        .parameter(voice, 4 + 2 * self.filter_routes.len() + index, frame)?
-                        .clamp(0.0, 1.0);
+                    let position =
+                        self.parameter(voice, 4 + 2 * self.filter_routes.len() + index, frame)?;
                     let (inward, equal_power) = self.crossfades[index];
-                    let weight = if equal_power && position > 0.0 && position < 1.0 {
-                        if inward {
-                            (PI * position / 2.0).sin()
-                        } else {
-                            (PI * position / 2.0).cos()
-                        }
-                    } else if inward {
-                        position
-                    } else {
-                        1.0 - position
-                    };
-                    level *= weight;
+                    level *= weight_at_position(position, inward, equal_power);
                 }
                 let step = self.steps[voice]
                     * ((self.parameter(voice, 1, frame)? + self.parameter(voice, 3, frame)?)

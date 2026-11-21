@@ -105,7 +105,7 @@ def test_latched_layer_weights_preserve_silent_voices_and_sum_without_normalizin
 @pytest.mark.parametrize("scope", ["instrument", "part", "trigger"])
 @pytest.mark.parametrize("delay", [0, 600])
 def test_live_layer_weights_smooth_before_mapping_and_restore(
-    tmp_path: Path, curve: str, scope: str, delay: int
+    tmp_path: Path, curve: str, scope: str, delay: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     raw = sample_score().model_dump(mode="json")
     raw["body"]["settings"]["controls"] = {"expression": {"default": 0.25}}
@@ -179,7 +179,15 @@ def test_live_layer_weights_smooth_before_mapping_and_restore(
     gain = 2 * weights[0][0] * weights[1][1] + weights[0][1] * weights[1][0]
     gain[: 2000 + delay] = 0
     expected = gain[:, None] * [0.1, 0.225]
+
+    def unexpected_python_weight(*args: object) -> np.ndarray:
+        pytest.fail("Native sampler used the Python crossfade calculation")
+
     for backend in ("numpy", "native", "persistent"):
+        if backend == "native":
+            monkeypatch.setattr(
+                sample_instrument, "_crossfade_weight", unexpected_python_weight
+            )
         renderer = (
             sample_instrument.PersistentSampler(definition)
             if backend == "persistent"

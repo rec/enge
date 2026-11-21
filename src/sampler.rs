@@ -7,6 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use ufor::codec::{self, Format};
+use ufor::samples::crossfade::Crossfade;
 use ufor::samples::playback::{Direction, LoopMode, Mapping, ResolvedSlotPlayback};
 
 // Integers stay integers across the binding, including frames beyond 2**53.
@@ -42,6 +43,68 @@ impl SampleBuffer {
         Ok(Self {
             audio: Arc::new(samples.as_array().to_owned()),
         })
+    }
+}
+
+#[pyclass(frozen)]
+pub(crate) struct SampleCrossfades {
+    latched: Vec<Crossfade>,
+    controls: Vec<Crossfade>,
+}
+
+#[pymethods]
+impl SampleCrossfades {
+    #[new]
+    fn new(documents: Vec<String>) -> PyResult<Self> {
+        let fades = documents
+            .iter()
+            .map(|text| {
+                codec::parse_sample_crossfade(text, Format::Json)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let (controls, latched) = fades
+            .into_iter()
+            .partition(|fade| fade.control_route().is_some());
+        Ok(Self { latched, controls })
+    }
+
+    #[pyo3(signature = (key, velocity))]
+    fn onset_gain(&self, key: Option<i64>, velocity: f64) -> PyResult<f64> {
+        self.latched.iter().try_fold(1.0, |gain, fade| {
+            let weight = fade
+                .onset_weight(key, velocity)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            Ok(gain * weight.expect("latched crossfade"))
+        })
+    }
+
+    fn control_routes(&self) -> Vec<(f64, f64, bool, bool)> {
+        self.controls
+            .iter()
+            .filter_map(Crossfade::control_route)
+            .collect()
+    }
+
+    fn control_weights<'py>(
+        &self,
+        py: Python<'py>,
+        index: usize,
+        values: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+        let fade = self
+            .controls
+            .get(index)
+            .ok_or_else(|| PyValueError::new_err("Unknown control crossfade"))?;
+        let weights = values
+            .as_array()
+            .iter()
+            .map(|&value| {
+                fade.control_weight(value)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(weights.into_pyarray(py))
     }
 }
 

@@ -222,6 +222,16 @@ class OfflineSampler:
         self.voices: dict[str, SampleVoiceSnapshot] = {}
         self.pending: dict[str, trace.VoiceStart] = {}
         self.slots = {s.name: s for s in definition.document.body.slots}
+        self.native_crossfades = (
+            {
+                s.name: _native.SampleCrossfades(
+                    [f.model_dump_json() for f in s.crossfades]
+                )
+                for s in self.slots.values()
+            }
+            if backend == "native"
+            else {}
+        )
         self.native_mappings = (
             {
                 s.name: _native.SamplePitchMapping(s.mapping.model_dump_json())
@@ -438,6 +448,9 @@ class OfflineSampler:
                 ratio = self.native_mappings[slot.name].pitch_ratio(
                     action.pitch_hz, 0, action.variation.pitch_cents
                 )
+                layer_gain = self.native_crossfades[slot.name].onset_gain(
+                    action.key, action.velocity
+                )
             except ValueError as error:
                 raise synth.EngineError(str(error)) from error
         else:
@@ -452,6 +465,7 @@ class OfflineSampler:
             ratio = playback.pitch_ratio(
                 slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
             )
+            layer_gain = _layer_gain(slot, action)
         common = self.definition.document.body.settings
         envelope = settings.envelope or common.envelope
         assert envelope is not None
@@ -467,7 +481,7 @@ class OfflineSampler:
                 if settings.processing.filters
                 else common.processing.filter_order,
                 pitch_ratio=ratio,
-                gain=_layer_gain(slot, action)
+                gain=layer_gain
                 * 10
                 ** (
                     (
@@ -555,7 +569,9 @@ class OfflineSampler:
             for f in self.slots[voice.template].crossfades
             if isinstance(f, crossfade.ControlCrossfade)
         ]
-        for fade, index in zip(fades, voice.crossfade_sources, strict=True):
+        for route, (fade, index) in enumerate(
+            zip(fades, voice.crossfade_sources, strict=True)
+        ):
             state = next(
                 r.state
                 for r in self.controls.contexts[index].ramps
@@ -565,7 +581,11 @@ class OfflineSampler:
             values = control.control_samples(
                 state, start, frames, self.definition.sample_rate
             )
-            gain *= _crossfade_weight(fade, values)
+            gain *= (
+                self.native_crossfades[voice.template].control_weights(route, values)
+                if self.backend == "native"
+                else _crossfade_weight(fade, values)
+            )
         return gain
 
 
@@ -750,9 +770,15 @@ class PersistentSampler(OfflineSampler):
                 maps.extend(prepared[18][0])
             source = self.native_sources[slot.name]
             fades = []
-            for fade in slot.crossfades:
-                if not isinstance(fade, crossfade.ControlCrossfade):
-                    continue
+            for fade, (start, end, inward, equal_power) in zip(
+                (
+                    f
+                    for f in slot.crossfades
+                    if isinstance(f, crossfade.ControlCrossfade)
+                ),
+                self.native_crossfades[slot.name].control_routes(),
+                strict=True,
+            ):
                 declaration = common.controls[fade.control]
                 duration = (
                     Fraction(str(fade.smoothing_seconds)) * self.definition.sample_rate
@@ -776,13 +802,8 @@ class PersistentSampler(OfflineSampler):
                 parameters.extend([0, 0, 1])
                 scopes.append(fade.scope)
                 names.append(fade.control)
-                maps.append((0, [(fade.start, 0.0), (fade.end, 1.0)]))
-                fades.append(
-                    (
-                        fade.direction == enums.FadeDirection.fade_in,
-                        fade.curve == enums.FadeCurve.equal_power,
-                    )
-                )
+                maps.append((0, [(start, 0.0), (end, 1.0)]))
+                fades.append((inward, equal_power))
             runtime.set_sample_controls(
                 source,
                 np.concatenate(rows),

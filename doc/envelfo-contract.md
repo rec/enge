@@ -267,6 +267,14 @@ Slot playback passed 671 focused macOS tests with zero heap operations
 inside 6,756 successful and seven failed callbacks. The generated report is
 `build/rust-ufor-slot-playback-audit.xml`.
 
+Native sampler onset and offline control fades use Rust uFor's authored sample
+crossfades. The live callback uses the same gain curve on its normalized
+control position. Enge retains control smoothing and voice selection, and
+the NumPy renderer retains its reference calculation.
+Crossfade preparation passed 671 focused macOS tests with zero heap
+operations inside 6,756 successful and seven failed callbacks. The generated
+report is `build/rust-ufor-sample-crossfade-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to
