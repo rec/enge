@@ -110,10 +110,13 @@ def test_native_sample_trace_matches_conditional_voice_starts_and_state() -> Non
 def test_native_sample_trace_matches_take_choices_and_snapshots(mode: str) -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
     raw["body"]["settings"]["selections"] = [{"name": "takes", "mode": mode}]
+    raw["body"]["groups"] = [{"name": "alternates", "selection": "takes"}]
     slot = raw["body"]["slots"][0]
+    slot.pop("selection", None)
+    slot["group"] = "alternates"
     raw["body"]["slots"] = [
-        slot | {"name": name, "selection": "takes"}
-        for name in ("third", "first", "second")
+        *(slot | {"name": name} for name in ("third", "first", "second")),
+        slot | {"name": "overlay", "selection": False},
     ]
     definition = instrument.SampleInstrumentScore.model_validate(raw).body
     events: list[PerformanceEvent] = [
@@ -126,7 +129,9 @@ def test_native_sample_trace_matches_take_choices_and_snapshots(mode: str) -> No
     reference = trace.prepare(definition, events, seed=2**64 - 1)
     assert prepared == reference
     assert len(prepared.snapshots[-1].selection.sequences) == 2
-    assert sum(isinstance(a, trace.VoiceStart) for a in prepared.actions) == 10
+    starts = [a for a in prepared.actions if isinstance(a, trace.VoiceStart)]
+    assert len(starts) == 20
+    assert [a.template for a in starts[::2]] == ["overlay"] * 10
 
 
 def test_native_sample_trace_matches_random_range_boundary_and_voice_variation() -> (
@@ -598,7 +603,10 @@ def test_sampler_consumes_sustain_controls_and_group_envelope_with_restores(
     ramp = np.arange(96000, dtype=np.float64) / 96000
     audio = np.column_stack([ramp, 1 - ramp])
     prepared = sample_instrument.prepare(document, {"asset": audio})
-    actions = trace.prepare(
+    prepare_trace = (
+        sample_instrument.prepare_trace if backend == "native" else trace.prepare
+    )
+    actions = prepare_trace(
         document.body,
         [
             onset(pitch=220),

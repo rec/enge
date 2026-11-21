@@ -359,6 +359,17 @@ Pitch realization passed 285 focused macOS tests with zero heap operations
 inside 2,119 successful and six failed callbacks. The generated report is
 `build/rust-ufor-synth-pitch-audit.xml`.
 
+Sampler renderer and native trace preparation use Rust uFor to resolve
+slot-group inheritance. The resolver selects whole SoundSettings categories
+and resolves take-set inheritance, including an explicit `selection = false`.
+Unspecified categories use the SoundSettings defaults when there is no
+group value. Python decodes the selected bodies and continues to validate the
+instrument document and expand Patch outputs. Nested generator bodies keep
+their authored declaration order through the bridge.
+Slot inheritance passed 186 focused macOS tests with zero heap operations
+inside 5,815 successful and seven failed callbacks. The generated report is
+`build/rust-ufor-slot-settings-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

@@ -145,9 +145,34 @@ def prepare_trace(
         admit_voices=voice_admission.native_retirements,
         release_plan=voice_release.native_release_plan,
         prepare_start=_native.prepare_voice_start,
+        slot_settings=_resolve_slots,
         draw_random_range=_native.draw_sample_range,
         resolve_variation=_resolve_variation,
     )
+
+
+def _resolve_slots(
+    definition: instrument.SampleInstrument,
+) -> dict[str, instrument.ResolvedSlotSettings]:
+    fields = {
+        "processing",
+        "envelope",
+        "envelfos",
+        "modulation",
+        "bindings",
+        "event_connections",
+        "selection",
+    }
+    groups = {g.name: g.model_dump_json(include=fields) for g in definition.groups}
+    return {
+        s.name: instrument.ResolvedSlotSettings.model_validate_json(
+            _native.resolve_sample_slot_settings(
+                s.model_dump_json(include=fields),
+                groups[s.group] if s.group is not None else None,
+            )
+        )
+        for s in definition.slots
+    }
 
 
 def _advance_selection(
@@ -199,7 +224,6 @@ def prepare(
     sample_rate = rates[output.timebase].numerator
     assets = {a.name: a for a in score.assets}
     slices = {s.name: s for s in score.body.slices}
-    groups = {g.name: g for g in score.body.groups}
     required = {s.asset for s in score.body.slices}
     if audio.keys() != required:
         raise synth.EngineError("Decoded assets must match the referenced asset IDs")
@@ -232,11 +256,10 @@ def prepare(
     default_playback = score.body.settings.playback.model_dump_json()
     settings: dict[str, processing.SoundSettings] = {}
     routes: dict[str, list[list[float]]] = {}
+    resolved_slots = _resolve_slots(score.body)
     for slot in score.body.slots:
         settings[slot.name] = synth.expand_patch_outputs(
-            instrument.effective_settings(
-                slot, groups.get(slot.group) if slot.group is not None else None
-            )
+            resolved_slots[slot.name].settings
         )
         _validate_settings(settings[slot.name])
         filters.parameters(settings[slot.name].processing.filters, sample_rate, 1)

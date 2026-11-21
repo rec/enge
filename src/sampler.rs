@@ -10,8 +10,17 @@ use ufor::codec::{self, Format};
 use ufor::identifier::Identifier;
 use ufor::samples::crossfade::Crossfade;
 use ufor::samples::eligibility::Eligibility;
+use ufor::samples::inheritance::resolve_slot_settings;
 use ufor::samples::playback::{Direction, LoopMode, Mapping, ResolvedSlotPlayback};
 use ufor::samples::variation::DrawEvent;
+
+#[pyfunction]
+#[pyo3(signature = (slot, group=None))]
+pub(crate) fn resolve_sample_slot_settings(slot: &str, group: Option<&str>) -> PyResult<String> {
+    let resolved = resolve_slot_settings(slot, group)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    serde_json::to_string(&resolved).map_err(|error| PyValueError::new_err(error.to_string()))
+}
 
 #[pyfunction]
 #[pyo3(signature = (seed, part, trigger_id, tick, ordinal))]

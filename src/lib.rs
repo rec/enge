@@ -249,6 +249,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<sampler::PreparedSlotPlayback>()?;
     module.add_class::<sampler::SampleTraversal>()?;
     module.add_function(wrap_pyfunction!(sampler::advance_sample_selection, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        sampler::resolve_sample_slot_settings,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(plan_voice_retirements, module)?)?;
     module.add_function(wrap_pyfunction!(plan_voice_release, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::draw_sample_range, module)?)?;
