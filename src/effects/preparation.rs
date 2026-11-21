@@ -63,11 +63,10 @@ pub(crate) fn prepare_effect_controls(
         if parameter.scope() != Scope::Voice {
             return Err(invalid("effect parameters belong to one graph instance"));
         }
-        if definitions.contains_key(&node) {
-            parameters_by_node.entry(node).or_default().push(parameter);
-        } else if names.contains(parameter.target().name()) {
+        if !definitions.contains_key(&node) {
             return Err(invalid("effect target node does not match processor"));
         }
+        parameters_by_node.entry(node).or_default().push(parameter);
         addresses.insert(parameter.target(), targets.len());
         targets.push((node, field, parameter.minimum(), parameter.maximum()));
     }

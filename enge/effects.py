@@ -2179,23 +2179,6 @@ def _native_control_plan(definition: PreparedEffects) -> EffectControlPlan:
             (nodes[p.name], p.model_dump_json())
             for p in graph.processors
             if p.name in target_owners
-            and isinstance(
-                p,
-                (
-                    audio_effects.Gain,
-                    audio_effects.Multiply,
-                    audio_effects.FrequencyShifter,
-                    audio_effects.Filter,
-                    audio_effects.Gate,
-                    audio_effects.Expander,
-                    audio_effects.Compressor,
-                    audio_effects.Follower,
-                    audio_effects.Limiter,
-                    audio_effects.TransientShaper,
-                    audio_effects.DynamicEQ,
-                    audio_effects.MultibandCompressor,
-                ),
-            )
         ],
         [
             (

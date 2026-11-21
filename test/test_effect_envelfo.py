@@ -162,6 +162,8 @@ def test_native_effect_controls_check_authored_processor_identity_and_defaults()
     assert targets == [(0, 0, -12, 0)]
     assert routes == [(0, -1, 0, 0, [(-1, -3), (1, 3)], -1, 1, "motion")]
     with pytest.raises(ValueError, match="node does not match processor"):
+        _native.prepare_effect_controls(document, [], [(0, 0)], [])
+    with pytest.raises(ValueError, match="node does not match processor"):
         _native.prepare_effect_controls(document, processors, [(1, 0)], [])
     data = json.loads(document)
     data["parameters"][0]["default"] = -3
