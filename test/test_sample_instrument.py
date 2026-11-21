@@ -80,6 +80,29 @@ def test_native_sample_trace_matches_conditional_voice_starts_and_state() -> Non
     ] == ["eligible"]
 
 
+@pytest.mark.parametrize("mode", ["cycle", "random", "shuffle"])
+def test_native_sample_trace_matches_take_choices_and_snapshots(mode: str) -> None:
+    raw = sample_score(frames=4).model_dump(mode="json")
+    raw["body"]["settings"]["selections"] = [{"name": "takes", "mode": mode}]
+    slot = raw["body"]["slots"][0]
+    raw["body"]["slots"] = [
+        slot | {"name": name, "selection": "takes"}
+        for name in ("third", "first", "second")
+    ]
+    definition = instrument.SampleInstrumentScore.model_validate(raw).body
+    events: list[PerformanceEvent] = [
+        onset(i, f"note-{i}", part="left" if i % 2 else "right").model_copy(
+            update={"controls": {}}
+        )
+        for i in range(10)
+    ]
+    prepared = sample_instrument.prepare_trace(definition, events, seed=2**64 - 1)
+    reference = trace.prepare(definition, events, seed=2**64 - 1)
+    assert prepared == reference
+    assert len(prepared.snapshots[-1].selection.sequences) == 2
+    assert sum(isinstance(a, trace.VoiceStart) for a in prepared.actions) == 10
+
+
 @pytest.mark.parametrize("location", ["instrument", "slot"])
 @pytest.mark.parametrize("delay", [0, 6001])
 def test_sample_patch_signal_survives_partitioned_snapshot_restore(

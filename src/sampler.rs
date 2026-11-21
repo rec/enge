@@ -11,6 +11,23 @@ use ufor::samples::crossfade::Crossfade;
 use ufor::samples::eligibility::Eligibility;
 use ufor::samples::playback::{Direction, LoopMode, Mapping, ResolvedSlotPlayback};
 
+#[pyfunction]
+pub(crate) fn advance_sample_selection(
+    mode: &str,
+    seed: u64,
+    document: &str,
+) -> PyResult<(String, String)> {
+    let mode = serde_json::from_value(serde_json::Value::String(mode.to_owned()))
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let sequence =
+        codec::parse_sample_selection_sequence(document, Format::Json).map_err(invalid)?;
+    let (choice, next) = sequence.advance(mode, seed).map_err(invalid)?;
+    let next =
+        serde_json::to_string(&next).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok((choice.into(), next))
+}
+
 // Integers stay integers across the binding, including frames beyond 2**53.
 pub(crate) type State = (
     i64,

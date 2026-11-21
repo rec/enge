@@ -13,7 +13,15 @@ from ufor import instrument_trace
 from ufor.base import Model
 from ufor.envelfo import Patch
 from ufor.events import PerformanceEvent
-from ufor.samples import crossfade, enums, instrument, playback, processing, trace
+from ufor.samples import (
+    crossfade,
+    enums,
+    instrument,
+    playback,
+    processing,
+    selection,
+    trace,
+)
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
 
@@ -106,7 +114,7 @@ def prepare_trace(
     *,
     max_records: int = 10_000,
 ) -> trace.SampleTrace:
-    """Prepare sampler actions using Rust uFor to filter sample slots."""
+    """Prepare sampler actions with Rust uFor slot filtering and take selection."""
     fields = {
         "name",
         "mapping",
@@ -127,7 +135,22 @@ def prepare_trace(
     def matching_slots(context: trace.EligibilityContext) -> list[str]:
         return eligibility.matching_slots(dumps(context))
 
-    return trace.prepare(definition, events, seed, eligible_slots=matching_slots)
+    return trace.prepare(
+        definition,
+        events,
+        seed,
+        eligible_slots=matching_slots,
+        advance_selection=_advance_selection,
+    )
+
+
+def _advance_selection(
+    definition: selection.Selection, seed: int, sequence: selection.SelectionSequence
+) -> tuple[str, selection.SelectionSequence]:
+    choice, state = _native.advance_sample_selection(
+        definition.mode, seed, sequence.model_dump_json()
+    )
+    return choice, selection.SelectionSequence.model_validate_json(state)
 
 
 def prepare(
