@@ -31,6 +31,15 @@ type RenderedBlock<'py> = (
     Bound<'py, PyArray3<f64>>,
 );
 
+#[pyfunction]
+fn plan_voice_retirements(document: &str) -> PyResult<String> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let batch =
+        ufor::codec::parse_voice_admission(document, ufor::codec::Format::Json).map_err(invalid)?;
+    let actions = batch.retirements().map_err(invalid)?;
+    serde_json::to_string(&actions).map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
 fn envelope_spans(envelope: PyReadonlyArray2<'_, f64>, count: usize) -> PyResult<Vec<f64>> {
     if envelope.shape()[1] != 8 || !envelope.is_c_contiguous() {
         return Err(PyValueError::new_err("Invalid native envelope layout"));
@@ -222,6 +231,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<sampler::PreparedSlotPlayback>()?;
     module.add_class::<sampler::SampleTraversal>()?;
     module.add_function(wrap_pyfunction!(sampler::advance_sample_selection, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_voice_retirements, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::draw_sample_range, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::resolve_sample_variation, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::render_sample, module)?)?;

@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from test_dynamic_synth import change, dynamic_score, onset
 from test_synth import check_audio, score
+from ufor import synth_trace
 from ufor.envelfo import Envelope
 from ufor.events import ControlChange, PerformanceEvent, Release
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
@@ -14,8 +15,9 @@ from ufor.samples import instrument, trace
 from ufor.samples.enums import LoopMode
 from ufor.samples.playback import Loop, Playback, Slice
 from ufor.segments import Segment
+from ufor.synth import SynthInstrument
 
-from enge import live, sample_instrument, sampler
+from enge import live, sample_instrument, sampler, voice_admission
 from enge.synth import EngineError
 
 
@@ -130,6 +132,37 @@ def test_native_sample_trace_matches_random_range_boundary_and_voice_variation()
     starts = [a for a in prepared.actions if isinstance(a, trace.VoiceStart)]
     assert [a.template for a in starts] == ["upper"]
     assert starts[0].variation.delay_seconds > 0
+
+
+@pytest.mark.parametrize("kind", ["sample", "synth"])
+def test_native_trace_retires_oldest_then_retires_repeated_key(kind: str) -> None:
+    policy = {"maximum_voices": 1, "same_key": "replace"}
+    events: list[PerformanceEvent] = [
+        onset(i, f"note-{i}").model_copy(update={"controls": {}, "key": key})
+        for i, key in enumerate([69, 70, 70])
+    ]
+    if kind == "sample":
+        raw = sample_score(frames=32).body.model_dump(mode="json")
+        raw["settings"]["voice_policy"] = policy
+        samples = instrument.SampleInstrument.model_validate(raw)
+        prepared = sample_instrument.prepare_trace(samples, events, seed=0)
+        assert prepared == trace.prepare(samples, events, seed=0)
+    else:
+        raw = score().body.model_dump(mode="json")
+        raw["voice_policy"] = policy
+        synth = SynthInstrument.model_validate(raw)
+        prepared = synth_trace.prepare(
+            synth, events, seed=0, admit_voices=voice_admission.native_retirements
+        )
+        assert prepared == synth_trace.prepare(synth, events, seed=0)
+    assert [
+        (a.voice_id, a.cause, a.action)
+        for a in prepared.actions
+        if isinstance(a, VoiceRetirement)
+    ] == [
+        ("voice-0", RetirementCause.voice_limit, "release"),
+        ("voice-1", RetirementCause.same_key, "stop"),
+    ]
 
 
 @pytest.mark.parametrize("location", ["instrument", "slot"])

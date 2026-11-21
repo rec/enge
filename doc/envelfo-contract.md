@@ -293,6 +293,15 @@ Seeded ranges and variation passed 129 focused macOS tests with zero heap
 operations inside 3,409 successful and six failed callbacks. The generated
 report is `build/rust-ufor-sample-variation-audit.xml`.
 
+Native MIDI trace preparation uses Rust uFor to plan voice retirements
+before starting a selected batch for sampler, synth, FM and noise. The
+planner applies chokes, per-part sampler pools in name order, then the
+instrument-wide policy. Python supplies the selected batch and active voices
+and records the resulting retirement actions in the trace.
+Voice admission passed 201 focused macOS tests with zero heap operations
+inside 3,421 successful and six failed callbacks. The generated report is
+`build/rust-ufor-voice-admission-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to
