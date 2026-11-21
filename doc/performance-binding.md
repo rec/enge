@@ -23,8 +23,13 @@ selector. Missing referenced tunings fail preparation. With no tuning reference,
 notes use 12-tone equal temperament with A4 at 440 Hz. Finite tunings do not wrap
 or fall back to equal temperament when a key is unavailable.
 
-Preparation snapshots the binding and used tunings, and checks every CC/bend
-target and output range against the instrument's control declarations. It does
+Preparation snapshots the binding and decodes each referenced tuning once with
+Rust uFor's portable tuning codec. Invalid definitions fail construction with
+the tuning reference in the error. A valid finite tuning can still reject an
+out-of-range note during feed. Rust evaluates configured tunings, and each
+trigger carries the resolved frequency in `pitch_hz`.
+Preparation also checks every CC/bend target and output range against the
+instrument's control declarations. It does
 not synthesize initial controller observations. Defaults remain the engine's
 responsibility. Input channels are 1–16; output parts are the binding's named
 parts rather than channel numbers. Several channels can share a part, while

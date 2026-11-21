@@ -12,6 +12,7 @@ mod heap_audit;
 mod lfo;
 mod live;
 mod noise;
+mod performance;
 mod queue;
 mod runtime;
 mod sampler;
@@ -201,6 +202,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_class::<live::LiveRuntime>()?;
+    module.add_class::<performance::PreparedTuning>()?;
     module.add_class::<effects::runtime::EffectRuntime>()?;
     module.add_class::<live::LiveRuntimeSnapshot>()?;
     module.add_class::<queue::ActionQueue>()?;

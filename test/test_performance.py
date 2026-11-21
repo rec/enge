@@ -8,7 +8,7 @@ from ufor import events, performance_binding
 from ufor.interface import ScoreReference
 from ufor.samples.instrument import SampleInstrumentScore
 from ufor.synth import SynthInstrumentScore
-from ufor.tuning import FrequencyTable, Tuning
+from ufor.tuning import Computed, FrequencyTable, Tuning
 
 from enge.performance import MidiConverter
 
@@ -302,6 +302,56 @@ def test_tuning_references_are_required_snapshotted_and_never_wrapped(
         )
     with pytest.raises(RuntimeError, match="restart"):
         converter.finish()
+
+
+def test_tuning_is_validated_when_preparing_the_converter(
+    binding: performance_binding.PerformanceBindingScore,
+    instrument: SynthInstrumentScore,
+) -> None:
+    raw = binding.model_dump()
+    raw["body"]["midi"][0]["tuning"] = {"path": "tuning.toml"}
+    binding = performance_binding.PerformanceBindingScore.model_validate(raw)
+    table = FrequencyTable(first_note=69, values=["432"])
+    tuning = Tuning(source=table)
+    assert isinstance(tuning.source, FrequencyTable)
+    tuning.source.values.clear()
+    with pytest.raises(ValueError, match=r"Cannot prepare tuning tuning\.toml"):
+        MidiConverter(
+            source="keys",
+            binding=binding,
+            instrument=instrument,
+            tunings={"tuning.toml": tuning},
+        )
+
+
+def test_computed_tuning_preserves_root_and_detune_on_both_channels(
+    binding: performance_binding.PerformanceBindingScore,
+    instrument: SynthInstrumentScore,
+) -> None:
+    raw = binding.model_dump()
+    raw["body"]["midi"][0]["tuning"] = {"path": "tuning.toml"}
+    binding = performance_binding.PerformanceBindingScore.model_validate(raw)
+    tuning = Tuning(
+        source=Computed(notes_per_octave=19, octave_ratio="3"),
+        root_note=62,
+        root_frequency="1300/3",
+        detune_cents=25,
+    )
+    converter = MidiConverter(
+        source="keys",
+        binding=binding,
+        instrument=instrument,
+        tunings={"tuning.toml": tuning},
+    )
+    for channel, note in [(1, 0), (2, 62), (1, 127)]:
+        event = converter.feed(
+            messages.NoteOn(channel=channel, note=note, velocity=80),
+            tick=note,
+            ordinal=0,
+        )[0]
+        assert isinstance(event, events.Trigger)
+        assert event.key == note
+        assert event.pitch_hz == pytest.approx(float(tuning(note)), rel=1e-13)
 
 
 @pytest.mark.parametrize("limit", [2, 4096])

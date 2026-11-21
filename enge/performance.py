@@ -10,6 +10,8 @@ from ufor.samples.instrument import SampleInstrumentScore
 from ufor.synth import SynthInstrumentScore
 from ufor.tuning import Tuning
 
+from ._native import PreparedTuning
+
 
 class MidiConverter:
     """Pair notes from one source; own no transport, clock, files or audio.
@@ -37,7 +39,8 @@ class MidiConverter:
         self._controllers: dict[
             tuple[int, int], performance_binding.MidiController
         ] = {}
-        self._tunings: dict[int, Tuning] = {}
+        self._tunings: dict[int, PreparedTuning] = {}
+        prepared_tunings: dict[str, PreparedTuning] = {}
         declarations = (
             instrument.body.settings
             if isinstance(instrument, SampleInstrumentScore)
@@ -56,7 +59,16 @@ class MidiConverter:
                 key = entry.tuning.key
                 if tunings is None or key not in tunings:
                     raise ValueError(f"Unresolved tuning: {key}")
-                tuning = tunings[key].model_copy(deep=True)
+                if key not in prepared_tunings:
+                    try:
+                        prepared_tunings[key] = PreparedTuning(
+                            tunings[key].model_dump_json()
+                        )
+                    except ValueError as error:
+                        raise ValueError(
+                            f"Cannot prepare tuning {key}: {error}"
+                        ) from error
+                tuning = prepared_tunings[key]
             for channel in entry.channels:
                 self._inputs[channel] = entry
                 if tuning is not None:
@@ -118,7 +130,7 @@ class MidiConverter:
             tuning = self._tunings.get(message.channel)
             try:
                 pitch = (
-                    float(tuning(message.note))
+                    tuning.frequency_hz(message.note)
                     if tuning is not None
                     else 440 * 2 ** ((message.note - 69) / 12)
                 )

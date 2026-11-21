@@ -361,6 +361,14 @@ that ordinary extension.
 
 ### 4. Tuning integration and closeout
 
+The first tuning slice is implemented in `enge.performance.MidiConverter`.
+Each referenced tuning is prepared once using Rust uFor's portable JSON codec.
+Note-on evaluation uses the retained Rust definition and converts to float Hz
+when creating `Trigger.pitch_hz`. Missing or invalid definitions fail
+construction. Unavailable notes still fail feed and invalidate pairing state.
+The host resolves references and the unconfigured default remains A4 = 440 Hz
+in 12-tone equal temperament.
+
 Identify where native preparation or execution needs tuning evaluation rather
 than assuming all Python pitch work should move. Use uFor's validated tuning
 types at that boundary, preserving note addressing, exact ratios and existing

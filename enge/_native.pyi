@@ -8,6 +8,10 @@ from .effect_controls import EffectControlPlan
 
 class SynthRuntimeSnapshot: ...
 
+class PreparedTuning:
+    def __init__(self, document: str) -> None: ...
+    def frequency_hz(self, note: int) -> float: ...
+
 def prepare_modulation(
     sample_rate: float,
     context: str,
