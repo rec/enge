@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use ufor::codec::{self, Format};
 use ufor::samples::crossfade::Crossfade;
+use ufor::samples::eligibility::Eligibility;
 use ufor::samples::playback::{Direction, LoopMode, Mapping, ResolvedSlotPlayback};
 
 // Integers stay integers across the binding, including frames beyond 2**53.
@@ -43,6 +44,35 @@ impl SampleBuffer {
         Ok(Self {
             audio: Arc::new(samples.as_array().to_owned()),
         })
+    }
+}
+
+#[pyclass(frozen)]
+pub(crate) struct SampleEligibility {
+    slots: Eligibility,
+}
+
+#[pymethods]
+impl SampleEligibility {
+    #[new]
+    #[pyo3(signature = (document, *, max_records=10_000))]
+    fn new(document: &str, max_records: usize) -> PyResult<Self> {
+        let slots = codec::parse_sample_eligibility(document, Format::Json, max_records)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { slots })
+    }
+
+    fn matching_slots(&self, document: &str) -> PyResult<Vec<String>> {
+        let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+        let context =
+            codec::parse_sample_eligibility_context(document, Format::Json).map_err(invalid)?;
+        Ok(self
+            .slots
+            .matching_slots(&context)
+            .map_err(invalid)?
+            .into_iter()
+            .map(|name| name.as_str().to_owned())
+            .collect())
     }
 }
 

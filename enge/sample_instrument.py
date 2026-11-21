@@ -2,6 +2,7 @@
 
 from fractions import Fraction
 from hashlib import sha256
+from json import dumps
 from math import isfinite, pi
 from typing import Literal
 
@@ -11,6 +12,7 @@ from pydantic import ConfigDict, Field
 from ufor import instrument_trace
 from ufor.base import Model
 from ufor.envelfo import Patch
+from ufor.events import PerformanceEvent
 from ufor.samples import crossfade, enums, instrument, playback, processing, trace
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
@@ -95,6 +97,37 @@ class NativeSampleVoice(Model, frozen=True):
     slot: int
     started_frame: int
     trigger: enums.TriggerKind
+
+
+def prepare_trace(
+    definition: instrument.SampleInstrument,
+    events: list[PerformanceEvent],
+    seed: int,
+    *,
+    max_records: int = 10_000,
+) -> trace.SampleTrace:
+    """Prepare sampler actions using Rust uFor to filter sample slots."""
+    fields = {
+        "name",
+        "mapping",
+        "trigger",
+        "articulations",
+        "key_conditions",
+        "previous_key",
+        "control_conditions",
+        "control_trigger",
+        "sequence",
+        "random_range",
+    }
+    eligibility = _native.SampleEligibility(
+        dumps([s.model_dump(mode="json", include=fields) for s in definition.slots]),
+        max_records=max_records,
+    )
+
+    def matching_slots(context: trace.EligibilityContext) -> list[str]:
+        return eligibility.matching_slots(dumps(context))
+
+    return trace.prepare(definition, events, seed, eligible_slots=matching_slots)
 
 
 def prepare(

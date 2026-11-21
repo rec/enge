@@ -84,7 +84,12 @@ def render_midi(
             renderer = sample_instrument.OfflineSampler(
                 sample_instrument.prepare(score, assets), backend, control_interval
             )
-            actions = trace.prepare(score.body, events, seed=0).actions
+            prepare_trace = (
+                sample_instrument.prepare_trace
+                if backend == "native"
+                else trace.prepare
+            )
+            actions = prepare_trace(score.body, events, seed=0).actions
         else:
             if isinstance(score.body.voices[0], YamahaVoiceTemplate):
                 if backend != "numpy":

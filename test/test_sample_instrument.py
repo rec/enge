@@ -59,6 +59,27 @@ def sample_score(
     return instrument.SampleInstrumentScore.model_validate(raw)
 
 
+def test_native_sample_trace_matches_conditional_voice_starts_and_state() -> None:
+    raw = sample_score(frames=4).model_dump(mode="json")
+    raw["body"]["settings"]["controls"] = {"gain": {"default": 0.5}}
+    slot = raw["body"]["slots"][0]
+    slot["control_conditions"] = [{"control": "gain", "minimum_value": 0.5}]
+    slot["sequence"] = {"length": 2, "position": 2}
+    definition = instrument.SampleInstrumentScore.model_validate(raw).body
+    events: list[PerformanceEvent] = [
+        onset(0, "odd", gain=0.75),
+        onset(1, "quiet", gain=0.25),
+        onset(2, "third").model_copy(update={"controls": {}}),
+        onset(3, "eligible").model_copy(update={"controls": {}}),
+        Release(tick=4, ordinal=0, part="main", trigger_id="eligible"),
+    ]
+    prepared = sample_instrument.prepare_trace(definition, events, seed=7)
+    assert prepared == trace.prepare(definition, events, seed=7)
+    assert [
+        a.trigger_id for a in prepared.actions if isinstance(a, trace.VoiceStart)
+    ] == ["eligible"]
+
+
 @pytest.mark.parametrize("location", ["instrument", "slot"])
 @pytest.mark.parametrize("delay", [0, 6001])
 def test_sample_patch_signal_survives_partitioned_snapshot_restore(
@@ -739,7 +760,7 @@ def test_persistent_sampler_matches_native_across_blocks_and_restore(
     frames = np.arange(96000)
     audio = np.column_stack([np.sin(2 * np.pi * frames * 220 / 48000), np.zeros(96000)])
     prepared = sample_instrument.prepare(document, {"asset": audio})
-    actions = trace.prepare(
+    actions = sample_instrument.prepare_trace(
         document.body,
         [
             onset(pitch=440).model_copy(update={"controls": {}}),

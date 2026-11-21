@@ -275,6 +275,16 @@ Crossfade preparation passed 671 focused macOS tests with zero heap
 operations inside 6,756 successful and seven failed callbacks. The generated
 report is `build/rust-ufor-sample-crossfade-audit.xml`.
 
+`sample_instrument.prepare_trace` prepares sampler actions using Rust uFor to
+filter slots in instrument declaration order. Native MIDI rendering uses
+this preparation path for sample instruments. Python supplies the event
+context and retains deterministic take selection, trigger and voice
+lifecycle, and trace snapshots. The offline and live samplers continue to
+consume the same prepared actions.
+Sampler eligibility passed 691 focused macOS tests with zero heap operations
+inside 7,383 successful and seven failed callbacks. The generated report is
+`build/rust-ufor-sample-eligibility-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to
