@@ -4,19 +4,22 @@ use super::{exact, invalid};
 use crate::amplitude::frame_time;
 use crate::runtime::core_error;
 use engelfo::random::stream_key;
+use numpy::IntoPyArray;
 use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PySet, PyTuple};
 use std::collections::{BTreeMap, BTreeSet};
-use ufor::codec;
+use ufor::codec::{self, Format};
 use ufor::control::{Polarity, Scope};
 use ufor::envelfo::{self, Body, Initial, PreparationLimits};
 use ufor::identifier::Identifier;
 use ufor::modulation::{Interpolation, Operation, SourceScope, Target};
-use ufor::samples::processing::{Binding, EventKind, GeneratorBinding, ReleaseTiming};
+use ufor::samples::processing::{
+    Binding, EventKind, FilterBoundary, FilterResponse, GeneratorBinding, ReleaseTiming,
+    SoundSettings, TargetMinimum, TargetResolution,
+};
 
-type TargetInput = (String, String, usize, f64, f64, f64);
+type TargetInput = (String, String, usize, Option<f64>, f64, f64);
 type RouteMaps = Vec<Vec<(usize, Vec<(f64, f64)>)>>;
 type StageConnection = (
     usize,
@@ -30,28 +33,54 @@ type StageConnection = (
     (i64, i64),
 );
 
-/// Host defaults/domains and filter discovery stay outside the shared format.
+/// Resolve authored defaults before applying renderer profile bounds and indices.
 #[pyfunction]
-#[pyo3(signature = (sample_rate, context, generators, targets, filters, *, max_records=10000))]
+#[pyo3(signature = (sample_rate, context, generators, targets, *, sound_settings=None, max_records=10000))]
 pub(crate) fn prepare_modulation(
     py: Python<'_>,
     sample_rate: f64,
     context: String,
     generators: Vec<(String, String)>,
-    targets: Vec<TargetInput>,
-    filters: PyReadonlyArray2<'_, f64>,
+    mut targets: Vec<TargetInput>,
+    sound_settings: Option<&str>,
     max_records: usize,
 ) -> PyResult<Py<PyTuple>> {
     let rate = frame_time(sample_rate)?;
-    if sample_rate <= 0.0
-        || filters.shape()[1] != 7
-        || filters.as_array().iter().any(|v| !v.is_finite())
-    {
+    if sample_rate <= 0.0 {
         return Err(invalid("Invalid modulation host metadata"));
     }
+    let limits = PreparationLimits::new(max_records).map_err(invalid)?;
+    let mut records = 0;
+    let sound = if let Some(text) = sound_settings {
+        let length = generators
+            .iter()
+            .map(|(_, document)| document.as_str())
+            .chain([context.as_str(), text])
+            .flat_map(str::chars)
+            .take(codec::MAX_SCORE_CHARACTERS + 1)
+            .count();
+        if length > codec::MAX_SCORE_CHARACTERS {
+            return Err(invalid("Preparation exceeds document character limit"));
+        }
+        let settings = codec::parse_sound_settings(text, Format::Json, limits).map_err(invalid)?;
+        records = envelfo::preparation_records(
+            &serde_json::to_value(&settings).map_err(invalid)?,
+            limits,
+        )
+        .map_err(invalid)?;
+        Some(settings)
+    } else {
+        None
+    };
+    let first_filter = targets.len();
+    let filters = match &sound {
+        Some(settings) => prepare_filters(settings, sample_rate, &mut targets)?,
+        None => Array2::zeros((0, 7)),
+    };
     let metadata = targets
         .len()
-        .checked_add(filters.shape()[0])
+        .checked_add(filters.nrows())
+        .and_then(|n| n.checked_add(records))
         .ok_or_else(|| invalid("Preparation size overflow"))?;
     let remaining = max_records
         .checked_sub(metadata)
@@ -64,29 +93,73 @@ pub(crate) fn prepare_modulation(
             .checked_mul(3)
             .ok_or_else(|| invalid("Parameter size overflow"))?
     ];
+    let mut shared = vec![None; targets.len()];
     let mut indices = BTreeMap::new();
     let mut addresses = BTreeSet::new();
-    for (name, parameter, index, default, minimum, maximum) in &targets {
+    for (name, parameter, index, host_default, minimum, maximum) in &targets {
         let target = Target::new(
             Identifier::new(name.clone()).map_err(invalid)?,
             Identifier::new(parameter.clone()).map_err(invalid)?,
         );
         if *index >= targets.len()
             || !addresses.insert(*index)
-            || [default, minimum, maximum].iter().any(|v| !v.is_finite())
+            || !minimum.is_finite()
+            || !maximum.is_finite()
             || minimum > maximum
-            || default < minimum
-            || default > maximum
+        {
+            return Err(invalid("Invalid modulation target metadata"));
+        }
+        let default = match host_default {
+            Some(_) if sound.is_some() && (name == "processing" || name.starts_with("filter-")) => {
+                return Err(invalid(
+                    "Shared modulation target defaults come from SoundSettings",
+                ));
+            }
+            Some(default) => *default,
+            None => {
+                let settings = sound
+                    .as_ref()
+                    .ok_or_else(|| invalid("Missing SoundSettings for shared modulation target"))?;
+                let TargetResolution::Resolved(facts) =
+                    settings.resolve_target(&target).map_err(invalid)?
+                else {
+                    return Err(invalid("Unresolved SoundSettings target"));
+                };
+                shared[*index] = Some(facts);
+                if *index >= first_filter && parameter == "cutoff_hz" {
+                    facts.default_value.clamp(*minimum, *maximum)
+                } else {
+                    facts.default_value
+                }
+            }
+        };
+        if !default.is_finite()
+            || default < *minimum
+            || default > *maximum
             || indices.insert(target, *index).is_some()
         {
             return Err(invalid("Invalid modulation target metadata"));
         }
-        values[3 * index..3 * index + 3].copy_from_slice(&[*default, *minimum, *maximum]);
+        values[3 * index..3 * index + 3].copy_from_slice(&[default, *minimum, *maximum]);
     }
     for parameter in declarations.modulation.parameters() {
         let index = indices
             .get(parameter.target())
             .ok_or_else(|| invalid("Persistent runtime has an unsupported modulation target"))?;
+        if let Some(facts) = shared[*index] {
+            if parameter.unit() != facts.unit || parameter.default_value() != facts.default_value {
+                return Err(invalid(
+                    "Modulation unit and default must match SoundSettings",
+                ));
+            }
+            if match facts.minimum {
+                TargetMinimum::Unrestricted => false,
+                TargetMinimum::Nonnegative => parameter.minimum() < 0.0,
+                TargetMinimum::Positive => parameter.minimum() <= 0.0,
+            } {
+                return Err(invalid("Modulation domain conflicts with SoundSettings"));
+            }
+        }
         values[3 * index..3 * index + 3].copy_from_slice(&[
             parameter.default_value(),
             parameter.minimum(),
@@ -142,10 +215,7 @@ pub(crate) fn prepare_modulation(
         .iter()
         .map(|(n, t)| (n.as_str(), t.as_str()))
         .collect();
-    let mut prepared = Prepared::new(
-        declarations.records + metadata,
-        PreparationLimits::new(max_records).map_err(invalid)?,
-    );
+    let mut prepared = Prepared::new(declarations.records + metadata, limits);
     for route in routes {
         let source = sources
             .get(route.source())
@@ -314,7 +384,7 @@ pub(crate) fn prepare_modulation(
     prepared.into_python(
         py,
         values,
-        filters.as_array().to_owned(),
+        filters,
         context,
         generators,
         targets
@@ -322,6 +392,55 @@ pub(crate) fn prepare_modulation(
             .map(|(n, p, i, _, _, _)| (n, p, i))
             .collect(),
     )
+}
+
+// Filter placement, runtime codes and rate-dependent limits belong to enge.
+fn prepare_filters(
+    sound: &SoundSettings,
+    sample_rate: f64,
+    targets: &mut Vec<TargetInput>,
+) -> PyResult<Array2<f64>> {
+    let filters = sound.processing().filters();
+    let mut rows = Vec::new();
+    for filter in filters {
+        let minimum = filter.minimum_hz();
+        let maximum = sample_rate / 2.0 * filter.nyquist_ratio();
+        if minimum >= maximum {
+            return Err(invalid("Filter minimum_hz must be below its Nyquist bound"));
+        }
+        let cutoff = targets.len();
+        let q = cutoff + 1;
+        let name = format!("filter-{}", filter.name().as_str());
+        targets.push((
+            name.clone(),
+            "cutoff_hz".into(),
+            cutoff,
+            None,
+            minimum,
+            maximum,
+        ));
+        targets.push((name, "q".into(), q, None, f64::MIN_POSITIVE, 1e300));
+        let response = match filter.response() {
+            FilterResponse::Lowpass => 0.0,
+            FilterResponse::Highpass => 1.0,
+            FilterResponse::Bandpass => 2.0,
+            FilterResponse::Notch => 3.0,
+        };
+        let boundary = match filter.boundary() {
+            FilterBoundary::Error => 0.0,
+            FilterBoundary::Clamp => 1.0,
+        };
+        rows.extend([
+            response,
+            f64::from(filter.stages()),
+            boundary,
+            minimum,
+            maximum,
+            cutoff as f64,
+            q as f64,
+        ]);
+    }
+    Array2::from_shape_vec((filters.len(), 7), rows).map_err(invalid)
 }
 
 #[derive(Default)]

@@ -180,14 +180,23 @@ audio and continuation suites cover the consumers. The generated report is
 ### Modulation route preparation and shared mathematics
 
 `_native.prepare_modulation` consumes canonical modulation/binding/control/event
-declarations, ordered generator JSON and separate host target/default/filter
-metadata. It returns the existing indexed tables and source maps. Python retains
-DSP discovery, full target validation, Patch-output materialization, ownership
-orchestration and the offline graph adapter. The old Python control/route/smoothing
-and generic Stage-event delay encoders are removed.
+declarations, ordered generator JSON and host target metadata. Synth, FM, noise
+and sampler also supply the processing portion of a canonical SoundSettings
+body. Rust uFor resolves the authored amplitude, tuning cents, cutoff and Q
+facts for the shared native slots, and enge checks authored parameter units,
+defaults and minimum rules against those facts. The host still supplies the
+FM operator, edge and carrier targets and effect processor targets.
+
+Enge's native preparation assigns filter slots in authored order and applies
+the sample-rate and Nyquist bounds. The authored cutoff remains the default
+used for target validation. The runtime cutoff fallback for an undeclared
+parameter still uses the clamped value. Existing runtime capabilities govern
+which targets get slots. Python retains owner validation, Patch-output
+materialization, orchestration and the offline graph adapter.
 
 Its `max_records=10000` budget combines shared declarations, supplied generators,
-host target/filter records and expanded generator slots/bodies. An override
+the SoundSettings processing body, host target/filter records and expanded
+generator slots/bodies. An override
 reaches embedded modulation and generator validation. Expanded JSON text is also
 bounded, alongside existing per-document limits. Exact seconds convert to frame
 ratios with checked signed-64-bit components. Source-map insertion order, sorted
@@ -214,6 +223,12 @@ reallocations or frees. The generated report is
 `build/rust-ufor-modulation-audit.xml`; the integration record describes reproduction
 and the local macOS qualification boundary. The broader native-call boundary
 still performs heap operations outside callbacks.
+
+After adopting SoundSettings for shared targets, the full macOS allocation
+audit passed 3,649 tests with 29 optional skips. It recorded 24,704 successful
+and 71 failed callbacks with zero Rust allocations, reallocations or frees.
+Use `build/rust-ufor-sound-settings-audit.xml` as the report path when
+reproducing the audit with the integration record's commands.
 
 JSON parsing, validation and conversion allocate only during preparation. They
 are not called from audio processing. `test/test_generator_preparation.py`

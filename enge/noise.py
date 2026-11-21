@@ -372,7 +372,7 @@ class PersistentNoise(synth.PersistentSynth):
                 ("processing", "amplitude"),
                 0,
                 modulation.Operation.multiply,
-                1.0,
+                None,
                 0.0,
                 1e300,
             )

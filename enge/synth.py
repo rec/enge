@@ -2781,7 +2781,7 @@ def _persistent_modulation(
     declarations: dict[str, controls.ControlDeclaration],
     template: processing.ModulationSettings,
     source_parameters: list[
-        tuple[tuple[str, str], int, modulation.Operation, float, float, float]
+        tuple[tuple[str, str], int, modulation.Operation, float | None, float, float]
     ]
     | None = None,
 ) -> PersistentModulation:
@@ -2795,7 +2795,7 @@ def _persistent_modulation(
                 ("processing", "amplitude"),
                 0,
                 modulation.Operation.multiply,
-                1,
+                None,
                 -1e300,
                 1e300,
             ),
@@ -2803,50 +2803,12 @@ def _persistent_modulation(
                 ("processing", "tuning_cents"),
                 1,
                 modulation.Operation.add,
-                template.processing.tuning_cents,
+                None,
                 -120000,
                 120000,
             ),
         ]
     targets = [(n, p, i, d, m, x) for (n, p), i, _, d, m, x in source_parameters]
-    runtime_filters: list[list[float]] = []
-    for definition in (
-        template.processing.filters if isinstance(template, SoundSettings) else []
-    ):
-        maximum = sample_rate / 2 * definition.nyquist_ratio
-        cutoff = len(targets)
-        q = cutoff + 1
-        targets.extend(
-            [
-                (
-                    f"filter-{definition.name}",
-                    "cutoff_hz",
-                    cutoff,
-                    min(max(definition.cutoff_hz, definition.minimum_hz), maximum),
-                    definition.minimum_hz,
-                    maximum,
-                ),
-                (
-                    f"filter-{definition.name}",
-                    "q",
-                    q,
-                    definition.q,
-                    np.finfo(np.float64).tiny,
-                    1e300,
-                ),
-            ]
-        )
-        runtime_filters.append(
-            [
-                list(processing.FilterResponse).index(definition.response),
-                definition.stages,
-                list(processing.FilterBoundary).index(definition.boundary),
-                definition.minimum_hz,
-                maximum,
-                cutoff,
-                q,
-            ]
-        )
     return _native.prepare_modulation(
         sample_rate,
         json.dumps(
@@ -2863,7 +2825,11 @@ def _persistent_modulation(
         ),
         [(n, v.model_dump_json()) for n, v in template.envelfos.items()],
         targets,
-        np.asarray(runtime_filters, dtype=np.float64).reshape(-1, 7),
+        sound_settings=(
+            json.dumps({"processing": template.processing.model_dump(mode="json")})
+            if isinstance(template, SoundSettings)
+            else None
+        ),
     )
 
 

@@ -16,9 +16,9 @@ def prepare_modulation(
     sample_rate: float,
     context: str,
     generators: list[tuple[str, str]],
-    targets: list[tuple[str, str, int, float, float, float]],
-    filters: np.ndarray,
+    targets: Sequence[tuple[str, str, int, float | None, float, float]],
     *,
+    sound_settings: str | None = None,
     max_records: int = 10000,
 ) -> tuple[
     np.ndarray,

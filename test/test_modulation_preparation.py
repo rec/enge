@@ -24,9 +24,7 @@ def test_routes_keep_sorted_slots_exact_smoothing_and_latched_events(
         context["modulation"]["routes"].append(
             {**context["modulation"]["routes"][0], "name": name, "source": name}
         )
-    prepared = _native.prepare_modulation(
-        48000, json.dumps(context), [], TARGETS, np.empty((0, 7))
-    )
+    prepared = _native.prepare_modulation(48000, json.dumps(context), [], TARGETS)
     np.testing.assert_array_equal(
         prepared[0],
         [
@@ -47,23 +45,17 @@ def test_routes_keep_sorted_slots_exact_smoothing_and_latched_events(
 
 def test_route_budget_combines_declarations_and_host_targets() -> None:
     text = json.dumps(control_context("instrument"))
-    _native.prepare_modulation(
-        48000, text, [], TARGETS, np.empty((0, 7)), max_records=10
-    )
+    _native.prepare_modulation(48000, text, [], TARGETS, max_records=10)
     with pytest.raises(ValueError):
-        _native.prepare_modulation(
-            48000, text, [], TARGETS, np.empty((0, 7)), max_records=9
-        )
+        _native.prepare_modulation(48000, text, [], TARGETS, max_records=9)
     context = control_context("instrument")
     context["modulation"]["routes"][0]["points"] = [
         {"input": i / 10000, "amount": i / 10000} for i in range(10001)
     ]
     text = json.dumps(context)
     with pytest.raises(ValueError):
-        _native.prepare_modulation(48000, text, [], TARGETS, np.empty((0, 7)))
-    prepared = _native.prepare_modulation(
-        48000, text, [], TARGETS, np.empty((0, 7)), max_records=10009
-    )
+        _native.prepare_modulation(48000, text, [], TARGETS)
+    prepared = _native.prepare_modulation(48000, text, [], TARGETS, max_records=10009)
     assert len(prepared[18][0][0][1]) == 10001
 
 
@@ -84,9 +76,7 @@ def test_route_preparation_rejects_invalid_host_facts_and_frame_overflow(
     else:
         context["bindings"][0]["smoothing"] = str(2**63 - 1)
     with pytest.raises(ValueError):
-        _native.prepare_modulation(
-            48000, json.dumps(context), [], targets, np.empty((0, 7))
-        )
+        _native.prepare_modulation(48000, json.dumps(context), [], targets)
 
 
 def test_expanded_generator_slots_share_the_preparation_budget() -> None:
@@ -111,15 +101,12 @@ def test_expanded_generator_slots_share_the_preparation_budget() -> None:
         {**route, "name": f"route-{i}"} for i in range(5)
     ]
     with pytest.raises(ValueError):
-        _native.prepare_modulation(
-            48000, json.dumps(context), documents, TARGETS, np.empty((0, 7))
-        )
+        _native.prepare_modulation(48000, json.dumps(context), documents, TARGETS)
     prepared = _native.prepare_modulation(
         48000,
         json.dumps(context),
         documents,
         TARGETS,
-        np.empty((0, 7)),
         max_records=13000,
     )
     assert prepared[12] == {"shape": [0, 1, 2, 3, 4]}
@@ -150,7 +137,7 @@ def test_generator_source_maps_keep_route_order_instead_of_sorting_root_names() 
         for n in ("a-root", "z-root")
     ]
     prepared = _native.prepare_modulation(
-        48000, json.dumps(context), documents, TARGETS, np.empty((0, 7))
+        48000, json.dumps(context), documents, TARGETS
     )
     assert list(prepared[8]) == ["z-root", "a-root"]
     assert prepared[8] == {"z-root": [0, 2], "a-root": [1]}
@@ -175,6 +162,99 @@ def test_shared_arithmetic_failures_zero_the_callback_without_heap_operations(
         runtime.process_into(actual)
     assert runtime.failed()
     check_audio(tmp_path / "failed-math.wav", actual, np.zeros_like(actual))
+
+
+def test_sound_settings_supply_shared_defaults_and_ordered_native_filter_slots() -> (
+    None
+):
+    context = json.dumps(
+        {"modulation": {}, "bindings": [], "controls": {}, "event_connections": []}
+    )
+    prepared = _native.prepare_modulation(
+        48000,
+        context,
+        [],
+        [
+            ("processing", "amplitude", 0, None, 0, 2),
+            ("processing", "tuning_cents", 1, None, -120000, 120000),
+        ],
+        sound_settings=SOUND_SETTINGS,
+        max_records=14,
+    )
+    assert prepared[22] == [
+        ("processing", "amplitude", 0),
+        ("processing", "tuning_cents", 1),
+        ("filter-z", "cutoff_hz", 2),
+        ("filter-z", "q", 3),
+        ("filter-a", "cutoff_hz", 4),
+        ("filter-a", "q", 5),
+    ]
+    assert prepared[2][::3] == [1, 25, 12000, 2, 200, 1]
+    np.testing.assert_array_equal(
+        prepared[14], [[3, 2, 1, 10, 12000, 2, 3], [1, 1, 0, 1, 23976, 4, 5]]
+    )
+    with pytest.raises(ValueError, match="limit"):
+        _native.prepare_modulation(
+            48000,
+            context,
+            [],
+            [
+                ("processing", "amplitude", 0, None, 0, 2),
+                ("processing", "tuning_cents", 1, None, -120000, 120000),
+            ],
+            sound_settings=SOUND_SETTINGS,
+            max_records=13,
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "parameter", "unit", "default", "minimum", "error"),
+    [
+        ("filter-z", "cutoff_hz", "hz", 18000, 10, None),
+        ("filter-z", "cutoff_hz", "hz", 12000, 10, "unit and default"),
+        ("filter-z", "q", "db", 2, 1, "unit and default"),
+        ("filter-z", "q", "ratio", 2, 0, "domain conflicts"),
+        ("processing", "volume_db", "db", 0, -6, "unsupported modulation target"),
+    ],
+)
+def test_shared_target_validation_uses_authored_facts_before_filter_bounds(
+    name: str,
+    parameter: str,
+    unit: str,
+    default: float,
+    minimum: float,
+    error: str | None,
+) -> None:
+    context = json.dumps(
+        {
+            "modulation": {
+                "parameters": [
+                    {
+                        "target": {"name": name, "parameter": parameter},
+                        "scope": "voice",
+                        "unit": unit,
+                        "default": default,
+                        "minimum": minimum,
+                        "maximum": max(4, default + 1),
+                    }
+                ]
+            },
+            "bindings": [],
+            "controls": {},
+            "event_connections": [],
+        }
+    )
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            _native.prepare_modulation(
+                48000, context, [], [], sound_settings=SOUND_SETTINGS
+            )
+    else:
+        prepared = _native.prepare_modulation(
+            48000, context, [], [], sound_settings=SOUND_SETTINGS
+        )
+        assert prepared[2][:3] == [18000, 10, 18001]
+        assert prepared[14][0, 4] == 12000
 
 
 def control_context(scope: str) -> dict:
@@ -219,3 +299,23 @@ def control_context(scope: str) -> dict:
 
 
 TARGETS = [("processing", "amplitude", 0, 0.5, -10, 10)]
+SOUND_SETTINGS = json.dumps(
+    {
+        "processing": {
+            "tuning_cents": "25 cents",
+            "filters": [
+                {
+                    "name": "z",
+                    "response": "notch",
+                    "cutoff_hz": "18 kHz",
+                    "q": 2,
+                    "minimum_hz": 10,
+                    "nyquist_ratio": 0.5,
+                    "boundary": "clamp",
+                    "stages": 2,
+                },
+                {"name": "a", "response": "highpass", "cutoff_hz": 200, "q": 1},
+            ],
+        }
+    }
+)

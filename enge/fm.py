@@ -499,13 +499,15 @@ class PersistentFM(synth.PersistentSynth):
             instrument=definition.score.body,
         )
         source_parameters: list[
-            tuple[tuple[str, str], int, modulation.Operation, float, float, float]
+            tuple[
+                tuple[str, str], int, modulation.Operation, float | None, float, float
+            ]
         ] = [
             (
                 ("processing", "amplitude"),
                 0,
                 modulation.Operation.multiply,
-                1,
+                None,
                 0,
                 1e300,
             ),
@@ -513,7 +515,7 @@ class PersistentFM(synth.PersistentSynth):
                 ("processing", "tuning_cents"),
                 1,
                 modulation.Operation.add,
-                template.processing.tuning_cents,
+                None,
                 -120000,
                 120000,
             ),
