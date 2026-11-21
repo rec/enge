@@ -370,6 +370,15 @@ Slot inheritance passed 186 focused macOS tests with zero heap operations
 inside 5,815 successful and seven failed callbacks. The generated report is
 `build/rust-ufor-slot-settings-audit.xml`.
 
+Rust uFor resolves authored channel routes into input-by-output gain matrices
+for sampler, oscillator synth, FM and noise. Sampler preparation also applies
+the Native or SFizz pan law to mono-to-stereo routing, or the corresponding
+balance law to stereo-to-stereo routing. Other layouts use their authored
+matrix directly. The renderer consumes the prepared gains.
+Channel routing passed 400 focused macOS tests with zero heap operations
+inside 3,605 successful and six failed callbacks. The generated report is
+`build/rust-ufor-channel-routing-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

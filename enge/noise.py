@@ -13,7 +13,7 @@ from ufor.streams import AudioType
 from ufor.synth import NoiseVoice, SynthInstrumentScore
 from ufor.synth_trace import VoiceStart
 
-from . import _native, filters, synth
+from . import _native, filters, native, synth
 
 
 class PreparedVoice(synth.PreparedVoiceEnvelope, frozen=True):
@@ -288,12 +288,9 @@ class OfflineNoise:
                     minimum_hold_seconds=template.minimum_hold_seconds,
                     filters=template.processing.filters,
                     filter_order=template.processing.filter_order,
-                    routes=[
-                        [
-                            sum(r.gain for r in template.channels if r.output == c)
-                            for c in self.definition.channels
-                        ]
-                    ],
+                    routes=native.channel_routes(
+                        ["mono"], self.definition.channels, template.channels
+                    ),
                 ),
                 stream_key=action.noise_key,
                 backend=self.backend,
@@ -357,9 +354,8 @@ class PersistentNoise(synth.PersistentSynth):
             raise synth.EngineError(
                 "Persistent noise spatial processing is not implemented"
             )
-        route = [
-            sum(r.gain for r in template.channels if r.output == c)
-            for c in definition.channels
+        route = native.channel_routes(["mono"], definition.channels, template.channels)[
+            0
         ]
         rate = definition.sample_rate
         shared = synth.PreparedSynth(

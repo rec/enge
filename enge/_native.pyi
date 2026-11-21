@@ -402,6 +402,12 @@ class SampleEligibility:
     def __init__(self, document: str, *, max_records: int = 10000) -> None: ...
     def matching_slots(self, document: str) -> list[str]: ...
 
+def prepare_channel_routes(
+    inputs: list[str],
+    outputs: list[str],
+    routes: list[tuple[str, str, float]],
+    spatial: tuple[str, float, float] | None = None,
+) -> list[list[float]]: ...
 def tuned_frequencies(
     pitch_hz: float,
     tuning: np.ndarray,

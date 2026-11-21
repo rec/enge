@@ -1817,12 +1817,9 @@ class OfflineSynth:
                     filters=template.processing.filters,
                     filter_order=template.processing.filter_order,
                     minimum_hold_seconds=template.minimum_hold_seconds,
-                    routes=[
-                        [
-                            sum(r.gain for r in template.channels if r.output == c)
-                            for c in self.definition.channels
-                        ]
-                    ],
+                    routes=native.channel_routes(
+                        ["mono"], self.definition.channels, template.channels
+                    ),
                 ),
                 action.tick if template.synchronize_oscillator else 0,
                 backend=self.backend,
@@ -1898,9 +1895,8 @@ class PersistentSynth:
             raise EngineError(
                 "Persistent synth gain and spatial processing are not implemented"
             )
-        route = [
-            sum(r.gain for r in template.channels if r.output == c)
-            for c in definition.channels
+        route = native.channel_routes(["mono"], definition.channels, template.channels)[
+            0
         ]
         rate = definition.sample_rate
         self.definition = definition.model_copy(deep=True)

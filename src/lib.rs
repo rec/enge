@@ -225,6 +225,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<performance::PreparedVoiceEligibility>()?;
     module.add_class::<performance::PreparedOscillator>()?;
     module.add_function(wrap_pyfunction!(performance::tuned_frequencies, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        performance::prepare_channel_routes,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(performance::prepare_voice_start, module)?)?;
     module.add_function(wrap_pyfunction!(
         performance::schedule_envelfo_commands,

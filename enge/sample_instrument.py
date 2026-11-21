@@ -26,7 +26,16 @@ from ufor.samples import (
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
 
-from . import _native, control, filters, sampler, synth, voice_admission, voice_release
+from . import (
+    _native,
+    control,
+    filters,
+    native,
+    sampler,
+    synth,
+    voice_admission,
+    voice_release,
+)
 
 
 class PreparedSampler(Model, frozen=True):
@@ -257,6 +266,7 @@ def prepare(
     settings: dict[str, processing.SoundSettings] = {}
     routes: dict[str, list[list[float]]] = {}
     resolved_slots = _resolve_slots(score.body)
+    instrument_processing = score.body.settings.processing
     for slot in score.body.slots:
         settings[slot.name] = synth.expand_patch_outputs(
             resolved_slots[slot.name].settings
@@ -265,27 +275,17 @@ def prepare(
         filters.parameters(settings[slot.name].processing.filters, sample_rate, 1)
         selection = slices[slot.slice]
         source_channels = assets[selection.asset].audio.channels
-        gains = [1.0] * len(output.channels)
-        if output.channels == ["left", "right"] and source_channels in (
-            ["mono"],
-            ["left", "right"],
-        ):
-            stereo = source_channels == ["left", "right"]
-            parameter = "stereo_balance" if stereo else "pan"
-            position = getattr(score.body.settings.processing, parameter) + getattr(
-                settings[slot.name].processing, parameter
-            )
-            gains = processing.pan_gains(position, score.body.pan_law, stereo=stereo)
-            if not stereo:
-                gains = [g / 2**-0.5 for g in gains]
-        routes[slot.name] = [
-            [
-                sum(r.gain for r in slot.channels if r.input == s and r.output == c)
-                * gains[i]
-                for i, c in enumerate(output.channels)
-            ]
-            for s in source_channels
-        ]
+        slot_processing = settings[slot.name].processing
+        routes[slot.name] = native.channel_routes(
+            source_channels,
+            output.channels,
+            slot.channels,
+            (
+                score.body.pan_law,
+                instrument_processing.pan + slot_processing.pan,
+                instrument_processing.stereo_balance + slot_processing.stereo_balance,
+            ),
+        )
         traversal = _native.PreparedSlotPlayback(
             slot.playback.model_dump_json(), default_playback
         )

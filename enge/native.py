@@ -9,9 +9,22 @@ from envelfo.runtime import envelfo_at, resolved_envelope
 from ufor.approach import ExponentialApproach
 from ufor.envelfo import EnvelfoState, Envelope, EnvelopeState
 from ufor.oscillator import Oscillator
+from ufor.samples.processing import ChannelRoute, PanLaw
 from ufor.segments import IndefiniteSegment, Segment
 
 from . import _native
+
+
+def channel_routes(
+    inputs: list[str],
+    outputs: list[str],
+    routes: list[ChannelRoute],
+    spatial: tuple[PanLaw, float, float] | None = None,
+) -> list[list[float]]:
+    """Prepare a route matrix in native input and output channel order."""
+    return _native.prepare_channel_routes(
+        inputs, outputs, [(r.input, r.output, r.gain) for r in routes], spatial
+    )
 
 
 @lru_cache

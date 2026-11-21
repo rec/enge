@@ -10,12 +10,39 @@ use ufor::identifier::Identifier;
 use ufor::number::Rational;
 use ufor::oscillator::Oscillator;
 use ufor::samples::eligibility::VoiceEligibility;
+use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
 use ufor::synth_pitch;
 use ufor::tuning::Tuning;
 use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
 type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
+
+#[pyfunction]
+#[pyo3(signature = (inputs, outputs, routes, spatial=None))]
+pub(crate) fn prepare_channel_routes(
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+    routes: Vec<(String, String, f64)>,
+    spatial: Option<(&str, f64, f64)>,
+) -> PyResult<Vec<Vec<f64>>> {
+    let routes: Vec<_> = routes
+        .into_iter()
+        .map(|(input, output, gain)| ChannelRoute {
+            input,
+            output,
+            gain,
+        })
+        .collect();
+    let matrix = if let Some((law, pan, balance)) = spatial {
+        let law = serde_json::from_value(serde_json::Value::String(law.to_owned()))
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        sampler_matrix(&inputs, &outputs, &routes, law, pan, balance)
+    } else {
+        channel_matrix(&inputs, &outputs, &routes)
+    };
+    matrix.map_err(|error| PyValueError::new_err(error.to_string()))
+}
 
 #[pyfunction]
 #[pyo3(signature = (pitch_hz, tuning, operator=None))]
