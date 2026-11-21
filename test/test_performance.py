@@ -282,7 +282,7 @@ def test_tuning_references_are_required_snapshotted_and_never_wrapped(
     binding = performance_binding.PerformanceBindingScore.model_validate(raw)
     with pytest.raises(ValueError, match="Unresolved tuning"):
         MidiConverter(source="keys", binding=binding, instrument=instrument)
-    tuning = Tuning(source=FrequencyTable(first_note=69, values=["432"]))
+    tuning = Tuning(source=FrequencyTable(first_note=69, frequencies=["432"]))
     converter = MidiConverter(
         source="keys",
         binding=binding,
@@ -290,7 +290,7 @@ def test_tuning_references_are_required_snapshotted_and_never_wrapped(
         tunings={"tuning.toml": tuning},
     )
     assert isinstance(tuning.source, FrequencyTable)
-    tuning.source.values.clear()
+    tuning.source.frequencies.clear()
     event = converter.feed(
         messages.NoteOn(channel=1, note=69, velocity=80), tick=0, ordinal=0
     )[0]
@@ -311,10 +311,10 @@ def test_tuning_is_validated_when_preparing_the_converter(
     raw = binding.model_dump()
     raw["body"]["midi"][0]["tuning"] = {"path": "tuning.toml"}
     binding = performance_binding.PerformanceBindingScore.model_validate(raw)
-    table = FrequencyTable(first_note=69, values=["432"])
+    table = FrequencyTable(first_note=69, frequencies=["432"])
     tuning = Tuning(source=table)
     assert isinstance(tuning.source, FrequencyTable)
-    tuning.source.values.clear()
+    tuning.source.frequencies.clear()
     with pytest.raises(ValueError, match=r"Cannot prepare tuning tuning\.toml"):
         MidiConverter(
             source="keys",
