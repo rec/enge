@@ -1832,11 +1832,6 @@ def native_live_graph(
                     audio_effects.Crossfader,
                     audio_effects.Follower,
                     audio_effects.MultibandCompressor,
-                    audio_effects.Reverb,
-                    audio_effects.TapDelay,
-                    audio_effects.MatrixDelay,
-                    audio_effects.ResonantDelay,
-                    audio_effects.ModulatedDelay,
                 ),
             )
             else processor.mix,

@@ -88,6 +88,9 @@ def test_reverb_zero_mix_preserves_the_declared_dry_mapping(
     for backend in ("numpy", "native"):
         actual = effects.OfflineEffects(prepared, backend).advance(inputs, [], 0, 48000)
         check_audio(tmp_path / f"dry-{backend}.wav", actual, expected)
+    callback, replay, _ = callback_audio(prepared, inputs, [])
+    check_audio(tmp_path / "dry-callback.wav", callback, expected)
+    check_audio(tmp_path / "dry-replay.wav", replay, expected)
 
 
 @pytest.mark.parametrize(
