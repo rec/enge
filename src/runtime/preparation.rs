@@ -480,7 +480,7 @@ fn segments(values: &[envelfo::EnvelopeSegment], scale: Time) -> PyResult<Vec<en
         .collect()
 }
 
-fn exact(value: ufor::number::Rational) -> PyResult<Time> {
+pub(super) fn exact(value: ufor::number::Rational) -> PyResult<Time> {
     Time::new(value.numerator(), value.denominator()).map_err(|e| core_error(e).into())
 }
 

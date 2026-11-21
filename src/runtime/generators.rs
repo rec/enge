@@ -2,14 +2,15 @@
 use super::controls::ControlBank;
 use super::patch_host::{PatchHost, clock_at};
 use super::preparation::patch::{Detectors, GeneratorSlots, PreparedPatch, TransformMaps};
-use super::{
-    BeatClockInput, PatchEventInput, StageConnectionInput, StageStartInput, initial_lfo,
-    ratio_time, valid_envelfo_owners,
-};
+use super::preparation::{exact, invalid};
 use super::{
     BeatPoint, EnvelfoTransformInput, EnvelfoTransformRoute, LfoDefinition, LfoPlayback,
     NamedEnvelopeDefinition, PatchEventConnection, PatchStageStartConnection, StagedConnection,
     StagedEnvelfoDefinition, control_time, core_error, lfo_command, route_map,
+};
+use super::{
+    PatchEventInput, StageConnectionInput, StageStartInput, initial_lfo, ratio_time,
+    valid_envelfo_owners,
 };
 use crate::amplitude::{frame_position, frame_time};
 use crate::error::{NativeError, NativeResult};
@@ -18,7 +19,10 @@ use engelfo::patch::{ChildCommand, PatchState, PatchStorage};
 use engelfo::{lfo, time::Time};
 use numpy::PyReadonlyArray2;
 use pyo3::{exceptions::PyValueError, prelude::*};
+use ufor::codec::{self, Format};
+use ufor::envelfo::PreparationLimits;
 use ufor::modulation::math::{Mapping, add_partial};
+use ufor::number::Rational;
 
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
@@ -552,33 +556,27 @@ impl GeneratorBank {
         })
     }
 
-    fn set_beat_clock(&mut self, points: Vec<BeatClockInput>) -> PyResult<()> {
-        let points = points
+    #[pyo3(signature = (document, *, max_records=10000))]
+    fn set_beat_clock(&mut self, document: &str, max_records: usize) -> PyResult<()> {
+        let limits = PreparationLimits::new(max_records).map_err(invalid)?;
+        let tempo = codec::parse_tempo_map(document, Format::Json, limits).map_err(invalid)?;
+        let rate = Rational::from_f64(self.rate).map_err(invalid)?;
+        if rate.denominator() != 1 {
+            return Err(invalid("beat clock requires an integer sample rate"));
+        }
+        let points = tempo
+            .frame_points(rate.numerator())
+            .map_err(invalid)?
             .into_iter()
-            .map(|(frame, beat, song, rate)| {
-                let clock_frame = Time::new(frame.0, frame.1).map_err(core_error)?;
-                let clock_beat = Time::new(beat.0, beat.1).map_err(core_error)?;
-                let clock_rate = Time::new(rate.0, rate.1).map_err(core_error)?;
-                let song_beat = Time::new(song.0, song.1).map_err(core_error)?;
+            .map(|point| {
                 Ok(BeatPoint {
-                    song_beat,
-                    clock_frame,
-                    clock_beat,
-                    clock_rate,
+                    song_beat: exact(point.transport_beat)?,
+                    clock_frame: exact(point.frame)?,
+                    clock_beat: exact(point.elapsed_beat)?,
+                    clock_rate: exact(point.beats_per_frame)?,
                 })
             })
             .collect::<PyResult<Vec<_>>>()?;
-        if points.is_empty()
-            || points[0].clock_frame != Time::ZERO
-            || points
-                .iter()
-                .any(|p| p.clock_beat < Time::ZERO || p.clock_rate < Time::ZERO)
-            || points
-                .windows(2)
-                .any(|p| p[1].clock_frame <= p[0].clock_frame)
-        {
-            return Err(PyValueError::new_err("Invalid native beat clock"));
-        }
         self.beat_points = points;
         Ok(())
     }

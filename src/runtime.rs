@@ -164,8 +164,6 @@ type StageStartInput = (
 type EnvelfoTransformInput = (u8, Vec<(u8, usize, f64, f64)>, f64, f64, Option<f64>);
 type EnvelfoTransformRoute = (usize, usize, usize);
 
-type BeatClockInput = ((i64, i64), (i64, i64), (i64, i64), (i64, i64));
-
 #[derive(Clone, PartialEq)]
 struct FilterDefinition {
     response: usize,

@@ -246,12 +246,7 @@ class GeneratorBank:
         *,
         max_records: int = 10000,
     ) -> None: ...
-    def set_beat_clock(
-        self,
-        points: list[
-            tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]
-        ],
-    ) -> None: ...
+    def set_beat_clock(self, document: str, *, max_records: int = 10000) -> None: ...
     def set_staged_envelfos(
         self,
         inputs: list[tuple[str, int | None, int]],

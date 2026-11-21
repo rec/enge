@@ -232,6 +232,15 @@ Action validation passed 457 focused macOS tests. The audit recorded zero
 heap operations inside 18,719 successful and 68 failed callbacks. The
 generated report is `build/rust-ufor-effect-actions-audit.xml`.
 
+Native generator preparation reads the host's canonical TempoMap through Rust
+uFor and derives exact frame points for transport and elapsed beats. The
+Python reference renderer uses the Python TempoMap. Native snapshots retain
+their existing clock point representation. Preparation uses the generator
+bank's integer sample rate and the shared 10,000-record default.
+TempoMap preparation passed 510 focused macOS tests with zero heap operations
+inside 2,227 successful and one failed callback. The generated report is
+`build/rust-ufor-tempo-map-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

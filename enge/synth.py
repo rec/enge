@@ -2734,28 +2734,7 @@ def _prepare_native_generators(
     )
     _configure_sample_hold_keys(generators, template, named_envelfo_sources)
     if tempo_map is not None:
-        generators.set_beat_clock(
-            [
-                cast(
-                    tuple[
-                        tuple[int, int],
-                        tuple[int, int],
-                        tuple[int, int],
-                        tuple[int, int],
-                    ],
-                    tuple(
-                        (v.numerator, v.denominator)
-                        for v in (
-                            p.at_seconds * rate,
-                            tempo_map.elapsed_beats(Fraction(0), p.at_seconds),
-                            p.beat,
-                            p.bpm / (60 * rate) if p.running else Fraction(0),
-                        )
-                    ),
-                )
-                for p in tempo_map.points
-            ]
-        )
+        generators.set_beat_clock(tempo_map.model_dump_json())
     generators.set_staged_envelfos(staged_envelfos, event_connections)
     _configure_generator_owners(generators, prepared)
     transform_nodes, transform_maps = generators.configure_patches(
