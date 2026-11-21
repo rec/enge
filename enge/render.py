@@ -22,18 +22,8 @@ from ufor.synth import (
     SynthInstrumentScore,
     YamahaVoiceTemplate,
 )
-from ufor.voice_admission import plan_retirements
-from ufor.voice_release import plan_release
 
-from . import (
-    fm,
-    noise,
-    sample_instrument,
-    synth,
-    voice_admission,
-    voice_release,
-    yamaha_instrument,
-)
+from . import fm, noise, sample_instrument, synth, yamaha_instrument
 from .midi import MidiPerformance
 
 
@@ -119,21 +109,10 @@ def render_midi(
                 renderer = synth.OfflineSynth(
                     synth.prepare(score), backend, control_interval
                 )
-            actions = synth_trace.prepare(
-                score.body,
-                events,
-                seed=0,
-                admit_voices=(
-                    voice_admission.native_retirements
-                    if backend == "native"
-                    else plan_retirements
-                ),
-                release_plan=(
-                    voice_release.native_release_plan
-                    if backend == "native"
-                    else plan_release
-                ),
-            ).actions
+            prepare_synth_trace = (
+                synth.prepare_trace if backend == "native" else synth_trace.prepare
+            )
+            actions = prepare_synth_trace(score.body, events, seed=0).actions
         if (
             renderer.definition.sample_rate != performance.sample_rate
             or renderer.definition.channels != ["left", "right"]

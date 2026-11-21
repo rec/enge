@@ -17,7 +17,7 @@ from envelfo.runtime import (
     resolved_envelope,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from ufor import envelfo_random, instrument_trace, modulation
+from ufor import envelfo_random, instrument_trace, modulation, synth_trace
 from ufor.approach import ExponentialApproach
 from ufor.base import Model
 from ufor.control import TempoMap
@@ -44,6 +44,7 @@ from ufor.envelfo import (
     Sum,
     Threshold,
 )
+from ufor.events import PerformanceEvent
 from ufor.oscillator import Oscillator, Waveform
 from ufor.samples import controls, processing
 from ufor.samples.processing import (
@@ -64,7 +65,15 @@ from ufor.synth import (
 from ufor.synth_trace import VoiceStart
 from ufor.time import Timebase
 
-from . import _native, control, envelfo_graph, filters, native
+from . import (
+    _native,
+    control,
+    envelfo_graph,
+    filters,
+    native,
+    voice_admission,
+    voice_release,
+)
 from .lfo import lfo_samples
 
 
@@ -502,6 +511,35 @@ def apply_amplitude_event(
         if (part, trigger) == (action.part, action.trigger_id):
             renderer.amplitude_event(action)
     return True
+
+
+def prepare_trace(
+    definition: SynthInstrument,
+    events: list[PerformanceEvent],
+    seed: int,
+    *,
+    tempo_map: TempoMap | None = None,
+    sample_rate: int | None = None,
+    max_records: int = 10_000,
+) -> synth_trace.SynthTrace:
+    """Prepare synth-family actions with Rust uFor voice and release rules."""
+    fields = {"name", "mapping", "trigger"}
+    eligibility = _native.PreparedVoiceEligibility(
+        json.dumps(
+            [v.model_dump(mode="json", include=fields) for v in definition.voices]
+        ),
+        max_records=max_records,
+    )
+    return synth_trace.prepare(
+        definition,
+        events,
+        seed,
+        tempo_map=tempo_map,
+        sample_rate=sample_rate,
+        admit_voices=voice_admission.native_retirements,
+        release_plan=voice_release.native_release_plan,
+        eligible_voices=eligibility.matching_voices,
+    )
 
 
 def prepare(score: SynthInstrumentScore) -> PreparedSynth:

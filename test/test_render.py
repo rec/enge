@@ -10,6 +10,7 @@ from ufor import performance_binding, synth_trace
 from ufor.events import PerformanceEvent, Release, Trigger
 from ufor.instrument_trace import TraceAction
 from ufor.samples import instrument, trace
+from ufor.samples.enums import TriggerKind
 
 from enge import fm, live, noise, sample_instrument, synth
 from enge.midi import MidiPerformance, read_midi
@@ -37,6 +38,63 @@ def decode(path: Path) -> np.ndarray:
     samples = octets[:, 0] | octets[:, 1] << 8 | octets[:, 2] << 16
     samples = (samples ^ (1 << 23)) - (1 << 23)
     return samples.reshape(-1, 2).astype(np.float64) / (2**23 - 1)
+
+
+@pytest.mark.parametrize("engine", ["synth", "fm", "noise"])
+def test_native_synth_family_trace_matches_layers_and_release_mapping(
+    engine: Literal["synth", "fm", "noise"],
+) -> None:
+    score, _ = Patch(engine=engine).prepare_score(48000)
+    assert not isinstance(score, instrument.SampleInstrumentScore)
+    voice = score.body.voices[0]
+    layer_mapping = voice.mapping.model_copy(
+        update={"lowest_key": 60, "highest_key": 60, "minimum_velocity": 0.5}
+    )
+    voices = [
+        voice.model_copy(update={"name": "z-wide"}),
+        voice.model_copy(update={"name": "a-layer", "mapping": layer_mapping}),
+        voice.model_copy(
+            update={
+                "name": "tail",
+                "mapping": layer_mapping,
+                "trigger": TriggerKind.logical_release,
+            }
+        ),
+    ]
+    definition = score.body.model_copy(update={"voices": voices})
+    events: list[PerformanceEvent] = [
+        Trigger(
+            tick=0,
+            ordinal=0,
+            part="main",
+            trigger_id="quiet",
+            key=60,
+            velocity=0.49,
+            pitch_hz=220,
+        ),
+        Trigger(
+            tick=1,
+            ordinal=0,
+            part="main",
+            trigger_id="layered",
+            key=60,
+            velocity=0.5,
+            pitch_hz=220,
+        ),
+        Release(tick=2, ordinal=0, part="main", trigger_id="layered"),
+    ]
+    native = synth.prepare_trace(definition, events, seed=0)
+    assert native == synth_trace.prepare(definition, events, seed=0)
+    assert [
+        (a.tick, a.template, a.pitch_hz)
+        for a in native.actions
+        if isinstance(a, synth_trace.VoiceStart)
+    ] == [
+        (0, "z-wide", 220),
+        (1, "z-wide", 220),
+        (1, "a-layer", 220),
+        (2, "tail", 220),
+    ]
 
 
 def test_mixed_engine_render_preserves_notes_tails_and_block_boundaries(
