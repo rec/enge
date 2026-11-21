@@ -1,4 +1,7 @@
-# Integrating Rust uFor into enge
+# Rust uFor integration in enge
+
+Completed on 2026-11-21. This record describes the adopted preparation
+boundaries, consumer behavior and qualification for the completed integration.
 
 ## Goal and scope
 
@@ -7,10 +10,8 @@ enge's native preparation. Replace the corresponding Python-to-native conversion
 code incrementally, preserving supported audio behavior and the existing
 prepared runtime representation.
 
-Implementation and all four recommendations below were approved on 2026-11-16.
-Begin with literal LFOs and Envelopes. No further
-large uFor port is a prerequisite. Record concrete API gaps discovered during
-integration before proposing additional shared-library work.
+Implementation and the four decisions below were approved on 2026-11-16.
+The first slice covered literal LFOs and Envelopes.
 
 ## Current boundary and ownership
 
@@ -24,9 +25,8 @@ and calls native `prepare_modulation` to compile the indexed source/route tables
 Native definitions, route maps and execution adapters live in `src/runtime.rs`,
 `src/runtime/generators.rs` and `src/runtime/patch_host.rs`.
 
-Synth, FM and noise already use the shared generator bank. Sampler preparation
-also uses that machinery, including common/slot remapping. Inspect current
-callers before each stage because these paths continue to evolve.
+Synth, FM and noise use the shared generator bank. Sampler preparation also
+uses that machinery, including common/slot remapping.
 
 | Owner | Responsibility |
 |---|---|
@@ -361,7 +361,8 @@ that ordinary extension.
 
 ### 4. Tuning integration and closeout
 
-The first tuning slice is implemented in `enge.performance.MidiConverter`.
+Tuning preparation is implemented in `enge.performance.MidiConverter` in
+commit `5c7d1af`.
 Each referenced tuning is prepared once using Rust uFor's portable JSON codec.
 Note-on evaluation uses the retained Rust definition and converts to float Hz
 when creating `Trigger.pitch_hz`. Missing or invalid definitions fail
@@ -369,16 +370,32 @@ construction. Unavailable notes still fail feed and invalidate pairing state.
 The host resolves references and the unconfigured default remains A4 = 440 Hz
 in 12-tone equal temperament.
 
-Identify where native preparation or execution needs tuning evaluation rather
-than assuming all Python pitch work should move. Use uFor's validated tuning
-types at that boundary, preserving note addressing, exact ratios and existing
-frequency preparation. Inspect synth, FM, noise and sampler consumers separately.
+The consumer audit found no additional tuning evaluation needed in the renderers.
+Performance traces carry resolved Hz into voice actions, with existing
+voice-specific offsets or explicit trigger pitches applied during tracing.
 
-Remove obsolete conversion code for the completed stages, update native stubs
-and documentation, and record the remaining Python-owned work. A useful next
-uFor port would be `SoundSettings`, processing declarations and target resolution,
-if the integration confirms these are the next blocker. Full instrument/effect
-documents and TempoMap are separate milestones.
+| Consumer | Voice preparation contract |
+|---|---|
+| Synth | Uses positive finite `VoiceStart.pitch_hz` as the base oscillator frequency. |
+| FM | Uses positive finite `VoiceStart.pitch_hz` as the base for operator frequencies and their existing ratios and offsets. |
+| Noise | Uses the resolved random stream key. Pitch does not enter the noise signal path. |
+| Sampler | Pitch-tracked slots derive a playback ratio from positive finite `VoiceStart.pitch_hz` and the sample reference pitch. Unpitched slots can start without a frequency. |
+
+These are the existing offline and native paths. Cents modulation, sample
+variation, and playback ratios are renderer processing of already resolved
+pitches. Callers that supply their own `Trigger.pitch_hz` can use the same
+renderer contract directly. See the [performance binding contract](performance-binding.md).
+
+The tuning implementation passed 90 targeted tests on macOS, including MIDI
+file and live input, rendering and portamento. Closeout reran 50 focused cases
+covering converter and MIDI file behavior, synth pitch admission, persistent FM,
+pitch-independent noise, and sampler pitch and continuation. All passed.
+
+Python continues to resolve resources and references, build performance traces,
+discover DSP targets and validate complete instrument and effect settings.
+Any future port of `SoundSettings`, processing declarations, target resolution,
+instrument/effect documents or TempoMap is a separate milestone. Global
+modulation ordering and weighting alignment also remain separate behavior changes.
 
 ## Approved decisions
 
@@ -405,17 +422,13 @@ documents and TempoMap are separate milestones.
    Translate validation errors into the existing Python preparation exception
    convention. Callback errors retain the fixed-size native error path.
 
-Ask immediately if implementation requires a changed host profile, wire shape,
-snapshot contract, library ownership or dependency upgrade beyond adding uFor.
-
 ## Conformance and consumer verification
 
-Keep uFor's shared corpora authoritative for portable definitions and mathematics.
-Add enge tests for the conversion and actual host behavior, without copying the
-entire library corpus or retaining a second production implementation as an
-oracle. Reuse existing audio regressions and standalone core expectations.
+uFor's shared corpora define the portable contracts. Enge's consumer tests
+exercise the conversion and host behavior using existing audio regressions and
+standalone core expectations.
 
-Cover the following as their stages are implemented:
+The verification scope included:
 
 - Literal LFO phase/rate/reset/onset and Envelope curves, indefinite holds,
   release interruption, markers and supported captured approaches.
@@ -432,29 +445,8 @@ Cover the following as their stages are implemented:
   meaning; any required snapshot-format change needs a separate decision.
 
 Audio regressions use 48,000 samples per second and at least one second of output.
-Run focused tests first, then the repository's required checks for implementation
-commits. Exercise the opt-in allocation audit on successful and failed callbacks
-affected by the migration. Preparation may allocate; callback behavior must retain
-the existing zero-heap-operation guarantees for the qualified paths.
-
-Test declared, non-editable Python installation and locked Cargo dependencies.
-Preserve Python 3.13 and macOS/Windows/Linux compatibility. Specific Rust-version
-targets are not a project requirement. Hosted
-platform evidence comes from the existing workflows; do not launch release
-workflows for every commit. Local tests do not establish hardware deadlines or
-qualify unavailable platforms.
-
-## Completion criteria and exclusions
-
-Each stage is complete when its consumers use the new preparation boundary,
-obsolete encoders are removed, expected accept/reject behavior is documented,
-and affected audio, continuation and allocation checks pass. Record evidence and
-remaining limitations in this plan as work lands.
-
-No generator runtime rewrite, broad instrument/effect port, resource loader,
-Python/Rust binding package in uFor, callback JSON parsing, new execution backend,
-TempoMap migration, hardware access or performance claim is included.
-
-## Additional work beyond the prompt
-
-None.
+The stage records give the results from installed Python builds with locked
+Cargo dependencies. The opt-in allocation audit measured successful and failed
+callbacks for the migrated runtime paths. The results describe local macOS
+testing. Windows and Linux execution and hardware deadlines require separate
+qualification.

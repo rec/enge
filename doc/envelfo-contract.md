@@ -117,7 +117,7 @@ allocations, reallocations or frees inside the callback boundary. The broader
 native-call boundary retains allocations outside callbacks. Preparation limits
 and profile rejection tests are in `test/test_amplitude_preparation.py`; existing
 amplitude, runtime and live regressions cover audio and snapshot continuation.
-See the integration plan for the installed-build audit reproduction commands.
+See the integration record for the installed-build audit reproduction commands.
 
 `GeneratorBank.set_staged_envelfos` takes `(JSON Stages definition, optional
 parameter index, operation)` tuples and the existing connection metadata, plus
@@ -166,8 +166,8 @@ Patch-output/source/index materialization retain their consumers.
 
 Synth, effects and sampler use the full configuration operation. FM/noise keep
 their current supported profiles and run the same generator-aware checks before
-their existing native preparation. Further integration work is tracked in the
-[integration plan](../plan/rust-ufor-integration.md).
+their existing native preparation. See the
+[integration record](rust-ufor-integration.md) for completed stages and qualification.
 
 Patch/binding qualification passed 3,628 Python tests with 29 optional skips. The
 24,703 successful and 68 failed callbacks recorded zero callback allocations,
@@ -175,7 +175,7 @@ reallocations or frees. The broader native-call boundary retains allocations
 outside callbacks. `test/test_patch_preparation.py` checks unresolved requirements,
 host layout order, combined budgets and failure without mutation; the existing
 audio and continuation suites cover the consumers. The generated report is
-`build/rust-ufor-patch-audit.xml`; see the integration plan for reproduction.
+`build/rust-ufor-patch-audit.xml`; see the integration record for reproduction.
 
 ### Modulation route preparation and shared mathematics
 
@@ -211,7 +211,7 @@ ownership, execution profiles and snapshot representation are unchanged.
 Modulation qualification passed 3,641 Python tests with 29 optional skips. The
 24,704 successful and 71 failed callbacks recorded zero Rust allocations,
 reallocations or frees. The generated report is
-`build/rust-ufor-modulation-audit.xml`; the integration plan records reproduction
+`build/rust-ufor-modulation-audit.xml`; the integration record describes reproduction
 and the local macOS qualification boundary. The broader native-call boundary
 still performs heap operations outside callbacks.
 

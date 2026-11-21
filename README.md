@@ -86,7 +86,7 @@ Python retains DSP target/default discovery and host orchestration. Mapping and
 accurate summation share uFor's allocation-free kernels with fixed-size errors;
 enge retains its existing contribution category order and activation weighting.
 Nonfinite intermediate arithmetic fails explicitly. See the
-[integration plan](plan/rust-ufor-integration.md) for the preparation budget and
+[integration record](doc/rust-ufor-integration.md) for the preparation budget and
 the remaining policy differences from uFor's scalar reference evaluator.
 
 Python graph playback now uses the standalone `envelfo.patch` scheduler too.
