@@ -13,6 +13,43 @@ from ufor.samples.variation import ResolvedVariation
 from enge import live, sample_instrument
 
 
+def test_slot_and_variation_delays_round_once_with_maximum_play_count(
+    tmp_path: Path,
+) -> None:
+    raw = sample_score(frames=48000).model_dump(mode="json")
+    raw["body"]["settings"]["playback"]["mode"] = "one_shot"
+    raw["body"]["slots"][0]["playback"] = {
+        "start_delay_seconds": 0.00001,
+        "play_count": 2**64,
+    }
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    prepared = sample_instrument.prepare(
+        document, {"asset": np.tile([0.2, 0.1], (48000, 1))}
+    )
+    assert next(iter(prepared.samples.values())).play_count == 2**64
+    actions = trace.prepare(
+        document.body, [onset(pitch=440).model_copy(update={"controls": {}})], seed=0
+    ).actions
+    actions = [
+        a.model_copy(update={"variation": ResolvedVariation(delay_seconds=0.00001)})
+        if isinstance(a, trace.VoiceStart)
+        else a
+        for a in actions
+    ]
+    expected = np.tile([0.2, 0.15], (48000, 1))
+    expected[0] = 0
+    offline = sample_instrument.OfflineSampler(prepared, backend="native")
+    check_audio(
+        tmp_path / "rounded-offline.wav", offline.advance(actions, 0, 48000), expected
+    )
+    engine = live.NativeLiveEngine(
+        {"sample": sample_instrument.PersistentSampler(prepared)}, 48000
+    )
+    actual = np.empty_like(expected)
+    engine.advance_into({"sample": actions}, [], 0, 48000, actual)
+    check_audio(tmp_path / "rounded-live.wav", actual, expected)
+
+
 @pytest.mark.parametrize("release_at", [3000, 6001, 9000])
 @pytest.mark.parametrize("mode", ["one_shot", "while_held"])
 @pytest.mark.parametrize("sustain", [False, True])

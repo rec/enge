@@ -258,6 +258,15 @@ Pitch mapping passed 670 focused macOS tests with zero heap operations inside
 6,755 successful and seven failed callbacks. The generated report is
 `build/rust-ufor-sample-pitch-audit.xml`.
 
+Rust uFor also prepares slot playback overrides against instrument defaults.
+Enge uses the same prepared slot to calculate onset delays for offline and
+live playback. Slot and variation delay are added as checked rational seconds
+before rounding up to an output frame. The total play count can still reach
+`2^64` because the cursor tracks only plays remaining after the first.
+Slot playback passed 671 focused macOS tests with zero heap operations
+inside 6,756 successful and seven failed callbacks. The generated report is
+`build/rust-ufor-slot-playback-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

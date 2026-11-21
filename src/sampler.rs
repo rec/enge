@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use ufor::codec::{self, Format};
-use ufor::samples::playback::{Direction, LoopMode, Mapping};
+use ufor::samples::playback::{Direction, LoopMode, Mapping, ResolvedSlotPlayback};
 
 // Integers stay integers across the binding, including frames beyond 2**53.
 pub(crate) type State = (
@@ -42,6 +42,32 @@ impl SampleBuffer {
         Ok(Self {
             audio: Arc::new(samples.as_array().to_owned()),
         })
+    }
+}
+
+#[pyclass(frozen)]
+pub(crate) struct PreparedSlotPlayback(ResolvedSlotPlayback);
+
+#[pymethods]
+impl PreparedSlotPlayback {
+    #[new]
+    fn new(document: &str, defaults: &str) -> PyResult<Self> {
+        let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+        let defaults = codec::parse_sample_playback(defaults, Format::Json).map_err(invalid)?;
+        let slot = codec::parse_slot_playback(document, Format::Json).map_err(invalid)?;
+        slot.resolve(defaults).map(Self).map_err(invalid)
+    }
+
+    fn resolved(&self) -> PyResult<(String, u64, f64)> {
+        let playback = serde_json::to_string(&self.0.playback)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok((playback, self.0.additional_plays, self.0.end_fade_seconds))
+    }
+
+    fn delay_frames(&self, variation: &str, sample_rate: i64) -> PyResult<i64> {
+        let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+        let variation = ufor::quantity::exact(variation, "seconds").map_err(invalid)?;
+        self.0.delay_frames(variation, sample_rate).map_err(invalid)
     }
 }
 

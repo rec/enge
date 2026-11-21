@@ -2,12 +2,12 @@
 
 from fractions import Fraction
 from hashlib import sha256
-from math import ceil, isfinite, pi
+from math import isfinite, pi
 from typing import Literal
 
 import numpy as np
 from envelfo import patch
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from ufor import instrument_trace
 from ufor.base import Model
 from ufor.envelfo import Patch
@@ -15,7 +15,7 @@ from ufor.samples import crossfade, enums, instrument, playback, processing, tra
 from ufor.samples.enums import Direction, LoopMode
 from ufor.streams import AudioType
 
-from . import control, filters, sampler, synth
+from . import _native, control, filters, sampler, synth
 
 
 class PreparedSampler(Model, frozen=True):
@@ -26,6 +26,9 @@ class PreparedSampler(Model, frozen=True):
     settings: dict[str, processing.SoundSettings]
     routes: dict[str, list[list[float]]]
     audio_digests: dict[str, str]
+    slot_playback: dict[str, _native.PreparedSlotPlayback] = Field(exclude=True)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class SampleVoiceSnapshot(Model, frozen=True):
@@ -141,6 +144,8 @@ def prepare(
     _validate_settings(score.body.settings)
     filters.parameters(score.body.settings.processing.filters, sample_rate, 1)
     samples: dict[str, sampler.PreparedSample] = {}
+    slot_playback: dict[str, _native.PreparedSlotPlayback] = {}
+    default_playback = score.body.settings.playback.model_dump_json()
     settings: dict[str, processing.SoundSettings] = {}
     routes: dict[str, list[list[float]]] = {}
     for slot in score.body.slots:
@@ -174,18 +179,19 @@ def prepare(
             ]
             for s in source_channels
         ]
+        traversal = _native.PreparedSlotPlayback(
+            slot.playback.model_dump_json(), default_playback
+        )
+        slot_playback[slot.name] = traversal
+        resolved, additional_plays, end_fade_seconds = traversal.resolved()
         samples[slot.name] = sampler.PreparedSample(
             samples=decoded[selection.asset],
             native_rate=rates[assets[selection.asset].audio.timebase].numerator,
             sample_rate=sample_rate,
             slice=selection,
-            play_count=slot.playback.play_count or 1,
-            end_fade_seconds=slot.playback.end_fade_seconds,
-            playback=playback.Playback(
-                direction=slot.playback.direction
-                or score.body.settings.playback.direction,
-                mode=slot.playback.mode or score.body.settings.playback.mode,
-            ),
+            play_count=additional_plays + 1,
+            end_fade_seconds=end_fade_seconds,
+            playback=playback.Playback.model_validate_json(resolved),
         )
     return PreparedSampler(
         document=score,
@@ -195,6 +201,7 @@ def prepare(
         settings=settings,
         routes=routes,
         audio_digests=digests,
+        slot_playback=slot_playback,
     )
 
 
@@ -207,8 +214,6 @@ class OfflineSampler:
         backend: Literal["numpy", "native"] = "numpy",
         control_interval: int = 1,
     ) -> None:
-        from . import _native
-
         if backend not in ("numpy", "native"):
             raise synth.EngineError(f"Unknown sampler backend: {backend}")
         self.definition = definition
@@ -315,7 +320,9 @@ class OfflineSampler:
             return
         if isinstance(action, trace.VoiceStart):
             slot, _, _ = self._voice_definition(action)
-            delay = _delay_frames(slot, action, self.definition.sample_rate)
+            delay = self.definition.slot_playback[slot.name].delay_frames(
+                str(action.variation.delay_seconds), self.definition.sample_rate
+            )
             if delay:
                 self.pending[action.voice_id] = action.model_copy(
                     update={"tick": action.tick + delay}
@@ -644,8 +651,6 @@ class PersistentSampler(OfflineSampler):
         self.native_contexts = snapshot.native_contexts.copy()
 
     def add_to_native_live(self, runtime: object, batch_capacity: int) -> None:
-        from . import _native
-
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         common = self.definition.document.body.settings
@@ -862,8 +867,6 @@ class PersistentSampler(OfflineSampler):
         end: int,
         runtime: object,
     ) -> dict[int, np.ndarray]:
-        from . import _native
-
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         if start != self.frame or end <= start:
@@ -1075,7 +1078,9 @@ class PersistentSampler(OfflineSampler):
                         "Persistent sampler voice capacity exceeded"
                     )
                 active[source][voice] = True
-                delay = _delay_frames(slot, action, self.definition.sample_rate)
+                delay = self.definition.slot_playback[slot.name].delay_frames(
+                    str(action.variation.delay_seconds), self.definition.sample_rate
+                )
                 if delay > 2**53:
                     raise synth.EngineError(
                         "Native sample delay is not exactly representable"
@@ -1223,8 +1228,6 @@ class PersistentSampler(OfflineSampler):
         }
 
     def finish_native_live_block(self, end: int, runtime: object) -> None:
-        from . import _native
-
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         active = {
@@ -1278,18 +1281,6 @@ class PersistentSampler(OfflineSampler):
         ):
             raise synth.EngineError("Persistent sampler voice capacity exceeded")
         super()._apply(action)
-
-
-def _delay_frames(
-    slot: instrument.SampleSlot, action: trace.VoiceStart, sample_rate: int
-) -> int:
-    return ceil(
-        (
-            Fraction(str(slot.playback.start_delay_seconds))
-            + Fraction(str(action.variation.delay_seconds))
-        )
-        * sample_rate
-    )
 
 
 def _validate_settings(settings: processing.SoundSettings) -> None:
