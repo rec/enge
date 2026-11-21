@@ -207,6 +207,8 @@ class OfflineSampler:
         backend: Literal["numpy", "native"] = "numpy",
         control_interval: int = 1,
     ) -> None:
+        from . import _native
+
         if backend not in ("numpy", "native"):
             raise synth.EngineError(f"Unknown sampler backend: {backend}")
         self.definition = definition
@@ -215,6 +217,14 @@ class OfflineSampler:
         self.voices: dict[str, SampleVoiceSnapshot] = {}
         self.pending: dict[str, trace.VoiceStart] = {}
         self.slots = {s.name: s for s in definition.document.body.slots}
+        self.native_mappings = (
+            {
+                s.name: _native.SamplePitchMapping(s.mapping.model_dump_json())
+                for s in self.slots.values()
+            }
+            if backend == "native"
+            else {}
+        )
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
             definition.document.body.settings.controls,
@@ -416,13 +426,24 @@ class OfflineSampler:
             raise synth.EngineError(
                 "Latched sample parameter overrides are not implemented"
             )
-        if slot.mapping.pitch_tracking and (
-            action.pitch_hz is None
-            or not isfinite(action.pitch_hz)
-            or action.pitch_hz <= 0
-        ):
-            raise synth.EngineError(
-                "Pitch-tracked sample requires positive resolved pitch_hz"
+        if self.backend == "native":
+            try:
+                ratio = self.native_mappings[slot.name].pitch_ratio(
+                    action.pitch_hz, 0, action.variation.pitch_cents
+                )
+            except ValueError as error:
+                raise synth.EngineError(str(error)) from error
+        else:
+            if slot.mapping.pitch_tracking and (
+                action.pitch_hz is None
+                or not isfinite(action.pitch_hz)
+                or action.pitch_hz <= 0
+            ):
+                raise synth.EngineError(
+                    "Pitch-tracked sample requires positive resolved pitch_hz"
+                )
+            ratio = playback.pitch_ratio(
+                slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
             )
         common = self.definition.document.body.settings
         envelope = settings.envelope or common.envelope
@@ -438,9 +459,7 @@ class OfflineSampler:
                 filter_order=settings.processing.filter_order
                 if settings.processing.filters
                 else common.processing.filter_order,
-                pitch_ratio=playback.pitch_ratio(
-                    slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
-                ),
+                pitch_ratio=ratio,
                 gain=_layer_gain(slot, action)
                 * 10
                 ** (

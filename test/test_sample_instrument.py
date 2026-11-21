@@ -630,7 +630,7 @@ def test_prepared_replacement_and_transport_stop_apply_before_the_sample(
 
 
 def test_resolved_variation_and_static_tuning_are_applied_once(
-    backend: Literal["numpy", "native"], tmp_path: Path
+    backend: Literal["numpy", "native"], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     raw = sample_score().model_dump(mode="json")
     raw["body"]["settings"]["processing"] = {"tuning_cents": 100, "volume_db": 3}
@@ -651,6 +651,14 @@ def test_resolved_variation_and_static_tuning_are_applied_once(
         seed=123,
     ).actions
     start = next(a for a in actions if isinstance(a, trace.VoiceStart))
+    if backend == "native":
+
+        def unexpected_reference_ratio(*args: object) -> float:
+            pytest.fail("Native sampler used Python pitch mapping")
+
+        monkeypatch.setattr(
+            sample_instrument.playback, "pitch_ratio", unexpected_reference_ratio
+        )
     actual = sample_instrument.OfflineSampler(prepared, backend=backend).advance(
         actions, 0, 48000
     )

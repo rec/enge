@@ -250,6 +250,14 @@ Traversal preparation passed 670 focused macOS tests with zero heap
 operations inside 6,755 successful and seven failed callbacks. The generated
 report is `build/rust-ufor-sample-traversal-audit.xml`.
 
+The native sampler prepares a Rust uFor pitch mapping per slot. Each onset
+uses the resolved `pitch_hz`, the sample's reference frequency, and the voice's
+pitch variation. The sampler applies the native asset rate and live tuning in
+its existing playback path. The NumPy renderer uses Python's mapping.
+Pitch mapping passed 670 focused macOS tests with zero heap operations inside
+6,755 successful and seven failed callbacks. The generated report is
+`build/rust-ufor-sample-pitch-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

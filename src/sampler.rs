@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use ufor::codec::{self, Format};
-use ufor::samples::playback::{Direction, LoopMode};
+use ufor::samples::playback::{Direction, LoopMode, Mapping};
 
 // Integers stay integers across the binding, including frames beyond 2**53.
 pub(crate) type State = (
@@ -42,6 +42,31 @@ impl SampleBuffer {
         Ok(Self {
             audio: Arc::new(samples.as_array().to_owned()),
         })
+    }
+}
+
+#[pyclass(frozen)]
+pub(crate) struct SamplePitchMapping(Mapping);
+
+#[pymethods]
+impl SamplePitchMapping {
+    #[new]
+    fn new(document: &str) -> PyResult<Self> {
+        codec::parse_sample_mapping(document, Format::Json)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (pitch_hz, tuning_cents, variation_cents))]
+    fn pitch_ratio(
+        &self,
+        pitch_hz: Option<f64>,
+        tuning_cents: f64,
+        variation_cents: f64,
+    ) -> PyResult<f64> {
+        self.0
+            .pitch_ratio(pitch_hz, tuning_cents, variation_cents)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 }
 

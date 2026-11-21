@@ -383,6 +383,12 @@ def render(
 class SampleBuffer:
     def __init__(self, samples: np.ndarray) -> None: ...
 
+class SamplePitchMapping:
+    def __init__(self, document: str) -> None: ...
+    def pitch_ratio(
+        self, pitch_hz: float | None, tuning_cents: float, variation_cents: float
+    ) -> float: ...
+
 class SampleTraversal:
     def __init__(
         self,
