@@ -83,9 +83,9 @@ preserved.
 Native modulation preparation uses Rust uFor's validated declarations to compile
 the existing indexed routes, scoped controls, exact smoothing and event slots.
 Rust uFor resolves authored amplitude, tuning, filter, and FM target defaults.
-Rust also compiles effect control routes and checks authored Gain, Multiply,
-FrequencyShifter, and Filter targets through uFor. Enge owns runtime slots and
-sample-rate filter bounds. Mapping and
+Rust also compiles effect control routes and checks authored dynamics, follower,
+Gain, Multiply, FrequencyShifter, and Filter targets through uFor. Enge owns
+runtime slots and sample-rate filter bounds. Mapping and
 accurate summation share uFor's allocation-free kernels with fixed-size errors;
 enge retains its existing contribution category order and activation weighting.
 Nonfinite intermediate arithmetic fails explicitly. See the

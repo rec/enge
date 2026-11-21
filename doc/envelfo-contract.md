@@ -187,8 +187,11 @@ facts for the shared native slots, and enge checks authored parameter units,
 defaults and minimum rules against those facts.
 
 Effect graph preparation compiles canonical modulation declarations into
-native control tables. Rust uFor checks Gain, Multiply, FrequencyShifter,
-and Filter target units, defaults, and bounds against the authored processors.
+native control tables. Rust uFor checks target units, defaults, and bounds
+against authored Gain, Multiply, FrequencyShifter, Filter, Gate, Expander,
+Compressor, Follower, Limiter, TransientShaper, DynamicEQ, and
+MultibandCompressor processors. Rust checks each multiband target against its
+authored low, mid, or high band when compiling enge's runtime field slots.
 Python retains the graph topology, other processor definitions and their
 validation, and the mapping from processor addresses to native slots.
 The compiler preserves declaration order for target slots and sorts route
@@ -201,6 +204,9 @@ The focused macOS audit passed 162 tests covering effect controls, persistent
 effects, followers, frequency shifting, routing, mixing, and matrix delay.
 It recorded zero heap operations in 6,627 successful and 12 failed callbacks.
 The generated report is `build/rust-ufor-effect-targets-audit.xml`.
+The dynamics extension passed 98 focused macOS tests with zero heap operations
+inside 4,481 successful and 15 failed callbacks. The generated report is
+`build/rust-ufor-dynamics-targets-audit.xml`.
 
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
