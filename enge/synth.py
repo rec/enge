@@ -1838,6 +1838,14 @@ class OfflineSynth:
         tuning, gains, filter_values = self.controls.parameters(
             template, voice.sources, start, frames
         )
+        if self.backend == "native":
+            try:
+                frequencies = _native.tuned_frequencies(voice.frequency_hz, tuning)
+            except ValueError as error:
+                raise EngineError(
+                    f"Invalid frequency for {voice.voice_id} at frame {start}"
+                ) from error
+            return frequencies, gains, filter_values
         frequencies = np.array(
             [frequency(voice.frequency_hz, float(c)) for c in tuning]
         )

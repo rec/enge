@@ -350,6 +350,15 @@ Oscillator preparation passed 198 focused macOS tests with zero heap
 operations inside 2,119 successful and six failed callbacks. The generated
 report is `build/rust-ufor-oscillator-audit.xml`.
 
+Native offline and persistent oscillator and FM rendering use Rust uFor
+to apply routed tuning to the resolved onset `pitch_hz`. FM applies the
+operator ratio first, then the combined voice and operator cents.
+Persistent evaluation rejects nonfinite or nonpositive rendered frequencies
+with fixed-size errors inside the callback.
+Pitch realization passed 285 focused macOS tests with zero heap operations
+inside 2,119 successful and six failed callbacks. The generated report is
+`build/rust-ufor-synth-pitch-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

@@ -1,5 +1,6 @@
 //! Portable preparation for MIDI conversion and instrument traces.
 
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use ufor::codec::{self, Format};
@@ -9,10 +10,48 @@ use ufor::identifier::Identifier;
 use ufor::number::Rational;
 use ufor::oscillator::Oscillator;
 use ufor::samples::eligibility::VoiceEligibility;
+use ufor::synth_pitch;
 use ufor::tuning::Tuning;
 use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
+type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
+
+#[pyfunction]
+#[pyo3(signature = (pitch_hz, tuning, operator=None))]
+pub(crate) fn tuned_frequencies<'py>(
+    py: Python<'py>,
+    pitch_hz: f64,
+    tuning: PyReadonlyArray1<'py, f64>,
+    operator: Option<OperatorTuning<'py>>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let tuning = tuning.as_array();
+    let frequencies = if let Some((ratios, cents)) = operator {
+        let ratios = ratios.as_array();
+        let cents = cents.as_array();
+        if ratios.len() != tuning.len() || cents.len() != tuning.len() {
+            return Err(PyValueError::new_err(
+                "Mismatched FM operator tuning arrays",
+            ));
+        }
+        tuning
+            .iter()
+            .zip(ratios.iter())
+            .zip(cents.iter())
+            .map(|((&tuning, &ratio), &cents)| {
+                synth_pitch::operator_frequency(pitch_hz, ratio, tuning, cents)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    } else {
+        tuning
+            .iter()
+            .map(|&cents| synth_pitch::frequency(pitch_hz, cents))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    Ok(frequencies
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py))
+}
 
 #[pyclass(frozen, skip_from_py_object)]
 pub(crate) struct PreparedOscillator(Oscillator);

@@ -15,6 +15,7 @@ use std::f64::consts::{PI, TAU};
 use std::io::{Cursor, Write};
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::modulation::{Interpolation, Point};
+use ufor::synth_pitch;
 
 use generators::GeneratorBank;
 use patch_host::PatchHost;
@@ -1031,12 +1032,24 @@ impl SynthRuntime {
                         value.value
                     };
                     let process_tuning = self.parameter(voice, 1)?;
-                    let mod_frequency = self.frequencies[voice]
-                        * self.parameter(voice, 2)?
-                        * 2_f64.powf((process_tuning + self.parameter(voice, 3)?) / 1200.0);
-                    let carrier_frequency = self.frequencies[voice]
-                        * self.parameter(voice, 4)?
-                        * 2_f64.powf((process_tuning + self.parameter(voice, 5)?) / 1200.0);
+                    let mod_frequency = synth_pitch::operator_frequency(
+                        self.frequencies[voice],
+                        self.parameter(voice, 2)?,
+                        process_tuning,
+                        self.parameter(voice, 3)?,
+                    )
+                    .map_err(|_| {
+                        NativeError::Message("Invalid persistent FM operator frequency")
+                    })?;
+                    let carrier_frequency = synth_pitch::operator_frequency(
+                        self.frequencies[voice],
+                        self.parameter(voice, 4)?,
+                        process_tuning,
+                        self.parameter(voice, 5)?,
+                    )
+                    .map_err(|_| {
+                        NativeError::Message("Invalid persistent FM operator frequency")
+                    })?;
                     let modulator = mod_level
                         * (TAU * self.mod_phases[voice] / self.rate
                             + self.parameter(voice, 7)? * self.previous_modulators[voice])
@@ -1116,13 +1129,15 @@ impl SynthRuntime {
                     }
                     for operator in 0..operators {
                         let definition = self.graph_operators[operator].clone();
-                        let frequency = self.frequencies[voice]
-                            * self.parameter(voice, definition.ratio_parameter)?
-                            * 2_f64.powf(
-                                (process_tuning
-                                    + self.parameter(voice, definition.tuning_parameter)?)
-                                    / 1200.0,
-                            );
+                        let frequency = synth_pitch::operator_frequency(
+                            self.frequencies[voice],
+                            self.parameter(voice, definition.ratio_parameter)?,
+                            process_tuning,
+                            self.parameter(voice, definition.tuning_parameter)?,
+                        )
+                        .map_err(|_| {
+                            NativeError::Message("Invalid persistent FM operator frequency")
+                        })?;
                         let index = operator_base + operator;
                         let increment = frequency - self.graph_errors[index];
                         let total = self.graph_phases[index] + increment;
@@ -1148,8 +1163,12 @@ impl SynthRuntime {
                     self.filter_voice(voice, wave)? * self.gains[voice] * level * amplitude
                 };
                 if self.source_kind == 0 {
-                    let tuning = 2_f64.powf(self.parameter(voice, 1)? / 1200.0);
-                    let increment = self.frequencies[voice] * tuning - self.errors[voice];
+                    let pitch =
+                        synth_pitch::frequency(self.frequencies[voice], self.parameter(voice, 1)?)
+                            .map_err(|_| {
+                                NativeError::Message("Invalid persistent oscillator frequency")
+                            })?;
+                    let increment = pitch - self.errors[voice];
                     let total = self.phases[voice] + increment;
                     self.errors[voice] = (total - self.phases[voice]) - increment;
                     self.phases[voice] = total.rem_euclid(self.rate);

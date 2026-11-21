@@ -413,11 +413,25 @@ class OfflineFM:
                 cents = values.get(
                     (f"operator-{name}", "tuning_cents"), operator.tuning_cents
                 )
-                frequencies[:, i] = (
-                    renderer.definition.pitch_hz
-                    * ratio
-                    * np.exp2((tuning + cents) / 1200)
-                )
+                if self.backend == "native":
+                    frequencies[:, i] = _native.tuned_frequencies(
+                        renderer.definition.pitch_hz,
+                        tuning,
+                        (
+                            np.broadcast_to(
+                                np.asarray(ratio, dtype=np.float64), (count,)
+                            ),
+                            np.broadcast_to(
+                                np.asarray(cents, dtype=np.float64), (count,)
+                            ),
+                        ),
+                    )
+                else:
+                    frequencies[:, i] = (
+                        renderer.definition.pitch_hz
+                        * ratio
+                        * np.exp2((tuning + cents) / 1200)
+                    )
             edge_indices = (
                 np.column_stack(
                     [

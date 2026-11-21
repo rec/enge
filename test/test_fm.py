@@ -877,6 +877,8 @@ def test_native_fm_preserves_graph_sound_and_state(
 
     raw = score().model_dump()
     raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 0.7
+    raw["body"]["voices"][0]["fm"]["operators"][0]["tuning_cents"] = -13
+    raw["body"]["voices"][0]["processing"]["tuning_cents"] = 37
     raw["body"]["voices"][0]["processing"]["filters"] = [
         {"name": "tone", "response": "lowpass", "cutoff_hz": 1800, "q": 0.7}
     ]
