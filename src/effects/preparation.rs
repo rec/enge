@@ -58,17 +58,23 @@ pub(crate) fn prepare_effect_controls(
     }
     let mut addresses = BTreeMap::new();
     let mut targets = Vec::with_capacity(slots.len());
+    let mut parameters_by_node = BTreeMap::<_, Vec<_>>::new();
     for (parameter, (node, field)) in modulation.parameters().iter().zip(slots) {
         if parameter.scope() != Scope::Voice {
             return Err(invalid("effect parameters belong to one graph instance"));
         }
-        if let Some(processor) = definitions.get(&node) {
-            processor.validate_parameter(parameter).map_err(invalid)?;
+        if definitions.contains_key(&node) {
+            parameters_by_node.entry(node).or_default().push(parameter);
         } else if names.contains(parameter.target().name()) {
             return Err(invalid("effect target node does not match processor"));
         }
         addresses.insert(parameter.target(), targets.len());
         targets.push((node, field, parameter.minimum(), parameter.maximum()));
+    }
+    for (node, parameters) in parameters_by_node {
+        definitions[&node]
+            .validate_parameters(parameters)
+            .map_err(invalid)?;
     }
     let sources: BTreeMap<_, _> = modulation
         .sources()

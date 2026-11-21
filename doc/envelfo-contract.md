@@ -192,6 +192,9 @@ against authored Gain, Multiply, FrequencyShifter, Filter, Gate, Expander,
 Compressor, Follower, Limiter, TransientShaper, DynamicEQ, and
 MultibandCompressor processors. Rust checks each multiband target against its
 authored low, mid, or high band when compiling enge's runtime field slots.
+Reverb and delay targets also use authored limits. Rust checks the combined
+base-delay and depth ranges for modulated delays and admits fixed-delay damping
+targets when the processor declares damping.
 Python retains the graph topology, other processor definitions and their
 validation, and the mapping from processor addresses to native slots.
 The compiler preserves declaration order for target slots and sorts route
@@ -207,6 +210,9 @@ The generated report is `build/rust-ufor-effect-targets-audit.xml`.
 The dynamics extension passed 98 focused macOS tests with zero heap operations
 inside 4,481 successful and 15 failed callbacks. The generated report is
 `build/rust-ufor-dynamics-targets-audit.xml`.
+The delay extension passed 101 focused macOS tests with zero heap operations
+inside 4,890 successful and 12 failed callbacks. The generated report is
+`build/rust-ufor-delay-targets-audit.xml`.
 
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered

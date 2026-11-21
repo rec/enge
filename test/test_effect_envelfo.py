@@ -169,6 +169,37 @@ def test_native_effect_controls_check_authored_processor_identity_and_defaults()
         _native.prepare_effect_controls(json.dumps(data), processors, [(0, 0)], [])
 
 
+def test_native_delay_control_bounds_combine_base_and_depth() -> None:
+    graph, _, _, _ = modulated_graph("chorus")
+    raw = graph.model_dump(mode="json")
+    document = raw["modulation"]
+    depth = {
+        "target": {"name": "fx", "parameter": "depth_seconds"},
+        "unit": "seconds",
+        "scope": "voice",
+        "minimum": 0,
+        "maximum": 0.002,
+        "default": 0,
+    }
+    document["parameters"].append(depth)
+    processors = [(0, graph.processors[0].model_dump_json())]
+    slots = [(0, 0), (0, 3)]
+    audio_effects.EffectGraph.model_validate(raw)
+    targets, _ = _native.prepare_effect_controls(
+        json.dumps(document), processors, slots, []
+    )
+    assert targets == [(0, 0, 0.003, 0.007), (0, 3, 0, 0.002)]
+    depth["maximum"] = 0.004
+    with pytest.raises(
+        ValueError, match="modulation domains exceed the prepared delay span"
+    ):
+        audio_effects.EffectGraph.model_validate(raw)
+    with pytest.raises(
+        ValueError, match="modulation domains exceed the prepared delay span"
+    ):
+        _native.prepare_effect_controls(json.dumps(document), processors, slots, [])
+
+
 @pytest.mark.parametrize(
     "kind",
     [
