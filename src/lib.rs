@@ -211,6 +211,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         effects::preparation::prepare_effect_controls,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        effects::preparation::prepare_effect_topology,
+        module
+    )?)?;
     module.add_class::<runtime::preparation::fm::PreparedFm>()?;
     module.add_class::<runtime::SynthRuntime>()?;
     module.add_class::<runtime::SynthRuntimeSnapshot>()?;

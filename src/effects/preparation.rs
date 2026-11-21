@@ -9,6 +9,44 @@ use ufor::envelfo::{PreparationLimits, preparation_records};
 use ufor::identifier::Identifier;
 use ufor::modulation::{Interpolation, Modulation, Operation};
 
+type GraphTopology = (
+    Vec<String>,
+    BTreeMap<String, Vec<String>>,
+    Vec<String>,
+    BTreeMap<String, i64>,
+);
+
+#[pyfunction]
+#[pyo3(signature = (document, sample_rate, *, max_records=10000))]
+pub(crate) fn prepare_effect_topology(
+    document: &str,
+    sample_rate: i64,
+    max_records: usize,
+) -> PyResult<GraphTopology> {
+    let limits = PreparationLimits::new(max_records).map_err(invalid)?;
+    let topology = codec::parse_effect_topology(document, Format::Json, limits).map_err(invalid)?;
+    let latencies = topology.latencies(sample_rate).map_err(invalid)?;
+    let channel_names = |channels: &[Identifier]| {
+        channels
+            .iter()
+            .map(|name| name.as_str().to_owned())
+            .collect()
+    };
+    Ok((
+        channel_names(topology.order()),
+        topology
+            .layouts()
+            .iter()
+            .map(|(name, channels)| (name.as_str().to_owned(), channel_names(channels)))
+            .collect(),
+        channel_names(topology.output_channels()),
+        latencies
+            .into_iter()
+            .map(|(name, frames)| (name.into(), frames))
+            .collect(),
+    ))
+}
+
 #[pyfunction]
 #[pyo3(signature = (document, processors, slots, followers, *, max_records=10000))]
 pub(crate) fn prepare_effect_controls(

@@ -197,6 +197,13 @@ def test_follower_and_generator_contributions_align_with_delayed_audio(
     )
     graph = audio_effects.EffectGraph.model_validate(raw)
     prepared = effects.prepare(graph, 48000)
+    assert prepared.order == graph.order()
+    assert prepared.latencies == graph.latencies(48000)
+    assert prepared.layouts == {
+        "gain": ["left", "right"],
+        "level": ["level"],
+        "shape": ["left", "right"],
+    }
     assert prepared.latency_frames == 48
     frames = np.arange(48000)
     source = np.repeat(

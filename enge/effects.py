@@ -201,6 +201,8 @@ class PreparedEffects(BaseModel, frozen=True):
     definition: audio_effects.EffectGraph
     sample_rate: int = Field(gt=0)
     order: list[str]
+    layouts: dict[str, list[str]]
+    latencies: dict[str, int]
     channels: list[str]
     latency_frames: int = Field(ge=0)
     tempo_map: TempoMap | None = None
@@ -261,7 +263,7 @@ class OfflineEffects:
         self.frame = 0
         self.ended_inputs: dict[str, int] = {}
         self.stopped_at: int | None = None
-        layouts = _processor_layouts(definition.definition)
+        layouts = definition.layouts
         self.processors = {
             p.name: _initial_state(
                 p,
@@ -271,7 +273,7 @@ class OfflineEffects:
             )
             for p in definition.definition.processors
         }
-        latencies = definition.definition.latencies(definition.sample_rate)
+        latencies = definition.latencies
         inputs = {i.name: i.channels for i in definition.definition.inputs}
         connections = {
             (c.processor, c.port): c.source for c in definition.definition.connections
@@ -505,7 +507,7 @@ class OfflineEffects:
             or snapshot.audio_digests != self.definition.audio_digests
         ):
             raise EngineError("Snapshot belongs to different prepared effects")
-        layouts = _processor_layouts(self.definition.definition)
+        layouts = self.definition.layouts
         for processor in self.definition.definition.processors:
             if isinstance(processor, audio_effects.DynamicEQ):
                 state = snapshot.processors[processor.name]
@@ -1599,7 +1601,21 @@ def prepare(
     if sample_rate <= 0:
         raise EngineError("Effect sample rate must be positive")
     definition = synth.expand_patch_outputs(definition)
-    layouts = _processor_layouts(definition)
+    order, layouts, channels, latencies = _native.prepare_effect_topology(
+        definition.model_dump_json(
+            include={
+                "scope",
+                "owner",
+                "inputs",
+                "processors",
+                "connections",
+                "output",
+                "modulation",
+                "bindings",
+            }
+        ),
+        sample_rate,
+    )
     if tempo_map is None and any(
         g.clock == "beats" for g in definition.envelfos.values()
     ):
@@ -1688,12 +1704,14 @@ def prepare(
     prepared = PreparedEffects(
         definition=definition,
         sample_rate=sample_rate,
-        order=definition.order(),
-        channels=definition.output_channels(),
+        order=order,
+        layouts=layouts,
+        latencies=latencies,
+        channels=channels,
         latency_frames=(
             0
             if isinstance(definition.output, audio_effects.InputSource)
-            else definition.latencies(sample_rate)[definition.output.processor]
+            else latencies[definition.output.processor]
         ),
         tempo_map=tempo_map,
         audio=buffers,
@@ -1728,7 +1746,7 @@ def native_live_graph(
     ordered = [processors[n] for n in definition.order]
     input_indices = {p.name: i for i, p in enumerate(graph.inputs)}
     processor_indices = {p.name: i + len(graph.inputs) for i, p in enumerate(ordered)}
-    layouts = _processor_layouts(graph)
+    layouts = definition.layouts
     channel_widths = [len(p.channels) for p in graph.inputs] + [
         len(layouts[p.name]) for p in ordered
     ]
@@ -2915,24 +2933,3 @@ def _delay_waveform(waveform: Waveform, phase: np.ndarray) -> np.ndarray:
     if waveform == Waveform.square:
         return np.where(phase < 0.5, 1.0, -1.0)
     return np.where(phase < 0.5, 4 * phase - 1, 3 - 4 * phase)
-
-
-def _processor_layouts(
-    graph: audio_effects.EffectGraph,
-) -> dict[str, list[str]]:
-    inputs = {i.name: i for i in graph.inputs}
-    processors = {p.name: p for p in graph.processors}
-    connections = {(c.processor, c.port): c.source for c in graph.connections}
-    layouts: dict[str, list[str]] = {}
-    for name in graph.order():
-        processor = processors[name]
-        layouts[name] = audio_effects.processor_channels(
-            processor,
-            {
-                port: audio_effects.source_channels(
-                    connections[(name, port)], inputs, layouts
-                )
-                for port in audio_effects.processor_ports(processor)
-            },
-        )
-    return layouts

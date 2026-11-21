@@ -85,6 +85,8 @@ the existing indexed routes, scoped controls, exact smoothing and event slots.
 Rust uFor resolves authored amplitude, tuning, filter, and FM target defaults.
 Rust also compiles effect control routes and checks all effect modulation targets
 against their authored processor definitions through uFor.
+Effect preparation uses uFor's processor order, named channel layouts, and
+latency alignment for both offline and live rendering.
 Enge owns runtime slots and sample-rate filter bounds. Mapping and
 accurate summation share uFor's allocation-free kernels with fixed-size errors;
 enge retains its existing contribution category order and activation weighting.
