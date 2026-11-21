@@ -4,7 +4,6 @@ use super::fm::PreparedFm;
 use super::{exact, invalid};
 use crate::amplitude::frame_time;
 use crate::runtime::core_error;
-use engelfo::random::stream_key;
 use numpy::IntoPyArray;
 use numpy::ndarray::Array2;
 use pyo3::prelude::*;
@@ -19,6 +18,7 @@ use ufor::samples::processing::{
     Binding, EventKind, FilterBoundary, FilterResponse, GeneratorBinding, ReleaseTiming,
     SoundSettings, TargetMinimum, TargetResolution,
 };
+use ufor::voice_start::envelfo_stream_key;
 
 pub(super) type TargetInput = (String, String, usize, Option<f64>, f64, f64);
 type RouteMaps = Vec<Vec<(usize, Vec<(f64, f64)>)>>;
@@ -402,7 +402,7 @@ pub(crate) fn prepare_modulation(
             usize::try_from(connection.every()).map_err(invalid)?,
             usize::try_from(connection.offset()).map_err(invalid)?,
             (connection.probability() * (1_u64 << 53) as f64) as u64,
-            stream_key(
+            envelfo_stream_key(
                 0,
                 &format!("{}:cue-{order}", destination.reference().as_str()),
             ),

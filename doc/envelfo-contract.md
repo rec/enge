@@ -321,6 +321,16 @@ Voice eligibility passed 352 focused macOS tests with zero heap operations
 inside 3,421 successful and six failed callbacks. The generated report is
 `build/rust-ufor-voice-eligibility-audit.xml`.
 
+Native sampler and synth-family trace preparation derives voice-start pitch
+and random stream keys with Rust uFor. Synth-family voices apply their
+authored frequency offset when a `pitch_hz` is supplied. Noise and EnveLFO
+derive keys from the performance seed and voice ID using their own
+SHA-256 domains. Native Patch and modulation preparation
+also use the shared EnveLFO graph identity calculation.
+Voice-start and graph stream preparation passed 640 focused macOS tests
+with zero heap operations inside 3,537 successful and six failed callbacks.
+The generated report is `build/rust-ufor-voice-start-audit.xml`.
+
 Persistent FM prepares a canonical uFor FM body once. Rust validates the
 operator Envelopes and current-sample topology, then compiles the ordered
 indexed graph for enge. Native modulation uses the same prepared graph to

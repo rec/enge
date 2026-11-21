@@ -406,6 +406,13 @@ class PreparedVoiceEligibility:
     def __init__(self, document: str, *, max_records: int = 10000) -> None: ...
     def matching_voices(self, trigger: str, key: int, velocity: float) -> list[str]: ...
 
+def prepare_voice_start(
+    seed: int,
+    voice_id: str,
+    pitch_hz: float | None,
+    frequency_offset_hz: float,
+    is_noise: bool,
+) -> tuple[float | None, int, int | None]: ...
 def advance_sample_selection(
     mode: str, seed: int, document: str
 ) -> tuple[str, str]: ...

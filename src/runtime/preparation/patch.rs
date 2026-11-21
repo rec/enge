@@ -7,7 +7,6 @@ use crate::runtime::generators::GeneratorBank;
 use crate::runtime::{
     EnvelfoTransformInput, EnvelfoTransformRoute, PatchEventInput, StageStartInput, core_error,
 };
-use engelfo::random::stream_key;
 use engelfo::time::Time;
 use pyo3::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,6 +14,7 @@ use ufor::envelfo::{Body, EventAction, PatchNode, SignalOperation};
 use ufor::identifier::Identifier;
 use ufor::modulation::{Interpolation, Operation};
 use ufor::samples::processing::{Binding, GeneratorBinding};
+use ufor::voice_start::envelfo_stream_key;
 
 pub(crate) type GeneratorSlots = (
     Vec<(String, usize)>,
@@ -329,7 +329,7 @@ impl PreparedPatch {
                                 every,
                                 offset,
                                 probability,
-                                stream_key(0, &identity),
+                                envelfo_stream_key(0, &identity),
                                 delay,
                                 capture,
                             ));
@@ -342,7 +342,7 @@ impl PreparedPatch {
                             every,
                             offset,
                             probability,
-                            stream_key(0, &identity),
+                            envelfo_stream_key(0, &identity),
                             delay,
                             capture,
                         )),
@@ -382,7 +382,7 @@ impl PreparedPatch {
                 every,
                 offset,
                 probability,
-                stream_key(0, &format!("{}:cue-{order}", target.reference().as_str())),
+                envelfo_stream_key(0, &format!("{}:cue-{order}", target.reference().as_str())),
                 delay(connection.delay(), bank.rate, false)?,
                 false,
             ));
@@ -448,7 +448,7 @@ impl PreparedPatch {
                     every,
                     offset,
                     probability,
-                    stream_key(0, &identity),
+                    envelfo_stream_key(0, &identity),
                     delay(connection.delay(), bank.rate, true)?,
                     capture,
                 ));
@@ -483,7 +483,7 @@ impl PreparedPatch {
                     every,
                     offset,
                     probability,
-                    stream_key(0, &format!("{}:cue-{order}", target.reference().as_str())),
+                    envelfo_stream_key(0, &format!("{}:cue-{order}", target.reference().as_str())),
                     delay(connection.delay(), bank.rate, true)?,
                     false,
                 ));

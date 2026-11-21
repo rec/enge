@@ -539,6 +539,7 @@ def prepare_trace(
         admit_voices=voice_admission.native_retirements,
         release_plan=voice_release.native_release_plan,
         eligible_voices=eligibility.matching_voices,
+        prepare_start=_native.prepare_voice_start,
     )
 
 

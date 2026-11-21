@@ -3,8 +3,26 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use ufor::codec::{self, Format};
+use ufor::identifier::Identifier;
 use ufor::samples::eligibility::VoiceEligibility;
 use ufor::tuning::Tuning;
+use ufor::voice_start;
+
+#[pyfunction]
+#[pyo3(signature = (seed, voice_id, pitch_hz, frequency_offset_hz, is_noise))]
+pub(crate) fn prepare_voice_start(
+    seed: u64,
+    voice_id: String,
+    pitch_hz: Option<f64>,
+    frequency_offset_hz: f64,
+    is_noise: bool,
+) -> PyResult<(Option<f64>, u64, Option<u64>)> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let id = Identifier::new(voice_id).map_err(invalid)?;
+    let values = voice_start::prepare_values(seed, &id, pitch_hz, frequency_offset_hz, is_noise)
+        .map_err(invalid)?;
+    Ok((values.pitch_hz, values.envelfo_key, values.noise_key))
+}
 
 #[pyclass(frozen, skip_from_py_object)]
 pub(crate) struct PreparedTuning(Tuning);

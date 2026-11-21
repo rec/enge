@@ -223,6 +223,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<live::LiveRuntime>()?;
     module.add_class::<performance::PreparedTuning>()?;
     module.add_class::<performance::PreparedVoiceEligibility>()?;
+    module.add_function(wrap_pyfunction!(performance::prepare_voice_start, module)?)?;
     module.add_class::<effects::runtime::EffectRuntime>()?;
     module.add_class::<live::LiveRuntimeSnapshot>()?;
     module.add_class::<queue::ActionQueue>()?;

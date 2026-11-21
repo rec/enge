@@ -58,6 +58,7 @@ def test_native_synth_family_trace_matches_layers_and_release_mapping(
                 "name": "tail",
                 "mapping": layer_mapping,
                 "trigger": TriggerKind.logical_release,
+                "frequency_offset_hz": 0.0 if engine == "noise" else -12.5,
             }
         ),
     ]
@@ -83,17 +84,17 @@ def test_native_synth_family_trace_matches_layers_and_release_mapping(
         ),
         Release(tick=2, ordinal=0, part="main", trigger_id="layered"),
     ]
-    native = synth.prepare_trace(definition, events, seed=0)
-    assert native == synth_trace.prepare(definition, events, seed=0)
-    assert [
-        (a.tick, a.template, a.pitch_hz)
-        for a in native.actions
-        if isinstance(a, synth_trace.VoiceStart)
-    ] == [
+    seed = 2**64 - 1
+    native = synth.prepare_trace(definition, events, seed=seed)
+    assert native == synth_trace.prepare(definition, events, seed=seed)
+    starts = [a for a in native.actions if isinstance(a, synth_trace.VoiceStart)]
+    assert starts[0].envelfo_key == 0x2303A83161E3DDB5
+    assert starts[0].noise_key == (8322409229319871196 if engine == "noise" else None)
+    assert [(a.tick, a.template, a.pitch_hz) for a in starts] == [
         (0, "z-wide", 220),
         (1, "z-wide", 220),
         (1, "a-layer", 220),
-        (2, "tail", 220),
+        (2, "tail", 220 if engine == "noise" else 207.5),
     ]
 
 

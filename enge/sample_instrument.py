@@ -144,6 +144,7 @@ def prepare_trace(
         advance_selection=_advance_selection,
         admit_voices=voice_admission.native_retirements,
         release_plan=voice_release.native_release_plan,
+        prepare_start=_native.prepare_voice_start,
         draw_random_range=_native.draw_sample_range,
         resolve_variation=_resolve_variation,
     )
