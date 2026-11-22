@@ -13,8 +13,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::{PI, TAU};
 use std::io::{Cursor, Write};
+use ufor::envelfo::Waveform;
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::modulation::{Interpolation, Point};
+use ufor::oscillator::sample_at_angle;
 use ufor::samples::processing::FilterBoundary;
 use ufor::synth_pitch;
 
@@ -179,7 +181,7 @@ struct FilterDefinition {
 
 #[derive(Clone, PartialEq)]
 struct GraphOperator {
-    waveform: u8,
+    waveform: Waveform,
     phase_offset: f64,
     ratio_parameter: usize,
     tuning_parameter: usize,
@@ -202,7 +204,7 @@ pub struct SynthRuntimeSnapshot {
     envelfo_transforms: Vec<EnvelfoTransformInput>,
     envelfo_transform_routes: Vec<EnvelfoTransformRoute>,
     rate: f64,
-    waveform: u8,
+    waveform: Waveform,
     source_kind: u8,
     duty: f64,
     fm_phase_offsets: [f64; 2],
@@ -270,7 +272,7 @@ pub struct SynthRuntime {
     parameter_partials: Vec<f64>,
     rate: f64,
     filter_after_amplitude: bool,
-    waveform: u8,
+    waveform: Waveform,
     source_kind: u8,
     duty: f64,
     fm_phase_offsets: [f64; 2],
@@ -333,9 +335,10 @@ impl SynthRuntime {
         let (control_definitions, control_states) =
             control_definitions(controls, &control_smoothing)?;
         let filter_definitions = filter_definitions(filters)?;
+        let invalid = || PyValueError::new_err("Invalid synth runtime definition");
+        let waveform = crate::oscillator_waveform(waveform).ok_or_else(invalid)?;
         if !rate.is_finite()
             || rate <= 0.0
-            || waveform > 2
             || !duty.is_finite()
             || !(0.0..=1.0).contains(&duty)
             || routes.shape()[0] == 0
@@ -360,7 +363,7 @@ impl SynthRuntime {
             || generators.rate != rate
             || context_capacity == 0
         {
-            return Err(PyValueError::new_err("Invalid synth runtime definition"));
+            return Err(invalid());
         }
         let slots = routes.shape()[0];
         let channels = routes.shape()[1];
@@ -1008,21 +1011,7 @@ impl SynthRuntime {
                 let level = observed.value;
                 let wave = if self.source_kind == 0 {
                     let angle = TAU * self.phases[voice] / self.rate;
-                    let phase = (angle / TAU).rem_euclid(1.0);
-                    match self.waveform {
-                        0 => angle.sin(),
-                        1 => {
-                            if phase < self.duty {
-                                1.0
-                            } else {
-                                -1.0
-                            }
-                        }
-                        _ if self.duty == 0.0 => 1.0 - 2.0 * phase,
-                        _ if self.duty == 1.0 => 2.0 * phase - 1.0,
-                        _ if phase < self.duty => 2.0 * phase / self.duty - 1.0,
-                        _ => (1.0 + self.duty - 2.0 * phase) / (1.0 - self.duty),
-                    }
+                    sample_at_angle(self.waveform, angle, self.duty)
                 } else if self.source_kind == 1 {
                     let definition = &self.amplitude_definitions[1];
                     let state = &self.amplitude_states[voice][1];
@@ -1100,24 +1089,7 @@ impl SynthRuntime {
                         }
                         let angle =
                             TAU * self.graph_phases[operator_base + operator] / self.rate + offset;
-                        let phase = (angle / TAU).rem_euclid(1.0);
-                        let value = match definition.waveform {
-                            0 => angle.sin(),
-                            1 => {
-                                if phase < 0.5 {
-                                    1.0
-                                } else {
-                                    -1.0
-                                }
-                            }
-                            _ => {
-                                if phase < 0.5 {
-                                    4.0 * phase - 1.0
-                                } else {
-                                    3.0 - 4.0 * phase
-                                }
-                            }
-                        };
+                        let value = sample_at_angle(definition.waveform, angle, 0.5);
                         self.graph_outputs[operator_base + operator] = level * value;
                         if operator == self.graph_carrier {
                             carrier_sample = value;

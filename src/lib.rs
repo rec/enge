@@ -24,12 +24,23 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
+use ufor::envelfo::Waveform;
+use ufor::oscillator::sample_at_angle;
 
 type RenderedBlock<'py> = (
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray3<f64>>,
 );
+
+fn oscillator_waveform(code: u8) -> Option<Waveform> {
+    match code {
+        0 => Some(Waveform::Sine),
+        1 => Some(Waveform::Square),
+        2 => Some(Waveform::Triangle),
+        _ => None,
+    }
+}
 
 #[pyfunction]
 fn plan_voice_retirements(document: &str) -> PyResult<String> {
@@ -131,8 +142,10 @@ fn render<'py>(
     let count = frequencies.shape()[0];
     let sources = frequencies.shape()[1];
     let channels = routes.shape()[1];
-    if waveform > 2
-        || !duty.is_finite()
+    let invalid =
+        || PyValueError::new_err("Invalid native voice dimensions, layout, or oscillator settings");
+    let waveform = oscillator_waveform(waveform).ok_or_else(invalid)?;
+    if !duty.is_finite()
         || !(0.0..=1.0).contains(&duty)
         || !rate.is_finite()
         || rate <= 0.0
@@ -145,9 +158,7 @@ fn render<'py>(
         || !envelope.is_c_contiguous()
         || !routes.is_c_contiguous()
     {
-        return Err(PyValueError::new_err(
-            "Invalid native voice dimensions, layout, or oscillator settings",
-        ));
+        return Err(invalid());
     }
     let envelope = envelope_spans(envelope, count)?;
     // Own every working buffer before releasing the GIL. No borrowed Python
@@ -165,22 +176,7 @@ fn render<'py>(
         for i in 0..count {
             for s in 0..sources {
                 let angle = TAU * (states[[s, 0]] / rate);
-                // Retain the reference's angle-to-phase rounding at shape edges.
-                let phase = (angle / TAU).rem_euclid(1.0);
-                waves[s] = match waveform {
-                    0 => angle.sin(),
-                    1 => {
-                        if phase < duty {
-                            1.0
-                        } else {
-                            -1.0
-                        }
-                    }
-                    _ if duty == 0.0 => 1.0 - 2.0 * phase,
-                    _ if duty == 1.0 => 2.0 * phase - 1.0,
-                    _ if phase < duty => 2.0 * phase / duty - 1.0,
-                    _ => (1.0 + duty - 2.0 * phase) / (1.0 - duty),
-                };
+                waves[s] = sample_at_angle(waveform, angle, duty);
                 let increment = frequencies[i * sources + s] - states[[s, 1]];
                 let total = states[[s, 0]] + increment;
                 states[[s, 1]] = (total - states[[s, 0]]) - increment;

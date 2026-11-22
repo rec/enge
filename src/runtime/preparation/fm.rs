@@ -6,7 +6,7 @@ use crate::runtime::{GraphEdge, GraphOperator};
 use pyo3::prelude::*;
 use std::collections::BTreeMap;
 use ufor::codec::{self, Format};
-use ufor::envelfo::{self, PreparationLimits, Waveform};
+use ufor::envelfo::{self, PreparationLimits};
 use ufor::fm::Fm;
 
 #[pyclass(frozen, skip_from_py_object)]
@@ -54,11 +54,7 @@ impl PreparedFm {
             .map(|operator| {
                 let name = format!("operator-{}", operator.name().as_str());
                 GraphOperator {
-                    waveform: match operator.waveform() {
-                        Waveform::Sine => 0,
-                        Waveform::Square => 1,
-                        Waveform::Triangle => 2,
-                    },
+                    waveform: operator.waveform(),
                     phase_offset: operator.phase_cycles(),
                     ratio_parameter: slot(name.clone(), "ratio", f64::MIN_POSITIVE, 1e300),
                     tuning_parameter: slot(name, "tuning_cents", -120000.0, 120000.0),

@@ -1,4 +1,4 @@
-use crate::{envelope_amplitudes, envelope_spans, filters};
+use crate::{envelope_amplitudes, envelope_spans, filters, oscillator_waveform};
 use numpy::ndarray::Array2;
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2,
@@ -7,6 +7,7 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
+use ufor::oscillator::sample_at_angle;
 
 type RenderedFM<'py> = (
     Bound<'py, PyArray2<f64>>,
@@ -143,10 +144,13 @@ pub fn render_graph_fm<'py>(
     }
     let frequencies = frequencies.as_array().to_owned();
     let envelopes = envelopes.as_array().to_owned();
-    let waveforms: Vec<u8> = waveforms.as_array().iter().copied().collect();
-    if waveforms.iter().any(|waveform| *waveform > 2) {
-        return Err(PyValueError::new_err("Invalid FM waveform"));
-    }
+    let waveforms = waveforms
+        .as_array()
+        .iter()
+        .copied()
+        .map(oscillator_waveform)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| PyValueError::new_err("Invalid FM waveform"))?;
     let indices = indices.as_array().to_owned();
     let edges = edges.as_array().to_owned();
     let levels: Vec<f64> = levels.as_array().iter().copied().collect();
@@ -220,25 +224,7 @@ pub fn render_graph_fm<'py>(
                     }
                 }
                 let angle = TAU * phases[[*operator, 0]] / rate + offset;
-                let phase = (angle / TAU).rem_euclid(1.0);
-                let sample = match waveforms[*operator] {
-                    0 => angle.sin(),
-                    1 => {
-                        if phase < 0.5 {
-                            1.0
-                        } else {
-                            -1.0
-                        }
-                    }
-                    2 => {
-                        if phase < 0.5 {
-                            4.0 * phase - 1.0
-                        } else {
-                            3.0 - 4.0 * phase
-                        }
-                    }
-                    _ => unreachable!(),
-                };
+                let sample = sample_at_angle(waveforms[*operator], angle, 0.5);
                 output[*operator] = envelopes[[i, *operator]] * sample;
                 if *operator == carrier {
                     carrier_sample = sample;
