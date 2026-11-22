@@ -13,7 +13,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::{PI, TAU};
 use std::io::{Cursor, Write};
+use std::sync::Arc;
 use ufor::envelfo::Waveform;
+use ufor::fm::FmTopology;
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::modulation::{Interpolation, Point};
 use ufor::oscillator::{advance_phase, sample_at_angle};
@@ -187,14 +189,6 @@ struct GraphOperator {
     tuning_parameter: usize,
 }
 
-#[derive(Clone, PartialEq)]
-struct GraphEdge {
-    source: usize,
-    destination: usize,
-    delayed: bool,
-    parameter: usize,
-}
-
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SynthRuntimeSnapshot {
@@ -209,9 +203,8 @@ pub struct SynthRuntimeSnapshot {
     duty: f64,
     fm_phase_offsets: [f64; 2],
     graph_operators: Vec<GraphOperator>,
-    graph_edges: Vec<GraphEdge>,
-    graph_order: Vec<usize>,
-    graph_carrier: usize,
+    graph_topology: Option<Arc<FmTopology>>,
+    graph_edge_parameters: Vec<usize>,
     graph_carrier_parameter: usize,
     minimum_hold_frames: Time,
     routes: Array2<f64>,
@@ -277,9 +270,8 @@ pub struct SynthRuntime {
     duty: f64,
     fm_phase_offsets: [f64; 2],
     graph_operators: Vec<GraphOperator>,
-    graph_edges: Vec<GraphEdge>,
-    graph_order: Vec<usize>,
-    graph_carrier: usize,
+    graph_topology: Option<Arc<FmTopology>>,
+    graph_edge_parameters: Vec<usize>,
     graph_carrier_parameter: usize,
     minimum_hold_frames: Time,
     routes: Array2<f64>,
@@ -382,9 +374,8 @@ impl SynthRuntime {
             duty,
             fm_phase_offsets: [0.0; 2],
             graph_operators: Vec::new(),
-            graph_edges: Vec::new(),
-            graph_order: Vec::new(),
-            graph_carrier: 0,
+            graph_topology: None,
+            graph_edge_parameters: Vec::new(),
             graph_carrier_parameter: 0,
             minimum_hold_frames,
             routes: routes.as_array().to_owned(),
@@ -582,14 +573,13 @@ impl SynthRuntime {
         let slots = runtime.frequencies.len();
         runtime.source_kind = 3;
         runtime.graph_operators = graph.operators.clone();
-        runtime.graph_edges = graph.edges.clone();
-        runtime.graph_order = graph.graph.order().to_vec();
-        runtime.graph_carrier = graph.graph.carrier_index();
+        runtime.graph_topology = Some(Arc::new(graph.graph.topology().clone()));
+        runtime.graph_edge_parameters = graph.edge_parameters.clone();
         runtime.graph_carrier_parameter = graph.carrier_parameter;
         runtime.graph_phases = vec![0.0; slots * operators];
         runtime.graph_errors = vec![0.0; slots * operators];
         runtime.graph_outputs = vec![0.0; slots * operators];
-        runtime.graph_history = vec![0.0; slots * runtime.graph_edges.len()];
+        runtime.graph_history = vec![0.0; slots * runtime.graph_edge_parameters.len()];
         runtime.amplitude_definitions = graph.amplitudes.clone();
         runtime.amplitude_states = (0..slots)
             .map(|_| {
@@ -732,9 +722,8 @@ impl SynthRuntime {
             duty: self.duty,
             fm_phase_offsets: self.fm_phase_offsets,
             graph_operators: self.graph_operators.clone(),
-            graph_edges: self.graph_edges.clone(),
-            graph_order: self.graph_order.clone(),
-            graph_carrier: self.graph_carrier,
+            graph_topology: self.graph_topology.clone(),
+            graph_edge_parameters: self.graph_edge_parameters.clone(),
             graph_carrier_parameter: self.graph_carrier_parameter,
             minimum_hold_frames: self.minimum_hold_frames,
             routes: self.routes.clone(),
@@ -862,9 +851,8 @@ impl SynthRuntime {
             || self.duty != snapshot.duty
             || self.fm_phase_offsets != snapshot.fm_phase_offsets
             || self.graph_operators != snapshot.graph_operators
-            || self.graph_edges != snapshot.graph_edges
-            || self.graph_order != snapshot.graph_order
-            || self.graph_carrier != snapshot.graph_carrier
+            || self.graph_topology != snapshot.graph_topology
+            || self.graph_edge_parameters != snapshot.graph_edge_parameters
             || self.graph_carrier_parameter != snapshot.graph_carrier_parameter
             || self.minimum_hold_frames != snapshot.minimum_hold_frames
             || self.routes != snapshot.routes
@@ -967,6 +955,11 @@ impl SynthRuntime {
         let a2 = g * a1;
         let a3 = g * a2;
         output.fill(0.0);
+        // Keep the topology available while parameter resolution mutates scratch state.
+        let graph_topology = self.graph_topology.clone();
+        let carrier_index = graph_topology
+            .as_deref()
+            .map_or(0, FmTopology::carrier_index);
         let mut action = 0;
         for frame in 0..frames {
             if action < actions.len() && actions[action] as usize == frame {
@@ -1000,8 +993,8 @@ impl SynthRuntime {
                 {
                     definition.settle(state, self.release_frames[voice], self.ages[voice])?;
                 }
-                let definition = &self.amplitude_definitions[self.graph_carrier];
-                let state = &self.amplitude_states[voice][self.graph_carrier];
+                let definition = &self.amplitude_definitions[carrier_index];
+                let state = &self.amplitude_states[voice][carrier_index];
                 let observed = definition.value(state, self.ages[voice])?;
                 if definition.complete(state, &observed) {
                     self.active[voice] = false;
@@ -1062,14 +1055,14 @@ impl SynthRuntime {
                     );
                     carrier
                 } else if self.source_kind == 3 {
+                    let topology = graph_topology.as_deref().expect("prepared FM topology");
                     let operators = self.graph_operators.len();
-                    let edges = self.graph_edges.len();
+                    let edges = self.graph_edge_parameters.len();
                     let operator_base = voice * operators;
                     let mut carrier_sample = 0.0;
                     let edge_base = voice * edges;
                     let process_tuning = self.parameter(voice, 1)?;
-                    for order in 0..self.graph_order.len() {
-                        let operator = self.graph_order[order];
+                    for &operator in topology.order() {
                         let definition = self.graph_operators[operator].clone();
                         let amplitude = &self.amplitude_definitions[operator];
                         let state = &self.amplitude_states[voice][operator];
@@ -1079,31 +1072,28 @@ impl SynthRuntime {
                         } else {
                             observed.value
                         };
-                        let mut offset = 0.0;
-                        for index in 0..self.graph_edges.len() {
-                            let edge = self.graph_edges[index].clone();
-                            if edge.destination == operator {
-                                offset += self.parameter(voice, edge.parameter)?
-                                    * if edge.delayed {
-                                        self.graph_history[edge_base + index]
-                                    } else {
-                                        self.graph_outputs[operator_base + edge.source]
-                                    };
-                            }
-                        }
+                        let offset = topology.phase_offset(operator, |edge| {
+                            let index = self
+                                .parameter(voice, self.graph_edge_parameters[edge.edge_index()])?;
+                            let sample = edge.sample(
+                                &self.graph_outputs[operator_base..operator_base + operators],
+                                &self.graph_history[edge_base..edge_base + edges],
+                            );
+                            Ok::<_, NativeError>((index, sample))
+                        })?;
                         let angle =
                             TAU * self.graph_phases[operator_base + operator] / self.rate + offset;
                         let value = sample_at_angle(definition.waveform, angle, 0.5);
                         self.graph_outputs[operator_base + operator] = level * value;
-                        if operator == self.graph_carrier {
+                        if operator == carrier_index {
                             carrier_sample = value;
                         }
                     }
                     let carrier = carrier_sample;
-                    for (index, edge) in self.graph_edges.iter().enumerate() {
-                        self.graph_history[edge_base + index] =
-                            self.graph_outputs[operator_base + edge.source];
-                    }
+                    topology.capture_feedback(
+                        &self.graph_outputs[operator_base..operator_base + operators],
+                        &mut self.graph_history[edge_base..edge_base + edges],
+                    );
                     for operator in 0..operators {
                         let definition = self.graph_operators[operator].clone();
                         let frequency = synth_pitch::operator_frequency(
@@ -1256,7 +1246,7 @@ impl SynthRuntime {
                 self.previous_modulators[voice] = 0.0;
                 if self.source_kind == 3 {
                     let operators = self.graph_operators.len();
-                    let edges = self.graph_edges.len();
+                    let edges = self.graph_edge_parameters.len();
                     let operator_base = voice * operators;
                     for operator in 0..operators {
                         let index = operator_base + operator;

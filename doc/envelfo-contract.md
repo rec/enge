@@ -444,6 +444,12 @@ Offline native FM prepares one Rust graph per instrument voice template.
 Each render block uses its validated operator order, carrier and edge
 endpoints. Per-voice phase and feedback history remain in the snapshot.
 Graphs without edges use the same path and an empty feedback history.
+Both native FM renderers use uFor's prepared incoming edges, weighted input
+sum, and feedback capture. This preserves edge order for both per-frame
+accumulation and the history stored in snapshots.
+The FM input and feedback audit passed 218 tests on macOS and recorded zero
+Rust heap operations inside 1,870 successful and eight failed callbacks.
+The generated report is `build/rust-ufor-fm-input-audit.xml`.
 Native synth and FM renderers also use uFor's compensated phase advancement.
 Snapshots carry the wrapped position and the compensation in sample-rate units.
 Oscillator preparation passed 198 focused macOS tests with zero heap

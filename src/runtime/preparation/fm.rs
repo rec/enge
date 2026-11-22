@@ -1,8 +1,8 @@
 //! Compile authored FM graphs for the persistent renderer.
 use super::{amplitude_definition, invalid};
 use crate::amplitude::{Amplitude, frame_time};
+use crate::runtime::GraphOperator;
 use crate::runtime::preparation::modulation::TargetInput;
-use crate::runtime::{GraphEdge, GraphOperator};
 use pyo3::prelude::*;
 use ufor::codec::{self, Format};
 use ufor::envelfo::{self, PreparationLimits};
@@ -16,7 +16,7 @@ pub(crate) struct PreparedFm {
     pub(in crate::runtime) records: usize,
     pub(in crate::runtime) characters: usize,
     pub(in crate::runtime) operators: Vec<GraphOperator>,
-    pub(in crate::runtime) edges: Vec<GraphEdge>,
+    pub(in crate::runtime) edge_parameters: Vec<usize>,
     pub(in crate::runtime) amplitudes: Vec<Amplitude>,
     pub(in crate::runtime) carrier_parameter: usize,
 }
@@ -57,16 +57,10 @@ impl PreparedFm {
                 }
             })
             .collect();
-        let edges = graph
+        let edge_parameters = graph
             .edges()
             .iter()
-            .zip(graph.edge_endpoints())
-            .map(|(edge, &(source, destination))| GraphEdge {
-                source,
-                destination,
-                delayed: edge.delayed(),
-                parameter: slot(format!("edge-{}", edge.target_name()), "index", 0.0, 1e300),
-            })
+            .map(|edge| slot(format!("edge-{}", edge.target_name()), "index", 0.0, 1e300))
             .collect();
         let carrier_parameter = slot("fm".into(), "carrier_level", 0.0, 1e300);
         // Include materialized default Envelopes in the preparation budget.
@@ -85,7 +79,7 @@ impl PreparedFm {
             records,
             characters: document.chars().count(),
             operators,
-            edges,
+            edge_parameters,
             amplitudes,
             carrier_parameter,
         })

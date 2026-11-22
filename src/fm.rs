@@ -7,6 +7,7 @@ use numpy::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::convert::Infallible;
 use std::f64::consts::TAU;
 use ufor::oscillator::{advance_phase, sample_at_angle};
 
@@ -124,6 +125,7 @@ pub fn render_graph_fm<'py>(
 ) -> PyResult<RenderedGraphFM<'py>> {
     let count = frequencies.shape()[0];
     let graph = &prepared.graph;
+    let topology = graph.topology();
     let rate = prepared.rate;
     let operators = graph.operators().len();
     let carrier = graph.carrier_index();
@@ -161,20 +163,15 @@ pub fn render_graph_fm<'py>(
         for i in 0..count {
             output.fill(0.0);
             let mut carrier_sample = 0.0;
-            for &operator in graph.order() {
-                let mut offset = 0.0;
-                for (edge_index, &(source, destination)) in
-                    graph.edge_endpoints().iter().enumerate()
-                {
-                    if destination == operator {
-                        offset += indices[[i, edge_index]]
-                            * if graph.edges()[edge_index].delayed() {
-                                history[edge_index]
-                            } else {
-                                output[source]
-                            };
-                    }
-                }
+            for &operator in topology.order() {
+                let offset = topology
+                    .phase_offset(operator, |edge| {
+                        Ok::<_, Infallible>((
+                            indices[[i, edge.edge_index()]],
+                            edge.sample(&output, &history),
+                        ))
+                    })
+                    .unwrap();
                 let angle = TAU * phases[[operator, 0]] / rate + offset;
                 let sample = sample_at_angle(graph.operators()[operator].waveform(), angle, 0.5);
                 output[operator] = envelopes[[i, operator]] * sample;
@@ -195,9 +192,7 @@ pub fn render_graph_fm<'py>(
                     rate,
                 );
             }
-            for (previous, &(source, _)) in history.iter_mut().zip(graph.edge_endpoints()) {
-                *previous = output[source];
-            }
+            topology.capture_feedback(&output, &mut history);
         }
         if audio
             .iter()
