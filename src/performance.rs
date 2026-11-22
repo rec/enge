@@ -3,13 +3,14 @@
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyInt;
 use std::collections::BTreeMap;
 use ufor::codec::{self, Format};
 use ufor::control::schedule::{EventCoordinate, schedule_commands};
 use ufor::envelfo::{PreparationLimits, Waveform};
 use ufor::identifier::Identifier;
 use ufor::number::Rational;
-use ufor::oscillator::Oscillator;
+use ufor::oscillator::{Oscillator, PhaseOrigin, phase_at_frame};
 use ufor::performance_binding::{ControlValue, HeldNotes, MidiBindings, RepeatedKeyRelease};
 use ufor::samples::controls::ControlDeclaration;
 use ufor::samples::playback::{self, sample_step, tuned_pitch_ratio};
@@ -316,6 +317,21 @@ pub(crate) fn maximum_sample_step(
 
 #[pyclass(frozen, skip_from_py_object)]
 pub(crate) struct PreparedOscillator(Oscillator);
+
+#[pyfunction]
+pub(crate) fn oscillator_phase(
+    frame: &Bound<'_, PyAny>,
+    frequency_hz: f64,
+    sample_rate: i64,
+) -> PyResult<f64> {
+    let origin = if frame.is_instance_of::<PyInt>() {
+        PhaseOrigin::Whole(frame.extract()?)
+    } else {
+        PhaseOrigin::Fractional(frame.extract()?)
+    };
+    phase_at_frame(origin, frequency_hz, sample_rate)
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
 
 #[pymethods]
 impl PreparedOscillator {

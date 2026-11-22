@@ -1,5 +1,5 @@
 from fractions import Fraction
-from itertools import pairwise
+from itertools import pairwise, product
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +12,19 @@ from ufor.samples.processing import ResonantFilter
 from ufor.segments import Segment
 from ufor.synth_trace import prepare
 
-from enge import filters, native, synth
+from enge import _native, filters, native, synth
+
+
+def test_native_transport_phase_matches_exact_fraction_calculation() -> None:
+    subnormal = float.fromhex("0x0.0000000000001p-1022")
+    largest = float.fromhex("0x1.fffffffffffffp+1023")
+    origins = [-(2**63), 2**63 - 1, 2**53 + 125, -0.5, -1e-40, 1.25, largest, subnormal]
+    frequencies = [100.25, -0.000001, subnormal, 0.5, largest]
+    for frame, frequency, rate in product(
+        origins, frequencies, [1, 3, 48000, 2**63 - 1]
+    ):
+        expected = float((Fraction(frame) * Fraction(frequency)) % rate)
+        assert _native.oscillator_phase(frame, frequency, rate) == expected
 
 
 @pytest.mark.parametrize(

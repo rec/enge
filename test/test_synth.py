@@ -239,7 +239,7 @@ def test_offline_synth_defers_release_until_the_voice_minimum_hold(
     )
 
 
-def test_offline_synth_can_use_transport_synchronized_offset_pitch(
+def test_synth_uses_transport_synchronized_offset_pitch(
     tmp_path: Path,
     backend: Literal["numpy", "native"],
 ) -> None:
@@ -263,12 +263,18 @@ def test_offline_synth_can_use_transport_synchronized_offset_pitch(
         ],
         seed=42,
     )
-    output = OfflineSynth(prepare(document), backend).advance(trace.actions, 0, 48000)
+    definition = prepare(document)
+    output = OfflineSynth(definition, backend).advance(trace.actions, 0, 48000)
     assert output[1, 0] == pytest.approx(-1 + 4 * 441 / 48_000)
     phase = np.arange(48000) * 441 / 48000 % 1
     expected = np.zeros_like(output)
     expected[1:, 0] = np.where(phase[1:] < 0.5, 4 * phase[1:] - 1, 3 - 4 * phase[1:])
     check_audio(tmp_path / "synchronized.wav", output, expected)
+    if backend == "native":
+        persistent = PersistentSynth(definition, voices=1).advance(
+            trace.actions, 0, 48000
+        )
+        check_audio(tmp_path / "synchronized-persistent.wav", persistent, expected)
 
 
 def test_waveform_samples_uses_tuneys_start_length_and_period_convention(

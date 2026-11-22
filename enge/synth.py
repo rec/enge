@@ -129,9 +129,18 @@ class OscillatorState(Model, frozen=True):
 
     @classmethod
     def at_frame(
-        cls, frame: int | float, frequency_hz: float, sample_rate: int
+        cls,
+        frame: int | float,
+        frequency_hz: float,
+        sample_rate: int,
+        *,
+        backend: Literal["numpy", "native"] = "numpy",
     ) -> Self:
         """Initialize phase without losing precision at large frame coordinates."""
+        if backend == "native":
+            return cls(
+                position=_native.oscillator_phase(frame, frequency_hz, sample_rate)
+            )
         return cls(
             position=float((Fraction(frame) * Fraction(frequency_hz)) % sample_rate)
         )
@@ -367,7 +376,9 @@ class VoiceRenderer(VoiceEnvelopeRenderer):
                 definition.filters, len(definition.frequencies)
             ),
             oscillators=[
-                OscillatorState.at_frame(phase_origin, f, definition.sample_rate)
+                OscillatorState.at_frame(
+                    phase_origin, f, definition.sample_rate, backend=backend
+                )
                 for f in definition.frequencies
             ],
         )
@@ -2397,18 +2408,17 @@ class PersistentSynth:
         if slot is None:
             raise EngineError("Persistent synth voice capacity exceeded")
         gain = self._oscillator.gain(action.key)
+        phase = (
+            _native.oscillator_phase(
+                action.tick, action.pitch_hz, self.definition.sample_rate
+            )
+            if self.template.synchronize_oscillator
+            else 0.0
+        )
         active[slot] = True
         self.voices[action.voice_id] = slot
         self.voice_triggers[action.voice_id] = VoiceAddress(
             part=action.part, trigger_id=action.trigger_id
-        )
-        phase = (
-            float(
-                (Fraction(action.tick) * Fraction(action.pitch_hz))
-                % self.definition.sample_rate
-            )
-            if self.template.synchronize_oscillator
-            else 0.0
         )
         return (
             slot,

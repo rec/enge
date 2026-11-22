@@ -434,6 +434,9 @@ oscillator waveform, duty cycle, and key-scaled gain. Enge reuses prepared
 oscillator declarations across voice starts and blocks. The audio kernels
 receive a binary64 duty value rounded directly from the exact ratio so that
 the position of a square-wave transition matches the Python reference.
+For transport-synchronized onsets, Rust uFor reduces the exact frame-frequency
+product modulo the sample rate before rounding the initial phase. The native
+bridge keeps whole-frame origins as signed 64-bit integers.
 Oscillator preparation passed 198 focused macOS tests with zero heap
 operations inside 2,119 successful and six failed callbacks. The generated
 report is `build/rust-ufor-oscillator-audit.xml`.
