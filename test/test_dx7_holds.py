@@ -28,8 +28,13 @@ def test_release_rate_uses_per_frame_reference_timing(
     # Pinned Dexed Env drops 262144 units per 64 frames at 44.1 kHz.
     # Convert its measured slope to the nearest integer per output frame.
     gains = np.array([envelope.sample() for _ in range(sample_rate)])
-    expected = 2 ** (
-        ((initial - step * np.arange(1, sample_rate + 1)) / 65536 - 14 * 256) / 256
+    # Use scalar powers so the exact comparison measures timing, independent of
+    # rounding differences between Python and NumPy's vectorized exponentiation.
+    expected = np.array(
+        [
+            2 ** (((initial - step * n) / 65536 - 14 * 256) / 256)
+            for n in range(1, sample_rate + 1)
+        ]
     )
     np.testing.assert_array_equal(gains, expected)
     if sample_rate == 48000:
