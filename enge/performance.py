@@ -1,16 +1,31 @@
 """Caller-driven MIDI 1 conversion using resolved uFor performance bindings."""
 
+from collections.abc import Callable
 from json import dumps
 from typing import NoReturn
 
 from meedee import messages
 from ufor import events, performance_binding
 from ufor.base import identifier
+from ufor.samples.controls import ControlDeclaration
 from ufor.samples.instrument import SampleInstrumentScore
 from ufor.synth import SynthInstrumentScore
 from ufor.tuning import Tuning
 
-from ._native import MidiHeldNotes, PreparedMidiBindings
+from ._native import MidiHeldNotes, PreparedEventValidator, PreparedMidiBindings
+
+
+def prepare_event_validator(
+    controls: dict[str, ControlDeclaration],
+) -> Callable[[events.PerformanceEvent], None]:
+    validator = PreparedEventValidator(
+        dumps({n: c.model_dump(mode="json") for n, c in controls.items()})
+    )
+
+    def validate(event: events.PerformanceEvent) -> None:
+        validator.validate(event.model_dump_json(exclude={"tick", "ordinal"}))
+
+    return validate
 
 
 class MidiConverter:

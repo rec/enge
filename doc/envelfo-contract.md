@@ -271,6 +271,11 @@ bodies. Rust uFor checks the mapped ranges and prepares the tunings by
 channel. Enge validates event order and emits performance events with the
 exact host ticks and ordinals.
 
+Native synth-family and sampler trace preparation validate performance
+payloads through Rust uFor. This includes trigger control overrides,
+addressed control changes, and LFO and Envelfo command fields. The trace
+planner retains event order and voice lifecycle state.
+
 Both samplers use Rust uFor's cursor for pending release and loop decisions,
 forward and reverse movement, mirror turns, whole plays, overlap taps, and
 end fades. A shared read plan determines overlap and interpolation weights

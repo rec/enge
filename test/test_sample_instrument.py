@@ -18,7 +18,7 @@ from ufor.segments import Segment
 from ufor.synth import SynthInstrument
 from ufor.voice_release import KeyRelease, ReleaseRequest
 
-from enge import live, sample_instrument, sampler, voice_admission, voice_release
+from enge import live, sample_instrument, sampler, synth, voice_admission, voice_release
 from enge.synth import EngineError
 
 
@@ -83,6 +83,29 @@ def sample_score(
         ],
     }
     return instrument.SampleInstrumentScore.model_validate(raw)
+
+
+@pytest.mark.parametrize("kind", ["sample", "synth"])
+def test_native_trace_checks_performance_control_domains(kind: str) -> None:
+    declarations = {"expression": {}}
+    bad_trigger = onset(0, "note").model_copy(update={"controls": {"expression": -0.5}})
+    unknown_control = change(0, 0.5, "missing")
+    if kind == "sample":
+        raw = sample_score(frames=32).body.model_dump(mode="json")
+        raw["settings"]["controls"] = declarations
+        samples = instrument.SampleInstrument.model_validate(raw)
+        with pytest.raises(ValueError, match="Control expression.*polarity domain"):
+            sample_instrument.prepare_trace(samples, [bad_trigger], seed=0)
+        with pytest.raises(ValueError, match="Unknown control: missing"):
+            sample_instrument.prepare_trace(samples, [unknown_control], seed=0)
+    else:
+        raw = score().body.model_dump(mode="json")
+        raw["controls"] = declarations
+        definition = SynthInstrument.model_validate(raw)
+        with pytest.raises(ValueError, match="Control expression.*polarity domain"):
+            synth.prepare_trace(definition, [bad_trigger], seed=0)
+        with pytest.raises(ValueError, match="Unknown control: missing"):
+            synth.prepare_trace(definition, [unknown_control], seed=0)
 
 
 def test_native_sample_trace_matches_conditional_voice_starts_and_state() -> None:

@@ -3,6 +3,7 @@
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::collections::BTreeMap;
 use ufor::codec::{self, Format};
 use ufor::control::schedule::{EventCoordinate, schedule_commands};
 use ufor::envelfo::{PreparationLimits, Waveform};
@@ -10,6 +11,7 @@ use ufor::identifier::Identifier;
 use ufor::number::Rational;
 use ufor::oscillator::Oscillator;
 use ufor::performance_binding::{ControlValue, HeldNotes, MidiBindings, RepeatedKeyRelease};
+use ufor::samples::controls::ControlDeclaration;
 use ufor::samples::eligibility::VoiceEligibility;
 use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
@@ -19,6 +21,27 @@ use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
 type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
+
+#[pyclass(frozen, skip_from_py_object)]
+pub(crate) struct PreparedEventValidator(BTreeMap<Identifier, ControlDeclaration>);
+
+#[pymethods]
+impl PreparedEventValidator {
+    #[new]
+    fn new(controls: &str) -> PyResult<Self> {
+        let value = codec::parse_value(controls, Format::Json)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        serde_json::from_value(value)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn validate(&self, payload: &str) -> PyResult<()> {
+        codec::parse_performance_payload(payload, Format::Json)
+            .and_then(|event| event.validate_controls(&self.0))
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
 
 #[pyclass(frozen, skip_from_py_object)]
 pub(crate) struct PreparedMidiBindings(MidiBindings);

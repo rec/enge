@@ -75,6 +75,7 @@ from . import (
     voice_release,
 )
 from .lfo import lfo_samples
+from .performance import prepare_event_validator
 
 
 class EngineError(ValueError):
@@ -555,6 +556,7 @@ def prepare_trace(
         eligible_voices=eligibility.matching_voices,
         prepare_start=_native.prepare_voice_start,
         schedule=schedule,
+        validate_event=prepare_event_validator(definition.controls),
     )
 
 

@@ -36,6 +36,7 @@ from . import (
     voice_admission,
     voice_release,
 )
+from .performance import prepare_event_validator
 
 
 class PreparedSampler(Model, frozen=True):
@@ -157,6 +158,7 @@ def prepare_trace(
         slot_settings=_resolve_slots,
         draw_random_range=_native.draw_sample_range,
         resolve_variation=_resolve_variation,
+        validate_event=prepare_event_validator(definition.settings.controls),
     )
 
 

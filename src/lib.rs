@@ -222,6 +222,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_class::<live::LiveRuntime>()?;
     module.add_class::<performance::PreparedMidiBindings>()?;
+    module.add_class::<performance::PreparedEventValidator>()?;
     module.add_class::<performance::MidiHeldNotes>()?;
     module.add_class::<performance::MidiFileClock>()?;
     module.add_class::<performance::PreparedVoiceEligibility>()?;
