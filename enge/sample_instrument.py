@@ -864,12 +864,20 @@ class PersistentSampler(OfflineSampler):
                         (
                             filter_offset + 2 * i,
                             filter_offset + 2 * i + 1,
-                            f.stages,
-                            f.boundary == processing.FilterBoundary.clamp,
-                            f.minimum_hz,
-                            self.definition.sample_rate / 2 * f.nyquist_ratio,
+                            int(stages),
+                            bool(boundary),
+                            float(minimum),
+                            float(maximum),
                         )
-                        for i, f in enumerate(template.processing.filters)
+                        for i, (
+                            _,
+                            stages,
+                            boundary,
+                            minimum,
+                            maximum,
+                            _,
+                            _,
+                        ) in enumerate(prepared[14])
                     ]
                 )
                 scopes.extend(prepared[4])

@@ -43,12 +43,15 @@ def parameters(
         raise ValueError("Filter parameters must have shape (frames, filters, 2)")
     values = np.array(values, dtype=np.float64, copy=True)
     for j, definition in enumerate(definitions):
-        upper = rate / 2 * definition.nyquist_ratio
-        if definition.minimum_hz >= upper:
-            raise ValueError(f"Filter {definition.name}: invalid cutoff bounds")
+        try:
+            minimum, upper = definition.cutoff_bounds(rate)
+        except ValueError as error:
+            raise ValueError(
+                f"Filter {definition.name}: invalid cutoff bounds"
+            ) from error
         cutoff, q = values[:, j, 0], values[:, j, 1]
         invalid = ~np.isfinite(cutoff) | ~np.isfinite(q) | (q <= 0)
-        outside = (cutoff < definition.minimum_hz) | (cutoff > upper)
+        outside = (cutoff < minimum) | (cutoff > upper)
         if definition.boundary == FilterBoundary.error:
             invalid |= outside
         if np.any(invalid):
@@ -56,7 +59,7 @@ def parameters(
             raise ValueError(
                 f"Filter {definition.name}: invalid cutoff/Q at frame {frame}"
             )
-        np.clip(cutoff, definition.minimum_hz, upper, out=cutoff)
+        np.clip(cutoff, minimum, upper, out=cutoff)
     return values
 
 

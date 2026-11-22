@@ -41,6 +41,7 @@ use reverb::Reverb;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::f64::consts::PI;
 use ufor::modulation::math::{Mapping, add_partial, sum_partials};
+use ufor::samples::processing::FilterBoundary;
 use waveshaper::Waveshaper;
 
 #[pyclass(unsendable)]
@@ -115,7 +116,7 @@ struct EffectFilter {
     state_floor: f64,
     minimum: f64,
     maximum: f64,
-    clamp: bool,
+    boundary: FilterBoundary,
 }
 
 #[derive(Clone)]
@@ -770,7 +771,11 @@ impl EffectRuntime {
                 state_floor: row[3],
                 minimum: row[4],
                 maximum: row[5],
-                clamp: row[6] == 1.0,
+                boundary: if row[6] == 1.0 {
+                    FilterBoundary::Clamp
+                } else {
+                    FilterBoundary::Error
+                },
             });
         }
         for (node, kind) in kinds.iter().enumerate() {
@@ -783,7 +788,7 @@ impl EffectRuntime {
                 if rows.next().is_some()
                     || filter.response != 2
                     || filter.parameter != 3
-                    || filter.clamp
+                    || filter.boundary != FilterBoundary::Error
                     || filter.state_floor <= 0.0
                     || values[[node, 3]] < filter.minimum
                     || values[[node, 3]] > filter.maximum
@@ -2078,15 +2083,15 @@ impl EffectRuntime {
             if filter.node != node {
                 continue;
             }
-            let mut cutoff = self.resolved[[node, filter.parameter]];
+            let cutoff = self.resolved[[node, filter.parameter]];
             let q = self.resolved[[node, filter.parameter + 1]];
-            if !cutoff.is_finite()
-                || q <= 0.0
-                || (!filter.clamp && (cutoff < filter.minimum || cutoff > filter.maximum))
-            {
+            if q <= 0.0 {
                 return Err(NativeError::Message("Invalid live filter cutoff/Q"));
             }
-            cutoff = cutoff.clamp(filter.minimum, filter.maximum);
+            let cutoff = filter
+                .boundary
+                .resolve(cutoff, filter.minimum, filter.maximum)
+                .ok_or(NativeError::Message("Invalid live filter cutoff/Q"))?;
             let [g, d, a1, a2, a3] = self.filter_coefficients[stage].get(cutoff, q, rate);
             for (channel, input) in self.wet[..channels].iter_mut().enumerate() {
                 let (s1, s2) = (

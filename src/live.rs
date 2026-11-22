@@ -18,6 +18,7 @@ use pyo3::types::PySequence;
 use rtrb::{Consumer, Producer, RingBuffer};
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::samples::crossfade::weight_at_position;
+use ufor::samples::processing::FilterBoundary;
 
 struct Source {
     runtime: SourceRuntime,
@@ -71,7 +72,7 @@ struct SampleFilter {
     cutoff: usize,
     q: usize,
     stages: usize,
-    clamp: bool,
+    boundary: FilterBoundary,
     minimum: f64,
     maximum: f64,
 }
@@ -496,7 +497,11 @@ impl LiveRuntime {
                     cutoff,
                     q,
                     stages,
-                    clamp,
+                    boundary: if clamp {
+                        FilterBoundary::Clamp
+                    } else {
+                        FilterBoundary::Error
+                    },
                     minimum,
                     maximum,
                 },
@@ -1122,16 +1127,17 @@ impl SampleRuntime {
                     let mut stage = 0;
                     for index in 0..self.filter_routes.len() {
                         let route = self.filter_routes[index].clone();
-                        let mut cutoff = self.parameter(voice, route.cutoff, frame)?;
+                        let cutoff = self.parameter(voice, route.cutoff, frame)?;
                         let q = self.parameter(voice, route.q, frame)?;
-                        if q <= 0.0
-                            || (!route.clamp && (cutoff < route.minimum || cutoff > route.maximum))
-                        {
+                        if q <= 0.0 {
                             return Err(NativeError::Message(
                                 "Invalid live sample filter cutoff/Q",
                             ));
                         }
-                        cutoff = cutoff.clamp(route.minimum, route.maximum);
+                        let cutoff = route
+                            .boundary
+                            .resolve(cutoff, route.minimum, route.maximum)
+                            .ok_or(NativeError::Message("Invalid live sample filter cutoff/Q"))?;
                         for _ in 0..route.stages {
                             self.filters[voice].process_stage(
                                 self.frame + offset,

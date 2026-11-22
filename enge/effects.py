@@ -2064,8 +2064,7 @@ def native_live_graph(
                         response,
                         parameter,
                         processor.state_floor,
-                        filter_definition.minimum_hz,
-                        definition.sample_rate / 2 * filter_definition.nyquist_ratio,
+                        *filter_definition.cutoff_bounds(definition.sample_rate),
                         int(filter_definition.boundary == FilterBoundary.clamp),
                     ]
                     for _ in range(filter_definition.stages)

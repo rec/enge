@@ -430,7 +430,7 @@ pub(crate) fn prepare_modulation(
     )
 }
 
-// Filter placement, runtime codes and rate-dependent limits belong to enge.
+// Enge assigns runtime slots and response codes.
 fn prepare_filters(
     sound: &SoundSettings,
     sample_rate: f64,
@@ -439,11 +439,7 @@ fn prepare_filters(
     let filters = sound.processing().filters();
     let mut rows = Vec::new();
     for filter in filters {
-        let minimum = filter.minimum_hz();
-        let maximum = sample_rate / 2.0 * filter.nyquist_ratio();
-        if minimum >= maximum {
-            return Err(invalid("Filter minimum_hz must be below its Nyquist bound"));
-        }
+        let (minimum, maximum) = filter.cutoff_bounds(sample_rate).map_err(invalid)?;
         let cutoff = targets.len();
         let q = cutoff + 1;
         let name = format!("filter-{}", filter.name().as_str());

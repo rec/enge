@@ -15,6 +15,7 @@ use std::f64::consts::{PI, TAU};
 use std::io::{Cursor, Write};
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::modulation::{Interpolation, Point};
+use ufor::samples::processing::FilterBoundary;
 use ufor::synth_pitch;
 
 use generators::GeneratorBank;
@@ -169,7 +170,7 @@ type EnvelfoTransformRoute = (usize, usize, usize);
 struct FilterDefinition {
     response: usize,
     stages: usize,
-    boundary: usize,
+    boundary: FilterBoundary,
     minimum_hz: f64,
     maximum_hz: f64,
     cutoff_parameter: usize,
@@ -1390,19 +1391,17 @@ impl SynthRuntime {
         let mut stage = 0;
         for filter_index in 0..self.filter_definitions.len() {
             let filter = self.filter_definitions[filter_index].clone();
-            let mut cutoff = self.parameter(voice, filter.cutoff_parameter)?;
+            let cutoff = self.parameter(voice, filter.cutoff_parameter)?;
             let q = self.parameter(voice, filter.q_parameter)?;
             if q <= 0.0 {
                 return Err(NativeError::Message("Invalid persistent synth filter Q"));
             }
-            if cutoff < filter.minimum_hz || cutoff > filter.maximum_hz {
-                if filter.boundary == 0 {
-                    return Err(NativeError::Message(
-                        "Invalid persistent synth filter cutoff",
-                    ));
-                }
-                cutoff = cutoff.clamp(filter.minimum_hz, filter.maximum_hz);
-            }
+            let cutoff = filter
+                .boundary
+                .resolve(cutoff, filter.minimum_hz, filter.maximum_hz)
+                .ok_or(NativeError::Message(
+                    "Invalid persistent synth filter cutoff",
+                ))?;
             let index = voice * self.filter_definitions.len() + filter_index;
             let [g, d, a1, a2, a3] = self.filter_coefficients[index].get(cutoff, q, self.rate);
             for _ in 0..filter.stages {
@@ -1469,7 +1468,11 @@ fn filter_definitions(values: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<FilterD
             Ok(FilterDefinition {
                 response,
                 stages,
-                boundary,
+                boundary: if boundary == 0 {
+                    FilterBoundary::Error
+                } else {
+                    FilterBoundary::Clamp
+                },
                 minimum_hz: row[3],
                 maximum_hz: row[4],
                 cutoff_parameter,
