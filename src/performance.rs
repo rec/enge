@@ -19,9 +19,35 @@ use ufor::synth::SynthInstrument;
 use ufor::synth_pitch;
 use ufor::time::{PpqnClock, duration_frames};
 use ufor::voice_start;
+use ufor::yamaha::Patch;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
 type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
+
+#[pyfunction(signature = (model, patch, additional=None, additional2=None))]
+pub(crate) fn yamaha_patch_diagnostic(
+    model: &str,
+    patch: &[u8],
+    additional: Option<&[u8]>,
+    additional2: Option<&[u8]>,
+) -> PyResult<Option<String>> {
+    let patch = match (model, additional, additional2) {
+        ("dx7", None, None) => Patch::dx7(patch),
+        ("tx81z", Some(additional), None) => Patch::tx81z(patch, additional),
+        ("wt11", Some(additional), Some(additional2)) => {
+            Patch::wt11(patch, additional, additional2)
+        }
+        _ => {
+            return Err(PyValueError::new_err(
+                "Yamaha edit buffers do not match the model",
+            ));
+        }
+    };
+    Ok(match patch {
+        Ok(patch) => patch.parameter_diagnostic(),
+        Err(error) => Some(error.to_string()),
+    })
+}
 
 #[pyfunction]
 pub(crate) fn prepare_hold_frames(seconds: &str, sample_rate: i64) -> PyResult<(i64, i64)> {

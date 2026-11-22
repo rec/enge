@@ -427,6 +427,10 @@ ordering and weighting remain separate milestones.
 
 ## Conformance and consumer verification
 
+The DX7, TX81Z, and WT11 renderers use Rust uFor to check edit-buffer
+structure and diagnose invalid patch parameters during voice construction.
+Enge owns playback limits, chip emulation, and renderer state.
+
 uFor's shared corpora define the portable contracts. Enge's consumer tests
 exercise the conversion and host behavior using existing audio regressions and
 standalone core expectations.

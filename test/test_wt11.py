@@ -53,6 +53,26 @@ def definition(
     )
 
 
+def test_additional_patch_diagnostics_use_each_models_operator_order() -> None:
+    patch, additional, additional2, reference_voice, reference_extra = definition()
+    extra = bytearray(additional.data)
+    extra[8] = 8
+    with pytest.raises(
+        EngineError, match="WT11 additional operator 2 has invalid waveform"
+    ):
+        yamaha.WT11Renderer(
+            patch, wt11.WT11Additional(data=bytes(extra)), additional2, 69, 100
+        )
+    extra = bytearray(reference_extra.data)
+    extra[8] = 8
+    with pytest.raises(
+        EngineError, match="TX81Z additional operator 3 has invalid waveform"
+    ):
+        yamaha.TX81ZRenderer(
+            reference_voice, tx81z.TX81ZAdditional(data=bytes(extra)), 69, 100
+        )
+
+
 @pytest.mark.parametrize("algorithm", range(1, 9))
 @pytest.mark.parametrize("start_frame", [0, 7])
 def test_wt11_neutral_pitch_preserves_opz_audio_and_operator_identity(

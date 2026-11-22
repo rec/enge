@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ufor import tx81z, wt11
 from ufor.dx7 import DX7Operator, DX7Voice
 
+from ._native import yamaha_patch_diagnostic
 from .synth import EngineError
 from .yamaha_portamento import TX81ZPortamento
 
@@ -197,9 +198,10 @@ class TX81ZRenderer:
         *,
         start_frame: int = 0,
     ) -> None:
-        for diagnostic in (voice.parameter_diagnostic, additional.parameter_diagnostic):
-            if diagnostic is not None:
-                raise EngineError(diagnostic)
+        if (
+            diagnostic := yamaha_patch_diagnostic("tx81z", voice.data, additional.data)
+        ) is not None:
+            raise EngineError(diagnostic)
         for i in range(4):
             if voice.data[i * 13 + 8] > 1:
                 raise EngineError(
@@ -744,13 +746,12 @@ class WT11Renderer(TX81ZRenderer):
         *,
         start_frame: int = 0,
     ) -> None:
-        for diagnostic in (
-            voice.parameter_diagnostic,
-            additional.parameter_diagnostic,
-            additional2.parameter_diagnostic,
-        ):
-            if diagnostic is not None:
-                raise EngineError(diagnostic)
+        if (
+            diagnostic := yamaha_patch_diagnostic(
+                "wt11", voice.data, additional.data, additional2.data
+            )
+        ) is not None:
+            raise EngineError(diagnostic)
         assignment = additional2.aftertouch
         if assignment.pitch_bias != 50:
             raise EngineError(
@@ -937,7 +938,7 @@ class DX7Renderer:
         pitch_hz: float | None = None,
         initial_phases: list[float] | None = None,
     ) -> None:
-        if (diagnostic := voice.parameter_diagnostic) is not None:
+        if (diagnostic := yamaha_patch_diagnostic("dx7", voice.data)) is not None:
             raise EngineError(diagnostic)
         if any(v > 99 for o in voice.operators for v in (*o.rates, *o.levels)):
             raise EngineError("DX7 envelope rates and levels must be from 0 through 99")
