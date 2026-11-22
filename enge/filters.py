@@ -5,22 +5,26 @@ from typing import Literal
 
 import numpy as np
 from ufor.base import Model
-from ufor.samples.processing import FilterBoundary, FilterResponse, ResonantFilter
+from ufor.samples.processing import (
+    BiquadCoefficients,
+    FilterBoundary,
+    FilterResponse,
+    ResonantFilter,
+)
 
 
 class FilterState(Model, frozen=True):
-    """One stage's [s1, s2] integrators for each source channel."""
+    """One stage's two state values for each source channel."""
 
     integrators: list[list[float]]
 
 
 def initial_states(
-    definitions: list[ResonantFilter], channels: int
+    definitions: list[ResonantFilter], channels: int, equalizer_count: int = 0
 ) -> list[FilterState]:
     return [
         FilterState(integrators=[[0, 0] for _ in range(channels)])
-        for f in definitions
-        for _ in range(f.stages)
+        for _ in range(sum(f.stages for f in definitions) + equalizer_count)
     ]
 
 
@@ -64,15 +68,25 @@ def parameters(
 
 
 def native_inputs(
-    definitions: list[ResonantFilter], states: list[FilterState], values: np.ndarray
+    definitions: list[ResonantFilter],
+    states: list[FilterState],
+    values: np.ndarray,
+    equalizer: list[BiquadCoefficients] | None = None,
 ) -> tuple[list[int], np.ndarray, np.ndarray]:
     """Expand the ordered stage cascade; Rust computes its own coefficients."""
     stages = [i for i, f in enumerate(definitions) for _ in range(f.stages)]
     responses = [list(FilterResponse).index(definitions[i].response) for i in stages]
     channels = len(states[0].integrators) if states else 0
     memory = np.array([s.integrators for s in states], dtype=np.float64).reshape(
-        len(stages), channels, 2
+        len(states), channels, 2
     )
+    if equalizer:
+        packed = np.zeros((len(values), len(stages) + len(equalizer), 5))
+        packed[:, : len(stages), :2] = values[:, stages, :]
+        packed[:, len(stages) :, :] = [
+            [c.b0, c.b1, c.b2, c.a1, c.a2] for c in equalizer
+        ]
+        return responses + [4] * len(equalizer), memory, packed
     return responses, memory, np.ascontiguousarray(values[:, stages, :])
 
 
@@ -87,13 +101,15 @@ def filter_samples(
     values: np.ndarray,
     rate: int,
     backend: Literal["numpy", "native"] = "numpy",
+    *,
+    equalizer: list[BiquadCoefficients] | None = None,
 ) -> tuple[np.ndarray, list[FilterState]]:
     """Filter source channels before gain/routing, without mutating inputs.
 
     Values must already have passed `parameters`, as in the instrument renderers.
     State and parameter arrays cross the same boundary for both realizations.
     """
-    responses, memory, values = native_inputs(definitions, states, values)
+    responses, memory, values = native_inputs(definitions, states, values, equalizer)
     if backend == "native":
         from . import _native
 
@@ -106,7 +122,15 @@ def filter_samples(
     audio = np.array(samples, dtype=np.float64, copy=True)
     for j, response in enumerate(responses):
         s1, s2 = memory[j, :, 0].copy(), memory[j, :, 1].copy()
-        for i, (cutoff, q) in enumerate(values[:, j]):
+        if response == 4:
+            for i, (b0, b1, b2, a1, a2) in enumerate(values[:, j]):
+                current = audio[i]
+                result = b0 * current + s1
+                s1, s2 = b1 * current - a1 * result + s2, b2 * current - a2 * result
+                audio[i] = result
+            memory[j, :, 0], memory[j, :, 1] = s1, s2
+            continue
+        for i, (cutoff, q) in enumerate(values[:, j, :2]):
             g = tan(pi * float(cutoff) / rate)
             if q < 1:
                 d = float(q) * (1 + g * g) + g

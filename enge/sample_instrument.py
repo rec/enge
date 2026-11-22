@@ -45,6 +45,7 @@ class PreparedSampler(Model, frozen=True):
     samples: dict[str, sampler.PreparedSample]
     settings: dict[str, processing.SoundSettings]
     routes: dict[str, list[list[float]]]
+    equalizer: dict[str, list[processing.BiquadCoefficients]]
     audio_digests: dict[str, str]
     slot_playback: dict[str, _native.PreparedSlotPlayback] = Field(exclude=True)
 
@@ -285,8 +286,12 @@ def prepare(
     default_playback = score.body.settings.playback.model_dump_json()
     settings: dict[str, processing.SoundSettings] = {}
     routes: dict[str, list[list[float]]] = {}
+    equalizer: dict[str, list[processing.BiquadCoefficients]] = {}
     resolved_slots = _resolve_slots(score.body)
     instrument_processing = score.body.settings.processing
+    common_bands = [
+        b.biquad_coefficients(sample_rate) for b in instrument_processing.equalizer
+    ]
     for slot in score.body.slots:
         settings[slot.name] = synth.expand_patch_outputs(
             resolved_slots[slot.name].settings
@@ -296,6 +301,10 @@ def prepare(
         selection = slices[slot.slice]
         source_channels = assets[selection.asset].audio.channels
         slot_processing = settings[slot.name].processing
+        equalizer[slot.name] = [
+            *(b.biquad_coefficients(sample_rate) for b in slot_processing.equalizer),
+            *common_bands,
+        ]
         routes[slot.name] = native.channel_routes(
             source_channels,
             output.channels,
@@ -327,6 +336,7 @@ def prepare(
         samples=samples,
         settings=settings,
         routes=routes,
+        equalizer=equalizer,
         audio_digests=digests,
         slot_playback=slot_playback,
     )
@@ -650,8 +660,9 @@ class OfflineSampler:
                 slice=sample.slice,
                 envelope=envelope,
                 filters=[*settings.processing.filters, *common.processing.filters],
+                equalizer=self.definition.equalizer[slot.name],
                 filter_order=settings.processing.filter_order
-                if settings.processing.filters
+                if settings.processing.filters or settings.processing.equalizer
                 else common.processing.filter_order,
                 pitch_ratio=ratio,
                 gain=gain,
@@ -879,11 +890,13 @@ class PersistentSampler(OfflineSampler):
                 filter_definitions, self.definition.sample_rate, 1
             )
             filter_states = filters.initial_states(
-                filter_definitions, sample.samples.shape[1]
+                filter_definitions,
+                sample.samples.shape[1],
+                len(self.definition.equalizer[slot.name]),
             )
             filter_order = (
                 settings.processing.filter_order
-                if settings.processing.filters
+                if settings.processing.filters or settings.processing.equalizer
                 else common.processing.filter_order
             )
             self.native_sources[slot.name] = runtime.add_sample(
@@ -893,7 +906,12 @@ class PersistentSampler(OfflineSampler):
                 0,
                 self.voice_capacity,
                 batch_capacity,
-                filters.native_inputs(filter_definitions, filter_states, filter_values),
+                filters.native_inputs(
+                    filter_definitions,
+                    filter_states,
+                    filter_values,
+                    self.definition.equalizer[slot.name],
+                ),
                 filter_order == processing.FilterOrder.after_amplitude,
             )
             rows = []
@@ -1503,11 +1521,12 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
         tuning_cents=settings.processing.tuning_cents,
         pan=settings.processing.pan,
         stereo_balance=settings.processing.stereo_balance,
+        equalizer=settings.processing.equalizer,
         filters=settings.processing.filters,
         filter_order=settings.processing.filter_order,
     ):
         raise synth.EngineError(
-            "Only sample volume, tuning, pan, balance, and filter processing "
+            "Only sample volume, tuning, pan, balance, static EQ and filter processing "
             "are implemented"
         )
     synth.validate_generators(

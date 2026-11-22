@@ -11,7 +11,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from ufor.base import Model
 from ufor.samples.enums import Direction, LoopMode, PlaybackMode
 from ufor.samples.playback import Playback, Slice
-from ufor.samples.processing import FilterOrder, ResonantFilter
+from ufor.samples.processing import BiquadCoefficients, FilterOrder, ResonantFilter
 
 from . import filters, synth
 from .synth import EngineError
@@ -203,6 +203,7 @@ class PreparedSampleVoice(synth.PreparedVoiceEnvelope, frozen=True):
     pitch_ratio: float = Field(default=1, gt=0)
     gain: float = 1
     filters: list[ResonantFilter] = Field(default_factory=list)
+    equalizer: list[BiquadCoefficients] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def channel_routes(self) -> Self:
@@ -252,7 +253,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
             ),
             backend=backend,
             filter_states=filters.initial_states(
-                definition.filters, sample.samples.shape[1]
+                definition.filters, sample.samples.shape[1], len(definition.equalizer)
             ),
         )
 
@@ -384,7 +385,10 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                 np.asarray(self.definition.routes, dtype=np.float64),
                 frames,
                 filters.native_inputs(
-                    self.definition.filters, self.filter_states, values
+                    self.definition.filters,
+                    self.filter_states,
+                    values,
+                    self.definition.equalizer,
                 ),
                 self.definition.filter_order == FilterOrder.after_amplitude,
             )
@@ -410,7 +414,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                 amplitude *= gains[:count]
             if self.definition.filter_order == FilterOrder.after_amplitude:
                 audio *= amplitude[:, None]
-            if self.definition.filters:
+            if self.definition.filters or self.definition.equalizer:
                 active = (
                     count
                     if self.source.exhaustion_frame is None
@@ -424,6 +428,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                     audio[:active],
                     values[:active],
                     self.definition.sample_rate,
+                    equalizer=self.definition.equalizer,
                 )
             output[:count] = synth.route_samples(audio, self.definition.routes)
             if self.definition.filter_order == FilterOrder.before_amplitude:

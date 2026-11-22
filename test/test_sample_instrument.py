@@ -1,5 +1,6 @@
 from fractions import Fraction
 from itertools import pairwise
+from math import cos, pi, sin
 from pathlib import Path
 from typing import Literal
 
@@ -83,6 +84,87 @@ def sample_score(
         ],
     }
     return instrument.SampleInstrumentScore.model_validate(raw)
+
+
+def test_static_sample_eq_follows_filter_and_amplitude_and_survives_restore(
+    tmp_path: Path,
+) -> None:
+    rate = 48000
+    raw = sample_score(frames=rate).model_dump(mode="json")
+    slot = raw["body"]["slots"][0]
+    slot["envelope"] = {
+        "initial": 0.0,
+        "segments": [{"duration": "0.01 s", "to": 1.0}],
+        "release": [{"duration": 0, "to": 0.0}],
+    }
+    slot["processing"] = {
+        "filter_order": "after_amplitude",
+        "filters": [{"name": "low", "response": "lowpass", "cutoff_hz": 4000, "q": 1}],
+        "equalizer": [
+            {"name": "peak", "frequency_hz": 2500, "gain_db": 6, "resonance": 2}
+        ],
+    }
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    samples = 0.2 * np.sin(np.arange(rate) * 2 * pi * 2500 / rate)
+    definition = sample_instrument.prepare(
+        document, {"asset": np.column_stack([samples, np.zeros(rate)])}
+    )
+    actions = trace.prepare(
+        document.body, [onset(pitch=440).model_copy(update={"controls": {}})], seed=0
+    ).actions
+
+    def direct_form(source: np.ndarray, b: list[float], a: list[float]) -> np.ndarray:
+        output = np.empty_like(source)
+        previous_input = older_input = previous_output = older_output = 0.0
+        for i, current in enumerate(source):
+            output[i] = (
+                b[0] * current
+                + b[1] * previous_input
+                + b[2] * older_input
+                - a[1] * previous_output
+                - a[2] * older_output
+            ) / a[0]
+            older_input, previous_input = previous_input, current
+            older_output, previous_output = previous_output, output[i]
+        return output
+
+    low, peak = 2 * pi * 4000 / rate, 2 * pi * 2500 / rate
+    alpha_low, alpha_peak = sin(low) / 2, sin(peak) / 4
+    gain = 10 ** (6 / 40)
+    expected = direct_form(
+        samples * np.minimum(1, np.arange(rate) / 480),
+        [(1 - cos(low)) / 2, 1 - cos(low), (1 - cos(low)) / 2],
+        [1 + alpha_low, -2 * cos(low), 1 - alpha_low],
+    )
+    expected = direct_form(
+        expected,
+        [1 + alpha_peak * gain, -2 * cos(peak), 1 - alpha_peak * gain],
+        [1 + alpha_peak / gain, -2 * cos(peak), 1 - alpha_peak / gain],
+    )
+    stereo = np.column_stack([expected, expected / 4])
+    split = 12001
+    for backend in ("numpy", "native"):
+        renderer = sample_instrument.OfflineSampler(definition, backend)
+        first = renderer.advance(actions, 0, split)
+        saved = renderer.snapshot()
+        tail = renderer.advance([], split, rate)
+        check_audio(
+            tmp_path / f"sample-eq-{backend}.wav", np.concatenate([first, tail]), stereo
+        )
+        renderer.restore(saved)
+        np.testing.assert_array_equal(renderer.advance([], split, rate), tail)
+    engine = live.NativeLiveEngine(
+        {"sample": sample_instrument.PersistentSampler(definition)}, rate
+    )
+    actual = np.empty_like(stereo)
+    engine.advance_into({"sample": actions}, [], 0, split, actual[:split])
+    saved_live = engine.snapshot()
+    engine.advance_into({"sample": []}, [], split, rate, actual[split:])
+    check_audio(tmp_path / "sample-eq-live.wav", actual, stereo)
+    engine.restore(saved_live)
+    replay = np.empty_like(actual[split:])
+    engine.advance_into({"sample": []}, [], split, rate, replay)
+    np.testing.assert_array_equal(replay, actual[split:])
 
 
 @pytest.mark.parametrize("kind", ["sample", "synth"])

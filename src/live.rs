@@ -466,7 +466,7 @@ impl LiveRuntime {
                 && filters
                     .iter()
                     .try_fold(0usize, |total, f| total.checked_add(f.2))
-                    != Some(runtime.filters[0].states.shape()[0]))
+                    != Some(runtime.filters[0].resonant_stages()))
         {
             return Err(PyValueError::new_err("Invalid live sample filter routes"));
         }
@@ -1131,6 +1131,11 @@ impl SampleRuntime {
                             stage += 1;
                         }
                     }
+                    self.filters[voice].process_equalizer(
+                        0,
+                        self.frame + offset,
+                        &mut self.source_values,
+                    )?;
                 }
                 let output_gain = fade
                     * end_gain

@@ -18,6 +18,7 @@ type RenderedFilters<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray3<f64>
 pub struct FilterBank {
     coefficients: Vec<Coefficients>,
     responses: Vec<u8>,
+    resonant_stages: usize,
     pub states: Array3<f64>,
     values: Array3<f64>,
     rate: f64,
@@ -48,6 +49,10 @@ impl Coefficients {
 }
 
 impl FilterBank {
+    pub(crate) fn resonant_stages(&self) -> usize {
+        self.resonant_stages
+    }
+
     pub fn same_definition(&self, other: &Self) -> bool {
         self.responses == other.responses && self.values == other.values && self.rate == other.rate
     }
@@ -65,24 +70,27 @@ impl FilterBank {
             return Ok(Self {
                 coefficients: vec![],
                 responses: vec![],
+                resonant_stages: 0,
                 states: Array3::zeros((0, channels, 2)),
                 values: Array3::zeros((frames, 0, 2)),
                 rate,
             });
         };
         let stages = responses.len();
-        if responses.iter().any(|r| *r > 3)
+        let resonant_stages = responses.iter().take_while(|r| **r < 4).count();
+        let width = if resonant_stages == stages { 2 } else { 5 };
+        if responses[resonant_stages..].iter().any(|r| *r != 4)
             || states.shape()[0] != stages
             || states.shape()[2] != 2
             || (stages != 0 && states.shape()[1] != channels)
-            || values.shape() != [frames, stages, 2]
+            || values.shape() != [frames, stages, width]
             || states.as_array().iter().any(|v| !v.is_finite())
         {
             return Err(NativeError::Message("Invalid native filter buffers"));
         }
         let values = values.as_array().to_owned();
         for i in 0..frames {
-            for j in 0..stages {
+            for j in 0..resonant_stages {
                 let (cutoff, q) = (values[[i, j, 0]], values[[i, j, 1]]);
                 if !cutoff.is_finite()
                     || cutoff <= 0.0
@@ -93,10 +101,16 @@ impl FilterBank {
                     return Err(NativeError::Message("Invalid native filter cutoff/Q"));
                 }
             }
+            for j in resonant_stages..stages {
+                if (0..5).any(|k| !values[[i, j, k]].is_finite()) {
+                    return Err(NativeError::Message("Invalid native EQ coefficients"));
+                }
+            }
         }
         Ok(Self {
-            coefficients: vec![Coefficients::default(); stages],
+            coefficients: vec![Coefficients::default(); resonant_stages],
             responses,
+            resonant_stages,
             states: states.as_array().to_owned(),
             values,
             rate,
@@ -104,7 +118,7 @@ impl FilterBank {
     }
 
     pub fn process(&mut self, frame: usize, sources: &mut [f64]) -> NativeResult<()> {
-        for j in 0..self.responses.len() {
+        for j in 0..self.resonant_stages {
             self.process_stage(
                 frame,
                 j,
@@ -112,6 +126,30 @@ impl FilterBank {
                 self.values[[frame, j, 1]],
                 sources,
             )?;
+        }
+        self.process_equalizer(frame, frame, sources)
+    }
+
+    pub(crate) fn process_equalizer(
+        &mut self,
+        values_frame: usize,
+        output_frame: usize,
+        sources: &mut [f64],
+    ) -> NativeResult<()> {
+        for j in self.resonant_stages..self.responses.len() {
+            let [b0, b1, b2, a1, a2] = std::array::from_fn(|k| self.values[[values_frame, j, k]]);
+            for (c, sample) in sources.iter_mut().enumerate() {
+                let input = *sample;
+                let output = b0 * input + self.states[[j, c, 0]];
+                let first = b1 * input - a1 * output + self.states[[j, c, 1]];
+                let second = b2 * input - a2 * output;
+                if !output.is_finite() || !first.is_finite() || !second.is_finite() {
+                    return Err(NativeError::FilterOutput(output_frame));
+                }
+                self.states[[j, c, 0]] = first;
+                self.states[[j, c, 1]] = second;
+                *sample = output;
+            }
         }
         Ok(())
     }
