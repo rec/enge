@@ -15,7 +15,6 @@ use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
 use ufor::synth_pitch;
 use ufor::time::PpqnClock;
-use ufor::tuning::Tuning;
 use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
@@ -45,16 +44,15 @@ impl MidiHeldNotes {
         self.0.stopped()
     }
 
-    #[pyo3(signature = (channel, key, velocity, tuning))]
     fn note_on(
         &mut self,
         channel: u8,
         key: u8,
         velocity: u8,
-        tuning: Option<&PreparedTuning>,
+        bindings: &PreparedMidiBindings,
     ) -> PyResult<(String, f64, f64)> {
         self.0
-            .note_on(channel, key, velocity, tuning.map(|prepared| &prepared.0))
+            .note_on(channel, key, velocity, bindings.0.tuning(channel))
             .map(|note| (note.trigger_id, note.velocity, note.pitch_hz))
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
@@ -336,19 +334,6 @@ pub(crate) fn prepare_voice_start(
     let values = voice_start::prepare_values(seed, &id, pitch_hz, frequency_offset_hz, is_noise)
         .map_err(invalid)?;
     Ok((values.pitch_hz, values.envelfo_key, values.noise_key))
-}
-
-#[pyclass(frozen, skip_from_py_object)]
-pub(crate) struct PreparedTuning(Tuning);
-
-#[pymethods]
-impl PreparedTuning {
-    #[new]
-    fn new(document: &str) -> PyResult<Self> {
-        codec::parse_tuning(document, Format::Json)
-            .map(Self)
-            .map_err(|error| PyValueError::new_err(error.to_string()))
-    }
 }
 
 #[pyclass(frozen, skip_from_py_object)]

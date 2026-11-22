@@ -10,7 +10,7 @@ from ufor.samples.instrument import SampleInstrumentScore
 from ufor.synth import SynthInstrumentScore
 from ufor.tuning import Tuning
 
-from ._native import MidiHeldNotes, PreparedMidiBindings, PreparedTuning
+from ._native import MidiHeldNotes, PreparedMidiBindings
 
 
 class MidiConverter:
@@ -34,49 +34,34 @@ class MidiConverter:
         if type(max_held_notes) is not int or max_held_notes < 1:
             raise ValueError("max_held_notes must be a positive integer")
         self._notes = MidiHeldNotes(identifier(source), max_held_notes)
-        entries = binding.model_copy(deep=True).body.midi
-        self._bindings = PreparedMidiBindings(
-            dumps(
-                {
-                    "midi": [
-                        e.model_dump(mode="json", exclude={"tuning"}) for e in entries
-                    ]
-                }
-            )
-        )
-        self._tunings: dict[int, PreparedTuning] = {}
-        prepared_tunings: dict[str, PreparedTuning] = {}
+        entries = binding.body.midi
         declarations = (
             instrument.body.settings
             if isinstance(instrument, SampleInstrumentScore)
             else instrument.body
         )
-        for entry in entries:
-            for mapping in [
-                *entry.controllers,
-                *([entry.pitch_bend] if entry.pitch_bend else []),
-            ]:
-                declared = declarations.require_control(mapping.control)
-                declared.validate_value(mapping.minimum)
-                declared.validate_value(mapping.maximum)
-            tuning = None
-            if entry.tuning is not None:
-                key = entry.tuning.key
-                if tunings is None or key not in tunings:
-                    raise ValueError(f"Unresolved tuning: {key}")
-                if key not in prepared_tunings:
-                    try:
-                        prepared_tunings[key] = PreparedTuning(
-                            tunings[key].model_dump_json()
-                        )
-                    except ValueError as error:
-                        raise ValueError(
-                            f"Cannot prepare tuning {key}: {error}"
-                        ) from error
-                tuning = prepared_tunings[key]
-            if tuning is not None:
-                for channel in entry.channels:
-                    self._tunings[channel] = tuning
+        tuning_keys = {e.tuning.key for e in entries if e.tuning is not None}
+        sources = tunings if tunings is not None else {}
+        self._bindings = PreparedMidiBindings(
+            dumps(
+                {
+                    "midi": [
+                        e.model_dump(mode="json", exclude={"tuning"})
+                        | {"tuning": e.tuning.key if e.tuning is not None else None}
+                        for e in entries
+                    ],
+                    "controls": {
+                        n: c.model_dump(mode="json")
+                        for n, c in declarations.controls.items()
+                    },
+                    "tunings": {
+                        k: sources[k].model_dump(mode="json")
+                        for k in sorted(tuning_keys)
+                        if k in sources
+                    },
+                }
+            )
+        )
         self._last: tuple[int, int] | None = None
 
     @property
@@ -149,7 +134,7 @@ class MidiConverter:
                 message.channel,
                 message.note,
                 message.velocity,
-                self._tunings.get(message.channel),
+                self._bindings,
             )
             return [
                 events.Trigger(

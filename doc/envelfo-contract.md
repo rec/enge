@@ -266,8 +266,10 @@ extend the frame count without consuming performance ordinals.
 MIDI file and live converters share Rust uFor's prepared channel assignments
 and controller and pitch-bend mapping. The Rust held-note state handles
 note admission, pitch, pairing, trigger IDs, and restart. Enge resolves
-references, validates instrument controls and host event order, and emits
-performance events with the exact host ticks and ordinals.
+references and supplies the instrument control declarations and tuning
+bodies. Rust uFor checks the mapped ranges and prepares the tunings by
+channel. Enge validates event order and emits performance events with the
+exact host ticks and ordinals.
 
 Both samplers use Rust uFor's cursor for pending release and loop decisions,
 forward and reverse movement, mirror turns, whole plays, overlap taps, and
