@@ -524,30 +524,8 @@ def prepare_trace(
     max_records: int = 10_000,
 ) -> synth_trace.SynthTrace:
     """Prepare synth-family actions with Rust uFor voice and release rules."""
-    fields = {
-        "name",
-        "mapping",
-        "trigger",
-        "channels",
-        "frequency_offset_hz",
-        "minimum_hold_seconds",
-        "choke_group",
-        "chokes",
-        "articulations",
-        "oscillator",
-        "synchronize_oscillator",
-        "noise",
-        "fm",
-        "envelope",
-    }
     eligibility = _native.PreparedVoiceEligibility(
-        json.dumps(
-            {
-                "voices": [
-                    v.model_dump(mode="json", include=fields) for v in definition.voices
-                ]
-            }
-        ),
+        json.dumps({"voices": [v.model_dump(mode="json") for v in definition.voices]}),
         max_records=max_records,
     )
 

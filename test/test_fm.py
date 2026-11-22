@@ -250,7 +250,7 @@ def test_envelope_playback_modulates_fm_and_survives_restore(
         ],
     }
     document = SynthInstrumentScore.model_validate(raw)
-    actions = synth_trace.prepare(
+    actions = synth.prepare_trace(
         document.body,
         [
             trigger(),

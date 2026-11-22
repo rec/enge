@@ -287,10 +287,6 @@ to the threshold starts with the pedal pressed.
 Persistent synth, FM and noise voices use Rust uFor to convert minimum
 hold seconds to exact frame durations, including fractional frames.
 
-Native synth-family trace eligibility prepares mapped oscillator, FM and
-white-noise voices through Rust uFor. The record limit includes voice
-metadata, source graphs and amplitude envelopes.
-
 Both samplers use Rust uFor's cursor for pending release and loop decisions,
 forward and reverse movement, mirror turns, whole plays, overlap taps, and
 end fades. A shared read plan determines overlap and interpolation weights
@@ -395,10 +391,12 @@ inside 3,421 successful and six failed callbacks. The generated report is
 `build/rust-ufor-voice-release-audit.xml`.
 
 Native MIDI rendering uses `synth.prepare_trace` for oscillator synth, FM
-and noise. It prepares each instrument's voice mappings once with Rust uFor
-and selects matching voices in authored order for onset, release and sustain
-events. The trace provides the original onset velocity for release layers
-and continues to emit resolved `pitch_hz` for the renderer.
+and noise. Rust uFor validates the mapped voices, sources and SoundSettings
+together before selecting matching voices in authored order for onset,
+release and sustain events. FM modulation targets resolve against each
+voice's own graph. The trace provides the original onset velocity for
+release layers and resolved `pitch_hz` for the renderer.
+One record budget covers the voice metadata, sources and SoundSettings.
 Voice eligibility passed 352 focused macOS tests with zero heap operations
 inside 3,421 successful and six failed callbacks. The generated report is
 `build/rust-ufor-voice-eligibility-audit.xml`.
