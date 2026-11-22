@@ -9,9 +9,10 @@ use std::sync::Arc;
 use ufor::codec::{self, Format};
 use ufor::identifier::Identifier;
 use ufor::samples::crossfade::Crossfade;
+use ufor::samples::cursor::{Cursor, CursorState};
 use ufor::samples::eligibility::Eligibility;
 use ufor::samples::inheritance::resolve_slot_settings;
-use ufor::samples::playback::{Direction, LoopMode, Mapping, ResolvedSlotPlayback};
+use ufor::samples::playback::{Mapping, ResolvedSlotPlayback};
 use ufor::samples::variation::DrawEvent;
 
 #[pyfunction]
@@ -105,7 +106,7 @@ pub(crate) type State = (
     u64,
     Option<i64>,
 );
-pub(crate) type Selection = (i64, i64, bool, Option<(i64, i64, i64, bool)>);
+
 type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
 
 #[pyclass(frozen, skip_from_py_object)]
@@ -272,10 +273,7 @@ impl SamplePitchMapping {
 #[pyclass(frozen)]
 pub(crate) struct SampleTraversal {
     pub(crate) buffer: SampleBuffer,
-    selection: Selection,
-    rate: f64,
-    end_fade_frames: f64,
-    initial_state: State,
+    cursor: Cursor,
 }
 
 #[pymethods]
@@ -295,390 +293,34 @@ impl SampleTraversal {
         let playback = codec::parse_sample_playback(playback, Format::Json).map_err(invalid)?;
         let frames = i64::try_from(buffer.audio.nrows())
             .map_err(|_| PyValueError::new_err("Decoded sample frame count exceeds i64"))?;
-        slice
-            .validate_playback(playback, frames, additional_plays)
-            .map_err(invalid)?;
-        let end_fade_frames = end_fade_seconds * rate;
-        if !rate.is_finite() || rate <= 0.0 || !end_fade_frames.is_finite() || end_fade_frames < 0.0
-        {
-            return Err(PyValueError::new_err("Invalid sample rate or end fade"));
-        }
-        let backward = playback.direction == Direction::Backward;
-        let loop_settings = slice.loop_settings();
-        let selection = (
-            slice.start_frame(),
-            slice.end_frame(),
-            playback.direction == Direction::Mirror,
-            loop_settings.map(|settings| {
-                (
-                    settings.start_frame(),
-                    settings.end_frame(),
-                    settings.crossfade_frames(),
-                    settings.mode() == LoopMode::UntilRelease,
-                )
-            }),
-        );
-        let initial_state = (
-            if backward {
-                slice.end_frame() - 1
-            } else {
-                slice.start_frame()
-            },
-            0.0,
-            0.0,
-            if backward { -1 } else { 1 },
-            loop_settings.is_some(),
-            false,
-            false,
-            None,
-            loop_settings.and_then(|settings| settings.repeat_count()),
+        let cursor = Cursor::new(
+            &slice,
+            playback,
+            frames,
+            rate,
             additional_plays,
-            None,
-        );
+            end_fade_seconds,
+        )
+        .map_err(invalid)?;
         Ok(Self {
             buffer: buffer.clone(),
-            selection,
-            rate,
-            end_fade_frames,
-            initial_state,
+            cursor,
         })
     }
 }
 
 impl SampleTraversal {
     pub(crate) fn start(&self) -> Cursor {
-        Cursor::new(
-            self.selection,
-            self.rate,
-            self.initial_state,
-            self.end_fade_frames,
-        )
+        self.cursor
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct Cursor {
-    pub(crate) selection: Selection,
-    pub(crate) rate: f64,
-    pub(crate) index: i64,
-    pub(crate) position: f64,
-    pub(crate) error: f64,
-    pub(crate) direction: i64,
-    pub(crate) looping: bool,
-    pub(crate) overlap: bool,
-    pub(crate) released: bool,
-    pub(crate) exhausted: Option<i64>,
-    pub(crate) repeats_remaining: Option<u64>,
-    pub(crate) plays_remaining: u64,
-    pub(crate) end_fade_at: Option<i64>,
-    pub(crate) end_fade_frames: f64,
-}
-
-impl Cursor {
-    pub(crate) fn new(selection: Selection, rate: f64, state: State, end_fade_frames: f64) -> Self {
-        let (
-            index,
-            position,
-            error,
-            direction,
-            looping,
-            overlap,
-            released,
-            exhausted,
-            repeats_remaining,
-            plays_remaining,
-            end_fade_at,
-        ) = state;
-        Self {
-            selection,
-            rate,
-            index,
-            position,
-            error,
-            direction,
-            looping,
-            overlap,
-            released,
-            exhausted,
-            repeats_remaining,
-            plays_remaining,
-            end_fade_at,
-            end_fade_frames,
-        }
-    }
-
-    fn remaining(&self) -> Option<f64> {
-        let (start, end, mirror, loop_) = self.selection;
-        let mut distance = if self.direction == 1 {
-            end - self.index
-        } else {
-            self.index - start + 1
-        } as f64;
-        if let Some((a, b, overlap, _)) = loop_.filter(|_| self.looping || self.overlap) {
-            let repeats = if self.looping {
-                self.repeats_remaining?
-            } else {
-                0
-            };
-            let length = b - a;
-            if mirror && repeats > 0 {
-                let boundary = if self.direction == 1 { b - 1 } else { a };
-                let direction = self.direction * if repeats % 2 == 0 { 1 } else { -1 };
-                let last = if direction == -1 { b - 1 } else { a };
-                let tail = if direction == 1 {
-                    end - last
-                } else {
-                    last - start + 1
-                };
-                distance = (self.direction * (boundary - self.index)) as f64
-                    + (repeats - 1) as f64 * (length - 1) as f64
-                    + tail as f64;
-            } else if !mirror {
-                distance += (repeats as f64 + f64::from(self.overlap)) * (length - overlap) as f64;
-            }
-        } else if mirror && loop_.is_none() && self.direction == 1 {
-            distance += (end - start - 1) as f64;
-        }
-        let length = end - start;
-        distance += self.plays_remaining as f64
-            * if mirror {
-                2.0 * length as f64 - 1.0
-            } else {
-                length as f64
-            };
-        Some(distance - self.position / self.rate)
-    }
-
-    pub(crate) fn end_gain(&mut self, frame: i64, step: f64) -> f64 {
-        if self.end_fade_frames == 0.0 {
-            return 1.0;
-        }
-        if self.end_fade_at.is_none()
-            && self
-                .remaining()
-                .is_some_and(|d| d * self.rate / step <= self.end_fade_frames)
-        {
-            self.end_fade_at = Some(frame);
-        }
-        let gain = self.end_fade_at.map_or(1.0, |at| {
-            (1.0 - (frame - at) as f64 / self.end_fade_frames).max(0.0)
-        });
-        if gain == 0.0 {
-            self.exhausted = Some(frame);
-        }
-        gain
-    }
-
-    pub(crate) fn release(&mut self) {
-        self.released = true;
-        if self.selection.3.is_some_and(|l| l.3) {
-            self.looping = false;
-        }
-    }
-
-    fn take_repeat(&mut self) -> bool {
-        if let Some(remaining) = &mut self.repeats_remaining {
-            if *remaining == 0 {
-                self.looping = false;
-                return false;
-            }
-            *remaining -= 1;
-        }
-        true
-    }
-
-    pub(crate) fn settle(&mut self, frame: i64) {
-        if self.exhausted.is_some() {
-            return;
-        }
-        let (start, end, mirror, loop_) = self.selection;
-        if let Some((a, b, overlap, _)) = loop_ {
-            if self.overlap {
-                if self.direction == 1 && self.index == b {
-                    self.index = a + overlap;
-                    self.overlap = false;
-                } else if self.direction == -1 && self.index == a - 1 {
-                    self.index = b - 1 - overlap;
-                    self.overlap = false;
-                }
-            } else if self.looping {
-                if mirror {
-                    if self.direction == 1 && self.index == b - 1 && self.take_repeat() {
-                        self.direction = -1;
-                    } else if self.direction == -1 && self.index == a && self.take_repeat() {
-                        self.direction = 1;
-                    }
-                } else if overlap != 0 {
-                    self.overlap = self.index
-                        == if self.direction == 1 {
-                            b - overlap
-                        } else {
-                            a + overlap - 1
-                        }
-                        && self.take_repeat();
-                } else if self.direction == 1 && self.index == b && self.take_repeat() {
-                    self.index = a;
-                } else if self.direction == -1 && self.index == a - 1 && self.take_repeat() {
-                    self.index = b - 1;
-                }
-            }
-        } else if mirror && self.direction == 1 && self.index == end - 1 && end - start > 1 {
-            self.direction = -1;
-        }
-        if !(start..end).contains(&self.index) {
-            if self.plays_remaining > 0 {
-                self.plays_remaining -= 1;
-                self.index = if !mirror && self.direction == -1 {
-                    end - 1
-                } else {
-                    start
-                };
-                if mirror {
-                    self.direction = 1;
-                }
-                return;
-            }
-            self.exhausted = Some(frame);
-            self.position = 0.0;
-            self.error = 0.0;
-        }
-    }
-
-    pub(crate) fn read(&self, audio: &Array2<f64>, channel: usize) -> f64 {
-        let first = audio[[self.index as usize, channel]];
-        if !self.overlap {
-            return first;
-        }
-        let (a, b, overlap, _) = self.selection.3.expect("validated overlap");
-        let offset = if self.direction == 1 {
-            self.index - (b - overlap)
-        } else {
-            a + overlap - 1 - self.index
-        };
-        let incoming = if self.direction == 1 {
-            a + offset
-        } else {
-            b - 1 - offset
-        };
-        let weight = offset as f64 / (overlap - 1) as f64;
+pub(crate) fn read_sample(cursor: &Cursor, audio: &Array2<f64>, channel: usize) -> f64 {
+    let first = audio[[cursor.state().index as usize, channel]];
+    if let Some((incoming, weight)) = cursor.overlap_tap() {
         (1.0 - weight) * first + weight * audio[[incoming as usize, channel]]
-    }
-
-    fn boundary(&self) -> (i64, i64) {
-        let (start, end, mirror, loop_) = self.selection;
-        if let Some((a, b, overlap, _)) = loop_.filter(|_| self.looping || self.overlap) {
-            let length = b - a;
-            if mirror {
-                return (
-                    if self.direction == 1 { b - 1 } else { a },
-                    if (a..b).contains(&self.index) {
-                        2 * (length - 1)
-                    } else {
-                        0
-                    },
-                );
-            }
-            if self.direction == 1 {
-                return (
-                    b - if self.overlap { 0 } else { overlap },
-                    if self.looping && (a + overlap..b).contains(&self.index) {
-                        length - overlap
-                    } else {
-                        0
-                    },
-                );
-            }
-            return (
-                a - 1 + if self.overlap { 0 } else { overlap },
-                if self.looping && (a..b - overlap).contains(&self.index) {
-                    length - overlap
-                } else {
-                    0
-                },
-            );
-        }
-        if mirror && loop_.is_none() && self.direction == 1 && end - start > 1 {
-            return (end - 1, 0);
-        }
-        (if self.direction == 1 { end } else { start - 1 }, 0)
-    }
-
-    pub(crate) fn advance(&mut self, step: f64, frame: i64) {
-        if self.exhausted.is_some() {
-            return;
-        }
-        let increment = step - self.error;
-        let total = self.position + increment;
-        self.error = (total - self.position) - increment;
-        // Python float divmod snaps the quotient after computing the remainder.
-        // floor(total / rate) alone can disagree at a rounded integer boundary.
-        let mut remainder = total % self.rate;
-        let mut quotient = (total - remainder) / self.rate;
-        if remainder < 0.0 {
-            remainder += self.rate;
-            quotient -= 1.0;
-        }
-        let mut count = quotient.floor();
-        if quotient - count > 0.5 {
-            count += 1.0;
-        }
-        self.position = remainder;
-        // Keep small moves separate from a huge integer-valued float count.
-        // This avoids both integer overflow and loss of entry-path steps above 2**53.
-        let mut consumed = 0.0;
-        let mut finite_count =
-            (self.repeats_remaining.is_some() || self.plays_remaining > 0).then_some(count as u128);
-        while finite_count.map_or(count > consumed, |c| c > 0) {
-            if self.plays_remaining > 0 {
-                let length = (self.selection.1 - self.selection.0) as u128;
-                let period = if self.selection.2 {
-                    2 * length - 1
-                } else {
-                    length
-                };
-                let left = finite_count.as_mut().expect("finite play count");
-                let skipped = ((*left - 1) / period).min(self.plays_remaining as u128);
-                self.plays_remaining -= skipped as u64;
-                *left -= skipped * period;
-            }
-            let (boundary, period) = self.boundary();
-            if period != 0 {
-                if let Some(left) = &mut finite_count {
-                    let traversals = if self.selection.2 { 2 } else { 1 };
-                    let remaining = self.repeats_remaining.as_mut().expect("finite count");
-                    let skipped =
-                        ((*left - 1) / period as u128).min((*remaining / traversals) as u128);
-                    *remaining -= skipped as u64 * traversals;
-                    *left -= skipped * period as u128;
-                    if skipped > 0 && *remaining == 0 {
-                        self.looping = false;
-                        continue;
-                    }
-                } else {
-                    count = ((count % period as f64) - consumed).rem_euclid(period as f64);
-                    if count == 0.0 {
-                        count = period as f64;
-                    }
-                    consumed = 0.0;
-                }
-            }
-            let distance = self.direction * (boundary - self.index);
-            let moved = finite_count.map_or_else(
-                || (count - consumed).min(distance as f64) as i64,
-                |c| c.min(distance as u128) as i64,
-            );
-            self.index += self.direction * moved;
-            consumed += moved as f64;
-            if let Some(left) = &mut finite_count {
-                *left -= moved as u128;
-            }
-            if finite_count.map_or(count > consumed, |c| c > 0) || self.position != 0.0 {
-                self.settle(frame);
-                if self.exhausted.is_some() {
-                    return;
-                }
-            }
-        }
+    } else {
+        first
     }
 }
 
@@ -702,38 +344,12 @@ pub(crate) fn render_sample<'py>(
 ) -> PyResult<RenderedSample<'py>> {
     let count = steps.len();
     let channels = routes.shape()[1];
-    let SampleTraversal {
-        buffer,
-        selection,
-        rate,
-        end_fade_frames,
-        ..
-    } = traversal;
-    let (selection, rate, end_fade_frames) = (*selection, *rate, *end_fade_frames);
-    let (start, end, mirror, loop_) = selection;
-    let (index, position, error, direction, looping, overlap, _, _, _, _, end_fade_at) = state;
-    let valid_overlap = loop_.is_some_and(|(a, b, m, _)| {
-        m >= 2
-            && !mirror
-            && if direction == 1 {
-                (b - m..=b).contains(&index)
-            } else {
-                (a - 1..a + m).contains(&index)
-            }
-    });
-    if end_fade_at.is_some_and(|at| at < 0 || at > frame)
-        || (looping && loop_.is_none())
-        || (overlap && !valid_overlap)
-        || ![-1, 1].contains(&direction)
-        || !(start - 1..=end).contains(&index)
-        || !position.is_finite()
-        || !(0.0..rate).contains(&position)
-        || !error.is_finite()
-        || frame < 0
-        || i64::try_from(count)
-            .ok()
-            .and_then(|n| frame.checked_add(n))
-            .is_none()
+    let SampleTraversal { buffer, cursor } = traversal;
+    let rate = cursor.rate();
+    if i64::try_from(count)
+        .ok()
+        .and_then(|n| frame.checked_add(n))
+        .is_none()
         || steps.as_array().iter().any(|s| !s.is_finite() || *s <= 0.0)
         || frames < count
         || gains.len() != count
@@ -750,15 +366,35 @@ pub(crate) fn render_sample<'py>(
             "Invalid native sample settings, state, or buffers",
         ));
     }
-    let initial = Cursor::new(selection, rate, state, end_fade_frames);
-    let mut settled = initial;
-    settled.settle(frame);
-    if settled.exhausted.is_none() && settled.direction * (settled.boundary().0 - settled.index) < 0
-    {
-        return Err(PyValueError::new_err(
-            "Invalid native sample cursor direction",
-        ));
-    }
+    let (
+        index,
+        position,
+        error,
+        direction,
+        looping,
+        overlap,
+        released,
+        exhausted,
+        repeats_remaining,
+        plays_remaining,
+        end_fade_at,
+    ) = state;
+    let state = CursorState {
+        index,
+        position,
+        error,
+        direction,
+        looping,
+        overlap,
+        released,
+        exhausted,
+        repeats_remaining,
+        plays_remaining,
+        end_fade_at,
+    };
+    let initial = cursor
+        .resume(state, frame)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
     let envelope = super::envelope_spans(envelope, count)?;
     let steps = steps.as_slice()?.to_vec();
     let gains = gains.as_slice()?.to_vec();
@@ -771,7 +407,7 @@ pub(crate) fn render_sample<'py>(
         let mut output = Array2::zeros((frames, channels));
         let mut sources = vec![0.0; audio.ncols()];
         for (i, step) in steps.into_iter().enumerate() {
-            if cursor.exhausted.is_some() {
+            if cursor.state().exhausted.is_some() {
                 break;
             }
             let current = frame + i as i64;
@@ -780,30 +416,26 @@ pub(crate) fn render_sample<'py>(
                 cursor.release();
             }
             cursor.settle(current);
-            if cursor.exhausted.is_some() {
+            if cursor.state().exhausted.is_some() {
                 break;
             }
             let end_gain = cursor.end_gain(current, step);
-            if cursor.exhausted.is_some() {
+            if cursor.state().exhausted.is_some() {
                 break;
             }
-            let mut following = cursor;
-            if cursor.position != 0.0 {
-                following.index += following.direction;
-                following.position = 0.0;
-                following.settle(current);
-            }
+            let position = cursor.state().position;
+            let following = cursor.following(current);
             for (c, source) in sources.iter_mut().enumerate() {
-                let first = cursor.read(&audio, c);
-                let last = if following.exhausted.is_some() {
+                let first = read_sample(&cursor, &audio, c);
+                let last = if following.state().exhausted.is_some() {
                     first
                 } else {
-                    following.read(&audio, c)
+                    read_sample(&following, &audio, c)
                 };
-                *source = if cursor.position == 0.0 {
+                *source = if position == 0.0 {
                     first
                 } else {
-                    first + (cursor.position / rate) * (last - first)
+                    first + (position / rate) * (last - first)
                 };
             }
             let gain = (amplitude[i] * prepared_gain) * gains[i];
@@ -825,17 +457,19 @@ pub(crate) fn render_sample<'py>(
                         mixed * gain
                     };
             }
+            let invalid = |_| PyValueError::new_err("Invalid native sample advance");
             if let Some((_, _, before, after)) = split.filter(|r| r.1) {
-                cursor.advance(before, current + 1);
-                if cursor.exhausted.is_none() {
+                cursor.advance(before, current + 1).map_err(invalid)?;
+                if cursor.state().exhausted.is_none() {
                     cursor.release();
                     cursor.settle(current + 1);
-                    cursor.advance(after, current + 1);
+                    cursor.advance(after, current + 1).map_err(invalid)?;
                 }
             } else {
-                cursor.advance(step, current + 1);
+                cursor.advance(step, current + 1).map_err(invalid)?;
             }
         }
+        let cursor = cursor.state();
         Ok((
             output,
             (

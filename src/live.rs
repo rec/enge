@@ -9,7 +9,7 @@ use crate::runtime::controls::{ControlBank, control_definitions};
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::preparation;
 use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot, route_map};
-use crate::sampler::{Cursor, SampleBuffer, SampleTraversal};
+use crate::sampler::{SampleBuffer, SampleTraversal, read_sample};
 use numpy::ndarray::{Array2, ArrayViewMut2};
 use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -18,6 +18,7 @@ use pyo3::types::PySequence;
 use rtrb::{Consumer, Producer, RingBuffer};
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::samples::crossfade::weight_at_position;
+use ufor::samples::cursor::Cursor;
 use ufor::samples::processing::FilterBoundary;
 
 struct Source {
@@ -336,7 +337,7 @@ impl LiveRuntime {
         max_records: usize,
     ) -> PyResult<usize> {
         let mut cursor = traversal.start();
-        let rate = cursor.rate;
+        let rate = cursor.rate();
         if self.frame != 0
             || voices == 0
             || batch_capacity == 0
@@ -350,7 +351,7 @@ impl LiveRuntime {
         }
         let buffer = traversal.buffer.clone();
         cursor.settle(0);
-        if cursor.exhausted.is_some() {
+        if cursor.state().exhausted.is_some() {
             return Err(PyValueError::new_err("Live sample starts exhausted"));
         }
         let source_channels = buffer.audio.ncols();
@@ -887,13 +888,7 @@ impl SourceRuntime {
             }
             (Self::Sample(runtime), SourceSnapshot::Sample(state)) => {
                 if runtime.routes != state.routes
-                    || runtime.initial_cursor.end_fade_frames
-                        != state.initial_cursor.end_fade_frames
-                    || runtime.initial_cursor.selection != state.initial_cursor.selection
-                    || runtime.initial_cursor.repeats_remaining
-                        != state.initial_cursor.repeats_remaining
-                    || runtime.initial_cursor.plays_remaining
-                        != state.initial_cursor.plays_remaining
+                    || runtime.initial_cursor != state.initial_cursor
                     || runtime.controls.control_definitions != state.controls.control_definitions
                     || runtime.controls.context_kinds.len() != state.controls.context_kinds.len()
                     || runtime.route_maps != state.route_maps
@@ -1051,7 +1046,7 @@ impl SampleRuntime {
                     continue;
                 }
                 if let Some(release_frame) = self.release_frames[voice] {
-                    if age >= release_frame.ceil() && !self.cursors[voice].released {
+                    if age >= release_frame.ceil() && !self.cursors[voice].state().released {
                         self.cursors[voice].release();
                     }
                 }
@@ -1085,34 +1080,33 @@ impl SampleRuntime {
                         .exp2();
                 let source_frame = i64::try_from(frame)
                     .map_err(|_| NativeError::Message("Live sample frame overflow"))?;
+                if !step.is_finite() || step <= 0.0 {
+                    return Err(NativeError::Message("Invalid live sample advance"));
+                }
                 let cursor = &mut self.cursors[voice];
                 cursor.settle(source_frame);
-                if cursor.exhausted.is_some() {
+                if cursor.state().exhausted.is_some() {
                     self.active[voice] = false;
                     continue;
                 }
                 let end_gain = cursor.end_gain(source_frame, step);
-                if cursor.exhausted.is_some() {
+                if cursor.state().exhausted.is_some() {
                     self.active[voice] = false;
                     continue;
                 }
-                let mut following = *cursor;
-                if cursor.position != 0.0 {
-                    following.index += following.direction;
-                    following.position = 0.0;
-                    following.settle(source_frame);
-                }
+                let position = cursor.state().position;
+                let following = cursor.following(source_frame);
                 for (channel, value) in self.source_values.iter_mut().enumerate() {
-                    let first = cursor.read(&self.buffer.audio, channel);
-                    let last = if following.exhausted.is_some() {
+                    let first = read_sample(cursor, &self.buffer.audio, channel);
+                    let last = if following.state().exhausted.is_some() {
                         first
                     } else {
-                        following.read(&self.buffer.audio, channel)
+                        read_sample(&following, &self.buffer.audio, channel)
                     };
-                    *value = if cursor.position == 0.0 {
+                    *value = if position == 0.0 {
                         first
                     } else {
-                        first + (cursor.position / cursor.rate) * (last - first)
+                        first + (position / cursor.rate()) * (last - first)
                     };
                 }
                 let amplitude = level * self.gains[voice];
@@ -1166,7 +1160,9 @@ impl SampleRuntime {
                         .sum::<f64>();
                     output[[offset, channel]] += mixed * output_gain;
                 }
-                self.cursors[voice].advance(step, source_frame + 1);
+                self.cursors[voice]
+                    .advance(step, source_frame + 1)
+                    .map_err(|_| NativeError::Message("Invalid live sample advance"))?;
                 self.ages[voice] += 1;
             }
             for (running, active) in self.generator_active.iter_mut().zip(&self.active) {
@@ -1236,14 +1232,9 @@ impl SampleRuntime {
                     return Err(NativeError::Message("Invalid live sample offset"));
                 }
                 let cursor = &mut self.cursors[voice];
-                cursor.index = cursor
-                    .index
-                    .checked_add(offset as i64)
-                    .ok_or(NativeError::Message("Live sample offset overflow"))?;
-                if !(cursor.selection.0..cursor.selection.1).contains(&cursor.index) {
-                    cursor.exhausted = Some(frame as i64);
-                    self.active[voice] = false;
-                }
+                self.active[voice] = cursor
+                    .offset_start(offset as i64, frame as i64)
+                    .map_err(|_| NativeError::Message("Live sample offset overflow"))?;
                 self.steps[voice] = action[3];
                 self.gains[voice] = action[4];
                 self.ages[voice] = 0;

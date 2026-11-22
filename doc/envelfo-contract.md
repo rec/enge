@@ -243,12 +243,17 @@ inside 2,227 successful and one failed callback. The generated report is
 
 The offline native sampler and the live sampler share a prepared traversal
 from Rust uFor's authored slice, loop and resolved playback declarations.
-Preparation checks the decoded frame bounds and keeps the existing cursor and
-snapshot representation. Enge resolves slot settings, loads assets, and owns
-sample execution.
+Preparation checks the decoded frame bounds. Both samplers use Rust uFor's
+cursor for pending release and loop decisions, forward and reverse movement,
+mirror turns, whole plays, overlap taps, and end fades. Enge supplies the
+decoded audio and owns filtering and routing. Snapshot and Python bridge
+coordinates retain their existing integer and floating-point fields.
 Traversal preparation passed 670 focused macOS tests with zero heap
 operations inside 6,755 successful and seven failed callbacks. The generated
 report is `build/rust-ufor-sample-traversal-audit.xml`.
+The shared cursor subsequently passed 711 focused macOS tests with zero Rust
+heap operations in 6,507 successful and seven failed callbacks. The generated
+report is `build/rust-ufor-sample-cursor-audit.xml`.
 
 The native sampler prepares a Rust uFor pitch mapping per slot. Each onset
 uses the resolved `pitch_hz`, the sample's reference frequency, and the voice's
