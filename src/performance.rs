@@ -16,11 +16,19 @@ use ufor::samples::eligibility::VoiceEligibility;
 use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
 use ufor::synth_pitch;
-use ufor::time::PpqnClock;
+use ufor::time::{PpqnClock, duration_frames};
 use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
 type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
+
+#[pyfunction]
+pub(crate) fn prepare_hold_frames(seconds: &str, sample_rate: i64) -> PyResult<(i64, i64)> {
+    ufor::quantity::exact(seconds, "seconds")
+        .and_then(|seconds| duration_frames(seconds, sample_rate))
+        .map(|frames| (frames.numerator(), frames.denominator()))
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
 
 #[pyclass(frozen, skip_from_py_object)]
 pub(crate) struct PreparedEventValidator(BTreeMap<Identifier, ControlDeclaration>);

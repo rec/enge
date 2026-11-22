@@ -560,10 +560,7 @@ class PersistentFM(synth.PersistentSynth):
         self.runtime = _native.SynthRuntime.fm_graph(
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
             graph,
-            (
-                (hold := template.minimum_hold_seconds * rate).numerator,
-                hold.denominator,
-            ),
+            _native.prepare_hold_frames(str(template.minimum_hold_seconds), rate),
             controls,
             smoothing,
             generators,

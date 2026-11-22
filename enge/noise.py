@@ -430,10 +430,7 @@ class PersistentNoise(synth.PersistentSynth):
             rate,
             np.tile(np.asarray(route, dtype=np.float64), (voices, 1)),
             template.envelope.model_dump_json(),
-            (
-                (hold := template.minimum_hold_seconds * rate).numerator,
-                hold.denominator,
-            ),
+            _native.prepare_hold_frames(str(template.minimum_hold_seconds), rate),
             controls,
             smoothing,
             generators,

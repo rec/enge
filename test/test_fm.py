@@ -603,6 +603,7 @@ def test_persistent_fm_matches_native_across_blocks_and_restore(
     tmp_path: Path, order: str
 ) -> None:
     raw = score().model_dump()
+    raw["body"]["voices"][0]["minimum_hold_seconds"] = "72001/96000"
     raw["body"]["voices"][0]["fm"]["edges"][1]["index"] = 0.7
     raw["body"]["voices"][0]["processing"].update(
         filter_order=order,

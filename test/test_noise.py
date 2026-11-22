@@ -183,6 +183,7 @@ def test_persistent_noise_matches_native_across_blocks_and_restore(
 ) -> None:
     raw = score().model_dump()
     raw["body"]["voices"][0]["processing"]["filter_order"] = order
+    raw["body"]["voices"][0]["minimum_hold_seconds"] = "72001/96000"
     document = SynthInstrumentScore.model_validate(raw)
     events = [
         trigger(),

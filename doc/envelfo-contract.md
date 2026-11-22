@@ -284,6 +284,9 @@ Native sampler and synth-family traces prepare their initial sustain state
 from the declared unipolar control default using Rust uFor. A default equal
 to the threshold starts with the pedal pressed.
 
+Persistent synth, FM and noise voices use Rust uFor to convert minimum
+hold seconds to exact frame durations, including fractional frames.
+
 Both samplers use Rust uFor's cursor for pending release and loop decisions,
 forward and reverse movement, mirror turns, whole plays, overlap taps, and
 end fades. A shared read plan determines overlap and interpolation weights
