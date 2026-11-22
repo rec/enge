@@ -14,7 +14,7 @@ use ufor::samples::crossfade::Crossfade;
 use ufor::samples::cursor::{Cursor, CursorState};
 use ufor::samples::eligibility::Eligibility;
 use ufor::samples::inheritance::resolve_slot_settings;
-use ufor::samples::playback::{Mapping, ResolvedSlotPlayback};
+use ufor::samples::playback::{Mapping, ResolvedSlotPlayback, onset_gain};
 use ufor::samples::variation::DrawEvent;
 
 #[pyfunction]
@@ -259,14 +259,10 @@ impl SampleCrossfades {
         Ok(Self { latched, controls })
     }
 
-    #[pyo3(signature = (key, velocity))]
-    fn onset_gain(&self, key: Option<i64>, velocity: f64) -> PyResult<f64> {
-        self.latched.iter().try_fold(1.0, |gain, fade| {
-            let weight = fade
-                .onset_weight(key, velocity)
-                .map_err(|error| PyValueError::new_err(error.to_string()))?;
-            Ok(gain * weight.expect("latched crossfade"))
-        })
+    #[pyo3(signature = (key, velocity, volume_db))]
+    fn onset_gain(&self, key: Option<i64>, velocity: f64, volume_db: [f64; 3]) -> PyResult<f64> {
+        onset_gain(&self.latched, key, velocity, volume_db)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     fn control_routes(&self) -> Vec<(f64, f64, bool, bool)> {

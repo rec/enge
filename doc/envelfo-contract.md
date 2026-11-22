@@ -322,8 +322,10 @@ in 6,507 successful and seven failed callbacks. The generated report is
 
 The native sampler prepares a Rust uFor pitch mapping per slot. Each onset
 uses the resolved `pitch_hz`, the sample's reference frequency, and the voice's
-pitch variation. Native offline playback applies common and slot tuning to
-that ratio before converting it to cursor units with the decoded asset rate.
+pitch variation. Rust also combines the onset key and velocity crossfades
+with instrument, slot, and variation volume. Native offline playback applies
+common and slot tuning to that ratio before converting it to cursor units
+with the decoded asset rate.
 The same calculation supplies its control batch bound. Live playback applies
 both tuning layers to the onset step, which already carries the asset rate.
 Both native paths use the checked Rust uFor mathematics and preserve their

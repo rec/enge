@@ -571,13 +571,19 @@ class OfflineSampler:
             raise synth.EngineError(
                 "Latched sample parameter overrides are not implemented"
             )
+        common = self.definition.document.body.settings
+        volume_db = (
+            common.processing.volume_db,
+            settings.processing.volume_db,
+            action.variation.gain_db,
+        )
         if self.backend == "native":
             try:
                 ratio = self.native_mappings[slot.name].pitch_ratio(
                     action.pitch_hz, 0, action.variation.pitch_cents
                 )
-                layer_gain = self.native_crossfades[slot.name].onset_gain(
-                    action.key, action.velocity
+                gain = self.native_crossfades[slot.name].onset_gain(
+                    action.key, action.velocity, volume_db
                 )
             except ValueError as error:
                 raise synth.EngineError(str(error)) from error
@@ -593,8 +599,10 @@ class OfflineSampler:
             ratio = playback.pitch_ratio(
                 slot.mapping, action.pitch_hz, 0, action.variation.pitch_cents
             )
-            layer_gain = _layer_gain(slot, action)
-        common = self.definition.document.body.settings
+            instrument_db, slot_db, variation_db = volume_db
+            gain = _layer_gain(slot, action) * 10 ** (
+                (instrument_db + slot_db + variation_db) / 20
+            )
         envelope = settings.envelope or common.envelope
         assert envelope is not None
         return (
@@ -609,16 +617,7 @@ class OfflineSampler:
                 if settings.processing.filters
                 else common.processing.filter_order,
                 pitch_ratio=ratio,
-                gain=layer_gain
-                * 10
-                ** (
-                    (
-                        common.processing.volume_db
-                        + settings.processing.volume_db
-                        + action.variation.gain_db
-                    )
-                    / 20
-                ),
+                gain=gain,
                 routes=self.definition.routes[slot.name],
             ),
         )

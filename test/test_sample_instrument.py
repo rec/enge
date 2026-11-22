@@ -895,6 +895,10 @@ def test_resolved_variation_and_static_tuning_are_applied_once(
     slot = raw["body"]["slots"][0]
     slot["processing"] = {"tuning_cents": 200, "volume_db": -6}
     slot["variation"] = {"pitch_cents": 300, "gain_db": 3}
+    slot["crossfades"] = [
+        {"input": "key", "start": 45, "end": 93, "direction": "in"},
+        {"input": "velocity", "start": 0, "end": 1, "direction": "out"},
+    ]
     document = instrument.SampleInstrumentScore.model_validate(raw)
     ramp = np.arange(96000, dtype=np.float64) / 96000
     prepared = sample_instrument.prepare(
@@ -903,7 +907,7 @@ def test_resolved_variation_and_static_tuning_are_applied_once(
     actions = trace.prepare(
         document.body,
         [
-            onset(pitch=220).model_copy(update={"controls": {}}),
+            onset(pitch=220).model_copy(update={"controls": {}, "velocity": 0.5}),
             Release(tick=10000, ordinal=0, part="main", trigger_id="note"),
         ],
         seed=123,
@@ -926,7 +930,7 @@ def test_resolved_variation_and_static_tuning_are_applied_once(
     expected = np.zeros_like(actual)
     expected[:10000] = np.column_stack(
         [progress / 96000, 1 - 0.75 * progress / 96000]
-    ) * 10 ** ((-3 + start.variation.gain_db) / 20)
+    ) * (0.25 * 10 ** ((-3 + start.variation.gain_db) / 20))
     check_audio(tmp_path / "sample-variation.wav", actual, expected)
 
 
