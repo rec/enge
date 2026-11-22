@@ -47,34 +47,8 @@ def render(
         filters,
         filter_after_amplitude,
     )
-    (
-        index,
-        position,
-        error,
-        direction,
-        looping,
-        overlap,
-        released,
-        exhaustion,
-        repeats_remaining,
-        plays_remaining,
-        end_fade_at,
-    ) = values
     return (
         audio,
-        sampler.SampleState(
-            frame=state.frame + len(steps),
-            index=index,
-            position=position,
-            error=error,
-            direction=direction,
-            looping=looping,
-            overlap=overlap,
-            released=released,
-            exhaustion_frame=exhaustion,
-            repeats_remaining=repeats_remaining,
-            plays_remaining=plays_remaining,
-            end_fade_at=end_fade_at,
-        ),
+        sampler.SampleState.from_native(state.frame + len(steps), values),
         filter_states,
     )

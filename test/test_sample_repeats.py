@@ -24,6 +24,7 @@ def test_whole_sample_restarts_preserve_envelope_and_first_only_offset(
     )
     offset = -2 if direction == "backward" else 2
     raw["body"]["slots"][0]["alignment_frames"] = offset
+    raw["body"]["slots"][0]["variation"] = {"offset_frames": 2}
     raw["body"]["slots"][0].update(selection="takes", take="one", microphone="close")
     raw["body"]["settings"]["selections"] = [{"name": "takes", "mode": "cycle"}]
     raw["body"]["settings"]["envelope"] = {
@@ -42,7 +43,8 @@ def test_whole_sample_restarts_preserve_envelope_and_first_only_offset(
     cycle = list(range(11, -1, -1)) if direction == "backward" else list(range(12))
     if direction == "mirror":
         cycle += list(range(10, -1, -1))
-    indices = cycle[2:] + cycle * (plays - 1)
+    start = next(a for a in actions if isinstance(a, trace.VoiceStart))
+    indices = cycle[2 + start.variation.offset_frames :] + cycle * (plays - 1)
     positions = np.arange(0, len(indices), step)
     values = np.interp(positions, np.arange(len(indices)), indices)
     expected = np.zeros((48000, 2))

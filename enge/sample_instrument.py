@@ -23,7 +23,6 @@ from ufor.samples import (
     trace,
     variation,
 )
-from ufor.samples.enums import Direction
 from ufor.streams import AudioType
 
 from . import (
@@ -545,24 +544,12 @@ class OfflineSampler:
                 definition,
                 sample,
                 backend=self.backend,
+                alignment_frames=action.alignment_frames,
+                variation_frames=action.variation.offset_frames,
             ),
             instrument_sources=self.controls.sources(common, action, action.velocity),
             slot_sources=self.controls.sources(settings, action, action.velocity),
             crossfade_sources=crossfade_sources,
-        )
-        renderer = self.voices[action.voice_id].renderer
-        index = (
-            renderer.source.index
-            + action.alignment_frames
-            + renderer.source.direction * action.variation.offset_frames
-        )
-        renderer.source = renderer.source.model_copy(
-            update={
-                "index": index,
-                "exhaustion_frame": None
-                if sample.slice.start_frame <= index < sample.slice.end_frame
-                else 0,
-            }
         )
 
     def _voice_definition(
@@ -1283,6 +1270,13 @@ class PersistentSampler(OfflineSampler):
                     raise synth.EngineError(
                         "Native sample delay is not exactly representable"
                     )
+                position_offset = sample.native_traversal.start_offset(
+                    action.alignment_frames, action.variation.offset_frames
+                )
+                if abs(position_offset) > 2**53:
+                    raise synth.EngineError(
+                        "Native sample offset is not exactly representable"
+                    )
                 self.native_voices[action.voice_id] = NativeSampleVoice(
                     source=source,
                     slot=voice,
@@ -1291,15 +1285,6 @@ class PersistentSampler(OfflineSampler):
                     started_frame=action.tick + delay,
                     trigger=slot.trigger,
                 )
-                position_offset = (
-                    action.alignment_frames
-                    + (-1 if sample.playback.direction == Direction.backward else 1)
-                    * action.variation.offset_frames
-                )
-                if abs(position_offset) > 2**53:
-                    raise synth.EngineError(
-                        "Native sample offset is not exactly representable"
-                    )
                 if source in self.native_generators:
                     encoded[source].append(
                         [

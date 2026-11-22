@@ -130,13 +130,63 @@ class SampleState(Model, frozen=True):
         )
 
     @classmethod
-    def start(cls, definition: PreparedSample) -> Self:
-        backward = definition.playback.direction == Direction.backward
+    def from_native(cls, frame: int, values: "_native.SampleState") -> Self:
+        (
+            index,
+            position,
+            error,
+            direction,
+            looping,
+            overlap,
+            released,
+            exhaustion,
+            repeats_remaining,
+            plays_remaining,
+            end_fade_at,
+        ) = values
         return cls(
-            index=definition.slice.end_frame - 1
-            if backward
-            else definition.slice.start_frame,
-            direction=-1 if backward else 1,
+            frame=frame,
+            index=index,
+            position=position,
+            error=error,
+            direction=direction,
+            looping=looping,
+            overlap=overlap,
+            released=released,
+            exhaustion_frame=exhaustion,
+            repeats_remaining=repeats_remaining,
+            plays_remaining=plays_remaining,
+            end_fade_at=end_fade_at,
+        )
+
+    @classmethod
+    def start(
+        cls,
+        definition: PreparedSample,
+        *,
+        backend: Literal["numpy", "native"] = "numpy",
+        alignment_frames: int = 0,
+        variation_frames: int = 0,
+    ) -> Self:
+        if backend == "native":
+            return cls.from_native(
+                0,
+                definition.native_traversal.initial_state(
+                    alignment_frames, variation_frames
+                ),
+            )
+        backward = definition.playback.direction == Direction.backward
+        direction: Literal[-1, 1] = -1 if backward else 1
+        base = (
+            definition.slice.end_frame - 1 if backward else definition.slice.start_frame
+        )
+        index = base + alignment_frames + direction * variation_frames
+        return cls(
+            index=index,
+            direction=direction,
+            exhaustion_frame=None
+            if definition.slice.start_frame <= index < definition.slice.end_frame
+            else 0,
             looping=definition.slice.loop is not None,
             plays_remaining=definition.play_count - 1,
             repeats_remaining=None
@@ -181,6 +231,9 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
         definition: PreparedSampleVoice,
         sample: PreparedSample,
         backend: Literal["numpy", "native"] = "numpy",
+        *,
+        alignment_frames: int = 0,
+        variation_frames: int = 0,
     ) -> Self:
         if (
             definition.slice != sample.slice
@@ -191,7 +244,12 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
             raise EngineError("Sample routes must map every source channel")
         return cls(
             definition=definition,
-            source=SampleState.start(sample),
+            source=SampleState.start(
+                sample,
+                backend=backend,
+                alignment_frames=alignment_frames,
+                variation_frames=variation_frames,
+            ),
             backend=backend,
             filter_states=filters.initial_states(
                 definition.filters, sample.samples.shape[1]

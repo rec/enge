@@ -326,12 +326,15 @@ uses the resolved `pitch_hz`, the sample's reference frequency, and the voice's
 pitch variation. Rust also combines the onset key and velocity crossfades
 with instrument, slot, and variation volume. Native offline playback applies
 common and slot tuning to that ratio before converting it to cursor units
-with the decoded asset rate.
-The same calculation supplies its control batch bound. Live playback applies
+with the decoded asset rate. The same calculation supplies its control batch
+bound. Live playback applies
 both tuning layers to the onset step, which already carries the asset rate.
 Both native paths use the checked Rust uFor mathematics and preserve their
 existing multiplication order. The NumPy renderer uses Python's mapping and
 array arithmetic.
+Native offline and live onsets use the Rust cursor's initial direction and
+play budget. Rust applies asset alignment and direction-relative variation in
+signed 64-bit frames and marks an onset outside the slice as exhausted.
 Pitch mapping passed 670 focused macOS tests with zero heap operations inside
 6,755 successful and seven failed callbacks. The generated report is
 `build/rust-ufor-sample-pitch-audit.xml`.

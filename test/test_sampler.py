@@ -411,6 +411,22 @@ def test_exhausted_source_ignores_later_releases(
     assert ended.model_dump(exclude={"frame"}) == final.model_dump(exclude={"frame"})
 
 
+def test_outside_onset_restores_as_silence(
+    backend: Literal["numpy", "native"], tmp_path: Path
+) -> None:
+    definition = PreparedSample(
+        samples=np.ones((4, 1)),
+        native_rate=48000,
+        sample_rate=48000,
+        slice=Slice(name="slice", asset="asset", end_frame=4),
+    )
+    initial = SampleState.start(definition, backend=backend, alignment_frames=12)
+    restored = SampleState.model_validate_json(initial.model_dump_json())
+    actual, final = sample_frames(definition, restored, np.ones(48000), backend=backend)
+    check_audio(tmp_path / "outside-onset.wav", actual, np.zeros_like(actual))
+    assert final.exhaustion_frame == 0
+
+
 @pytest.mark.parametrize(
     "ratios", [[0], [-1], [float("nan")], [float("inf")], [[1]], 1]
 )

@@ -104,7 +104,7 @@ class RegionPlayer(BaseModel):
                         end_frame=run.end_frame,
                     ),
                 )
-                self.state = SampleState.start(self.definition)
+                self.state = SampleState.start(self.definition, backend=self.backend)
             assert self.state is not None
             count = min(frames - offset, run.frames - self.run_offset)
             rendered, self.state = sample_frames(

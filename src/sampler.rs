@@ -154,6 +154,22 @@ pub(crate) type State = (
 
 type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
 
+fn state_tuple(state: &CursorState) -> State {
+    (
+        state.index,
+        state.position,
+        state.error,
+        state.direction,
+        state.looping,
+        state.overlap,
+        state.released,
+        state.exhausted,
+        state.repeats_remaining,
+        state.plays_remaining,
+        state.end_fade_at,
+    )
+}
+
 fn restore_cursor(cursor: Cursor, state: State, frame: i64) -> PyResult<Cursor> {
     let (
         index,
@@ -383,6 +399,20 @@ impl SampleTraversal {
         })
     }
 
+    fn start_offset(&self, alignment: i64, variation: i64) -> PyResult<i64> {
+        self.cursor
+            .start_offset(alignment, variation)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn initial_state(&self, alignment: i64, variation: i64) -> PyResult<State> {
+        let mut cursor = self.cursor;
+        cursor
+            .offset_start(self.start_offset(alignment, variation)?, 0)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(state_tuple(cursor.state()))
+    }
+
     fn active_prefix(
         &self,
         state: State,
@@ -514,24 +544,7 @@ pub(crate) fn render_sample<'py>(
                 cursor.advance(step, current + 1).map_err(invalid)?;
             }
         }
-        let cursor = cursor.state();
-        Ok((
-            output,
-            (
-                cursor.index,
-                cursor.position,
-                cursor.error,
-                cursor.direction,
-                cursor.looping,
-                cursor.overlap,
-                cursor.released,
-                cursor.exhausted,
-                cursor.repeats_remaining,
-                cursor.plays_remaining,
-                cursor.end_fade_at,
-            ),
-            filters.states,
-        ))
+        Ok((output, state_tuple(cursor.state()), filters.states))
     })?;
     Ok((
         output.into_pyarray(py),
