@@ -303,6 +303,13 @@ def test_tuning_references_are_required_snapshotted_and_never_wrapped(
     with pytest.raises(RuntimeError, match="restart"):
         converter.finish()
 
+    converter.restart()
+    restarted = converter.feed(
+        messages.NoteOn(channel=1, note=69, velocity=80), tick=0, ordinal=0
+    )[0]
+    assert isinstance(restarted, events.Trigger)
+    assert restarted.trigger_id == "keys-note-1"
+
 
 def test_tuning_is_validated_when_preparing_the_converter(
     binding: performance_binding.PerformanceBindingScore,

@@ -9,7 +9,7 @@ use ufor::envelfo::{PreparationLimits, Waveform};
 use ufor::identifier::Identifier;
 use ufor::number::Rational;
 use ufor::oscillator::Oscillator;
-use ufor::performance_binding::{ControlValue, MidiBindings, RepeatedKeyRelease};
+use ufor::performance_binding::{ControlValue, HeldNotes, MidiBindings, RepeatedKeyRelease};
 use ufor::samples::eligibility::VoiceEligibility;
 use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
@@ -23,6 +23,67 @@ type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f6
 
 #[pyclass(frozen, skip_from_py_object)]
 pub(crate) struct PreparedMidiBindings(MidiBindings);
+
+#[pyclass(skip_from_py_object)]
+pub(crate) struct MidiHeldNotes(HeldNotes);
+
+#[pymethods]
+impl MidiHeldNotes {
+    #[new]
+    fn new(source: String, limit: usize) -> PyResult<Self> {
+        Identifier::new(source)
+            .and_then(|source| HeldNotes::new(source, limit))
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn source(&self) -> &str {
+        self.0.source().as_str()
+    }
+
+    fn stopped(&self) -> bool {
+        self.0.stopped()
+    }
+
+    #[pyo3(signature = (channel, key, velocity, tuning))]
+    fn note_on(
+        &mut self,
+        channel: u8,
+        key: u8,
+        velocity: u8,
+        tuning: Option<&PreparedTuning>,
+    ) -> PyResult<(String, f64, f64)> {
+        self.0
+            .note_on(channel, key, velocity, tuning.map(|prepared| &prepared.0))
+            .map(|note| (note.trigger_id, note.velocity, note.pitch_hz))
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn note_off(&mut self, channel: u8, key: u8, oldest: bool) -> PyResult<String> {
+        let policy = if oldest {
+            RepeatedKeyRelease::Oldest
+        } else {
+            RepeatedKeyRelease::Newest
+        };
+        self.0
+            .note_off(channel, key, policy)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn report_loss(&mut self) {
+        self.0.report_loss();
+    }
+
+    fn restart(&mut self) {
+        self.0.restart();
+    }
+
+    fn finish(&mut self) -> PyResult<()> {
+        self.0
+            .finish()
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
 
 #[pymethods]
 impl PreparedMidiBindings {
@@ -286,13 +347,6 @@ impl PreparedTuning {
     fn new(document: &str) -> PyResult<Self> {
         codec::parse_tuning(document, Format::Json)
             .map(Self)
-            .map_err(|error| PyValueError::new_err(error.to_string()))
-    }
-
-    fn frequency_hz(&self, note: i64) -> PyResult<f64> {
-        self.0
-            .evaluate(note)
-            .map(|frequency| frequency.as_f64())
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 }
