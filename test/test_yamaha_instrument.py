@@ -7,7 +7,7 @@ from test_synth import check_audio, score
 from test_yamaha import voice
 from ufor import synth_trace, tx81z
 from ufor.dx7 import DX7Voice
-from ufor.events import ControlChange, Release, Trigger
+from ufor.events import ControlChange, PerformanceEvent, Release, Trigger
 from ufor.instrument_trace import RetirementCause, VoiceRetirement
 from ufor.synth import (
     SynthInstrumentScore,
@@ -16,7 +16,7 @@ from ufor.synth import (
     YamahaWT11Voice,
 )
 
-from enge import filters, yamaha, yamaha_instrument, yamaha_lfo
+from enge import filters, synth, yamaha, yamaha_instrument, yamaha_lfo
 from enge.midi import MidiPerformance
 from enge.render import render_midi
 from enge.synth import EngineError
@@ -63,6 +63,36 @@ def instrument(kind: str, transpose: int = 0, delay: int = 0) -> SynthInstrument
             template["additional2"] = bytes([0, 0, 50, 0, 1, 2, 3, 4, 5, 6]).hex()
     raw["body"] = {"voices": [template]}
     return SynthInstrumentScore.model_validate(raw)
+
+
+@pytest.mark.parametrize("kind", ["dx7", "tx81z", "wt11"])
+def test_native_yamaha_trace_matches_the_reference(kind: str) -> None:
+    document = instrument(kind).model_dump(mode="json")
+    raw = document["body"]
+    if kind == "tx81z":
+        template = raw["voices"][0]
+        raw["tx81z_outputs"] = [
+            {"name": "chip", "voices": ["yamaha"], "channels": template.pop("channels")}
+        ]
+        raw["tx81z_lfos"] = [
+            {"name": "shared", "first": "yamaha", "routes": {"yamaha": "first"}}
+        ]
+    score = SynthInstrumentScore.model_validate(document)
+    events: list[PerformanceEvent] = [
+        Trigger(
+            tick=0,
+            ordinal=0,
+            part="main",
+            trigger_id="key",
+            key=69,
+            velocity=0.8,
+            pitch_hz=432.0,
+        ),
+        Release(tick=20, ordinal=0, part="main", trigger_id="key"),
+    ]
+    assert synth.prepare_trace(score.body, events, 3) == synth_trace.prepare(
+        score.body, events, 3
+    )
 
 
 @pytest.mark.parametrize(

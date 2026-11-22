@@ -429,7 +429,10 @@ ordering and weighting remain separate milestones.
 
 The DX7, TX81Z, and WT11 renderers use Rust uFor to check edit-buffer
 structure and diagnose invalid patch parameters during voice construction.
-Enge owns playback limits, chip emulation, and renderer state.
+MIDI rendering prepares Yamaha performance traces with Rust uFor's voice
+selection and lifecycle rules, including validation of shared TX81Z output
+and LFO declarations. Enge owns playback limits, chip emulation, and
+renderer state.
 
 uFor's shared corpora define the portable contracts. Enge's consumer tests
 exercise the conversion and host behavior using existing audio regressions and

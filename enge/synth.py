@@ -535,9 +535,7 @@ def prepare_trace(
 ) -> synth_trace.SynthTrace:
     """Prepare synth-family actions with Rust uFor voice and release rules."""
     eligibility = _native.PreparedVoiceEligibility(
-        definition.model_dump_json(
-            include={"voices", "controls", "voice_policy", "sustain", "articulations"}
-        ),
+        definition.model_dump_json(),
         max_records=max_records,
     )
 

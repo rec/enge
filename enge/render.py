@@ -110,7 +110,10 @@ def render_midi(
                     synth.prepare(score), backend, control_interval
                 )
             prepare_synth_trace = (
-                synth.prepare_trace if backend == "native" else synth_trace.prepare
+                synth.prepare_trace
+                if backend == "native"
+                or isinstance(renderer, yamaha_instrument.OfflineYamaha)
+                else synth_trace.prepare
             )
             actions = prepare_synth_trace(score.body, events, seed=0).actions
         if (
