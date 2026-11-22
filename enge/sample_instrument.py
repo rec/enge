@@ -359,6 +359,41 @@ class OfflineSampler:
             if backend == "native"
             else {}
         )
+        declarations = definition.document.body.settings.controls
+        if backend == "native":
+            encoded = dumps(
+                {n: c.model_dump(mode="json") for n, c in declarations.items()}
+            )
+            try:
+                self.native_fade_routes = {
+                    name: fades.control_routes(encoded, definition.sample_rate)
+                    for name, fades in self.native_crossfades.items()
+                }
+            except ValueError as error:
+                raise synth.EngineError(str(error)) from error
+            self.reference_fades = {}
+            self.crossfade_controls = {
+                name: [
+                    (scope, control, Fraction(*duration) / definition.sample_rate)
+                    for control, scope, _, duration, _, _ in routes
+                ]
+                for name, routes in self.native_fade_routes.items()
+            }
+        else:
+            self.native_fade_routes = {}
+            self.reference_fades = {
+                s.name: [
+                    f for f in s.crossfades if isinstance(f, crossfade.ControlCrossfade)
+                ]
+                for s in self.slots.values()
+            }
+            self.crossfade_controls = {
+                name: [
+                    (f.scope, f.control, Fraction(str(f.smoothing_seconds)))
+                    for f in fades
+                ]
+                for name, fades in self.reference_fades.items()
+            }
         self.native_mappings = (
             {
                 s.name: _native.SamplePitchMapping(s.mapping.model_dump_json())
@@ -387,15 +422,14 @@ class OfflineSampler:
             }
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
-            definition.document.body.settings.controls,
+            declarations,
             [definition.document.body.settings, *definition.settings.values()],
             backend,
             control_interval,
             control_sources=[
-                (f.scope, f.control, Fraction(str(f.smoothing_seconds)))
-                for s in self.slots.values()
-                for f in s.crossfades
-                if isinstance(f, crossfade.ControlCrossfade)
+                source
+                for sources in self.crossfade_controls.values()
+                for source in sources
             ],
         )
 
@@ -526,14 +560,12 @@ class OfflineSampler:
         settings = self.definition.settings[slot.name]
         common = self.definition.document.body.settings
         crossfade_sources: list[int] = []
-        for fade in slot.crossfades:
-            if not isinstance(fade, crossfade.ControlCrossfade):
-                continue
-            part = None if fade.scope == "instrument" else action.part
-            trigger = action.trigger_id if fade.scope == "trigger" else None
-            index = self.controls.context(fade.scope, part, trigger)
+        for scope, _, _ in self.crossfade_controls[slot.name]:
+            part = None if scope == "instrument" else action.part
+            trigger = action.trigger_id if scope == "trigger" else None
+            index = self.controls.context(scope, part, trigger)
             if index is None:
-                index = self.controls.new_context(fade.scope, part, trigger, 0, {})
+                index = self.controls.new_context(scope, part, trigger, 0, {})
             crossfade_sources.append(index)
         self.voices[action.voice_id] = SampleVoiceSnapshot(
             voice_id=action.voice_id,
@@ -720,19 +752,17 @@ class OfflineSampler:
         self, voice: SampleVoiceSnapshot, start: int, frames: int
     ) -> np.ndarray:
         gain = np.ones(frames)
-        fades = [
-            f
-            for f in self.slots[voice.template].crossfades
-            if isinstance(f, crossfade.ControlCrossfade)
-        ]
-        for route, (fade, index) in enumerate(
-            zip(fades, voice.crossfade_sources, strict=True)
+        for route, ((_, name, smoothing), index) in enumerate(
+            zip(
+                self.crossfade_controls[voice.template],
+                voice.crossfade_sources,
+                strict=True,
+            )
         ):
             state = next(
                 r.state
                 for r in self.controls.contexts[index].ramps
-                if r.control == fade.control
-                and r.state.smoothing == Fraction(str(fade.smoothing_seconds))
+                if r.control == name and r.state.smoothing == smoothing
             )
             values = control.control_samples(
                 state, start, frames, self.definition.sample_rate
@@ -740,7 +770,9 @@ class OfflineSampler:
             gain *= (
                 self.native_crossfades[voice.template].control_weights(route, values)
                 if self.backend == "native"
-                else _crossfade_weight(fade, values)
+                else _crossfade_weight(
+                    self.reference_fades[voice.template][route], values
+                )
             )
         return gain
 
@@ -830,13 +862,7 @@ class PersistentSampler(OfflineSampler):
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         common = self.definition.document.body.settings
-        control_declarations = dumps(
-            {n: c.model_dump(mode="json") for n, c in common.controls.items()}
-        )
         for slot in self.definition.document.body.slots:
-            fade_routes = self.native_crossfades[slot.name].control_routes(
-                control_declarations, self.definition.sample_rate
-            )
             sample = self.definition.samples[slot.name]
             settings = self.definition.settings[slot.name]
             envelope = settings.envelope or common.envelope
@@ -940,7 +966,14 @@ class PersistentSampler(OfflineSampler):
                 maps.extend(prepared[18][0])
             source = self.native_sources[slot.name]
             fades = []
-            for name, scope, facts, duration, interval, shape in fade_routes:
+            for (
+                name,
+                scope,
+                facts,
+                duration,
+                interval,
+                shape,
+            ) in self.native_fade_routes[slot.name]:
                 default, scope_index, minimum = facts
                 start, end = interval
                 rows.append(

@@ -10,6 +10,31 @@ from ufor.events import ControlChange
 from ufor.samples import instrument, trace
 
 from enge import live, sample_instrument
+from enge.synth import EngineError
+
+
+def test_native_samplers_reject_nonportable_crossfade_smoothing() -> None:
+    raw = sample_score().model_dump(mode="json")
+    raw["body"]["settings"]["controls"] = {"expression": {}}
+    raw["body"]["slots"][0]["crossfades"] = [
+        {
+            "input": "control",
+            "control": "expression",
+            "start": 0,
+            "end": 1,
+            "direction": "in",
+            "smoothing_seconds": 1e-20,
+        }
+    ]
+    document = instrument.SampleInstrumentScore.model_validate(raw)
+    definition = sample_instrument.prepare(
+        document, {"asset": np.tile([0.1, 0.2], (96000, 1))}
+    )
+    sample_instrument.OfflineSampler(definition, "numpy")
+    with pytest.raises(EngineError, match="64-bit"):
+        sample_instrument.OfflineSampler(definition, "native")
+    with pytest.raises(EngineError, match="64-bit"):
+        sample_instrument.PersistentSampler(definition)
 
 
 @pytest.mark.parametrize("curve", ["linear", "equal_power"])
@@ -124,7 +149,7 @@ def test_live_layer_weights_smooth_before_mapping_and_restore(
                     "end": 0.75,
                     "direction": d,
                     "curve": curve,
-                    "smoothing_seconds": 0.125,
+                    "smoothing_seconds": 0.12503125,
                 },
                 {
                     "input": "control",
@@ -161,7 +186,7 @@ def test_live_layer_weights_smooth_before_mapping_and_restore(
     ]
     actions = trace.prepare(document.body, events, seed=0).actions
     weights = []
-    for duration, low, high in [(6000, 0.25, 0.75), (3000, 0, 1)]:
+    for duration, low, high in [(6001.5, 0.25, 0.75), (3000, 0, 1)]:
         values = np.full(48000, 0.25)
         for at, target in [(1000, 1), (4000, 0), (14000, 1)]:
             if at < 2000 and scope == "trigger":
