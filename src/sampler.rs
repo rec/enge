@@ -18,6 +18,35 @@ use ufor::samples::playback::{Mapping, ResolvedSlotPlayback};
 use ufor::samples::variation::DrawEvent;
 
 #[pyfunction]
+#[pyo3(signature = (document, *, max_records=10_000))]
+pub(crate) fn prepare_sample_keyswitches(
+    document: &str,
+    max_records: usize,
+) -> PyResult<BTreeMap<i64, (Option<String>, bool)>> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let limits = PreparationLimits::new(max_records).map_err(invalid)?;
+    let articulations =
+        codec::parse_articulations(document, Format::Json, limits).map_err(invalid)?;
+    Ok(articulations
+        .latched_keys()
+        .map_err(invalid)?
+        .iter()
+        .map(|switch| {
+            (
+                switch.key,
+                (
+                    switch
+                        .articulation
+                        .as_ref()
+                        .map(|id| id.as_str().to_owned()),
+                    switch.consume,
+                ),
+            )
+        })
+        .collect())
+}
+
+#[pyfunction]
 #[pyo3(signature = (document, decoded_shapes, *, max_records=10_000))]
 pub(crate) fn prepare_sample_assets(
     document: &str,

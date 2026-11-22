@@ -108,6 +108,43 @@ def test_native_trace_checks_performance_control_domains(kind: str) -> None:
             synth.prepare_trace(definition, [unknown_control], seed=0)
 
 
+def test_native_sample_trace_latches_and_clears_keyswitches_per_part() -> None:
+    raw = sample_score(frames=32).body.model_dump(mode="json")
+    raw["settings"]["articulations"] = {
+        "ids": ["soft", "hard"],
+        "default": "soft",
+        "keys": [
+            {"key": 24, "articulation": "hard"},
+            {"key": 25, "consume": False},
+        ],
+    }
+    slot = raw["slots"][0]
+    raw["slots"] = [
+        slot | {"name": "soft", "articulations": ["soft"]},
+        slot | {"name": "hard", "articulations": ["hard"]},
+        slot | {"name": "all"},
+    ]
+    definition = instrument.SampleInstrument.model_validate(raw)
+    events: list[PerformanceEvent] = [
+        onset(i, f"note-{i}", part=part).model_copy(update={"controls": {}, "key": key})
+        for i, (part, key) in enumerate(
+            [("left", 24), ("left", 69), ("right", 69), ("left", 25), ("left", 69)]
+        )
+    ]
+    prepared = sample_instrument.prepare_trace(definition, events, seed=0)
+    assert prepared == trace.prepare(definition, events, seed=0)
+    starts = [a for a in prepared.actions if isinstance(a, trace.VoiceStart)]
+    assert [(a.tick, a.template) for a in starts] == [
+        (1, "hard"),
+        (1, "all"),
+        (2, "soft"),
+        (2, "all"),
+        (3, "all"),
+        (4, "all"),
+    ]
+    assert prepared.snapshots[-1].selection.articulations == {"left": None}
+
+
 def test_native_sample_trace_matches_conditional_voice_starts_and_state() -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
     raw["body"]["settings"]["controls"] = {"gain": {"default": 0.5}}

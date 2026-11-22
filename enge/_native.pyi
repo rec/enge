@@ -414,6 +414,9 @@ class SampleEligibility:
     def __init__(self, document: str, *, max_records: int = 10000) -> None: ...
     def matching_slots(self, document: str) -> list[str]: ...
 
+def prepare_sample_keyswitches(
+    document: str, *, max_records: int = 10000
+) -> dict[int, tuple[str | None, bool]]: ...
 def prepare_channel_routes(
     inputs: list[str],
     outputs: list[str],

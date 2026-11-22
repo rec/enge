@@ -258,6 +258,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<sampler::SamplePitchMapping>()?;
     module.add_class::<sampler::SampleCrossfades>()?;
     module.add_class::<sampler::SampleEligibility>()?;
+    module.add_function(wrap_pyfunction!(
+        sampler::prepare_sample_keyswitches,
+        module
+    )?)?;
     module.add_class::<sampler::PreparedSlotPlayback>()?;
     module.add_class::<sampler::SampleTraversal>()?;
     module.add_function(wrap_pyfunction!(sampler::advance_sample_selection, module)?)?;

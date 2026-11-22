@@ -146,6 +146,13 @@ def prepare_trace(
     def matching_slots(context: trace.EligibilityContext) -> list[str]:
         return eligibility.matching_slots(dumps(context))
 
+    def keyswitches(
+        declarations: selection.Articulations,
+    ) -> dict[int, tuple[str | None, bool]]:
+        return _native.prepare_sample_keyswitches(
+            declarations.model_dump_json(), max_records=max_records
+        )
+
     return trace.prepare(
         definition,
         events,
@@ -159,6 +166,7 @@ def prepare_trace(
         draw_random_range=_native.draw_sample_range,
         resolve_variation=_resolve_variation,
         validate_event=prepare_event_validator(definition.settings.controls),
+        prepare_keyswitches=keyswitches,
     )
 
 
