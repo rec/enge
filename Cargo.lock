@@ -722,7 +722,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "ufor"
 version = "0.1.0"
-source = "git+ssh://git@github.com/rec/ufor.git?rev=9079622#9079622b8a170687a3bdd008d90b7210987fbe0f"
+source = "git+ssh://git@github.com/rec/ufor.git?rev=83b16c3#83b16c372dae32827de6c8f192139e18bfa232cf"
 dependencies = [
  "serde",
  "serde_json",
