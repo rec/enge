@@ -16,7 +16,7 @@ use ufor::identifier::Identifier;
 use ufor::modulation::{Interpolation, Operation, SourceScope, Target};
 use ufor::samples::processing::{
     Binding, EventKind, FilterBoundary, FilterResponse, GeneratorBinding, ReleaseTiming,
-    SoundSettings, TargetMinimum, TargetResolution,
+    SoundSettings, TargetResolution,
 };
 use ufor::voice_start::envelfo_stream_key;
 
@@ -53,6 +53,7 @@ pub(crate) fn prepare_modulation(
         return Err(invalid("Invalid modulation host metadata"));
     }
     let limits = PreparationLimits::new(max_records).map_err(invalid)?;
+    let engine_target = |target: &Target| fm.and_then(|graph| graph.graph.resolve_target(target));
     let mut records = fm.map_or(0, |graph| graph.records);
     if let Some(graph) = fm {
         if graph.rate != sample_rate
@@ -86,7 +87,9 @@ pub(crate) fn prepare_modulation(
         if length > codec::MAX_SCORE_CHARACTERS - fm.map_or(0, |graph| graph.characters) {
             return Err(invalid("Preparation exceeds document character limit"));
         }
-        let settings = codec::parse_sound_settings(text, Format::Json, limits).map_err(invalid)?;
+        let settings =
+            codec::parse_sound_settings_with_targets(text, Format::Json, limits, engine_target)
+                .map_err(invalid)?;
         records = records
             .checked_add(
                 envelfo::preparation_records(
@@ -148,17 +151,12 @@ pub(crate) fn prepare_modulation(
                 let settings = sound
                     .as_ref()
                     .ok_or_else(|| invalid("Missing SoundSettings for shared modulation target"))?;
-                let facts =
-                    if let Some(facts) = fm.and_then(|graph| graph.graph.resolve_target(&target)) {
-                        facts
-                    } else {
-                        let TargetResolution::Resolved(facts) =
-                            settings.resolve_target(&target).map_err(invalid)?
-                        else {
-                            return Err(invalid("Unresolved SoundSettings target"));
-                        };
-                        facts
-                    };
+                let TargetResolution::Resolved(facts) = settings
+                    .resolve_target_with(&target, engine_target)
+                    .map_err(invalid)?
+                else {
+                    return Err(invalid("Unresolved SoundSettings target"));
+                };
                 shared[*index] = Some(facts);
                 if *index >= first_filter && parameter == "cutoff_hz" {
                     facts.default_value.clamp(*minimum, *maximum)
@@ -181,20 +179,7 @@ pub(crate) fn prepare_modulation(
             .get(parameter.target())
             .ok_or_else(|| invalid("Persistent runtime has an unsupported modulation target"))?;
         if let Some(facts) = shared[*index] {
-            if parameter.unit() != facts.unit || parameter.default_value() != facts.default_value {
-                return Err(invalid(
-                    "Modulation unit and default must match the authored setting",
-                ));
-            }
-            if match facts.minimum {
-                TargetMinimum::Unrestricted => false,
-                TargetMinimum::Nonnegative => parameter.minimum() < 0.0,
-                TargetMinimum::Positive => parameter.minimum() <= 0.0,
-            } {
-                return Err(invalid(
-                    "Modulation domain conflicts with the authored setting",
-                ));
-            }
+            facts.validate_parameter(parameter).map_err(invalid)?;
         }
         values[3 * index..3 * index + 3].copy_from_slice(&[
             parameter.default_value(),

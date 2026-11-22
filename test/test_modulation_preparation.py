@@ -295,14 +295,17 @@ def test_fm_targets_use_graph_defaults_and_keep_filter_slots_after_the_carrier(
         ("processing", "amplitude", 0, None, 0, 2),
         ("processing", "tuning_cents", 1, None, -120000, 120000),
     ]
+    settings = json.dumps(
+        json.loads(SOUND_SETTINGS) | {"modulation": json.loads(context)["modulation"]}
+    )
     if default != 2:
         with pytest.raises(ValueError, match="unit and default must match"):
             _native.prepare_modulation(
-                48000, context, [], slots, sound_settings=SOUND_SETTINGS, fm=graph
+                48000, context, [], slots, sound_settings=settings, fm=graph
             )
         return
     prepared = _native.prepare_modulation(
-        48000, context, [], slots, sound_settings=SOUND_SETTINGS, fm=graph
+        48000, context, [], slots, sound_settings=settings, fm=graph
     )
     assert prepared[2][::3] == [1, 25, 2, 0, 1, 0, 3, 0.75, 12000, 2, 200, 1]
     assert prepared[22][6:9] == [
