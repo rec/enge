@@ -437,8 +437,10 @@ and LFO declarations. Enge owns playback limits, chip emulation, and
 renderer state.
 
 Sampler trace and render preparation send the authored sampler body to Rust
-uFor for eligibility and slot-group inheritance. The prepared slot settings
-retain authored category order, selection opt-outs, and explicit clears.
+uFor for eligibility, slot-group inheritance, and playback. Rust resolves
+playback defaults and validates the trigger and referenced loop together.
+The prepared slot settings retain authored category order, selection opt-outs,
+and explicit clears.
 Sampler render preparation sends the complete authored score for inventory
 validation, including the public ports and slice-to-asset channel routes.
 Enge supplies the decoded shapes. Rust checks them against the referenced

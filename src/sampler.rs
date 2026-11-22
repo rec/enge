@@ -254,6 +254,13 @@ impl PreparedSampleSlots {
             })
             .collect()
     }
+
+    fn playback(&self, slot: &str) -> PyResult<PreparedSlotPlayback> {
+        self.0
+            .playback(slot)
+            .map(PreparedSlotPlayback)
+            .ok_or_else(|| PyValueError::new_err(format!("Unknown sample slot: {slot}")))
+    }
 }
 
 #[pyclass(frozen)]
@@ -355,14 +362,6 @@ pub(crate) struct PreparedSlotPlayback(ResolvedSlotPlayback);
 
 #[pymethods]
 impl PreparedSlotPlayback {
-    #[new]
-    fn new(document: &str, defaults: &str) -> PyResult<Self> {
-        let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
-        let defaults = codec::parse_sample_playback(defaults, Format::Json).map_err(invalid)?;
-        let slot = codec::parse_slot_playback(document, Format::Json).map_err(invalid)?;
-        slot.resolve(defaults).map(Self).map_err(invalid)
-    }
-
     fn resolved(&self) -> PyResult<(String, u64, f64)> {
         let playback = serde_json::to_string(&self.0.playback)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;

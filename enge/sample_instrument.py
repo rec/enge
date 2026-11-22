@@ -244,15 +244,13 @@ def prepare(
     filters.parameters(score.body.settings.processing.filters, sample_rate, 1)
     samples: dict[str, sampler.PreparedSample] = {}
     slot_playback: dict[str, _native.PreparedSlotPlayback] = {}
-    default_playback = score.body.settings.playback.model_dump_json()
     settings: dict[str, processing.SoundSettings] = {}
     routes: dict[str, list[list[float]]] = {}
     equalizer: dict[str, list[processing.BiquadCoefficients]] = {}
-    resolved_slots = _resolve_slots(
-        _native.PreparedSampleSlots(
-            score.body.model_dump_json(), max_records=max_records
-        )
+    prepared_slots = _native.PreparedSampleSlots(
+        score.body.model_dump_json(), max_records=max_records
     )
+    resolved_slots = _resolve_slots(prepared_slots)
     instrument_processing = score.body.settings.processing
     common_bands = [
         b.biquad_coefficients(sample_rate) for b in instrument_processing.equalizer
@@ -280,9 +278,7 @@ def prepare(
                 instrument_processing.stereo_balance + slot_processing.stereo_balance,
             ),
         )
-        traversal = _native.PreparedSlotPlayback(
-            slot.playback.model_dump_json(), default_playback
-        )
+        traversal = prepared_slots.playback(slot.name)
         slot_playback[slot.name] = traversal
         resolved, additional_plays, end_fade_seconds = traversal.resolved()
         samples[slot.name] = sampler.PreparedSample(
