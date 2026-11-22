@@ -58,26 +58,7 @@ pub(crate) fn prepare_hold_frames(seconds: &str, sample_rate: i64) -> PyResult<(
         .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
-#[pyclass(frozen, skip_from_py_object)]
-pub(crate) struct PreparedEventValidator(BTreeMap<Identifier, ControlDeclaration>);
-
-#[pymethods]
-impl PreparedEventValidator {
-    #[new]
-    fn new(controls: &str) -> PyResult<Self> {
-        let value = codec::parse_value(controls, Format::Json)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        serde_json::from_value(value)
-            .map(Self)
-            .map_err(|error| PyValueError::new_err(error.to_string()))
-    }
-
-    fn validate(&self, payload: &str) -> PyResult<()> {
-        validate_event_payload(payload, &self.0)
-    }
-}
-
-fn validate_event_payload(
+pub(crate) fn validate_event_payload(
     payload: &str,
     controls: &BTreeMap<Identifier, ControlDeclaration>,
 ) -> PyResult<()> {

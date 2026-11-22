@@ -18,35 +18,6 @@ use ufor::samples::slots::PreparedSlots;
 use ufor::samples::variation::DrawEvent;
 
 #[pyfunction]
-#[pyo3(signature = (document, *, max_records=10_000))]
-pub(crate) fn prepare_sample_keyswitches(
-    document: &str,
-    max_records: usize,
-) -> PyResult<BTreeMap<i64, (Option<String>, bool)>> {
-    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
-    let limits = PreparationLimits::new(max_records).map_err(invalid)?;
-    let articulations =
-        codec::parse_articulations(document, Format::Json, limits).map_err(invalid)?;
-    Ok(articulations
-        .latched_keys()
-        .map_err(invalid)?
-        .iter()
-        .map(|switch| {
-            (
-                switch.key,
-                (
-                    switch
-                        .articulation
-                        .as_ref()
-                        .map(|id| id.as_str().to_owned()),
-                    switch.consume,
-                ),
-            )
-        })
-        .collect())
-}
-
-#[pyfunction]
 #[pyo3(signature = (document, decoded_shapes, *, max_records=10_000))]
 pub(crate) fn prepare_sample_assets(
     document: &str,
@@ -240,6 +211,28 @@ impl PreparedSampleSlots {
             .map_err(invalid)?
             .into_iter()
             .map(|name| name.as_str().to_owned())
+            .collect())
+    }
+
+    fn validate_event(&self, payload: &str) -> PyResult<()> {
+        crate::performance::validate_event_payload(payload, self.0.controls())
+    }
+
+    #[getter]
+    fn sustain_pressed(&self) -> bool {
+        self.0.sustain_pressed()
+    }
+
+    fn keyswitches(&self) -> PyResult<BTreeMap<i64, (Option<&str>, bool)>> {
+        Ok(self
+            .0
+            .latched_keys()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?
+            .iter()
+            .map(|switch| {
+                let articulation = switch.articulation.as_ref().map(Identifier::as_str);
+                (switch.key, (articulation, switch.consume))
+            })
             .collect())
     }
 

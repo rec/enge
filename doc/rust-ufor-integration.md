@@ -439,6 +439,9 @@ renderer state.
 Sampler trace and render preparation send the authored sampler body to Rust
 uFor for eligibility, slot-group inheritance, and playback. Rust resolves
 playback defaults and validates the trigger and referenced loop together.
+It also checks selection, linked take, articulation, control, and voice
+group references. Trace preparation uses the prepared control domains,
+sustain state, and keyswitches from the same sampler declaration.
 The prepared slot settings retain authored category order, selection opt-outs,
 and explicit clears.
 Sampler render preparation sends the complete authored score for inventory

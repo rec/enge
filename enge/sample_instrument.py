@@ -35,7 +35,6 @@ from . import (
     voice_admission,
     voice_release,
 )
-from .performance import prepare_event_validator
 
 
 class PreparedSampler(Model, frozen=True):
@@ -134,12 +133,8 @@ def prepare_trace(
     def matching_slots(context: trace.EligibilityContext) -> list[str]:
         return slots.matching_slots(dumps(context))
 
-    def keyswitches(
-        declarations: selection.Articulations,
-    ) -> dict[int, tuple[str | None, bool]]:
-        return _native.prepare_sample_keyswitches(
-            declarations.model_dump_json(), max_records=max_records
-        )
+    def validate_event(event: PerformanceEvent) -> None:
+        slots.validate_event(event.model_dump_json(exclude={"tick", "ordinal"}))
 
     return trace.prepare(
         definition,
@@ -153,9 +148,9 @@ def prepare_trace(
         slot_settings=lambda _: _resolve_slots(slots),
         draw_random_range=_native.draw_sample_range,
         resolve_variation=_resolve_variation,
-        validate_event=prepare_event_validator(definition.settings.controls),
-        prepare_keyswitches=keyswitches,
-        prepare_sustain=voice_release.native_initially_pressed,
+        validate_event=validate_event,
+        prepare_keyswitches=lambda _: slots.keyswitches(),
+        prepare_sustain=lambda _sustain, _control: slots.sustain_pressed,
     )
 
 
