@@ -100,6 +100,13 @@ def test_native_synth_family_trace_matches_layers_and_release_mapping(
     ]
 
 
+def test_native_trace_counts_voice_routes_in_preparation_budget() -> None:
+    score, _ = Patch(engine="synth").prepare_score(48000)
+    assert not isinstance(score, instrument.SampleInstrumentScore)
+    with pytest.raises(ValueError, match="synth voice template records"):
+        synth.prepare_trace(score.body, [], seed=0, max_records=2)
+
+
 def test_native_trace_orders_quantized_commands_and_cancels_pending_seek() -> None:
     score, _ = Patch(engine="synth").prepare_score(48000)
     assert not isinstance(score, instrument.SampleInstrumentScore)
