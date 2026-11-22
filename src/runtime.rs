@@ -16,7 +16,7 @@ use std::io::{Cursor, Write};
 use ufor::envelfo::Waveform;
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::modulation::{Interpolation, Point};
-use ufor::oscillator::sample_at_angle;
+use ufor::oscillator::{advance_phase, sample_at_angle};
 use ufor::samples::processing::FilterBoundary;
 use ufor::synth_pitch;
 
@@ -1048,14 +1048,18 @@ impl SynthRuntime {
                         + self.parameter(voice, 6)? * modulator)
                         .sin();
                     self.previous_modulators[voice] = modulator;
-                    let increment = mod_frequency - self.mod_errors[voice];
-                    let total = self.mod_phases[voice] + increment;
-                    self.mod_errors[voice] = (total - self.mod_phases[voice]) - increment;
-                    self.mod_phases[voice] = total.rem_euclid(self.rate);
-                    let increment = carrier_frequency - self.errors[voice];
-                    let total = self.phases[voice] + increment;
-                    self.errors[voice] = (total - self.phases[voice]) - increment;
-                    self.phases[voice] = total.rem_euclid(self.rate);
+                    (self.mod_phases[voice], self.mod_errors[voice]) = advance_phase(
+                        self.mod_phases[voice],
+                        self.mod_errors[voice],
+                        mod_frequency,
+                        self.rate,
+                    );
+                    (self.phases[voice], self.errors[voice]) = advance_phase(
+                        self.phases[voice],
+                        self.errors[voice],
+                        carrier_frequency,
+                        self.rate,
+                    );
                     carrier
                 } else if self.source_kind == 3 {
                     let operators = self.graph_operators.len();
@@ -1112,10 +1116,12 @@ impl SynthRuntime {
                             NativeError::Message("Invalid persistent FM operator frequency")
                         })?;
                         let index = operator_base + operator;
-                        let increment = frequency - self.graph_errors[index];
-                        let total = self.graph_phases[index] + increment;
-                        self.graph_errors[index] = (total - self.graph_phases[index]) - increment;
-                        self.graph_phases[index] = total.rem_euclid(self.rate);
+                        (self.graph_phases[index], self.graph_errors[index]) = advance_phase(
+                            self.graph_phases[index],
+                            self.graph_errors[index],
+                            frequency,
+                            self.rate,
+                        );
                     }
                     carrier
                 } else {
@@ -1141,10 +1147,8 @@ impl SynthRuntime {
                             .map_err(|_| {
                                 NativeError::Message("Invalid persistent oscillator frequency")
                             })?;
-                    let increment = pitch - self.errors[voice];
-                    let total = self.phases[voice] + increment;
-                    self.errors[voice] = (total - self.phases[voice]) - increment;
-                    self.phases[voice] = total.rem_euclid(self.rate);
+                    (self.phases[voice], self.errors[voice]) =
+                        advance_phase(self.phases[voice], self.errors[voice], pitch, self.rate);
                 }
                 for channel in 0..channels {
                     output[[frame, channel]] += sample * self.routes[[voice, channel]];

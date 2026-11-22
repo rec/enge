@@ -440,6 +440,8 @@ bridge keeps whole-frame origins as signed 64-bit integers.
 The synth oscillator and FM graph renderers share uFor's binary64 waveform
 evaluation in both block and persistent rendering. FM graph operators use
 half duty for square and triangle waves.
+Native synth and FM renderers also use uFor's compensated phase advancement.
+Snapshots carry the wrapped position and the compensation in sample-rate units.
 Oscillator preparation passed 198 focused macOS tests with zero heap
 operations inside 2,119 successful and six failed callbacks. The generated
 report is `build/rust-ufor-oscillator-audit.xml`.
@@ -447,6 +449,9 @@ The shared waveform evaluator passed 249 focused render tests and an 80-test
 live audit on macOS. The live audit recorded zero Rust heap operations in
 1,875 successful and six failed callbacks. Its generated report is
 `build/rust-ufor-waveform-audit.xml`.
+Compensated phase advancement passed 350 render and live tests on macOS
+with zero Rust heap operations inside 1,875 successful and six failed
+callbacks. The generated report is `build/rust-ufor-phase-advance-audit.xml`.
 
 Native offline and persistent oscillator and FM rendering use Rust uFor
 to apply routed tuning to the resolved onset `pitch_hz`. FM applies the

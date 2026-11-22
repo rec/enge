@@ -25,7 +25,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
 use ufor::envelfo::Waveform;
-use ufor::oscillator::sample_at_angle;
+use ufor::oscillator::{advance_phase, sample_at_angle};
 
 type RenderedBlock<'py> = (
     Bound<'py, PyArray2<f64>>,
@@ -177,10 +177,12 @@ fn render<'py>(
             for s in 0..sources {
                 let angle = TAU * (states[[s, 0]] / rate);
                 waves[s] = sample_at_angle(waveform, angle, duty);
-                let increment = frequencies[i * sources + s] - states[[s, 1]];
-                let total = states[[s, 0]] + increment;
-                states[[s, 1]] = (total - states[[s, 0]]) - increment;
-                states[[s, 0]] = total.rem_euclid(rate);
+                (states[[s, 0]], states[[s, 1]]) = advance_phase(
+                    states[[s, 0]],
+                    states[[s, 1]],
+                    frequencies[i * sources + s],
+                    rate,
+                );
             }
             let gain = (amplitude[i] * prepared_gain) * gains[i];
             if filter_after_amplitude {

@@ -7,7 +7,7 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
-use ufor::oscillator::sample_at_angle;
+use ufor::oscillator::{advance_phase, sample_at_angle};
 
 type RenderedFM<'py> = (
     Bound<'py, PyArray2<f64>>,
@@ -85,10 +85,8 @@ pub fn render_fm<'py>(
                 * (TAU * phases[[1, 0]] / rate + parameters[[i, 2]] * value).sin();
             let mut source = [sample];
             for j in 0..2 {
-                let increment = parameters[[i, j]] - phases[[j, 1]];
-                let total = phases[[j, 0]] + increment;
-                phases[[j, 1]] = (total - phases[[j, 0]]) - increment;
-                phases[[j, 0]] = total.rem_euclid(rate);
+                (phases[[j, 0]], phases[[j, 1]]) =
+                    advance_phase(phases[[j, 0]], phases[[j, 1]], parameters[[i, j]], rate);
             }
             previous = value;
             filters.process(i, &mut source)?;
@@ -236,10 +234,12 @@ pub fn render_graph_fm<'py>(
                 carrier_sample
             };
             for operator in 0..operators {
-                let increment = frequencies[[i, operator]] - phases[[operator, 1]];
-                let total = phases[[operator, 0]] + increment;
-                phases[[operator, 1]] = (total - phases[[operator, 0]]) - increment;
-                phases[[operator, 0]] = total.rem_euclid(rate);
+                (phases[[operator, 0]], phases[[operator, 1]]) = advance_phase(
+                    phases[[operator, 0]],
+                    phases[[operator, 1]],
+                    frequencies[[i, operator]],
+                    rate,
+                );
             }
             history = edges
                 .rows()
