@@ -12,7 +12,7 @@ use ufor::number::Rational;
 use ufor::oscillator::Oscillator;
 use ufor::performance_binding::{ControlValue, HeldNotes, MidiBindings, RepeatedKeyRelease};
 use ufor::samples::controls::ControlDeclaration;
-use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
+use ufor::samples::playback::{self, sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
 use ufor::synth::SynthInstrument;
 use ufor::synth_pitch;
@@ -290,15 +290,28 @@ pub(crate) fn sample_steps<'py>(
 }
 
 #[pyfunction]
+pub(crate) fn prepare_sample_tuning_bounds(layers: Vec<(f64, String)>) -> PyResult<Vec<f64>> {
+    layers
+        .iter()
+        .map(|(static_cents, document)| {
+            let modulation = codec::parse_modulation(document, Format::Json)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            Ok(playback::maximum_tuning_cents(
+                *static_cents,
+                modulation.parameters(),
+            ))
+        })
+        .collect()
+}
+
+#[pyfunction]
 pub(crate) fn maximum_sample_step(
     base: f64,
     native_rate: f64,
     common_cents: f64,
     layer_cents: f64,
 ) -> f64 {
-    tuned_pitch_ratio(base, common_cents, layer_cents)
-        .and_then(|ratio| sample_step(ratio, native_rate))
-        .unwrap_or(f64::INFINITY)
+    playback::maximum_sample_step(base, native_rate, common_cents, layer_cents)
 }
 
 #[pyclass(frozen, skip_from_py_object)]

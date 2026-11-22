@@ -1138,6 +1138,7 @@ def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
     backend: Literal["numpy", "native"],
     tmp_path: Path,
     loop: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw = sample_score(frames=2).model_dump(mode="json")
     active = 4 if loop == "finite" else 2
@@ -1175,6 +1176,14 @@ def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
     ).actions
     expected = np.zeros((48000, 2))
     expected[:active] = (1 + np.arange(active) / (2 * active))[:, None] * [1, 1.25]
+    if backend == "native":
+
+        def unexpected_reference_bound(*args: object) -> float:
+            pytest.fail("Native sampler looked up tuning bounds in Python")
+
+        monkeypatch.setattr(
+            sample_instrument, "_maximum_tuning", unexpected_reference_bound
+        )
     renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
     actual = renderer.advance(actions, 0, 48000)
     check_audio(tmp_path / "exhausted-control-ramp.wav", actual, expected)

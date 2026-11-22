@@ -313,8 +313,9 @@ is `build/rust-ufor-sample-read-audit.xml`.
 
 Offline native control batching uses the same cursor to bound the active
 prefix from the maximum tuning, remaining finite traversal, and any latched
-end fade. The host splits the request at a pending release before calculating
-the bound. The NumPy reference applies the same rule. This keeps control
+end fade. Rust uFor reads and caches the common and slot tuning bounds during
+renderer preparation. The host splits the request at a pending release before
+calculating the bound. The NumPy reference applies the same rule. This keeps control
 evaluation inside the audible lifetime of a finite loop.
 The batch bound passed 713 focused macOS tests with zero Rust heap operations
 in 6,507 successful and seven failed callbacks. The generated report is

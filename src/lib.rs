@@ -246,6 +246,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(performance::sample_steps, module)?)?;
     module.add_function(wrap_pyfunction!(performance::maximum_sample_step, module)?)?;
     module.add_function(wrap_pyfunction!(
+        performance::prepare_sample_tuning_bounds,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         performance::prepare_channel_routes,
         module
     )?)?;

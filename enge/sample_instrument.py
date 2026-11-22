@@ -368,6 +368,24 @@ class OfflineSampler:
             if backend == "native"
             else {}
         )
+        self.native_tuning_bounds: dict[str, tuple[float, float]] = {}
+        if backend == "native":
+            common, *slots = _native.prepare_sample_tuning_bounds(
+                [
+                    (
+                        s.processing.tuning_cents,
+                        s.modulation.model_dump_json(include={"parameters"}),
+                    )
+                    for s in (
+                        definition.document.body.settings,
+                        *definition.settings.values(),
+                    )
+                ]
+            )
+            self.native_tuning_bounds = {
+                name: (common, slot)
+                for name, slot in zip(definition.settings, slots, strict=True)
+            }
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
             definition.document.body.settings.controls,
@@ -650,13 +668,14 @@ class OfflineSampler:
             settings = self.definition.settings[voice.template]
             sample = self.definition.samples[voice.template]
             pitch_ratio = voice.renderer.definition.pitch_ratio
-            common_maximum = _maximum_tuning(common)
-            slot_maximum = _maximum_tuning(settings)
             if self.backend == "native":
+                common_maximum, slot_maximum = self.native_tuning_bounds[voice.template]
                 maximum_step = _native.maximum_sample_step(
                     pitch_ratio, sample.native_rate, common_maximum, slot_maximum
                 )
             else:
+                common_maximum = _maximum_tuning(common)
+                slot_maximum = _maximum_tuning(settings)
                 with np.errstate(over="ignore", invalid="ignore"):
                     maximum_step = float(
                         pitch_ratio
