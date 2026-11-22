@@ -4,7 +4,7 @@ from collections.abc import Callable
 from json import dumps
 from typing import NoReturn
 
-from meedee import messages
+from middy import messages
 from ufor import events, performance_binding
 from ufor.base import identifier
 from ufor.samples.controls import ControlDeclaration
@@ -101,7 +101,7 @@ class MidiConverter:
         if self._notes.stopped():
             raise RuntimeError("MIDI converter requires explicit restart")
         if not isinstance(message, messages.Message):
-            raise TypeError("message must be a meedee Message")
+            raise TypeError("message must be a middy Message")
         time = events.Event(tick=tick, ordinal=ordinal)
         order = time.tick, time.ordinal
         if self._last is not None and order <= self._last:
@@ -109,23 +109,27 @@ class MidiConverter:
         self._last = order
         if isinstance(message, messages.SystemReset):
             self._fail("MIDI System Reset invalidates performance state")
-        if not isinstance(
-            message,
-            messages.NoteOn
-            | messages.NoteOff
-            | messages.ControlChange
-            | messages.PitchBend,
+        if isinstance(message, _CHANNEL_MESSAGES) and (
+            message.version != 1
+            or message.group is not None
+            or isinstance(message, messages.ControlChange)
+            and message.resolution != 7
         ):
+            self._fail("MIDI converter requires a primitive MIDI 1 message")
+        if not isinstance(message, _PERFORMANCE_MESSAGES):
             if isinstance(message, _IGNORED_MESSAGES):
                 return []
             self._fail("MIDI converter requires a primitive MIDI 1 message")
+        channel = message.channel
+        if channel is None:
+            self._fail("MIDI converter requires a channel on channel messages")
         if isinstance(message, messages.ControlChange | messages.PitchBend):
             mapped = (
                 self._bindings.control_change(
-                    message.channel, message.controller, message.value
+                    channel, message.controller, message.value
                 )
                 if isinstance(message, messages.ControlChange)
-                else self._bindings.pitch_bend(message.channel, message.value)
+                else self._bindings.pitch_bend(channel, message.value)
             )
             if mapped is None:
                 return []
@@ -140,13 +144,13 @@ class MidiConverter:
                     value=value,
                 )
             ]
-        route = self._bindings.note_route(message.channel)
+        route = self._bindings.note_route(channel)
         if route is None:
             return []
         part, oldest = route
         if isinstance(message, messages.NoteOn) and message.velocity:
             trigger_id, velocity, pitch = self._notes.note_on(
-                message.channel,
+                channel,
                 message.note,
                 message.velocity,
                 self._bindings,
@@ -167,7 +171,7 @@ class MidiConverter:
                 tick=time.tick,
                 ordinal=time.ordinal,
                 part=part,
-                trigger_id=self._notes.note_off(message.channel, message.note, oldest),
+                trigger_id=self._notes.note_off(channel, message.note, oldest),
             )
         ]
 
@@ -210,10 +214,23 @@ def converter_parts(converters: list[MidiConverter]) -> list[str]:
     return parts
 
 
-_IGNORED_MESSAGES = (
+_IGNORED_CHANNEL_MESSAGES = (
     messages.PolyPressure,
     messages.ChannelPressure,
     messages.ProgramChange,
+)
+
+_PERFORMANCE_MESSAGES = (
+    messages.NoteOn,
+    messages.NoteOff,
+    messages.ControlChange,
+    messages.PitchBend,
+)
+
+_CHANNEL_MESSAGES = (*_PERFORMANCE_MESSAGES, *_IGNORED_CHANNEL_MESSAGES)
+
+_IGNORED_MESSAGES = (
+    *_IGNORED_CHANNEL_MESSAGES,
     messages.SysEx,
     messages.QuarterFrame,
     messages.SongPosition,

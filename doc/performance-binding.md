@@ -1,7 +1,7 @@
 # MIDI performance binding conversion
 
 `enge.performance.MidiConverter` is a caller-driven MIDI 1 adapter. It accepts
-decoded meedee messages and emits uFor `Trigger`, `Release` and `ControlChange`
+decoded middy messages and emits uFor `Trigger`, `Release` and `ControlChange`
 values. It opens no files, devices or audio streams and starts no threads.
 `enge.midi.read_midi()` supplies file timing to configured converters. Live
 transport and audio-clock integration remain host responsibilities.
@@ -113,7 +113,7 @@ rational arithmetic and rounds absolute times to frames, ties to even. Metadata
 and track ends retain their timing effects, including trailing silence. SysEx
 and escape file records are rejected: an escape record could contain arbitrary
 MIDI traffic rather than a decoded SysEx message. Type 2 and SMPTE remain
-unsupported by this adapter. The existing meedee reader defaults apply: 1 MiB
+unsupported by this adapter. The middy reader defaults apply: 1 MiB
 per record, 128 tracks and 8 MiB of merge lookahead.
 
 Every primitive message is fed to each converter. Its binding chooses notes,
@@ -148,12 +148,12 @@ noise renderers retain their existing supported binding profile.
 ## Caller-polled live input
 
 `enge.midi.LiveInput(connection, converters=[...], message_limit=128)` wraps a
-caller-owned, queue-mode MIDI 1.0 `meedee.midi.TypedInputConnection`. UMP is
-unsupported by this converter and fails explicitly. Configure fresh or
+caller-owned, queue-mode `middy.midi.Input` configured for MIDI 1.0 bytes and
+decoded messages. The converter rejects UMP. Configure fresh or
 explicitly restarted converters with distinct source names and destination parts,
 as for file import. Use one adapter per independent input connection. The host
-opens and closes the connection, selects meedee's isolation mode and must be its
-only queue consumer. Do not share its converters with another active adapter or
+opens and closes the connection, chooses whether middy runs in a subprocess,
+and must be its only queue consumer. Do not share converters with another adapter or
 file import. The adapter adds no queue, thread or audio-device ownership.
 
 Call `drain(frame=destination_frame)` on one host control thread. It polls at most

@@ -127,10 +127,10 @@ storage bounds do not establish device deadlines or a complete native audio host
 
 ## Ownership outside enge
 
-uFor owns portable definitions and preparation; reccy owns shared unit parsing;
-enveLFO owns modulation execution; meedee owns MIDI protocols and transport;
-safaz owns SFZ conversion; arpeg owns arpeggiator scheduling. enge retains the
-audio realization of their contracts. Hosts own devices and application policy.
+uFor owns portable definitions and preparation. Reccy owns shared unit parsing.
+EnveLFO owns modulation execution, and middy owns MIDI protocols and transport.
+Safaz owns SFZ conversion, and arpeg owns arpeggiator scheduling. Enge renders
+audio from these contracts. Hosts own devices and application policy.
 
 ## Additional work beyond the prompt
 

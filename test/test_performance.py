@@ -1,7 +1,7 @@
 from typing import Literal
 
 import pytest
-from meedee import messages, ump
+from middy import messages, ump
 from test_sample_instrument import sample_score
 from test_synth import score
 from ufor import events, performance_binding
@@ -442,7 +442,11 @@ def test_out_of_order_input_invalidates_pairing(converter: MidiConverter) -> Non
 
 @pytest.mark.parametrize(
     "message",
-    [ump.Noop(), messages.ControlChange14(channel=1, controller=1, value=100)],
+    [
+        ump.Noop(),
+        messages.ControlChange(channel=1, controller=1, value=100, resolution=14),
+        messages.NoteOn(channel=1, note=60, velocity=100, version=2),
+    ],
 )
 def test_nonprimitive_or_ump_messages_fail_explicitly(
     converter: MidiConverter, message: messages.Message

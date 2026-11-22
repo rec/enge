@@ -11,7 +11,7 @@ requires-python = ">=3.13"
 classifiers = ["Programming Language :: Python :: 3", "Programming Language :: Python :: 3.13", "Programming Language :: Python :: 3.14","Programming Language :: Python :: 3.15"]
 dependencies = [
     "envelfo",
-    "meedee",
+    "middy",
     "numpy>=2.4.1",
     "pint>=0.25.3",
     "pydantic>=2.13.4",
@@ -33,7 +33,7 @@ testpaths = ["test"]
 addopts = "-n auto --dist=worksteal"
 
 [tool.uv.sources]
-meedee = { git = "https://github.com/rec/meedee", branch = "main" }
+middy = { git = "https://github.com/rec/middy.git", rev = "50049c0c02f137fc312c324cee8271364f4a0e61" }
 envelfo = { git = "https://github.com/rec/envelfo.git", rev = "c287217adc29f9a6c1580b03bdb4267286328f14" }
 ufor = { git = "https://github.com/rec/ufor.git", rev = "6491c28807dd3d8b5dd81629d4f2fe08c59482fe" }
 reccy = { git = "https://github.com/rec/reccy.git", branch = "main" }

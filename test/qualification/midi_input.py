@@ -10,7 +10,7 @@ from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
-from meedee import midi
+from middy import midi
 from ufor import performance_binding
 from ufor.events import ControlChange, PerformanceEvent, Release, Trigger
 
@@ -26,8 +26,9 @@ def test_live_input(isolated: bool, request: pytest.FixtureRequest) -> None:
         exercise_input(isolated)
         return
     root = Path(__file__).resolve().parents[2]
+    # Keep the worktree out of the import path so the child tests the installed build.
     child = Popen(
-        [executable, "-m", "pytest", "-q", "-s", "-n", "0", request.node.nodeid],
+        [executable, "-P", "-m", "pytest", "-q", "-s", "-n", "0", request.node.nodeid],
         cwd=root,
         env={**environ, "ENGE_LIVE_INPUT_CHILD": "1"},
         stdout=PIPE,
@@ -67,8 +68,8 @@ def exercise_input(isolated: bool) -> None:
     )
     prefix = f"enge-live-{uuid4().hex}"
     with ExitStack() as stack:
-        source = stack.enter_context(midi.Output(isolated=False).create_virtual(prefix))
-        client = midi.TypedInput(isolated=isolated)
+        source = stack.enter_context(midi.Output().create_virtual(prefix))
+        client = midi.Input(run_in_subprocess=isolated)
         port = next(p for p in client.ports() if p.name == prefix)
         connection = stack.enter_context(client.connect(port))
         converter = MidiConverter(source="keyboard", binding=binding, instrument=score)
@@ -98,7 +99,7 @@ def exercise_input(isolated: bool) -> None:
 
         # A too-small raw receive budget drops the final packet. No later MIDI
         # packet should be needed for the host to observe that loss.
-        quiet_client = midi.TypedInput(isolated=isolated, receive_byte_limit=2)
+        quiet_client = midi.Input(run_in_subprocess=isolated, receive_byte_limit=2)
         quiet_port = next(p for p in quiet_client.ports() if p.name == prefix)
         quiet = stack.enter_context(quiet_client.connect(quiet_port))
         quiet_converter = MidiConverter(

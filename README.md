@@ -375,12 +375,12 @@ instructions. Audio regressions retain at least one second at 48 kHz.
 
 Linux, Windows, and macOS use the same Python and Rust engine code. Source builds
 need Python 3.13 or newer, Rust/Cargo 1.87 or newer, CMake 3.22 or newer and a
-C++20 compiler for meedee. On Windows, use the Rust
+C++20 compiler for middy. On Windows, use the Rust
 MSVC toolchain and install Visual Studio Build Tools with the C++ build tools and
 Windows SDK. On macOS, install the Xcode Command Line Tools; on Linux, install
 your distribution's compiler build tools, ALSA development headers and pkg-config
 (`libasound2-dev` and `pkg-config` on Debian/Ubuntu). Linux needs `libasound.so.2`
-at runtime because meedee includes MIDI transport, even for file-only imports.
+at runtime because middy includes MIDI transport, even for file-only imports.
 Hosts still own audio devices; the engine does not require an audio device driver.
 
 FLAC export, listening demos, and their tests require the `flac` executable on
@@ -477,7 +477,7 @@ presets, and streaming FLAC rendering live in
 for atomic output publication.
 
 `enge.midi.read_midi(path, *, converters=[...], sample_rate=48000)` uses
-meedee's streaming reader and configured `MidiConverter` instances. Bindings
+middy's streaming reader and configured `MidiConverter` instances. Bindings
 select channels, named parts, tuning, repeated-key pairing and CC/bend targets.
 Supply fresh or explicitly restarted converters with distinct source names and
 parts across converters. The importer preserves exact rational PPQN timing,
@@ -493,14 +493,14 @@ keyed by those part names. Rendering requires the performance's sample rate and
 stereo `left`/`right` layout. Presets use `Trigger.velocity` directly. See the
 [Bach example](scripts/bach.py) for explicit four-instrument configuration.
 
-meedee's default reader limits apply: 1 MiB per record, 128 tracks and 8 MiB of
+middy's default reader limits apply: 1 MiB per record, 128 tracks and 8 MiB of
 merge lookahead. These bound parser working data, not the returned performance,
 which retains all converted events. Invalid files or exceeded reader limits raise
 `OSError`; unsupported performance messages raise `ValueError`. Source installs
-of meedee require Rust, CMake and a C++20 compiler, as described in
-[meedee's build instructions](https://github.com/rec/meedee#build-and-qualification).
+of middy require Rust, CMake and a C++20 compiler. See
+[middy's installation instructions](https://github.com/rec/middy#python-installation).
 
-`enge.performance.MidiConverter` converts decoded meedee messages through an
+`enge.performance.MidiConverter` converts decoded middy messages through an
 explicit uFor performance binding, with declared CC/bend targets, tuning,
 oldest/newest repeated-key pairing and bounded per-source state. Hosts supply
 resolved definitions and exact destination ticks/ordinals. It owns no transport
@@ -508,9 +508,9 @@ or audio; the file importer delegates conversion to it. See the
 [converter contract](doc/performance-binding.md) for loss and restart behavior.
 
 `enge.midi.LiveInput(connection, converters=[...])` adapts a caller-owned,
-queue-mode meedee MIDI 1.0 typed connection. `drain(frame=...)` polls at most 128
-messages
-by default and returns named-part uFor events at the supplied host frame. Native
+queue-mode `middy.midi.Input` configured for MIDI 1.0 bytes and decoded messages.
+`drain(frame=...)` polls at most 128 messages by default and returns named-part
+uFor events at the supplied host frame. Native
 MIDI timestamps are not converted to audio time. Observed drops, diagnostics or
 connection/conversion failures stop the adapter without returning that batch.
 `stop()` leaves port closure and musical cleanup to the host. This is an event

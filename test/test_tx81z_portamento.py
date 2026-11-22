@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from meedee import messages
+from middy import messages
 from test_synth import check_audio
 from test_tx81z_frequency import opz_frequency
 from test_tx81z_integer import native_carrier

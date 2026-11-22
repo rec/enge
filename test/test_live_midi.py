@@ -2,7 +2,7 @@ from collections import deque
 from typing import cast
 
 import pytest
-from meedee import events, messages, midi
+from middy import events, messages, midi
 from ufor import performance_binding
 from ufor.events import ControlChange, Release, Trigger
 
@@ -12,7 +12,7 @@ from enge.presets import Patch
 
 
 class InputQueue:
-    def __init__(self, items: list[events.Event | events.StreamDiagnostic]) -> None:
+    def __init__(self, items: list[messages.Message | events.StreamDiagnostic]) -> None:
         self.items = deque(items)
         self.dropped_packets = 0
         self.closed = False
@@ -21,7 +21,7 @@ class InputQueue:
 
     def receive(
         self, *, timeout: float | None = None
-    ) -> events.Event | events.StreamDiagnostic | None:
+    ) -> messages.Message | events.StreamDiagnostic | None:
         assert timeout == 0
         item = self.items.popleft() if self.items else None
         if self.fail_after_read:
@@ -53,10 +53,9 @@ def converters() -> list[MidiConverter]:
     return [MidiConverter(source="keyboard", binding=binding, instrument=score)]
 
 
-def packet(message: messages.Message) -> events.Event:
-    return events.Event(
+def packet(message: messages.Message) -> messages.Message:
+    return message.replace(
         stream="test",
-        message=message,
         timestamp=events.Timestamp(
             ticks=-1000000, clock=events.Clock(identity="unrelated-clock")
         ),
@@ -73,9 +72,7 @@ def test_live_drain_is_bounded_and_uses_host_frames_instead_of_native_time(
             packet(messages.NoteOff(channel=1, note=69, velocity=0)),
         ]
     )
-    adapter = LiveInput(
-        cast(midi.TypedInputConnection, queue), converters=converters, message_limit=2
-    )
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters, message_limit=2)
     first = adapter.drain(frame=480)
     assert [e.tick for e in first["main"]] == [480, 480]
     assert [e.ordinal for e in first["main"]] == [0, 1]
@@ -105,9 +102,7 @@ def test_live_ignored_messages_still_count_toward_drain_budget(
             packet(messages.NoteOn(channel=1, note=69, velocity=80)),
         ]
     )
-    adapter = LiveInput(
-        cast(midi.TypedInputConnection, queue), converters=converters, message_limit=1
-    )
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters, message_limit=1)
     assert adapter.drain(frame=0) == {"main": []}
     start = adapter.drain(frame=0)["main"][0]
     assert start.ordinal == 1
@@ -118,7 +113,7 @@ def test_bad_host_frame_does_not_consume_or_stop_input(
     converters: list[MidiConverter],
 ) -> None:
     queue = InputQueue([])
-    adapter = LiveInput(cast(midi.TypedInputConnection, queue), converters=converters)
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters)
     assert adapter.drain(frame=100) == {"main": []}
     queue.items.append(packet(messages.NoteOn(channel=1, note=69, velocity=80)))
     with pytest.raises(ValueError, match="backward"):
@@ -135,7 +130,7 @@ def test_connection_failure_rejects_queued_prefix_and_requires_recovery(
     converters: list[MidiConverter], failure: str
 ) -> None:
     queue = InputQueue([packet(messages.NoteOn(channel=1, note=69, velocity=80))])
-    adapter = LiveInput(cast(midi.TypedInputConnection, queue), converters=converters)
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters)
     if failure == "closed":
         queue.closed = True
     elif failure == "worker":
@@ -155,7 +150,7 @@ def test_quiet_receive_loss_stops_adapter_without_a_following_packet(
     converters: list[MidiConverter],
 ) -> None:
     queue = InputQueue([])
-    adapter = LiveInput(cast(midi.TypedInputConnection, queue), converters=converters)
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters)
     assert adapter.drain(frame=0) == {"main": []}
     queue.dropped_packets = 1
     with pytest.raises(RuntimeError, match="receive loss"):
@@ -169,13 +164,13 @@ def test_quiet_receive_loss_stops_adapter_without_a_following_packet(
 def test_input_diagnostic_discards_current_batch_and_invalidates_conversion(
     converters: list[MidiConverter],
 ) -> None:
-    diagnostic = events.PacketDecoder(stream="test", protocol=midi.Protocol.Midi1).loss(
+    diagnostic = events.PacketDecoder(stream="test", encoding=midi.Encoding.Bytes).loss(
         lost=1, reason="test loss"
     )
     queue = InputQueue(
         [packet(messages.NoteOn(channel=1, note=69, velocity=80)), diagnostic]
     )
-    adapter = LiveInput(cast(midi.TypedInputConnection, queue), converters=converters)
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters)
     with pytest.raises(ValueError, match="test loss"):
         adapter.drain(frame=0)
     with pytest.raises(RuntimeError, match="restart"):
@@ -189,7 +184,7 @@ def test_conversion_error_stops_adapter_without_closing_caller_connection(
     converters: list[MidiConverter],
 ) -> None:
     queue = InputQueue([packet(messages.NoteOff(channel=1, note=69, velocity=0))])
-    adapter = LiveInput(cast(midi.TypedInputConnection, queue), converters=converters)
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters)
     with pytest.raises(ValueError, match="Unmatched"):
         adapter.drain(frame=0)
     assert not queue.closed
@@ -201,7 +196,7 @@ def test_stop_is_final_and_never_releases_owned_notes(
     converters: list[MidiConverter],
 ) -> None:
     queue = InputQueue([packet(messages.NoteOn(channel=1, note=69, velocity=80))])
-    adapter = LiveInput(cast(midi.TypedInputConnection, queue), converters=converters)
+    adapter = LiveInput(cast(midi.Input, queue), converters=converters)
     assert adapter.drain(frame=0)["main"]
     adapter.stop()
     adapter.stop()
@@ -219,7 +214,7 @@ def test_invalid_drain_limit_does_not_consume_converters(
     queue = InputQueue([])
     with pytest.raises(ValueError, match="positive integer"):
         LiveInput(
-            cast(midi.TypedInputConnection, queue),
+            cast(midi.Input, queue),
             converters=converters,
             message_limit=limit,
         )

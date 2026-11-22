@@ -1,9 +1,8 @@
 """File and caller-polled live MIDI dispatch to uFor performance converters."""
 
-from contextlib import closing
 from pathlib import Path
 
-from meedee import events, messages, midi, smf
+from middy import events, file_io, messages, midi, smf
 from pydantic import BaseModel
 from ufor.events import ControlChange, PerformanceEvent, Release, Trigger
 from ufor.number import MAX_INTEGER
@@ -27,7 +26,7 @@ class LiveInput:
 
     def __init__(
         self,
-        connection: midi.TypedInputConnection,
+        connection: midi.Input[messages.Message | events.StreamDiagnostic],
         *,
         converters: list[MidiConverter],
         message_limit: int = 128,
@@ -63,7 +62,7 @@ class LiveInput:
                     raise ValueError(f"Live MIDI {item.kind}: {item.reason}")
                 for converter in self._converters:
                     for event in converter.feed(
-                        item.message, tick=frame, ordinal=self._ordinal
+                        item, tick=frame, ordinal=self._ordinal
                     ):
                         assert isinstance(event, Trigger | Release | ControlChange)
                         assert event.part is not None
@@ -114,11 +113,12 @@ def read_midi(
     ordinal = -1
     completed = False
     try:
-        with closing(smf.MergedReader(path)) as midi:
-            if midi.header.division & 0x8000:
+        with file_io.Reader(path) as reader:
+            merged = reader.merged()
+            if merged.header.division & 0x8000:
                 raise ValueError("MIDI requires synchronous PPQN timing")
-            clock = _native.MidiFileClock(midi.header.division, sample_rate)
-            for event in midi:
+            clock = _native.MidiFileClock(merged.header.division, sample_rate)
+            for event in merged:
                 message = event.record
                 tempo = (
                     int.from_bytes(message.data[:3], "big")

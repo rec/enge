@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from meedee import messages, smf
+from middy import messages, smf
 from ufor import performance_binding
 from ufor.events import ControlChange, Release, Trigger
 from ufor.tuning import Computed, Tuning

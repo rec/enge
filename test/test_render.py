@@ -5,7 +5,7 @@ from typing import Literal
 
 import numpy as np
 import pytest
-from meedee import messages, smf
+from middy import messages, smf
 from test_synth import check_audio
 from ufor import performance_binding, synth_trace
 from ufor.control import TempoMap

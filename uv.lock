@@ -39,7 +39,7 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "envelfo" },
-    { name = "meedee" },
+    { name = "middy" },
     { name = "numpy" },
     { name = "pint" },
     { name = "pydantic" },
@@ -59,7 +59,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "envelfo", git = "https://github.com/rec/envelfo.git?rev=c287217adc29f9a6c1580b03bdb4267286328f14" },
-    { name = "meedee", git = "https://github.com/rec/meedee?branch=main" },
+    { name = "middy", git = "https://github.com/rec/middy.git?rev=50049c0c02f137fc312c324cee8271364f4a0e61" },
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "pint", specifier = ">=0.25.3" },
     { name = "pydantic", specifier = ">=2.13.4" },
@@ -127,9 +127,14 @@ wheels = [
 ]
 
 [[package]]
-name = "meedee"
+name = "middy"
 version = "0.2.0"
-source = { git = "https://github.com/rec/meedee?branch=main#28b68ba3048607d4f0f6c766130dfc71e07e05a8" }
+source = { git = "https://github.com/rec/middy.git?rev=50049c0c02f137fc312c324cee8271364f4a0e61#50049c0c02f137fc312c324cee8271364f4a0e61" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "reccy" },
+    { name = "ufor" },
+]
 
 [[package]]
 name = "numpy"
