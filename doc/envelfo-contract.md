@@ -565,8 +565,10 @@ partitioned native snapshot continuation with two-second 48 kHz WAV regressions.
 
 enge's named Envelope, LFO, Stages and retained Patch scheduling all consume
 the extracted library in both languages. NumPy spans, audio interpolation and
-native waveform kernels remain acceleration. enge still restricts amplitude
-profiles and curved native preparation; those are explicit host restrictions,
+native waveform kernels remain acceleration. Offline native amplitude spans
+use Rust uFor's normalized exponential curve for synth, FM, noise, sampler,
+and LFO rendering. enge still restricts amplitude profiles and curved native
+preparation; those are explicit host restrictions,
 not missing standalone Envelope capabilities.
 
 ## Exact current reference boundary

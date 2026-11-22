@@ -25,6 +25,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::f64::consts::TAU;
 use ufor::envelfo::Waveform;
+use ufor::envelope::curve_progress;
 use ufor::oscillator::{advance_phase, sample_at_angle};
 
 type RenderedBlock<'py> = (
@@ -107,15 +108,7 @@ fn envelope_amplitudes(spans: &[f64], count: usize) -> Vec<f64> {
             .skip(span[0] as usize)
         {
             let progress = span[4] + (i as f64 - span[6]) / span[5];
-            let curve = span[7];
-            let progress = if curve == 0.0 || progress == 0.0 || progress == 1.0 {
-                progress
-            } else if curve > 0.0 {
-                (curve * (progress - 1.0)).exp() * (-curve * progress).exp_m1() / (-curve).exp_m1()
-            } else {
-                (curve * progress).exp_m1() / curve.exp_m1()
-            };
-            *value = span[2] + span[3] * progress;
+            *value = span[2] + span[3] * curve_progress(progress, span[7]);
         }
     }
     amplitude
