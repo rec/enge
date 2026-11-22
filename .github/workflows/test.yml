@@ -2,6 +2,9 @@ name: Cross-platform tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/test.yml]
   release:
     types: [published]
 
@@ -12,7 +15,7 @@ jobs:
   test:
     name: ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +36,9 @@ jobs:
         run: rustup toolchain install 1.87.0 --profile minimal --component clippy --component rustfmt
       - name: Fetch public Cargo dependencies over HTTPS
         run: git config --global --add url.https://github.com/rec/.insteadOf ssh://git@github.com/rec/
+      - name: Select the Windows C++ toolset
+        if: runner.os == 'Windows'
+        run: echo 'CMAKE_GENERATOR_TOOLSET=v143,version=14.44' >> "$GITHUB_ENV"
       - name: Install FLAC and MIDI build prerequisites on Linux
         if: runner.os == 'Linux'
         run: |
