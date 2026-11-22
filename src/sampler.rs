@@ -13,9 +13,8 @@ use ufor::number::Rational;
 use ufor::samples::controls::ControlDeclaration;
 use ufor::samples::crossfade::{ControlScope, Crossfade};
 use ufor::samples::cursor::{Cursor, CursorState};
-use ufor::samples::eligibility::Eligibility;
-use ufor::samples::inheritance::resolve_slot_settings;
 use ufor::samples::playback::{Mapping, ResolvedSlotPlayback, onset_gain};
+use ufor::samples::slots::PreparedSlots;
 use ufor::samples::variation::DrawEvent;
 
 #[pyfunction]
@@ -59,14 +58,6 @@ pub(crate) fn prepare_sample_assets(
     codec::parse_sample_inventory(document, Format::Json, limits)
         .and_then(|inventory| inventory.integer_rates(&decoded_shapes))
         .map_err(invalid)
-}
-
-#[pyfunction]
-#[pyo3(signature = (slot, group=None))]
-pub(crate) fn resolve_sample_slot_settings(slot: &str, group: Option<&str>) -> PyResult<String> {
-    let resolved = resolve_slot_settings(slot, group)
-        .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    serde_json::to_string(&resolved).map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 #[pyfunction]
@@ -225,18 +216,17 @@ impl SampleBuffer {
 }
 
 #[pyclass(frozen)]
-pub(crate) struct SampleEligibility {
-    slots: Eligibility,
-}
+pub(crate) struct PreparedSampleSlots(PreparedSlots);
 
 #[pymethods]
-impl SampleEligibility {
+impl PreparedSampleSlots {
     #[new]
     #[pyo3(signature = (document, *, max_records=10_000))]
     fn new(document: &str, max_records: usize) -> PyResult<Self> {
-        let slots = codec::parse_sample_eligibility(document, Format::Json, max_records)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        Ok(Self { slots })
+        PreparationLimits::new(max_records)
+            .and_then(|limits| PreparedSlots::from_json(document, limits))
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     fn matching_slots(&self, document: &str) -> PyResult<Vec<String>> {
@@ -244,12 +234,25 @@ impl SampleEligibility {
         let context =
             codec::parse_sample_eligibility_context(document, Format::Json).map_err(invalid)?;
         Ok(self
-            .slots
+            .0
+            .eligibility()
             .matching_slots(&context)
             .map_err(invalid)?
             .into_iter()
             .map(|name| name.as_str().to_owned())
             .collect())
+    }
+
+    fn resolved_settings(&self) -> PyResult<BTreeMap<&str, String>> {
+        self.0
+            .settings()
+            .iter()
+            .map(|(name, settings)| {
+                let text = serde_json::to_string(settings)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?;
+                Ok((name.as_str(), text))
+            })
+            .collect()
     }
 }
 

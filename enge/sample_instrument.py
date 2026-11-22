@@ -126,25 +126,13 @@ def prepare_trace(
     max_records: int = 10_000,
 ) -> trace.SampleTrace:
     """Prepare sampler actions with Rust uFor selection and variation."""
-    fields = {
-        "name",
-        "mapping",
-        "trigger",
-        "articulations",
-        "key_conditions",
-        "previous_key",
-        "control_conditions",
-        "control_trigger",
-        "sequence",
-        "random_range",
-    }
-    eligibility = _native.SampleEligibility(
-        dumps([s.model_dump(mode="json", include=fields) for s in definition.slots]),
+    slots = _native.PreparedSampleSlots(
+        definition.model_dump_json(),
         max_records=max_records,
     )
 
     def matching_slots(context: trace.EligibilityContext) -> list[str]:
-        return eligibility.matching_slots(dumps(context))
+        return slots.matching_slots(dumps(context))
 
     def keyswitches(
         declarations: selection.Articulations,
@@ -162,7 +150,7 @@ def prepare_trace(
         admit_voices=voice_admission.native_retirements,
         release_plan=voice_release.native_release_plan,
         prepare_start=_native.prepare_voice_start,
-        slot_settings=_resolve_slots,
+        slot_settings=lambda _: _resolve_slots(slots),
         draw_random_range=_native.draw_sample_range,
         resolve_variation=_resolve_variation,
         validate_event=prepare_event_validator(definition.settings.controls),
@@ -172,26 +160,11 @@ def prepare_trace(
 
 
 def _resolve_slots(
-    definition: instrument.SampleInstrument,
+    slots: _native.PreparedSampleSlots,
 ) -> dict[str, instrument.ResolvedSlotSettings]:
-    fields = {
-        "processing",
-        "envelope",
-        "envelfos",
-        "modulation",
-        "bindings",
-        "event_connections",
-        "selection",
-    }
-    groups = {g.name: g.model_dump_json(include=fields) for g in definition.groups}
     return {
-        s.name: instrument.ResolvedSlotSettings.model_validate_json(
-            _native.resolve_sample_slot_settings(
-                s.model_dump_json(include=fields),
-                groups[s.group] if s.group is not None else None,
-            )
-        )
-        for s in definition.slots
+        n: instrument.ResolvedSlotSettings.model_validate_json(t)
+        for n, t in slots.resolved_settings().items()
     }
 
 
@@ -236,8 +209,8 @@ def prepare(
 
     Asset arrays must match the declared native frame/channel layout. Decoded
     content fingerprints bind snapshots to the actual audio, independently of
-    the document's encoded-file hashes. `max_records` bounds asset inventory
-    preparation.
+    the document's encoded-file hashes. `max_records` bounds preparation of
+    the asset inventory and the slots.
     """
     score = instrument.SampleInstrumentScore.model_validate(score.model_dump())
     output = score.outputs[0].stream
@@ -287,7 +260,11 @@ def prepare(
     settings: dict[str, processing.SoundSettings] = {}
     routes: dict[str, list[list[float]]] = {}
     equalizer: dict[str, list[processing.BiquadCoefficients]] = {}
-    resolved_slots = _resolve_slots(score.body)
+    resolved_slots = _resolve_slots(
+        _native.PreparedSampleSlots(
+            score.body.model_dump_json(), max_records=max_records
+        )
+    )
     instrument_processing = score.body.settings.processing
     common_bands = [
         b.biquad_coefficients(sample_rate) for b in instrument_processing.equalizer
