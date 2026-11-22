@@ -439,6 +439,10 @@ renderer state.
 Sampler trace and render preparation send the authored sampler body to Rust
 uFor for eligibility and slot-group inheritance. The prepared slot settings
 retain authored category order, selection opt-outs, and explicit clears.
+Sampler render preparation sends the complete authored score for inventory
+validation, including the public ports and slice-to-asset channel routes.
+Enge supplies the decoded shapes. Rust checks them against the referenced
+assets and resolves the output and native sample rates.
 
 uFor's shared corpora define the portable contracts. Enge's consumer tests
 exercise the conversion and host behavior using existing audio regressions and

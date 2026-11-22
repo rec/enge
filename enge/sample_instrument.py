@@ -217,19 +217,7 @@ def prepare(
     assert isinstance(output, AudioType)
     try:
         sample_rate, native_rates = _native.prepare_sample_assets(
-            dumps(
-                {
-                    "timebases": [t.model_dump(mode="json") for t in score.timebases],
-                    "assets": [
-                        a.model_dump(mode="json", include={"name", "audio"})
-                        for a in score.assets
-                    ],
-                    "slices": [s.model_dump(mode="json") for s in score.body.slices],
-                    "output": output.model_dump(
-                        mode="json", include={"timebase", "channels"}
-                    ),
-                }
-            ),
+            score.model_dump_json(),
             {n: a.shape for n, a in audio.items()},
             max_records=max_records,
         )

@@ -55,7 +55,7 @@ pub(crate) fn prepare_sample_assets(
 ) -> PyResult<(i64, BTreeMap<String, i64>)> {
     let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
     let limits = PreparationLimits::new(max_records).map_err(invalid)?;
-    codec::parse_sample_inventory(document, Format::Json, limits)
+    codec::parse_sample_score_inventory(document, Format::Json, limits)
         .and_then(|inventory| inventory.integer_rates(&decoded_shapes))
         .map_err(invalid)
 }
