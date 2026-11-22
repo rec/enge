@@ -102,9 +102,13 @@ def test_native_synth_family_trace_matches_layers_and_release_mapping(
 
 @pytest.mark.parametrize(
     "limit,message",
-    [(2, "synth voice template records"), (4, "generator preparation records")],
+    [
+        (3, "generator preparation records"),
+        (5, "synth voice template records"),
+        (7, "generator preparation records"),
+    ],
 )
-def test_native_trace_counts_voice_routes_and_envelopes_in_preparation_budget(
+def test_native_trace_counts_controls_and_voices_in_preparation_budget(
     limit: int, message: str
 ) -> None:
     score, _ = Patch(engine="synth").prepare_score(48000)

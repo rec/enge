@@ -75,7 +75,6 @@ from . import (
     voice_release,
 )
 from .lfo import lfo_samples
-from .performance import prepare_event_validator
 
 
 class EngineError(ValueError):
@@ -525,7 +524,9 @@ def prepare_trace(
 ) -> synth_trace.SynthTrace:
     """Prepare synth-family actions with Rust uFor voice and release rules."""
     eligibility = _native.PreparedVoiceEligibility(
-        json.dumps({"voices": [v.model_dump(mode="json") for v in definition.voices]}),
+        definition.model_dump_json(
+            include={"voices", "controls", "voice_policy", "sustain", "articulations"}
+        ),
         max_records=max_records,
     )
 
@@ -542,6 +543,9 @@ def prepare_trace(
             max_records=max_records,
         )
 
+    def validate_event(event: PerformanceEvent) -> None:
+        eligibility.validate_event(event.model_dump_json(exclude={"tick", "ordinal"}))
+
     return synth_trace.prepare(
         definition,
         events,
@@ -553,8 +557,8 @@ def prepare_trace(
         eligible_voices=eligibility.matching_voices,
         prepare_start=_native.prepare_voice_start,
         schedule=schedule,
-        validate_event=prepare_event_validator(definition.controls),
-        prepare_sustain=voice_release.native_initially_pressed,
+        validate_event=validate_event,
+        prepare_sustain=lambda _sustain, _control: eligibility.sustain_pressed,
     )
 
 

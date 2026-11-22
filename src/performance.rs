@@ -14,7 +14,7 @@ use ufor::performance_binding::{ControlValue, HeldNotes, MidiBindings, RepeatedK
 use ufor::samples::controls::ControlDeclaration;
 use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
-use ufor::synth::SynthVoices;
+use ufor::synth::SynthInstrument;
 use ufor::synth_pitch;
 use ufor::time::{PpqnClock, duration_frames};
 use ufor::voice_start;
@@ -45,10 +45,17 @@ impl PreparedEventValidator {
     }
 
     fn validate(&self, payload: &str) -> PyResult<()> {
-        codec::parse_performance_payload(payload, Format::Json)
-            .and_then(|event| event.validate_controls(&self.0))
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+        validate_event_payload(payload, &self.0)
     }
+}
+
+fn validate_event_payload(
+    payload: &str,
+    controls: &BTreeMap<Identifier, ControlDeclaration>,
+) -> PyResult<()> {
+    codec::parse_performance_payload(payload, Format::Json)
+        .and_then(|event| event.validate_controls(controls))
+        .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 #[pyclass(frozen, skip_from_py_object)]
@@ -368,7 +375,7 @@ pub(crate) fn prepare_voice_start(
 }
 
 #[pyclass(frozen, skip_from_py_object)]
-pub(crate) struct PreparedVoiceEligibility(SynthVoices);
+pub(crate) struct PreparedVoiceEligibility(SynthInstrument);
 
 #[pymethods]
 impl PreparedVoiceEligibility {
@@ -376,9 +383,18 @@ impl PreparedVoiceEligibility {
     #[pyo3(signature = (document, *, max_records=10_000))]
     fn new(document: &str, max_records: usize) -> PyResult<Self> {
         PreparationLimits::new(max_records)
-            .and_then(|limits| codec::parse_synth_voices(document, Format::Json, limits))
+            .and_then(|limits| codec::parse_synth_instrument(document, Format::Json, limits))
             .map(Self)
             .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[getter]
+    fn sustain_pressed(&self) -> bool {
+        self.0.sustain_pressed()
+    }
+
+    fn validate_event(&self, payload: &str) -> PyResult<()> {
+        validate_event_payload(payload, self.0.controls())
     }
 
     fn matching_voices(&self, trigger: &str, key: i64, velocity: f64) -> PyResult<Vec<String>> {
@@ -386,6 +402,7 @@ impl PreparedVoiceEligibility {
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(self
             .0
+            .voices()
             .matching_voices(trigger, key, velocity)
             .map(|name| name.as_str().to_owned())
             .collect())

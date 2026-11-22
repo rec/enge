@@ -39,7 +39,8 @@ def test_physical_release_does_not_retire_sustained_synth_voices(
     raw["body"].setdefault("controls", {})["hold"] = {"default": 1}
     raw["body"]["sustain"] = {"control": "hold"}
     document = SynthInstrumentScore.model_validate(raw)
-    trace = synth_trace.prepare(
+    prepare_trace = synth_trace.prepare if backend == "numpy" else synth.prepare_trace
+    trace = prepare_trace(
         document.body,
         [
             Trigger(

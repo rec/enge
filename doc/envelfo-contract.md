@@ -391,12 +391,14 @@ inside 3,421 successful and six failed callbacks. The generated report is
 `build/rust-ufor-voice-release-audit.xml`.
 
 Native MIDI rendering uses `synth.prepare_trace` for oscillator synth, FM
-and noise. Rust uFor validates the mapped voices, sources and SoundSettings
-together before selecting matching voices in authored order for onset,
+and noise. Rust uFor validates the mapped voices, SoundSettings, and shared
+instrument declarations before selecting voices in authored order for onset,
 release and sustain events. FM modulation targets resolve against each
 voice's own graph. The trace provides the original onset velocity for
 release layers and resolved `pitch_hz` for the renderer.
-One record budget covers the voice metadata, sources and SoundSettings.
+One record budget covers the instrument and its voices. The prepared
+instrument also supplies the initial sustain state and the control
+declarations used to validate performance events.
 Voice eligibility passed 352 focused macOS tests with zero heap operations
 inside 3,421 successful and six failed callbacks. The generated report is
 `build/rust-ufor-voice-eligibility-audit.xml`.
