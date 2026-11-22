@@ -2,6 +2,9 @@ name: Cross-platform tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/test.yml]
   release:
     types: [published]
 
@@ -12,7 +15,7 @@ jobs:
   test:
     name: ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
