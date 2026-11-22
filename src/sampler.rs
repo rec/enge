@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use ufor::codec::{self, Format};
 use ufor::identifier::Identifier;
+use ufor::number::Rational;
 use ufor::samples::crossfade::Crossfade;
 use ufor::samples::cursor::{Cursor, CursorState};
 use ufor::samples::eligibility::Eligibility;
@@ -383,7 +384,7 @@ pub(crate) fn render_sample<'py>(
     state: State,
     frame: i64,
     steps: PyReadonlyArray1<'py, f64>,
-    release: Option<(usize, bool, f64, f64)>,
+    release: Option<(usize, i64, i64)>,
     prepared_gain: f64,
     gains: PyReadonlyArray1<'py, f64>,
     envelope: PyReadonlyArray2<'py, f64>,
@@ -408,8 +409,8 @@ pub(crate) fn render_sample<'py>(
         || !steps.is_c_contiguous()
         || !gains.is_c_contiguous()
         || !routes.is_c_contiguous()
-        || release.is_some_and(|(i, _, a, b)| {
-            i >= count || !a.is_finite() || a < 0.0 || !b.is_finite() || b < 0.0
+        || release.is_some_and(|(i, numerator, denominator)| {
+            i >= count || numerator < 0 || numerator >= denominator
         })
     {
         return Err(PyValueError::new_err(
@@ -417,6 +418,10 @@ pub(crate) fn render_sample<'py>(
         ));
     }
     let initial = restore_cursor(*cursor, state, frame)?;
+    let release = release
+        .map(|(index, n, d)| Rational::new(n, d).map(|fraction| (index, fraction)))
+        .transpose()
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
     let envelope = super::envelope_spans(envelope, count)?;
     let steps = steps.as_slice()?.to_vec();
     let gains = gains.as_slice()?.to_vec();
@@ -433,8 +438,10 @@ pub(crate) fn render_sample<'py>(
                 break;
             }
             let current = frame + i as i64;
-            let split = release.filter(|r| r.0 == i);
-            if split.is_some_and(|r| !r.1) {
+            let fraction = release
+                .filter(|(index, _)| *index == i)
+                .map(|(_, value)| value);
+            if fraction.is_some_and(|value| value.numerator() == 0) {
                 cursor.release();
             }
             cursor.settle(current);
@@ -480,13 +487,10 @@ pub(crate) fn render_sample<'py>(
                     };
             }
             let invalid = |_| PyValueError::new_err("Invalid native sample advance");
-            if let Some((_, _, before, after)) = split.filter(|r| r.1) {
-                cursor.advance(before, current + 1).map_err(invalid)?;
-                if cursor.state().exhausted.is_none() {
-                    cursor.release();
-                    cursor.settle(current + 1);
-                    cursor.advance(after, current + 1).map_err(invalid)?;
-                }
+            if let Some(fraction) = fraction.filter(|value| value.numerator() != 0) {
+                cursor
+                    .advance_with_release(step, fraction, current + 1)
+                    .map_err(invalid)?;
             } else {
                 cursor.advance(step, current + 1).map_err(invalid)?;
             }

@@ -248,12 +248,19 @@ cursor for pending release and loop decisions, forward and reverse movement,
 mirror turns, whole plays, overlap taps, and end fades. Enge supplies the
 decoded audio and owns filtering and routing. Snapshot and Python bridge
 coordinates retain their existing integer and floating-point fields.
+The offline native bridge passes a release as a batch frame offset and an
+exact fraction within the frame. Rust uFor rounds both parts of the advance
+from their exact products, then applies the release between them. The
+fractional part must fit signed 64-bit numerator and denominator fields.
 Traversal preparation passed 670 focused macOS tests with zero heap
 operations inside 6,755 successful and seven failed callbacks. The generated
 report is `build/rust-ufor-sample-traversal-audit.xml`.
 The shared cursor subsequently passed 711 focused macOS tests with zero Rust
 heap operations in 6,507 successful and seven failed callbacks. The generated
 report is `build/rust-ufor-sample-cursor-audit.xml`.
+The fractional release split passed 740 focused macOS tests with zero Rust
+heap operations in 6,507 successful and nine failed callbacks. The generated
+report is `build/rust-ufor-sample-release-split-audit.xml`.
 
 Offline native control batching uses the same cursor to bound the active
 prefix from the maximum tuning, remaining finite traversal, and any latched

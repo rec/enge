@@ -505,7 +505,7 @@ def render_sample(
     state: SampleState,
     frame: int,
     steps: np.ndarray,
-    release: tuple[int, bool, float, float] | None,
+    release: tuple[int, int, int] | None,
     prepared_gain: float,
     gains: np.ndarray,
     envelope: np.ndarray,

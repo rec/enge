@@ -262,6 +262,25 @@ def test_fractional_release_is_ordered_against_source_boundaries(
     assert state == final
 
 
+def test_native_sample_rejects_fractional_release_outside_portable_range() -> None:
+    definition = PreparedSample(
+        samples=np.ones((4, 1)),
+        native_rate=48000,
+        sample_rate=48000,
+        slice=Slice(name="slice", asset="asset", end_frame=4),
+    )
+    with pytest.raises(
+        ValueError, match="release fraction exceeds the signed 64-bit domain"
+    ):
+        sample_frames(
+            definition,
+            SampleState.start(definition),
+            np.ones(1),
+            Fraction(1, 2**63),
+            backend="native",
+        )
+
+
 @pytest.mark.parametrize(
     "direction,overlap,first,large,expected_prefix",
     [

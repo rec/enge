@@ -1,8 +1,9 @@
-"""Prepare exact release splits and owned parameter buffers for Rust sampling."""
+"""Pass exact release positions and owned parameter buffers to Rust sampling."""
 
 from fractions import Fraction
 
 import numpy as np
+from ufor.number import MAX_INTEGER
 
 from . import sampler
 
@@ -29,13 +30,9 @@ def render(
         offset = release_frame - state.frame
         index = int(offset)
         fraction = offset - index
-        before = Fraction(float(steps[index])) * fraction
-        release = (
-            index,
-            bool(fraction),
-            float(before),
-            float(Fraction(float(steps[index])) - before),
-        )
+        if fraction.denominator > MAX_INTEGER:
+            raise ValueError("Sample release fraction exceeds the signed 64-bit domain")
+        release = (index, fraction.numerator, fraction.denominator)
     audio, values, filter_states = _native.render_sample(
         definition.native_traversal,
         state.native_state(),

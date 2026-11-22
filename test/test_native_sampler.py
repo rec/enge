@@ -124,7 +124,7 @@ def test_native_buffer_owns_strided_audio_and_keeps_large_frame_coordinates(
         (0, 0, 0, 1, False, False, False, None, None, 0, None),
         origin,
         np.full(48000, 48000.0),
-        (123, False, 0, 48000),
+        (123, 0, 1),
         1,
         np.ones(48000),
         np.array([[0, 48000, 1, 0, 0, 1, 0, 0]], dtype=np.float64),
@@ -197,7 +197,7 @@ def test_native_sample_rejects_invalid_inputs(invalid: str) -> None:
             state,
             2**63 - 1 if invalid == "frame" else 0,
             steps,
-            (1, False, 0, 48000) if invalid == "release" else None,
+            (1, 0, 1) if invalid == "release" else None,
             1,
             np.ones(2 if invalid == "gains" else 1),
             np.array(
