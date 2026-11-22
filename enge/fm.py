@@ -642,9 +642,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedFM:
     if not isinstance(output, AudioType):
         raise synth.EngineError("FM output must be sampled audio")
     timebase = next(t for t in score.timebases if t.name == output.timebase)
-    if timebase.rate.denominator != 1:
-        raise synth.EngineError("FM output rate must be an integer")
-    rate = timebase.rate.numerator
+    rate = synth.integer_output_rate(timebase, "FM output rate must be an integer")
     for voice in score.body.voices:
         if not isinstance(voice, FMVoice):
             raise synth.EngineError("FM engine requires FM voice templates")

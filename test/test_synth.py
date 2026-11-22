@@ -170,6 +170,14 @@ def test_offline_synth_is_partition_invariant_and_restorable(
     check_audio(tmp_path / "restored.wav", np.concatenate([first, replay]), whole)
 
 
+def test_synth_output_requires_declared_integer_rate() -> None:
+    raw = score().model_dump(mode="json")
+    raw["timebases"][0]["rate"] = {"numerator": 96000, "denominator": 2}
+    document = SynthInstrumentScore.model_validate(raw)
+    with pytest.raises(EngineError, match="output rate must be an integer"):
+        prepare(document)
+
+
 def test_offline_synth_requires_resolved_pitch(
     backend: Literal["numpy", "native"],
 ) -> None:

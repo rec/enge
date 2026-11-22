@@ -517,9 +517,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedNoise:
     if not isinstance(output, AudioType):
         raise synth.EngineError("Noise output must be sampled audio")
     timebase = next(t for t in score.timebases if t.name == output.timebase)
-    if timebase.rate.denominator != 1:
-        raise synth.EngineError("Noise output rate must be an integer")
-    rate = timebase.rate.numerator
+    rate = synth.integer_output_rate(timebase, "Noise output rate must be an integer")
     for voice in score.body.voices:
         if not isinstance(voice, NoiseVoice):
             raise synth.EngineError("Noise engine requires noise voice templates")

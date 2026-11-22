@@ -787,8 +787,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
     if not isinstance(output, AudioType):
         raise synth.EngineError("Yamaha output must be sampled audio")
     timebase = next(t for t in score.timebases if t.name == output.timebase)
-    if timebase.rate.denominator != 1:
-        raise synth.EngineError("Yamaha output rate must be an integer")
+    rate = synth.integer_output_rate(timebase, "Yamaha output rate must be an integer")
     for voice in score.body.voices:
         if not isinstance(voice, (YamahaDX7Voice, YamahaTX81ZVoice, YamahaWT11Voice)):
             raise synth.EngineError(
@@ -830,7 +829,7 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
         ):
             raise synth.EngineError("Unsupported Yamaha processing")
         if isinstance(voice, YamahaDX7Voice):
-            yamaha_lfo.DX7LFOContext(voice.patch, timebase.rate.numerator)
+            yamaha_lfo.DX7LFOContext(voice.patch, rate)
         else:
             targets = {
                 p.target.parameter
@@ -840,14 +839,12 @@ def prepare(score: SynthInstrumentScore) -> PreparedYamaha:
             if "breath" in targets and voice.patch.data[75] != 50:
                 model = "WT11" if isinstance(voice, YamahaWT11Voice) else "TX81Z"
                 raise synth.EngineError(f"{model} breath pitch bias is not implemented")
-            yamaha_lfo.TX81ZLFOContext(voice.patch, timebase.rate.numerator)
-        _note(voice, 69, 127, timebase.rate.numerator, None)
-        filters.parameters(voice.processing.filters, timebase.rate.numerator, 1)
+            yamaha_lfo.TX81ZLFOContext(voice.patch, rate)
+        _note(voice, 69, 127, rate, None)
+        filters.parameters(voice.processing.filters, rate, 1)
     for group in score.body.tx81z_outputs:
-        filters.parameters(group.processing.filters, timebase.rate.numerator, 1)
-    return PreparedYamaha(
-        sample_rate=timebase.rate.numerator, channels=output.channels, score=score
-    )
+        filters.parameters(group.processing.filters, rate, 1)
+    return PreparedYamaha(sample_rate=rate, channels=output.channels, score=score)
 
 
 def _dx7_controller_row(

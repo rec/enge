@@ -565,20 +565,34 @@ def prepare(score: SynthInstrumentScore) -> PreparedSynth:
     if not isinstance(output, AudioType):
         raise EngineError("Synth output must be sampled audio")
     timebase = next(t for t in score.timebases if t.name == output.timebase)
+    sample_rate = integer_output_rate(
+        timebase, "Synth output rate must be an integer number of frames per second"
+    )
     voices: list[SynthVoice] = []
     for voice in score.body.voices:
         if not isinstance(voice, SynthVoice):
             raise EngineError("Oscillator engine requires oscillator voice templates")
         voice = expand_patch_outputs(voice)
         _validate_voice(voice)
-        filters.parameters(voice.processing.filters, _sample_rate(timebase), 1)
+        filters.parameters(voice.processing.filters, sample_rate, 1)
         voices.append(voice)
     return PreparedSynth(
-        sample_rate=_sample_rate(timebase),
+        sample_rate=sample_rate,
         channels=output.channels,
         instrument=score.body.model_copy(update={"voices": voices}),
         source_instrument=score.body if voices != score.body.voices else None,
     )
+
+
+def integer_output_rate(timebase: Timebase, message: str) -> int:
+    """Resolve the output rate through uFor's physical timebase contract."""
+    try:
+        rate = _native.integer_sample_rate(timebase.model_dump_json())
+    except ValueError as error:
+        raise EngineError(str(error)) from error
+    if rate is None:
+        raise EngineError(message)
+    return rate
 
 
 def expand_patch_outputs[T: processing.ModulationSettings](voice: T) -> T:
@@ -2624,14 +2638,6 @@ def validate_modulation(
         raise EngineError(
             "Only amplitude, tuning, and filter modulation are implemented"
         )
-
-
-def _sample_rate(timebase: Timebase) -> int:
-    if timebase.rate.denominator != 1:
-        raise EngineError(
-            "Synth output rate must be an integer number of frames per second"
-        )
-    return timebase.rate.numerator
 
 
 def _validate_voice(voice: SynthVoice) -> None:

@@ -408,6 +408,7 @@ def prepare_channel_routes(
     routes: list[tuple[str, str, float]],
     spatial: tuple[str, float, float] | None = None,
 ) -> list[list[float]]: ...
+def integer_sample_rate(document: str) -> int | None: ...
 def tuned_frequencies(
     pitch_hz: float,
     tuning: np.ndarray,

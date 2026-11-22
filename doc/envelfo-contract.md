@@ -252,6 +252,13 @@ Asset inventory preparation passed 718 focused macOS tests with zero Rust
 heap operations in 6,507 successful and seven failed callbacks. The generated
 report is `build/rust-ufor-sample-inventory-audit.xml`.
 
+Sampler, oscillator synth, FM, noise, and Yamaha preparation share Rust
+uFor's physical-timebase rate validation. Their integer-rate profiles
+require an authored denominator of one. Physical timebase integration
+passed 446 focused macOS tests with zero Rust heap operations across 2,533
+successful and six failed callbacks. The generated report is
+`build/rust-ufor-physical-timebase-audit.xml`.
+
 Both samplers use Rust uFor's cursor for pending release and loop decisions,
 forward and reverse movement, mirror turns, whole plays, overlap taps, and
 end fades. A shared read plan determines overlap and interpolation weights

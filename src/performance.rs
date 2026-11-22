@@ -20,6 +20,13 @@ type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
 type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
 
 #[pyfunction]
+pub(crate) fn integer_sample_rate(document: &str) -> PyResult<Option<i64>> {
+    codec::parse_timebase(document, Format::Json)
+        .map(|timebase| timebase.rate().integer_hz())
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
 #[pyo3(signature = (inputs, outputs, routes, spatial=None))]
 pub(crate) fn prepare_channel_routes(
     inputs: Vec<String>,
