@@ -109,6 +109,40 @@ pub(crate) type State = (
 
 type RenderedSample<'py> = (Bound<'py, PyArray2<f64>>, State, Bound<'py, PyArray3<f64>>);
 
+fn restore_cursor(cursor: Cursor, state: State, frame: i64) -> PyResult<Cursor> {
+    let (
+        index,
+        position,
+        error,
+        direction,
+        looping,
+        overlap,
+        released,
+        exhausted,
+        repeats_remaining,
+        plays_remaining,
+        end_fade_at,
+    ) = state;
+    cursor
+        .resume(
+            CursorState {
+                index,
+                position,
+                error,
+                direction,
+                looping,
+                overlap,
+                released,
+                exhausted,
+                repeats_remaining,
+                plays_remaining,
+                end_fade_at,
+            },
+            frame,
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
 #[pyclass(frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct SampleBuffer {
@@ -307,6 +341,22 @@ impl SampleTraversal {
             cursor,
         })
     }
+
+    fn active_prefix(
+        &self,
+        state: State,
+        frame: i64,
+        release_now: bool,
+        maximum_step: f64,
+        requested: usize,
+    ) -> PyResult<usize> {
+        Ok(restore_cursor(self.cursor, state, frame)?.active_prefix(
+            frame,
+            release_now,
+            maximum_step,
+            requested,
+        ))
+    }
 }
 
 impl SampleTraversal {
@@ -366,35 +416,7 @@ pub(crate) fn render_sample<'py>(
             "Invalid native sample settings, state, or buffers",
         ));
     }
-    let (
-        index,
-        position,
-        error,
-        direction,
-        looping,
-        overlap,
-        released,
-        exhausted,
-        repeats_remaining,
-        plays_remaining,
-        end_fade_at,
-    ) = state;
-    let state = CursorState {
-        index,
-        position,
-        error,
-        direction,
-        looping,
-        overlap,
-        released,
-        exhausted,
-        repeats_remaining,
-        plays_remaining,
-        end_fade_at,
-    };
-    let initial = cursor
-        .resume(state, frame)
-        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let initial = restore_cursor(*cursor, state, frame)?;
     let envelope = super::envelope_spans(envelope, count)?;
     let steps = steps.as_slice()?.to_vec();
     let gains = gains.as_slice()?.to_vec();

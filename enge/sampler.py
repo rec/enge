@@ -17,6 +17,7 @@ from . import filters, synth
 from .synth import EngineError
 
 if TYPE_CHECKING:
+    from . import _native
     from ._native import SampleBuffer, SampleTraversal
 
 
@@ -112,6 +113,21 @@ class SampleState(Model, frozen=True):
     repeats_remaining: int | None = Field(default=None, ge=0, le=2**64 - 1)
     plays_remaining: int = Field(default=0, ge=0, le=2**64 - 1)
     end_fade_at: int | None = Field(default=None, ge=0)
+
+    def native_state(self) -> "_native.SampleState":
+        return (
+            self.index,
+            self.position,
+            self.error,
+            self.direction,
+            self.looping,
+            self.overlap,
+            self.released,
+            self.exhaustion_frame,
+            self.repeats_remaining,
+            self.plays_remaining,
+            self.end_fade_at,
+        )
 
     @classmethod
     def start(cls, definition: PreparedSample) -> Self:
@@ -221,6 +237,26 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                 count, ceil(self.fade_frames) - (self.frame_count - self.fade_at)
             )
         return count
+
+    def active_source_prefix(
+        self, sample: PreparedSample, maximum_step: float, frames: int
+    ) -> int:
+        """Bound control evaluation to the traversal and next pending release."""
+        state = self.source
+        release_now = False
+        if self.release_frame is not None and not state.released:
+            until_release = self.release_frame - state.frame
+            release_now = until_release <= 0
+            if not release_now:
+                frames = min(frames, ceil(until_release))
+        if self.backend == "native":
+            return sample.native_traversal.active_prefix(
+                state.native_state(), state.frame, release_now, maximum_step, frames
+            )
+        cursor = _Cursor(sample, state)
+        if release_now:
+            cursor.release()
+        return cursor.active_prefix(state.frame, maximum_step, frames)
 
     def fade(self, seconds: float) -> None:
         frames = seconds * self.definition.sample_rate
@@ -533,6 +569,23 @@ class _Cursor:
         if gain == 0:
             self.exhaustion_frame = frame
         return gain
+
+    def active_prefix(self, frame: int, maximum_step: float, frames: int) -> int:
+        self.settle(frame)
+        if self.exhaustion_frame is not None:
+            return 0
+        rate = self.definition.sample_rate
+        duration = self.definition.end_fade_seconds * rate
+        if duration and self.end_fade_at is not None:
+            frames = min(frames, max(0, ceil(duration) - (frame - self.end_fade_at)))
+        distance = self.remaining()
+        if distance is None:
+            return frames
+        if not isfinite(maximum_step) or maximum_step <= 0:
+            return min(frames, 1)
+        horizon = (distance * rate + min(self.error, 0)) / maximum_step
+        known = int(np.nextafter(horizon, -np.inf)) if horizon > 0 else 0
+        return min(frames, max(1, known))
 
     def take_repeat(self) -> bool:
         if self.repeats_remaining == 0:

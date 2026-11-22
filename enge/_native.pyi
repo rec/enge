@@ -469,6 +469,14 @@ class SampleTraversal:
         additional_plays: int = 0,
         end_fade_seconds: float = 0,
     ) -> None: ...
+    def active_prefix(
+        self,
+        state: SampleState,
+        frame: int,
+        release_now: bool,
+        maximum_step: float,
+        requested: int,
+    ) -> int: ...
 
 type SampleState = tuple[
     int,

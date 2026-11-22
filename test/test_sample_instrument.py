@@ -1028,24 +1028,28 @@ def test_preparation_rejects_invalid_filter_bounds_before_rendering() -> None:
         sample_instrument.prepare(document, {"asset": np.ones((4, 2))})
 
 
-@pytest.mark.parametrize("loop", [False, True])
+@pytest.mark.parametrize("loop", ["none", "until_release", "finite"])
 def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
     backend: Literal["numpy", "native"],
     tmp_path: Path,
-    loop: bool,
+    loop: str,
 ) -> None:
     raw = sample_score(frames=2).model_dump(mode="json")
-    dynamic = dynamic_score(smoothing="1/12000").body
+    active = 4 if loop == "finite" else 2
+    dynamic = dynamic_score(smoothing=str(Fraction(2 * active, 48000))).body
     raw["body"]["settings"]["controls"] = {
         n: c.model_dump() for n, c in dynamic.controls.items()
     }
     slot = raw["body"]["slots"][0]
     slot["modulation"] = dynamic.voices[0].modulation.model_dump(mode="json")
     slot["bindings"] = [b.model_dump(mode="json") for b in dynamic.voices[0].bindings]
-    slot["modulation"]["parameters"][0]["maximum"] = 1.25
+    slot["modulation"]["parameters"][0]["maximum"] = 1.5 - 1 / (2 * active)
     slot["modulation"]["routes"][0]["operation"] = "add"
-    if loop:
+    if loop != "none":
         raw["body"]["slices"][0]["loop"] = {"start_frame": 0, "end_frame": 2}
+    if loop == "finite":
+        raw["body"]["slices"][0]["loop"]["repeat_count"] = 1
+    if loop == "until_release":
         raw["body"]["settings"]["envelope"]["release"] = [
             {"duration": "1/2 s", "to": 0}
         ]
@@ -1058,14 +1062,14 @@ def test_exhausted_sample_does_not_evaluate_later_voice_parameters(
             change(0, 1),
             *(
                 [Release(tick=2, ordinal=0, part="main", trigger_id="note")]
-                if loop
+                if loop == "until_release"
                 else []
             ),
         ],
         seed=0,
     ).actions
     expected = np.zeros((48000, 2))
-    expected[:2] = [[1, 1.25], [1.25, 1.5625]]
+    expected[:active] = (1 + np.arange(active) / (2 * active))[:, None] * [1, 1.25]
     renderer = sample_instrument.OfflineSampler(prepared, backend=backend)
     actual = renderer.advance(actions, 0, 48000)
     check_audio(tmp_path / "exhausted-control-ramp.wav", actual, expected)

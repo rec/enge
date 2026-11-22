@@ -255,6 +255,15 @@ The shared cursor subsequently passed 711 focused macOS tests with zero Rust
 heap operations in 6,507 successful and seven failed callbacks. The generated
 report is `build/rust-ufor-sample-cursor-audit.xml`.
 
+Offline native control batching uses the same cursor to bound the active
+prefix from the maximum tuning, remaining finite traversal, and any latched
+end fade. The host splits the request at a pending release before calculating
+the bound. The NumPy reference applies the same rule. This keeps control
+evaluation inside the audible lifetime of a finite loop.
+The batch bound passed 713 focused macOS tests with zero Rust heap operations
+in 6,507 successful and seven failed callbacks. The generated report is
+`build/rust-ufor-sample-prefix-audit.xml`.
+
 The native sampler prepares a Rust uFor pitch mapping per slot. Each onset
 uses the resolved `pitch_hz`, the sample's reference frequency, and the voice's
 pitch variation. The sampler applies the native asset rate and live tuning in

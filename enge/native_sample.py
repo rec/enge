@@ -38,19 +38,7 @@ def render(
         )
     audio, values, filter_states = _native.render_sample(
         definition.native_traversal,
-        (
-            state.index,
-            state.position,
-            state.error,
-            state.direction,
-            state.looping,
-            state.overlap,
-            state.released,
-            state.exhaustion_frame,
-            state.repeats_remaining,
-            state.plays_remaining,
-            state.end_fade_at,
-        ),
+        state.native_state(),
         state.frame,
         np.ascontiguousarray(steps),
         release,

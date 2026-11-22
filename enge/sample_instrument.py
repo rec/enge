@@ -23,7 +23,7 @@ from ufor.samples import (
     trace,
     variation,
 )
-from ufor.samples.enums import Direction, LoopMode
+from ufor.samples.enums import Direction
 from ufor.streams import AudioType
 
 from . import (
@@ -628,7 +628,16 @@ class OfflineSampler:
             count = voice.renderer.active_frames(frames)
             common = self.definition.document.body.settings
             settings = self.definition.settings[voice.template]
+            sample = self.definition.samples[voice.template]
+            maximum_cents = _maximum_tuning(common) + _maximum_tuning(settings)
+            with np.errstate(over="ignore", invalid="ignore"):
+                maximum_step = float(
+                    voice.renderer.definition.pitch_ratio
+                    * np.exp2(maximum_cents / 1200)
+                    * sample.native_rate
+                )
             offset = 0
+            exhausted = False
             while offset < count:
                 if voice.renderer.complete:
                     break
@@ -636,13 +645,12 @@ class OfflineSampler:
                 # their declared maximum tuning to find a prefix guaranteed to
                 # remain within the source, then resolve/render that prefix in
                 # one call. The last uncertain frame remains a one-frame call.
-                size = _safe_render_frames(
-                    voice.renderer,
-                    self.definition.samples[voice.template],
-                    common,
-                    settings,
-                    count - offset,
+                size = voice.renderer.active_source_prefix(
+                    sample, maximum_step, count - offset
                 )
+                if size == 0:
+                    exhausted = True
+                    break
                 tuning, gains, common_filters = self.controls.parameters(
                     common, voice.instrument_sources, start + offset, size
                 )
@@ -653,7 +661,7 @@ class OfflineSampler:
                     (tuning + slot_tuning) / 1200
                 )
                 output[offset : offset + size] += voice.renderer.render(
-                    self.definition.samples[voice.template],
+                    sample,
                     size,
                     ratios,
                     gains
@@ -662,7 +670,7 @@ class OfflineSampler:
                     np.concatenate((slot_filters, common_filters), axis=1),
                 )
                 offset += size
-            if voice.renderer.complete:
+            if exhausted or voice.renderer.complete:
                 del self.voices[voice.voice_id]
                 self.controls.stop(voice.voice_id)
         return output
@@ -1438,44 +1446,6 @@ def _validate_settings(settings: processing.SoundSettings) -> None:
         settings, allow_velocity_bindings=True, allow_key_bindings=True
     )
     synth.validate_modulation(settings)
-
-
-def _safe_render_frames(
-    renderer: sampler.SampleVoiceRenderer,
-    source: sampler.PreparedSample,
-    common: processing.SoundSettings,
-    settings: processing.SoundSettings,
-    frames: int,
-) -> int:
-    """Return a prefix known not to cross natural sample exhaustion.
-
-    Filter/control values may be invalid after a finite source ends, so a batch
-    must stop before that boundary. A currently looping source cannot exhaust.
-    For a finite traversal, the maximum declared tuning bounds its furthest
-    possible advance. The remaining uncertain frame is rendered alone.
-    """
-    state = renderer.source
-    loop = source.slice.loop
-    ending_loop = (
-        loop is not None
-        and loop.mode == LoopMode.until_release
-        and renderer.release_frame is not None
-        and renderer.release_frame <= renderer.frame_count
-    )
-    if state.looping and not ending_loop:
-        return frames
-    maximum = renderer.definition.pitch_ratio * np.exp2(
-        (_maximum_tuning(common) + _maximum_tuning(settings)) / 1200
-    )
-    step = maximum * source.native_rate
-    distance = (
-        source.slice.end_frame - state.index
-        if state.direction == 1
-        else state.index - source.slice.start_frame + 1
-    )
-    remaining = distance * source.sample_rate - state.position
-    known = int(np.floor(np.nextafter(remaining / step, -np.inf)))
-    return max(1, min(frames, known))
 
 
 def _layer_gain(slot: instrument.SampleSlot, action: trace.VoiceStart) -> float:
