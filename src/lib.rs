@@ -250,6 +250,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<runtime::SynthRuntime>()?;
     module.add_class::<runtime::SynthRuntimeSnapshot>()?;
     module.add_class::<sampler::SampleBuffer>()?;
+    module.add_function(wrap_pyfunction!(sampler::prepare_sample_assets, module)?)?;
     module.add_class::<sampler::SamplePitchMapping>()?;
     module.add_class::<sampler::SampleCrossfades>()?;
     module.add_class::<sampler::SampleEligibility>()?;

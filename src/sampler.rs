@@ -5,8 +5,9 @@ use numpy::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use ufor::codec::{self, Format};
+use ufor::envelfo::PreparationLimits;
 use ufor::identifier::Identifier;
 use ufor::number::Rational;
 use ufor::samples::crossfade::Crossfade;
@@ -15,6 +16,20 @@ use ufor::samples::eligibility::Eligibility;
 use ufor::samples::inheritance::resolve_slot_settings;
 use ufor::samples::playback::{Mapping, ResolvedSlotPlayback};
 use ufor::samples::variation::DrawEvent;
+
+#[pyfunction]
+#[pyo3(signature = (document, decoded_shapes, *, max_records=10_000))]
+pub(crate) fn prepare_sample_assets(
+    document: &str,
+    decoded_shapes: BTreeMap<String, Vec<usize>>,
+    max_records: usize,
+) -> PyResult<(i64, BTreeMap<String, i64>)> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let limits = PreparationLimits::new(max_records).map_err(invalid)?;
+    codec::parse_sample_inventory(document, Format::Json, limits)
+        .and_then(|inventory| inventory.integer_rates(&decoded_shapes))
+        .map_err(invalid)
+}
 
 #[pyfunction]
 #[pyo3(signature = (slot, group=None))]

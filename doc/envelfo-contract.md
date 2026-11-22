@@ -243,11 +243,20 @@ inside 2,227 successful and one failed callback. The generated report is
 
 The offline native sampler and the live sampler share a prepared traversal
 from Rust uFor's authored slice, loop and resolved playback declarations.
-Preparation checks the decoded frame bounds. Both samplers use Rust uFor's
-cursor for pending release and loop decisions, forward and reverse movement,
-mirror turns, whole plays, overlap taps, and end fades. A shared read plan
-determines overlap and interpolation weights once per frame and applies them
-to each decoded channel supplied by enge. Enge owns filtering and routing.
+Sampler preparation uses Rust uFor to resolve the output and native asset
+timebases, check slice extents, and match the decoded array shapes to the
+referenced assets. The asset inventory budget defaults to 10,000 records and
+can be overridden for a preparation call. Enge loads and fingerprints the
+audio buffers.
+Asset inventory preparation passed 718 focused macOS tests with zero Rust
+heap operations in 6,507 successful and seven failed callbacks. The generated
+report is `build/rust-ufor-sample-inventory-audit.xml`.
+
+Both samplers use Rust uFor's cursor for pending release and loop decisions,
+forward and reverse movement, mirror turns, whole plays, overlap taps, and
+end fades. A shared read plan determines overlap and interpolation weights
+once per frame and applies them to each decoded channel supplied by enge.
+Enge owns filtering and routing.
 Snapshot and Python bridge coordinates retain their existing integer and
 floating-point fields.
 The offline native bridge passes a release as a batch frame offset and an

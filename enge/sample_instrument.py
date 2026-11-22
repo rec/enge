@@ -216,36 +216,46 @@ def _resolve_variation(
 
 
 def prepare(
-    score: instrument.SampleInstrumentScore, audio: dict[str, np.ndarray]
+    score: instrument.SampleInstrumentScore,
+    audio: dict[str, np.ndarray],
+    *,
+    max_records: int = 10_000,
 ) -> PreparedSampler:
     """Prepare already-decoded assets; file discovery and decoding stay outside.
 
     Asset arrays must match the declared native frame/channel layout. Decoded
     content fingerprints bind snapshots to the actual audio, independently of
-    the document's encoded-file hashes.
+    the document's encoded-file hashes. `max_records` bounds asset inventory
+    preparation.
     """
     score = instrument.SampleInstrumentScore.model_validate(score.model_dump())
     output = score.outputs[0].stream
     assert isinstance(output, AudioType)
-    rates = {t.name: t.rate for t in score.timebases}
-    if rates[output.timebase].denominator != 1:
-        raise synth.EngineError("Sampler output rate must be an integer")
-    sample_rate = rates[output.timebase].numerator
+    try:
+        sample_rate, native_rates = _native.prepare_sample_assets(
+            dumps(
+                {
+                    "timebases": [t.model_dump(mode="json") for t in score.timebases],
+                    "assets": [
+                        a.model_dump(mode="json", include={"name", "audio"})
+                        for a in score.assets
+                    ],
+                    "slices": [s.model_dump(mode="json") for s in score.body.slices],
+                    "output": output.model_dump(
+                        mode="json", include={"timebase", "channels"}
+                    ),
+                }
+            ),
+            {n: a.shape for n, a in audio.items()},
+            max_records=max_records,
+        )
+    except ValueError as error:
+        raise synth.EngineError(str(error)) from error
     assets = {a.name: a for a in score.assets}
     slices = {s.name: s for s in score.body.slices}
-    required = {s.asset for s in score.body.slices}
-    if audio.keys() != required:
-        raise synth.EngineError("Decoded assets must match the referenced asset IDs")
     decoded: dict[str, np.ndarray] = {}
     digests: dict[str, str] = {}
-    for name in required:
-        metadata = assets[name].audio
-        if audio[name].shape != (metadata.frames, len(metadata.channels)):
-            raise synth.EngineError(
-                f"Decoded asset {name} does not match its frame/channel layout"
-            )
-        if rates[metadata.timebase].denominator != 1:
-            raise synth.EngineError("Sampler native rate must be an integer")
+    for name in native_rates:
         decoded[name] = sampler.PreparedSample.immutable_audio(audio[name])
         digests[name] = sha256(decoded[name].tobytes()).hexdigest()
 
@@ -293,7 +303,7 @@ def prepare(
         resolved, additional_plays, end_fade_seconds = traversal.resolved()
         samples[slot.name] = sampler.PreparedSample(
             samples=decoded[selection.asset],
-            native_rate=rates[assets[selection.asset].audio.timebase].numerator,
+            native_rate=native_rates[selection.asset],
             sample_rate=sample_rate,
             slice=selection,
             play_count=additional_plays + 1,

@@ -1018,6 +1018,31 @@ def test_unpitched_samples_inherit_direction_without_inventing_pitch(
     assert renderer.snapshot().voices == []
 
 
+@pytest.mark.parametrize(
+    ("audio", "error"),
+    [
+        ({}, "Decoded assets must match the referenced asset IDs"),
+        ({"asset": np.ones((4,))}, "does not match its frame/channel layout"),
+        ({"asset": np.ones((3, 2))}, "does not match its frame/channel layout"),
+    ],
+)
+def test_preparation_validates_decoded_asset_inventory(
+    audio: dict[str, np.ndarray], error: str
+) -> None:
+    with pytest.raises(sample_instrument.synth.EngineError, match=error):
+        sample_instrument.prepare(sample_score(frames=4), audio)
+
+
+def test_asset_inventory_budget_applies_to_sampler_preparation() -> None:
+    document = sample_score(frames=4, native_rate=44100)
+    audio = {"asset": np.ones((4, 2))}
+    with pytest.raises(sample_instrument.synth.EngineError, match="inventory records"):
+        sample_instrument.prepare(document, audio, max_records=4)
+    prepared = sample_instrument.prepare(document, audio, max_records=5)
+    assert prepared.sample_rate == 48000
+    assert prepared.samples["sample"].native_rate == 44100
+
+
 def test_preparation_rejects_invalid_filter_bounds_before_rendering() -> None:
     raw = sample_score(frames=4).model_dump(mode="json")
     raw["body"]["settings"]["processing"]["filters"] = [
