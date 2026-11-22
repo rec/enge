@@ -287,9 +287,9 @@ to the threshold starts with the pedal pressed.
 Persistent synth, FM and noise voices use Rust uFor to convert minimum
 hold seconds to exact frame durations, including fractional frames.
 
-Native synth-family trace eligibility prepares mapped voice metadata through
-Rust uFor. The record limit includes each voice's routes, chokes and
-articulation references.
+Native synth-family trace eligibility prepares mapped oscillator, FM and
+white-noise voices through Rust uFor. The record limit includes voice
+metadata, source graphs and amplitude envelopes.
 
 Both samplers use Rust uFor's cursor for pending release and loop decisions,
 forward and reverse movement, mirror turns, whole plays, overlap taps, and

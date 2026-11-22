@@ -14,7 +14,7 @@ use ufor::performance_binding::{ControlValue, HeldNotes, MidiBindings, RepeatedK
 use ufor::samples::controls::ControlDeclaration;
 use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
-use ufor::synth::VoiceTemplates;
+use ufor::synth::SynthVoices;
 use ufor::synth_pitch;
 use ufor::time::{PpqnClock, duration_frames};
 use ufor::voice_start;
@@ -368,7 +368,7 @@ pub(crate) fn prepare_voice_start(
 }
 
 #[pyclass(frozen, skip_from_py_object)]
-pub(crate) struct PreparedVoiceEligibility(VoiceTemplates);
+pub(crate) struct PreparedVoiceEligibility(SynthVoices);
 
 #[pymethods]
 impl PreparedVoiceEligibility {
@@ -376,7 +376,7 @@ impl PreparedVoiceEligibility {
     #[pyo3(signature = (document, *, max_records=10_000))]
     fn new(document: &str, max_records: usize) -> PyResult<Self> {
         PreparationLimits::new(max_records)
-            .and_then(|limits| codec::parse_synth_voice_templates(document, Format::Json, limits))
+            .and_then(|limits| codec::parse_synth_voices(document, Format::Json, limits))
             .map(Self)
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }

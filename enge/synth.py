@@ -534,6 +534,11 @@ def prepare_trace(
         "choke_group",
         "chokes",
         "articulations",
+        "oscillator",
+        "synchronize_oscillator",
+        "noise",
+        "fm",
+        "envelope",
     }
     eligibility = _native.PreparedVoiceEligibility(
         json.dumps(
