@@ -65,7 +65,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "reccy", git = "https://github.com/rec/reccy.git?branch=main" },
     { name = "tyro", specifier = ">=1.0.16" },
-    { name = "ufor", git = "https://github.com/rec/ufor.git?rev=9079622b8a170687a3bdd008d90b7210987fbe0f" },
+    { name = "ufor", git = "https://github.com/rec/ufor.git?rev=7284606f0b7d257f5d00d277382e68d628ba0a8a" },
 ]
 
 [package.metadata.requires-dev]
@@ -470,7 +470,7 @@ wheels = [
 [[package]]
 name = "ufor"
 version = "0.2.0"
-source = { git = "https://github.com/rec/ufor?branch=main#9079622b8a170687a3bdd008d90b7210987fbe0f" }
+source = { git = "https://github.com/rec/ufor?branch=main#7284606f0b7d257f5d00d277382e68d628ba0a8a" }
 dependencies = [
     { name = "pydantic" },
     { name = "reccy" },
