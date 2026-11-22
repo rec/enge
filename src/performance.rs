@@ -9,6 +9,7 @@ use ufor::envelfo::{PreparationLimits, Waveform};
 use ufor::identifier::Identifier;
 use ufor::number::Rational;
 use ufor::oscillator::Oscillator;
+use ufor::performance_binding::{ControlValue, MidiBindings, RepeatedKeyRelease};
 use ufor::samples::eligibility::VoiceEligibility;
 use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
@@ -19,6 +20,52 @@ use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
 type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
+
+#[pyclass(frozen, skip_from_py_object)]
+pub(crate) struct PreparedMidiBindings(MidiBindings);
+
+#[pymethods]
+impl PreparedMidiBindings {
+    #[new]
+    fn new(document: &str) -> PyResult<Self> {
+        codec::parse_midi_bindings(document, Format::Json, PreparationLimits::default())
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn parts(&self) -> Vec<&str> {
+        self.0.parts().map(Identifier::as_str).collect()
+    }
+
+    fn note_route(&self, channel: u8) -> Option<(&str, bool)> {
+        self.0
+            .note_route(channel)
+            .map(|(part, release)| (part.as_str(), release == RepeatedKeyRelease::Oldest))
+    }
+
+    fn control_change(
+        &self,
+        channel: u8,
+        controller: u8,
+        value: u8,
+    ) -> PyResult<Option<(&str, &str, f64)>> {
+        control_value(self.0.control_change(channel, controller, value))
+    }
+
+    fn pitch_bend(&self, channel: u8, value: i16) -> PyResult<Option<(&str, &str, f64)>> {
+        control_value(self.0.pitch_bend(channel, value))
+    }
+}
+
+fn control_value(
+    result: Result<Option<ControlValue<'_>>, ufor::error::Error>,
+) -> PyResult<Option<(&str, &str, f64)>> {
+    result
+        .map(|value| {
+            value.map(|mapped| (mapped.part.as_str(), mapped.control.as_str(), mapped.value))
+        })
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
 
 #[pyclass(skip_from_py_object)]
 pub(crate) struct MidiFileClock(PpqnClock);

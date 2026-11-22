@@ -1,6 +1,7 @@
 """Caller-driven MIDI 1 conversion using resolved uFor performance bindings."""
 
 from collections import deque
+from json import dumps
 from typing import NoReturn
 
 from meedee import messages
@@ -10,7 +11,7 @@ from ufor.samples.instrument import SampleInstrumentScore
 from ufor.synth import SynthInstrumentScore
 from ufor.tuning import Tuning
 
-from ._native import PreparedTuning
+from ._native import PreparedMidiBindings, PreparedTuning
 
 
 class MidiConverter:
@@ -35,10 +36,16 @@ class MidiConverter:
             raise ValueError("max_held_notes must be a positive integer")
         self._source = identifier(source)
         self._limit = max_held_notes
-        self._inputs: dict[int, performance_binding.MidiPerformanceInput] = {}
-        self._controllers: dict[
-            tuple[int, int], performance_binding.MidiController
-        ] = {}
+        entries = binding.model_copy(deep=True).body.midi
+        self._bindings = PreparedMidiBindings(
+            dumps(
+                {
+                    "midi": [
+                        e.model_dump(mode="json", exclude={"tuning"}) for e in entries
+                    ]
+                }
+            )
+        )
         self._tunings: dict[int, PreparedTuning] = {}
         prepared_tunings: dict[str, PreparedTuning] = {}
         declarations = (
@@ -46,7 +53,7 @@ class MidiConverter:
             if isinstance(instrument, SampleInstrumentScore)
             else instrument.body
         )
-        for entry in binding.model_copy(deep=True).body.midi:
+        for entry in entries:
             for mapping in [
                 *entry.controllers,
                 *([entry.pitch_bend] if entry.pitch_bend else []),
@@ -69,12 +76,9 @@ class MidiConverter:
                             f"Cannot prepare tuning {key}: {error}"
                         ) from error
                 tuning = prepared_tunings[key]
-            for channel in entry.channels:
-                self._inputs[channel] = entry
-                if tuning is not None:
+            if tuning is not None:
+                for channel in entry.channels:
                     self._tunings[channel] = tuning
-                for mapping in entry.controllers:
-                    self._controllers[channel, mapping.number] = mapping
         self._held: dict[tuple[int, int], deque[str]] = {}
         self._count = 0
         self._next_id = 0
@@ -89,7 +93,7 @@ class MidiConverter:
     @property
     def parts(self) -> list[str]:
         """Configured destination names, including parts with no observations."""
-        return list(dict.fromkeys(e.part for e in self._inputs.values()))
+        return self._bindings.parts()
 
     @property
     def ready(self) -> bool:
@@ -121,9 +125,31 @@ class MidiConverter:
             if isinstance(message, _IGNORED_MESSAGES):
                 return []
             self._fail("MIDI converter requires a primitive MIDI 1 message")
-        entry = self._inputs.get(message.channel)
-        if entry is None:
+        if isinstance(message, messages.ControlChange | messages.PitchBend):
+            mapped = (
+                self._bindings.control_change(
+                    message.channel, message.controller, message.value
+                )
+                if isinstance(message, messages.ControlChange)
+                else self._bindings.pitch_bend(message.channel, message.value)
+            )
+            if mapped is None:
+                return []
+            part, control, value = mapped
+            return [
+                events.ControlChange(
+                    tick=tick,
+                    ordinal=ordinal,
+                    part=part,
+                    scope="part",
+                    control=control,
+                    value=value,
+                )
+            ]
+        route = self._bindings.note_route(message.channel)
+        if route is None:
             return []
+        part, oldest = route
         if isinstance(message, messages.NoteOn) and message.velocity:
             if self._count >= self._limit:
                 self._fail("MIDI held-note limit exceeded")
@@ -137,7 +163,7 @@ class MidiConverter:
                 event = events.Trigger(
                     tick=tick,
                     ordinal=ordinal,
-                    part=entry.part,
+                    part=part,
                     trigger_id=f"{self._source}-note-{self._next_id}",
                     key=message.note,
                     velocity=message.velocity / 127,
@@ -154,65 +180,24 @@ class MidiConverter:
             self._next_id += 1
             self._count += 1
             return [event]
-        if isinstance(message, messages.NoteOn | messages.NoteOff):
-            key = message.channel, message.note
-            queue = self._held.get(key)
-            if not queue:
-                self._fail("Unmatched MIDI note-off")
-            oldest = entry.repeated_key_release == "oldest"
-            release = events.Release(
-                tick=tick,
-                ordinal=ordinal,
-                part=entry.part,
-                trigger_id=queue[0] if oldest else queue[-1],
-            )
-            if oldest:
-                queue.popleft()
-            else:
-                queue.pop()
-            if not queue:
-                del self._held[key]
-            self._count -= 1
-            return [release]
-        if isinstance(message, messages.ControlChange):
-            mapping = self._controllers.get((message.channel, message.controller))
-            if mapping is None:
-                return []
-            control = mapping.control
-            value = (
-                mapping.maximum
-                if message.value == 127
-                else (
-                    mapping.minimum
-                    + (mapping.maximum - mapping.minimum) * message.value / 127
-                )
-            )
+        key = message.channel, message.note
+        queue = self._held.get(key)
+        if not queue:
+            self._fail("Unmatched MIDI note-off")
+        release = events.Release(
+            tick=tick,
+            ordinal=ordinal,
+            part=part,
+            trigger_id=queue[0] if oldest else queue[-1],
+        )
+        if oldest:
+            queue.popleft()
         else:
-            bend = entry.pitch_bend
-            if bend is None:
-                return []
-            control = bend.control
-            if message.value == -8192:
-                value = bend.minimum
-            elif message.value == 8191:
-                value = bend.maximum
-            else:
-                value = (
-                    bend.center + (bend.center - bend.minimum) * message.value / 8192
-                    if message.value < 0
-                    else bend.center
-                    + (bend.maximum - bend.center) * message.value / 8191
-                )
-        return [
-            events.ControlChange(
-                tick=tick,
-                ordinal=ordinal,
-                part=entry.part,
-                scope="part",
-                control=control,
-                value=value,
-            )
-        ]
+            queue.pop()
+        if not queue:
+            del self._held[key]
+        self._count -= 1
+        return [release]
 
     def report_loss(self) -> None:
         """Invalidate known pairing without emitting speculative releases."""
