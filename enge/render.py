@@ -109,13 +109,12 @@ def render_midi(
                 renderer = synth.OfflineSynth(
                     synth.prepare(score), backend, control_interval
                 )
-            prepare_synth_trace = (
-                synth.prepare_trace
-                if backend == "native"
-                or isinstance(renderer, yamaha_instrument.OfflineYamaha)
-                else synth_trace.prepare
-            )
-            actions = prepare_synth_trace(score.body, events, seed=0).actions
+            if backend == "native" or isinstance(
+                renderer, yamaha_instrument.OfflineYamaha
+            ):
+                actions = synth.prepare_trace(score, events, seed=0).actions
+            else:
+                actions = synth_trace.prepare(score.body, events, seed=0).actions
         if (
             renderer.definition.sample_rate != performance.sample_rate
             or renderer.definition.channels != ["left", "right"]

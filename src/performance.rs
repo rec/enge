@@ -15,6 +15,7 @@ use ufor::performance_binding::{ControlValue, HeldNotes, MidiBindings, RepeatedK
 use ufor::samples::controls::ControlDeclaration;
 use ufor::samples::playback::{self, sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
+use ufor::score::Score;
 use ufor::synth::SynthInstrument;
 use ufor::synth_pitch;
 use ufor::time::{PpqnClock, duration_frames};
@@ -435,10 +436,23 @@ pub(crate) struct PreparedVoiceEligibility(SynthInstrument);
 #[pymethods]
 impl PreparedVoiceEligibility {
     #[new]
-    #[pyo3(signature = (document, *, max_records=10_000))]
-    fn new(document: &str, max_records: usize) -> PyResult<Self> {
+    #[pyo3(signature = (document, *, is_score=false, max_records=10_000))]
+    fn new(document: &str, is_score: bool, max_records: usize) -> PyResult<Self> {
         PreparationLimits::new(max_records)
-            .and_then(|limits| codec::parse_synth_instrument(document, Format::Json, limits))
+            .and_then(|limits| {
+                if is_score {
+                    let Score::SynthInstrument(score) =
+                        codec::parse_score(document, Format::Json, limits)?
+                    else {
+                        return Err(ufor::error::Error::Invalid(
+                            "expected a synth instrument score".into(),
+                        ));
+                    };
+                    Ok(score.into_body())
+                } else {
+                    codec::parse_synth_instrument(document, Format::Json, limits)
+                }
+            })
             .map(Self)
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }

@@ -90,9 +90,15 @@ def test_native_yamaha_trace_matches_the_reference(kind: str) -> None:
         ),
         Release(tick=20, ordinal=0, part="main", trigger_id="key"),
     ]
-    assert synth.prepare_trace(score.body, events, 3) == synth_trace.prepare(
+    assert synth.prepare_trace(score, events, 3) == synth_trace.prepare(
         score.body, events, 3
     )
+
+
+def test_native_yamaha_trace_requires_the_scores_public_timebase() -> None:
+    score = instrument("wt11").model_copy(update={"timebases": []})
+    with pytest.raises(ValueError, match="unknown timebase"):
+        synth.prepare_trace(score, [], 0)
 
 
 @pytest.mark.parametrize(

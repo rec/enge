@@ -36,8 +36,10 @@ uses that machinery, including common/slot remapping.
 | Python host | Authoring, resource/reference resolution and orchestration until explicitly migrated |
 
 Rust uFor's score codec supports tuning, scale, oscillator, EnveLFO, sequence,
-automation, and performance binding scores. Python validates complete instrument
-and effect documents and resolves their resources. The partial binding validator
+automation, performance binding, and synth instrument scores. Native synth-family
+MIDI trace preparation validates the complete score, including its ports and
+timebases. Python resolves instrument resources and validates the remaining
+instrument and effect document types. The partial binding validator
 reports unresolved reference, follower, event and target requirements. Enge
 discharges applicable requirements before building an executable plan.
 

@@ -525,7 +525,7 @@ def apply_amplitude_event(
 
 
 def prepare_trace(
-    definition: SynthInstrument,
+    definition: SynthInstrument | SynthInstrumentScore,
     events: list[PerformanceEvent],
     seed: int,
     *,
@@ -536,6 +536,7 @@ def prepare_trace(
     """Prepare synth-family actions with Rust uFor voice and release rules."""
     eligibility = _native.PreparedVoiceEligibility(
         definition.model_dump_json(),
+        is_score=isinstance(definition, SynthInstrumentScore),
         max_records=max_records,
     )
 
@@ -556,7 +557,7 @@ def prepare_trace(
         eligibility.validate_event(event.model_dump_json(exclude={"tick", "ordinal"}))
 
     return synth_trace.prepare(
-        definition,
+        definition.body if isinstance(definition, SynthInstrumentScore) else definition,
         events,
         seed,
         tempo_map=tempo_map,
