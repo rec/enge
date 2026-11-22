@@ -259,7 +259,7 @@ def test_native_trace_defers_releases_by_part_and_preserves_onset_order(
     kind: str,
 ) -> None:
     settings = {
-        "controls": {"pedal": {"default": 1.0}},
+        "controls": {"pedal": {"default": 0.5}},
         "sustain": {"control": "pedal"},
     }
     events: list[PerformanceEvent] = [
@@ -282,11 +282,9 @@ def test_native_trace_defers_releases_by_part_and_preserves_onset_order(
     else:
         raw = score().body.model_dump(mode="json")
         raw.update(settings)
-        synth = SynthInstrument.model_validate(raw)
-        prepared = synth_trace.prepare(
-            synth, events, seed=0, release_plan=voice_release.native_release_plan
-        )
-        assert prepared == synth_trace.prepare(synth, events, seed=0)
+        definition = SynthInstrument.model_validate(raw)
+        prepared = synth.prepare_trace(definition, events, seed=0)
+        assert prepared == synth_trace.prepare(definition, events, seed=0)
     assert [
         (a.tick, a.voice_id, a.cause)
         for a in prepared.actions

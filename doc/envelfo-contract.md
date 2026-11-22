@@ -280,6 +280,10 @@ Native sampler trace preparation asks Rust uFor to validate and prepare its
 latched keyswitch lookup. The sampler trace applies switches per part and
 records explicit clears in its selection snapshot.
 
+Native sampler and synth-family traces prepare their initial sustain state
+from the declared unipolar control default using Rust uFor. A default equal
+to the threshold starts with the pedal pressed.
+
 Both samplers use Rust uFor's cursor for pending release and loop decisions,
 forward and reverse movement, mirror turns, whole plays, overlap taps, and
 end fades. A shared read plan determines overlap and interpolation weights

@@ -167,6 +167,7 @@ def prepare_trace(
         resolve_variation=_resolve_variation,
         validate_event=prepare_event_validator(definition.settings.controls),
         prepare_keyswitches=keyswitches,
+        prepare_sustain=voice_release.native_initially_pressed,
     )
 
 

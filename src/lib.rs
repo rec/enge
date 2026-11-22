@@ -41,6 +41,18 @@ fn plan_voice_retirements(document: &str) -> PyResult<String> {
 }
 
 #[pyfunction]
+fn prepare_sustain(document: &str, declaration: &str) -> PyResult<bool> {
+    let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+    let sustain =
+        ufor::codec::parse_sustain(document, ufor::codec::Format::Json).map_err(invalid)?;
+    let control =
+        ufor::codec::parse_value(declaration, ufor::codec::Format::Json).map_err(invalid)?;
+    let control = serde_json::from_value(control)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    sustain.initially_pressed(&control).map_err(invalid)
+}
+
+#[pyfunction]
 fn plan_voice_release(document: &str) -> PyResult<String> {
     let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
     // The host's accumulated trigger state can exceed the score document limits.
@@ -270,6 +282,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(plan_voice_retirements, module)?)?;
+    module.add_function(wrap_pyfunction!(prepare_sustain, module)?)?;
     module.add_function(wrap_pyfunction!(plan_voice_release, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::draw_sample_range, module)?)?;
     module.add_function(wrap_pyfunction!(sampler::resolve_sample_variation, module)?)?;

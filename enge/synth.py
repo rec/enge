@@ -557,6 +557,7 @@ def prepare_trace(
         prepare_start=_native.prepare_voice_start,
         schedule=schedule,
         validate_event=prepare_event_validator(definition.controls),
+        prepare_sustain=voice_release.native_initially_pressed,
     )
 
 
