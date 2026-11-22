@@ -410,7 +410,18 @@ class SampleCrossfades:
     def onset_gain(
         self, key: int | None, velocity: float, volume_db: tuple[float, float, float]
     ) -> float: ...
-    def control_routes(self) -> list[tuple[float, float, bool, bool]]: ...
+    def control_routes(
+        self, declarations: str, sample_rate: int
+    ) -> list[
+        tuple[
+            str,
+            Literal["instrument", "part", "trigger"],
+            list[float],
+            tuple[int, int],
+            tuple[float, float],
+            tuple[bool, bool],
+        ]
+    ]: ...
     def control_weights(self, index: int, values: np.ndarray) -> np.ndarray: ...
 
 def plan_voice_retirements(document: str) -> str: ...

@@ -830,7 +830,13 @@ class PersistentSampler(OfflineSampler):
         if not isinstance(runtime, _native.LiveRuntime):
             raise synth.EngineError("Invalid native live runtime")
         common = self.definition.document.body.settings
+        control_declarations = dumps(
+            {n: c.model_dump(mode="json") for n, c in common.controls.items()}
+        )
         for slot in self.definition.document.body.slots:
+            fade_routes = self.native_crossfades[slot.name].control_routes(
+                control_declarations, self.definition.sample_rate
+            )
             sample = self.definition.samples[slot.name]
             settings = self.definition.settings[slot.name]
             envelope = settings.envelope or common.envelope
@@ -934,40 +940,30 @@ class PersistentSampler(OfflineSampler):
                 maps.extend(prepared[18][0])
             source = self.native_sources[slot.name]
             fades = []
-            for fade, (start, end, inward, equal_power) in zip(
-                (
-                    f
-                    for f in slot.crossfades
-                    if isinstance(f, crossfade.ControlCrossfade)
-                ),
-                self.native_crossfades[slot.name].control_routes(),
-                strict=True,
-            ):
-                declaration = common.controls[fade.control]
-                duration = (
-                    Fraction(str(fade.smoothing_seconds)) * self.definition.sample_rate
-                )
+            for name, scope, facts, duration, interval, shape in fade_routes:
+                default, scope_index, minimum = facts
+                start, end = interval
                 rows.append(
                     np.array(
                         [
                             [
-                                declaration.default,
-                                ["instrument", "part", "trigger"].index(fade.scope),
+                                default,
+                                scope_index,
                                 len(parameters) // 3,
                                 0,
-                                -1 if declaration.polarity == "bipolar" else 0,
+                                minimum,
                                 1,
                             ]
                         ],
                         dtype=np.float64,
                     )
                 )
-                smoothing.append((duration.numerator, duration.denominator))
+                smoothing.append(duration)
                 parameters.extend([0, 0, 1])
-                scopes.append(fade.scope)
-                names.append(fade.control)
+                scopes.append(scope)
+                names.append(name)
                 maps.append((0, [(start, 0.0), (end, 1.0)]))
-                fades.append((inward, equal_power))
+                fades.append(shape)
             runtime.set_sample_controls(
                 source,
                 np.concatenate(rows),

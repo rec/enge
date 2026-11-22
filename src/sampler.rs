@@ -10,7 +10,8 @@ use ufor::codec::{self, Format};
 use ufor::envelfo::PreparationLimits;
 use ufor::identifier::Identifier;
 use ufor::number::Rational;
-use ufor::samples::crossfade::Crossfade;
+use ufor::samples::controls::ControlDeclaration;
+use ufor::samples::crossfade::{ControlScope, Crossfade};
 use ufor::samples::cursor::{Cursor, CursorState};
 use ufor::samples::eligibility::Eligibility;
 use ufor::samples::inheritance::resolve_slot_settings;
@@ -258,6 +259,15 @@ pub(crate) struct SampleCrossfades {
     controls: Vec<Crossfade>,
 }
 
+type LiveFadeRoute = (
+    String,
+    &'static str,
+    [f64; 3],
+    (u64, u64),
+    (f64, f64),
+    (bool, bool),
+);
+
 #[pymethods]
 impl SampleCrossfades {
     #[new]
@@ -281,10 +291,37 @@ impl SampleCrossfades {
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
-    fn control_routes(&self) -> Vec<(f64, f64, bool, bool)> {
+    fn control_routes(&self, declarations: &str, sample_rate: i64) -> PyResult<Vec<LiveFadeRoute>> {
+        if self.controls.is_empty() {
+            return Ok(Vec::new());
+        }
+        let invalid = |error: ufor::error::Error| PyValueError::new_err(error.to_string());
+        let declarations = codec::parse_value(declarations, Format::Json).map_err(invalid)?;
+        let declarations: BTreeMap<Identifier, ControlDeclaration> =
+            serde_json::from_value(declarations)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
         self.controls
             .iter()
-            .filter_map(Crossfade::control_route)
+            .filter_map(|fade| fade.prepare_control(&declarations, sample_rate).transpose())
+            .map(|fade| {
+                let fade = fade.map_err(invalid)?;
+                let (scope, scope_index) = match fade.scope {
+                    ControlScope::Instrument => ("instrument", 0.0),
+                    ControlScope::Part => ("part", 1.0),
+                    ControlScope::Trigger => ("trigger", 2.0),
+                };
+                Ok((
+                    fade.control.as_str().to_owned(),
+                    scope,
+                    [fade.default, scope_index, fade.minimum],
+                    (
+                        fade.smoothing_frames.numerator() as u64,
+                        fade.smoothing_frames.denominator() as u64,
+                    ),
+                    fade.interval,
+                    fade.shape,
+                ))
+            })
             .collect()
     }
 

@@ -249,6 +249,9 @@ rendering also evaluate control-driven crossfades. Instrument, part and trigger
 controls use their
 declared source smoothing before the fade law, including independent smoothing
 durations for one control. Snapshots retain the ramps and each voice's context.
+For native live rendering, Rust uFor checks the fade endpoints against the
+declared control domain and converts smoothing to signed 64-bit rational frames
+during preparation.
 Native live samplers support authored amplitude and tuning control routes in
 instrument, part and trigger
 scopes, including common/slot composition, independent smoothing and snapshots.
