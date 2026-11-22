@@ -23,8 +23,10 @@ selector. Missing referenced tunings fail preparation. With no tuning reference,
 notes use 12-tone equal temperament with A4 at 440 Hz. Finite tunings do not wrap
 or fall back to equal temperament when a key is unavailable.
 
-Preparation snapshots the binding and decodes each referenced tuning once with
-Rust uFor's portable tuning codec. Invalid definitions fail construction with
+Rust uFor validates the authored performance binding score and prepares it
+against the resolved instrument's control declarations and supplied tunings.
+Preparation snapshots the binding and decodes each referenced tuning once.
+Invalid tuning definitions fail construction with
 the tuning reference in the error. A valid finite tuning can still reject an
 out-of-range note during feed. Rust evaluates configured tunings, and each
 trigger carries the resolved frequency in `pitch_hz`.

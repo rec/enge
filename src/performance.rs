@@ -125,8 +125,8 @@ impl MidiHeldNotes {
 #[pymethods]
 impl PreparedMidiBindings {
     #[new]
-    fn new(document: &str) -> PyResult<Self> {
-        codec::parse_midi_bindings(document, Format::Json, PreparationLimits::default())
+    fn new(score: &str, context: &str) -> PyResult<Self> {
+        codec::parse_midi_bindings(score, context, Format::Json, PreparationLimits::default())
             .map(Self)
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }

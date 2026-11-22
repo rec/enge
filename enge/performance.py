@@ -58,13 +58,9 @@ class MidiConverter:
         tuning_keys = {e.tuning.key for e in entries if e.tuning is not None}
         sources = tunings if tunings is not None else {}
         self._bindings = PreparedMidiBindings(
+            binding.model_dump_json(),
             dumps(
                 {
-                    "midi": [
-                        e.model_dump(mode="json", exclude={"tuning"})
-                        | {"tuning": e.tuning.key if e.tuning is not None else None}
-                        for e in entries
-                    ],
                     "controls": {
                         n: c.model_dump(mode="json")
                         for n, c in declarations.controls.items()
@@ -75,7 +71,7 @@ class MidiConverter:
                         if k in sources
                     },
                 }
-            )
+            ),
         )
         self._last: tuple[int, int] | None = None
 

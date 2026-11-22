@@ -273,12 +273,21 @@ def test_sample_instrument_uses_its_shared_control_declarations(
     assert event.value == 1
 
 
+@pytest.mark.parametrize(
+    ("reference", "key"),
+    [
+        ({"path": "tuning.toml"}, "tuning.toml"),
+        ({"selector": " concert # live # live "}, "selector:concert#live"),
+    ],
+)
 def test_tuning_references_are_required_snapshotted_and_never_wrapped(
     binding: performance_binding.PerformanceBindingScore,
     instrument: SynthInstrumentScore,
+    reference: dict[str, str],
+    key: str,
 ) -> None:
     raw = binding.model_dump()
-    raw["body"]["midi"][0]["tuning"] = {"path": "tuning.toml"}
+    raw["body"]["midi"][0]["tuning"] = reference
     binding = performance_binding.PerformanceBindingScore.model_validate(raw)
     with pytest.raises(ValueError, match="Unresolved tuning"):
         MidiConverter(source="keys", binding=binding, instrument=instrument)
@@ -287,7 +296,7 @@ def test_tuning_references_are_required_snapshotted_and_never_wrapped(
         source="keys",
         binding=binding,
         instrument=instrument,
-        tunings={"tuning.toml": tuning},
+        tunings={key: tuning},
     )
     assert isinstance(tuning.source, FrequencyTable)
     tuning.source.frequencies.clear()

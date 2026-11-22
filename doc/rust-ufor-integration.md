@@ -36,10 +36,10 @@ uses that machinery, including common/slot remapping.
 | Python host | Authoring, resource/reference resolution and orchestration until explicitly migrated |
 
 Rust uFor's score codec supports tuning, scale, oscillator, EnveLFO, sequence,
-and automation scores. Python validates complete instrument and effect documents
-and resolves their resources. The partial binding validator reports unresolved
-reference, follower, event and target requirements. Enge discharges applicable
-requirements before building an executable plan.
+automation, and performance binding scores. Python validates complete instrument
+and effect documents and resolves their resources. The partial binding validator
+reports unresolved reference, follower, event and target requirements. Enge
+discharges applicable requirements before building an executable plan.
 
 ## Implementation stages
 
@@ -450,6 +450,8 @@ The verification scope included:
 Audio regressions use 48,000 samples per second and at least one second of output.
 The stage records give the results from installed Python builds with locked
 Cargo dependencies. The opt-in allocation audit measured successful and failed
-callbacks for the migrated runtime paths. The results describe local macOS
-testing. Windows and Linux execution and hardware deadlines require separate
+callbacks for the migrated runtime paths on macOS. The
+[hosted run at `e634c26`](https://github.com/rec/enge/actions/runs/45044867301)
+passed both the core and Rubber Band profiles on Ubuntu 24.04, macOS 15, and
+Windows Server 2025 with middy 0.3.0. Hardware deadlines require separate
 qualification.
