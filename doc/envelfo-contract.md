@@ -245,9 +245,11 @@ The offline native sampler and the live sampler share a prepared traversal
 from Rust uFor's authored slice, loop and resolved playback declarations.
 Preparation checks the decoded frame bounds. Both samplers use Rust uFor's
 cursor for pending release and loop decisions, forward and reverse movement,
-mirror turns, whole plays, overlap taps, and end fades. Enge supplies the
-decoded audio and owns filtering and routing. Snapshot and Python bridge
-coordinates retain their existing integer and floating-point fields.
+mirror turns, whole plays, overlap taps, and end fades. A shared read plan
+determines overlap and interpolation weights once per frame and applies them
+to each decoded channel supplied by enge. Enge owns filtering and routing.
+Snapshot and Python bridge coordinates retain their existing integer and
+floating-point fields.
 The offline native bridge passes a release as a batch frame offset and an
 exact fraction within the frame. Rust uFor rounds both parts of the advance
 from their exact products, then applies the release between them. The
@@ -261,6 +263,9 @@ report is `build/rust-ufor-sample-cursor-audit.xml`.
 The fractional release split passed 740 focused macOS tests with zero Rust
 heap operations in 6,507 successful and nine failed callbacks. The generated
 report is `build/rust-ufor-sample-release-split-audit.xml`.
+The shared read plan passed 584 focused macOS tests with zero Rust heap
+operations in 3,793 successful and six failed callbacks. The generated report
+is `build/rust-ufor-sample-read-audit.xml`.
 
 Offline native control batching uses the same cursor to bound the active
 prefix from the maximum tuning, remaining finite traversal, and any latched

@@ -9,7 +9,7 @@ use crate::runtime::controls::{ControlBank, control_definitions};
 use crate::runtime::generators::GeneratorBank;
 use crate::runtime::preparation;
 use crate::runtime::{SynthRuntime, SynthRuntimeSnapshot, route_map};
-use crate::sampler::{SampleBuffer, SampleTraversal, read_sample};
+use crate::sampler::{SampleBuffer, SampleTraversal};
 use numpy::ndarray::{Array2, ArrayViewMut2};
 use numpy::{PyReadonlyArray2, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -1090,24 +1090,12 @@ impl SampleRuntime {
                     continue;
                 }
                 let end_gain = cursor.end_gain(source_frame, step);
-                if cursor.state().exhausted.is_some() {
+                let Some(read) = cursor.read_plan(source_frame) else {
                     self.active[voice] = false;
                     continue;
-                }
-                let position = cursor.state().position;
-                let following = cursor.following(source_frame);
+                };
                 for (channel, value) in self.source_values.iter_mut().enumerate() {
-                    let first = read_sample(cursor, &self.buffer.audio, channel);
-                    let last = if following.state().exhausted.is_some() {
-                        first
-                    } else {
-                        read_sample(&following, &self.buffer.audio, channel)
-                    };
-                    *value = if position == 0.0 {
-                        first
-                    } else {
-                        first + (position / cursor.rate()) * (last - first)
-                    };
+                    *value = read.sample(|index| self.buffer.audio[[index as usize, channel]]);
                 }
                 let amplitude = level * self.gains[voice];
                 if self.filter_after_amplitude {

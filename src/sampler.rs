@@ -366,15 +366,6 @@ impl SampleTraversal {
     }
 }
 
-pub(crate) fn read_sample(cursor: &Cursor, audio: &Array2<f64>, channel: usize) -> f64 {
-    let first = audio[[cursor.state().index as usize, channel]];
-    if let Some((incoming, weight)) = cursor.overlap_tap() {
-        (1.0 - weight) * first + weight * audio[[incoming as usize, channel]]
-    } else {
-        first
-    }
-}
-
 #[pyfunction]
 #[pyo3(signature = (traversal, state, frame, steps, release, prepared_gain, gains, envelope, routes, frames, filters=None, filter_after_amplitude=false))]
 #[allow(clippy::too_many_arguments)]
@@ -449,23 +440,11 @@ pub(crate) fn render_sample<'py>(
                 break;
             }
             let end_gain = cursor.end_gain(current, step);
-            if cursor.state().exhausted.is_some() {
+            let Some(read) = cursor.read_plan(current) else {
                 break;
-            }
-            let position = cursor.state().position;
-            let following = cursor.following(current);
+            };
             for (c, source) in sources.iter_mut().enumerate() {
-                let first = read_sample(&cursor, &audio, c);
-                let last = if following.state().exhausted.is_some() {
-                    first
-                } else {
-                    read_sample(&following, &audio, c)
-                };
-                *source = if position == 0.0 {
-                    first
-                } else {
-                    first + (position / rate) * (last - first)
-                };
+                *source = read.sample(|index| audio[[index as usize, c]]);
             }
             let gain = (amplitude[i] * prepared_gain) * gains[i];
             if filter_after_amplitude {
