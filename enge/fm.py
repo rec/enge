@@ -74,6 +74,8 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
         carrier_level: np.ndarray,
         gains: np.ndarray,
         filter_values: np.ndarray,
+        *,
+        native_graph: _native.PreparedFm | None = None,
     ) -> np.ndarray:
         """Render active-frame arrays, returning silence after carrier completion.
 
@@ -114,48 +116,18 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
         envelopes = np.column_stack(
             [self.amplitude_samples(count, operator.name) for operator in operators]
         )
-        graph_edges = [
-            (
-                next(
-                    i
-                    for i, operator in enumerate(operators)
-                    if operator.name == edge.source
-                ),
-                next(
-                    i
-                    for i, operator in enumerate(operators)
-                    if operator.name == edge.destination
-                ),
-                edge.delayed,
-            )
-            for edge in edges
-        ]
-        carrier = next(
-            i
-            for i, operator in enumerate(operators)
-            if operator.name == self.definition.fm.carrier
-        )
-        waveforms = np.array(
-            [
-                {
-                    Waveform.sine: 0,
-                    Waveform.square: 1,
-                    Waveform.triangle: 2,
-                }[operator.waveform]
-                for operator in operators
-            ],
-            dtype=np.uint8,
-        )
         if self.backend == "native":
-            native_edges = np.array(graph_edges, dtype=np.float64)
+            graph = (
+                native_graph
+                if native_graph is not None
+                else _native.PreparedFm(self.definition.fm.model_dump_json(), rate)
+            )
+            carrier = graph.carrier_index
             audio, phases, history = _native.render_graph_fm(
-                rate,
+                graph,
                 frequencies,
                 envelopes,
-                waveforms,
                 edge_indices,
-                native_edges,
-                carrier,
                 carrier_level,
                 np.array(self.phases),
                 np.array(self.history),
@@ -163,6 +135,20 @@ class VoiceRenderer(synth.VoiceEnvelopeRenderer):
                 or self.definition.filter_order == FilterOrder.after_amplitude,
             )
         else:
+            names = {o.name: i for i, o in enumerate(operators)}
+            graph_edges = [
+                (names[e.source], names[e.destination], e.delayed) for e in edges
+            ]
+            carrier = names[self.definition.fm.carrier]
+            waveforms = np.array(
+                [
+                    {Waveform.sine: 0, Waveform.square: 1, Waveform.triangle: 2}[
+                        o.waveform
+                    ]
+                    for o in operators
+                ],
+                dtype=np.uint8,
+            )
             audio, phases, history = graph_fm_samples(
                 frequencies,
                 envelopes,
@@ -262,6 +248,16 @@ class OfflineFM:
             for v in self.definition.score.body.voices
             if isinstance(v, FMVoice)
         }
+        self.native_graphs = (
+            {
+                name: _native.PreparedFm(
+                    template.fm.model_dump_json(), definition.sample_rate
+                )
+                for name, template in self.templates.items()
+            }
+            if backend == "native"
+            else {}
+        )
         self.controls = synth.ControlRenderer(
             definition.sample_rate,
             definition.score.body.controls,
@@ -458,6 +454,7 @@ class OfflineFM:
                 carrier_level,
                 gains * 10 ** (template.processing.volume_db / 20),
                 filter_values,
+                native_graph=self.native_graphs.get(voice.template),
             )
             if renderer.complete:
                 del self.voices[voice.voice_id]

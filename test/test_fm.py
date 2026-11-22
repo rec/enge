@@ -15,11 +15,30 @@ from ufor.synth import SynthInstrumentScore
 from enge import _native, fm, synth
 
 
+@pytest.fixture
+def native_test_graph() -> _native.PreparedFm:
+    return _native.PreparedFm(
+        json.dumps(
+            {
+                "operators": [
+                    {"name": "a", "waveform": "square"},
+                    {"name": "b", "waveform": "square"},
+                ],
+                "edges": [{"source": "a", "destination": "b"}],
+                "carrier": "b",
+            }
+        ),
+        48000,
+    )
+
+
 @pytest.mark.parametrize(
     "field", ["frequencies", "envelopes", "indices", "levels", "phases", "history"]
 )
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
-def test_native_graph_fm_rejects_nonfinite_inputs(field: str, value: float) -> None:
+def test_native_graph_fm_rejects_nonfinite_inputs(
+    native_test_graph: _native.PreparedFm, field: str, value: float
+) -> None:
     arrays = {
         "frequencies": np.ones((1, 2)),
         "envelopes": np.ones((1, 2)),
@@ -31,33 +50,25 @@ def test_native_graph_fm_rejects_nonfinite_inputs(field: str, value: float) -> N
     arrays[field].flat[0] = value
     with pytest.raises(ValueError, match="Invalid graph FM parameters or state"):
         _native.render_graph_fm(
-            48000,
+            native_test_graph,
             arrays["frequencies"],
             arrays["envelopes"],
-            np.zeros(2, dtype=np.uint8),
             arrays["indices"],
-            np.array([[0, 1, 0]], dtype=float),
-            1,
             arrays["levels"],
             arrays["phases"],
             arrays["history"],
         )
 
 
-@pytest.mark.parametrize("column", [0, 1, 2])
-@pytest.mark.parametrize("value", [0.5, np.nan, np.inf, -1.0, 2.0])
-def test_native_graph_fm_rejects_invalid_edges(column: int, value: float) -> None:
-    edges = np.array([[0, 1, 0]], dtype=float)
-    edges[0, column] = value
-    with pytest.raises(ValueError, match="Invalid FM edge"):
+def test_native_graph_fm_rejects_arrays_for_a_different_graph(
+    native_test_graph: _native.PreparedFm,
+) -> None:
+    with pytest.raises(ValueError, match="Invalid graph FM layout"):
         _native.render_graph_fm(
-            48000,
+            native_test_graph,
             np.ones((1, 2)),
             np.ones((1, 2)),
-            np.zeros(2, dtype=np.uint8),
-            np.ones((1, 1)),
-            edges,
-            1,
+            np.ones((1, 2)),
             np.ones(1),
             np.zeros((2, 2)),
             np.zeros(1),
@@ -81,18 +92,17 @@ def test_native_graph_preparation_rejects_current_sample_cycles() -> None:
         )
 
 
-def test_native_graph_fm_rejects_overflow_without_mutating_inputs() -> None:
+def test_native_graph_fm_rejects_overflow_without_mutating_inputs(
+    native_test_graph: _native.PreparedFm,
+) -> None:
     phases = np.zeros((2, 2))
     history = np.zeros(1)
     with pytest.raises(ValueError, match="Non-finite graph FM output or state"):
         _native.render_graph_fm(
-            48000,
+            native_test_graph,
             np.ones((1, 2)),
             np.full((1, 2), 1e308),
-            np.ones(2, dtype=np.uint8),
             np.zeros((1, 1)),
-            np.array([[0, 1, 0]], dtype=float),
-            1,
             np.full(1, 1e308),
             phases,
             history,
@@ -406,6 +416,21 @@ def test_fm_operator_waveforms_match_in_both_backends() -> None:
     native = fm.OfflineFM(fm.prepare(document), "native").advance(actions, 0, 48000)
 
     np.testing.assert_allclose(native, reference, atol=1e-10, rtol=1e-9)
+
+
+def test_offline_native_fm_accepts_an_edge_free_authored_graph(tmp_path: Path) -> None:
+    raw = score().model_dump()
+    voice = raw["body"]["voices"][0]
+    voice["fm"]["edges"] = []
+    voice["modulation"] = {}
+    voice["bindings"] = []
+    document = SynthInstrumentScore.model_validate(raw)
+    actions = synth_trace.prepare(document.body, [trigger()], seed=0).actions
+    definition = fm.prepare(document)
+    expected = fm.OfflineFM(definition).advance(actions, 0, 48000)
+    actual = fm.OfflineFM(definition, "native").advance(actions, 0, 48000)
+
+    check_audio(tmp_path / "edge-free-fm.wav", actual, expected)
 
 
 @pytest.mark.parametrize(

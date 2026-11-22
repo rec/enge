@@ -440,6 +440,10 @@ bridge keeps whole-frame origins as signed 64-bit integers.
 The synth oscillator and FM graph renderers share uFor's binary64 waveform
 evaluation in both block and persistent rendering. FM graph operators use
 half duty for square and triangle waves.
+Offline native FM prepares one Rust graph per instrument voice template.
+Each render block uses its validated operator order, carrier and edge
+endpoints. Per-voice phase and feedback history remain in the snapshot.
+Graphs without edges use the same path and an empty feedback history.
 Native synth and FM renderers also use uFor's compensated phase advancement.
 Snapshots carry the wrapped position and the compensation in sample-rate units.
 Oscillator preparation passed 198 focused macOS tests with zero heap

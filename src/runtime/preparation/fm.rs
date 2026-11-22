@@ -4,27 +4,30 @@ use crate::amplitude::{Amplitude, frame_time};
 use crate::runtime::preparation::modulation::TargetInput;
 use crate::runtime::{GraphEdge, GraphOperator};
 use pyo3::prelude::*;
-use std::collections::BTreeMap;
 use ufor::codec::{self, Format};
 use ufor::envelfo::{self, PreparationLimits};
 use ufor::fm::Fm;
 
 #[pyclass(frozen, skip_from_py_object)]
 pub(crate) struct PreparedFm {
-    pub(in crate::runtime) graph: Fm,
-    pub(in crate::runtime) rate: f64,
+    pub(crate) graph: Fm,
+    pub(crate) rate: f64,
     pub(in crate::runtime) targets: Vec<TargetInput>,
     pub(in crate::runtime) records: usize,
     pub(in crate::runtime) characters: usize,
     pub(in crate::runtime) operators: Vec<GraphOperator>,
     pub(in crate::runtime) edges: Vec<GraphEdge>,
     pub(in crate::runtime) amplitudes: Vec<Amplitude>,
-    pub(in crate::runtime) carrier: usize,
     pub(in crate::runtime) carrier_parameter: usize,
 }
 
 #[pymethods]
 impl PreparedFm {
+    #[getter]
+    fn carrier_index(&self) -> usize {
+        self.graph.carrier_index()
+    }
+
     #[new]
     #[pyo3(signature = (document, rate, *, max_records=10000))]
     fn new(document: &str, rate: f64, max_records: usize) -> PyResult<Self> {
@@ -41,13 +44,6 @@ impl PreparedFm {
             targets.push((name, parameter.into(), index, None, minimum, maximum));
             index
         };
-        let names: BTreeMap<_, _> = graph
-            .operators()
-            .iter()
-            .enumerate()
-            .map(|(index, operator)| (operator.name(), index))
-            .collect();
-        let carrier = names[graph.carrier()];
         let operators = graph
             .operators()
             .iter()
@@ -64,9 +60,10 @@ impl PreparedFm {
         let edges = graph
             .edges()
             .iter()
-            .map(|edge| GraphEdge {
-                source: names[edge.source()],
-                destination: names[edge.destination()],
+            .zip(graph.edge_endpoints())
+            .map(|(edge, &(source, destination))| GraphEdge {
+                source,
+                destination,
                 delayed: edge.delayed(),
                 parameter: slot(format!("edge-{}", edge.target_name()), "index", 0.0, 1e300),
             })
@@ -90,7 +87,6 @@ impl PreparedFm {
             operators,
             edges,
             amplitudes,
-            carrier,
             carrier_parameter,
         })
     }

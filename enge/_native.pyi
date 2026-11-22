@@ -46,6 +46,8 @@ class PreparedFm:
     def __init__(
         self, document: str, rate: float, *, max_records: int = 10000
     ) -> None: ...
+    @property
+    def carrier_index(self) -> int: ...
 
 def prepare_modulation(
     sample_rate: float,
@@ -578,13 +580,10 @@ def render_fm(
     filter_inputs: tuple[list[int], np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]: ...
 def render_graph_fm(
-    rate: float,
+    prepared: PreparedFm,
     frequencies: np.ndarray,
     envelopes: np.ndarray,
-    waveforms: np.ndarray,
     indices: np.ndarray,
-    edges: np.ndarray,
-    carrier: int,
     levels: np.ndarray,
     phases: np.ndarray,
     history: np.ndarray,

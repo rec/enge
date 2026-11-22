@@ -569,7 +569,7 @@ impl SynthRuntime {
             0,
             0.5,
             routes,
-            graph.amplitudes[graph.carrier].clone(),
+            graph.amplitudes[graph.graph.carrier_index()].clone(),
             minimum_hold_frames,
             controls,
             control_smoothing,
@@ -584,7 +584,7 @@ impl SynthRuntime {
         runtime.graph_operators = graph.operators.clone();
         runtime.graph_edges = graph.edges.clone();
         runtime.graph_order = graph.graph.order().to_vec();
-        runtime.graph_carrier = graph.carrier;
+        runtime.graph_carrier = graph.graph.carrier_index();
         runtime.graph_carrier_parameter = graph.carrier_parameter;
         runtime.graph_phases = vec![0.0; slots * operators];
         runtime.graph_errors = vec![0.0; slots * operators];

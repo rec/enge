@@ -1,4 +1,5 @@
-use crate::{envelope_amplitudes, envelope_spans, filters, oscillator_waveform};
+use crate::runtime::preparation::fm::PreparedFm;
+use crate::{envelope_amplitudes, envelope_spans, filters};
 use numpy::ndarray::Array2;
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2,
@@ -109,48 +110,35 @@ pub fn render_fm<'py>(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (rate, frequencies, envelopes, waveforms, indices, edges, carrier, levels, phases, history, carrier_amplitude=true))]
+#[pyo3(signature = (prepared, frequencies, envelopes, indices, levels, phases, history, carrier_amplitude=true))]
 pub fn render_graph_fm<'py>(
     py: Python<'py>,
-    rate: f64,
+    prepared: &PreparedFm,
     frequencies: PyReadonlyArray2<'py, f64>,
     envelopes: PyReadonlyArray2<'py, f64>,
-    waveforms: PyReadonlyArray1<'py, u8>,
     indices: PyReadonlyArray2<'py, f64>,
-    edges: PyReadonlyArray2<'py, f64>,
-    carrier: usize,
     levels: PyReadonlyArray1<'py, f64>,
     phases: PyReadonlyArray2<'py, f64>,
     history: PyReadonlyArray1<'py, f64>,
     carrier_amplitude: bool,
 ) -> PyResult<RenderedGraphFM<'py>> {
     let count = frequencies.shape()[0];
-    let operators = frequencies.shape()[1];
-    if !rate.is_finite()
-        || rate <= 0.0
-        || !(2..=6).contains(&operators)
-        || carrier >= operators
+    let graph = &prepared.graph;
+    let rate = prepared.rate;
+    let operators = graph.operators().len();
+    let carrier = graph.carrier_index();
+    if frequencies.shape()[1] != operators
         || envelopes.shape() != [count, operators]
-        || waveforms.len() != operators
-        || indices.shape() != [count, edges.shape()[0]]
-        || edges.shape()[1] != 3
+        || indices.shape() != [count, graph.edges().len()]
         || levels.len() != count
         || phases.shape() != [operators, 2]
-        || history.len() != edges.shape()[0]
+        || history.len() != graph.edges().len()
     {
         return Err(PyValueError::new_err("Invalid graph FM layout"));
     }
     let frequencies = frequencies.as_array().to_owned();
     let envelopes = envelopes.as_array().to_owned();
-    let waveforms = waveforms
-        .as_array()
-        .iter()
-        .copied()
-        .map(oscillator_waveform)
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| PyValueError::new_err("Invalid FM waveform"))?;
     let indices = indices.as_array().to_owned();
-    let edges = edges.as_array().to_owned();
     let levels: Vec<f64> = levels.as_array().iter().copied().collect();
     let mut phases = phases.as_array().to_owned();
     let mut history: Vec<f64> = history.as_array().iter().copied().collect();
@@ -168,63 +156,29 @@ pub fn render_graph_fm<'py>(
         ));
     }
     let (audio, phases, history) = py.detach(move || -> PyResult<_> {
-        let mut order = Vec::new();
-        let mut pending = vec![0usize; operators];
-        for edge in edges.rows() {
-            if edge
-                .iter()
-                .any(|value| !value.is_finite() || value.fract() != 0.0)
-                || edge[0] < 0.0
-                || edge[0] >= operators as f64
-                || edge[1] < 0.0
-                || edge[1] >= operators as f64
-                || edge[2] < 0.0
-                || edge[2] > 1.0
-            {
-                return Err(PyValueError::new_err("Invalid FM edge"));
-            }
-            if edge[2] == 0.0 {
-                pending[edge[1] as usize] += 1;
-            }
-        }
-        let mut ready: Vec<usize> = (0..operators).filter(|i| pending[*i] == 0).collect();
-        while let Some(operator) = ready.pop() {
-            order.push(operator);
-            for edge in edges.rows() {
-                if edge[2] == 0.0 && edge[0] as usize == operator {
-                    let destination = edge[1] as usize;
-                    pending[destination] -= 1;
-                    if pending[destination] == 0 {
-                        ready.push(destination);
-                    }
-                }
-            }
-        }
-        if order.len() != operators {
-            return Err(PyValueError::new_err(
-                "Graph FM current edges must be acyclic",
-            ));
-        }
         let mut audio = Array2::zeros((count, 1));
+        let mut output = vec![0.0; operators];
         for i in 0..count {
-            let mut output = vec![0.0; operators];
+            output.fill(0.0);
             let mut carrier_sample = 0.0;
-            for operator in &order {
+            for &operator in graph.order() {
                 let mut offset = 0.0;
-                for (edge_index, edge) in edges.rows().into_iter().enumerate() {
-                    if edge[1] as usize == *operator {
+                for (edge_index, &(source, destination)) in
+                    graph.edge_endpoints().iter().enumerate()
+                {
+                    if destination == operator {
                         offset += indices[[i, edge_index]]
-                            * if edge[2] == 0.0 {
-                                output[edge[0] as usize]
-                            } else {
+                            * if graph.edges()[edge_index].delayed() {
                                 history[edge_index]
+                            } else {
+                                output[source]
                             };
                     }
                 }
-                let angle = TAU * phases[[*operator, 0]] / rate + offset;
-                let sample = sample_at_angle(waveforms[*operator], angle, 0.5);
-                output[*operator] = envelopes[[i, *operator]] * sample;
-                if *operator == carrier {
+                let angle = TAU * phases[[operator, 0]] / rate + offset;
+                let sample = sample_at_angle(graph.operators()[operator].waveform(), angle, 0.5);
+                output[operator] = envelopes[[i, operator]] * sample;
+                if operator == carrier {
                     carrier_sample = sample;
                 }
             }
@@ -241,11 +195,9 @@ pub fn render_graph_fm<'py>(
                     rate,
                 );
             }
-            history = edges
-                .rows()
-                .into_iter()
-                .map(|edge| output[edge[0] as usize])
-                .collect();
+            for (previous, &(source, _)) in history.iter_mut().zip(graph.edge_endpoints()) {
+                *previous = output[source];
+            }
         }
         if audio
             .iter()
