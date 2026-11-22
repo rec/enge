@@ -19,6 +19,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use ufor::modulation::math::{Mapping, sum_partials};
 use ufor::samples::crossfade::weight_at_position;
 use ufor::samples::cursor::Cursor;
+use ufor::samples::playback::tuned_pitch_ratio;
 use ufor::samples::processing::FilterBoundary;
 
 struct Source {
@@ -1074,15 +1075,14 @@ impl SampleRuntime {
                     let (inward, equal_power) = self.crossfades[index];
                     level *= weight_at_position(position, inward, equal_power);
                 }
-                let step = self.steps[voice]
-                    * ((self.parameter(voice, 1, frame)? + self.parameter(voice, 3, frame)?)
-                        / 1200.0)
-                        .exp2();
+                let step = tuned_pitch_ratio(
+                    self.steps[voice],
+                    self.parameter(voice, 1, frame)?,
+                    self.parameter(voice, 3, frame)?,
+                )
+                .map_err(|_| NativeError::Message("Invalid live sample advance"))?;
                 let source_frame = i64::try_from(frame)
                     .map_err(|_| NativeError::Message("Live sample frame overflow"))?;
-                if !step.is_finite() || step <= 0.0 {
-                    return Err(NativeError::Message("Invalid live sample advance"));
-                }
                 let cursor = &mut self.cursors[voice];
                 cursor.settle(source_frame);
                 if cursor.state().exhausted.is_some() {

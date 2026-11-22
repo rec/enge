@@ -629,13 +629,20 @@ class OfflineSampler:
             common = self.definition.document.body.settings
             settings = self.definition.settings[voice.template]
             sample = self.definition.samples[voice.template]
-            maximum_cents = _maximum_tuning(common) + _maximum_tuning(settings)
-            with np.errstate(over="ignore", invalid="ignore"):
-                maximum_step = float(
-                    voice.renderer.definition.pitch_ratio
-                    * np.exp2(maximum_cents / 1200)
-                    * sample.native_rate
+            pitch_ratio = voice.renderer.definition.pitch_ratio
+            common_maximum = _maximum_tuning(common)
+            slot_maximum = _maximum_tuning(settings)
+            if self.backend == "native":
+                maximum_step = _native.maximum_sample_step(
+                    pitch_ratio, sample.native_rate, common_maximum, slot_maximum
                 )
+            else:
+                with np.errstate(over="ignore", invalid="ignore"):
+                    maximum_step = float(
+                        pitch_ratio
+                        * np.exp2((common_maximum + slot_maximum) / 1200)
+                        * sample.native_rate
+                    )
             offset = 0
             exhausted = False
             while offset < count:
@@ -657,9 +664,17 @@ class OfflineSampler:
                 slot_tuning, slot_gains, slot_filters = self.controls.parameters(
                     settings, voice.slot_sources, start + offset, size
                 )
-                ratios = voice.renderer.definition.pitch_ratio * np.exp2(
-                    (tuning + slot_tuning) / 1200
-                )
+                if self.backend == "native":
+                    try:
+                        ratios = _native.tuned_sample_ratios(
+                            pitch_ratio, tuning, slot_tuning
+                        )
+                    except ValueError as error:
+                        raise synth.EngineError(
+                            "Sample pitch ratios must be a positive finite vector"
+                        ) from error
+                else:
+                    ratios = pitch_ratio * np.exp2((tuning + slot_tuning) / 1200)
                 output[offset : offset + size] += voice.renderer.render(
                     sample,
                     size,

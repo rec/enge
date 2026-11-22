@@ -10,6 +10,7 @@ use ufor::identifier::Identifier;
 use ufor::number::Rational;
 use ufor::oscillator::Oscillator;
 use ufor::samples::eligibility::VoiceEligibility;
+use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
 use ufor::synth_pitch;
 use ufor::tuning::Tuning;
@@ -78,6 +79,54 @@ pub(crate) fn tuned_frequencies<'py>(
     Ok(frequencies
         .map_err(|error| PyValueError::new_err(error.to_string()))?
         .into_pyarray(py))
+}
+
+#[pyfunction]
+pub(crate) fn tuned_sample_ratios<'py>(
+    py: Python<'py>,
+    base: f64,
+    tuning: PyReadonlyArray1<'py, f64>,
+    layer: PyReadonlyArray1<'py, f64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let tuning = tuning.as_array();
+    let layer = layer.as_array();
+    if tuning.len() != layer.len() {
+        return Err(PyValueError::new_err("Mismatched sample tuning arrays"));
+    }
+    let ratios = tuning
+        .iter()
+        .zip(layer.iter())
+        .map(|(&cents, &layer_cents)| tuned_pitch_ratio(base, cents, layer_cents))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(ratios.into_pyarray(py))
+}
+
+#[pyfunction]
+pub(crate) fn sample_steps<'py>(
+    py: Python<'py>,
+    ratios: PyReadonlyArray1<'py, f64>,
+    native_rate: f64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let steps = ratios
+        .as_array()
+        .iter()
+        .map(|&ratio| sample_step(ratio, native_rate))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(steps.into_pyarray(py))
+}
+
+#[pyfunction]
+pub(crate) fn maximum_sample_step(
+    base: f64,
+    native_rate: f64,
+    common_cents: f64,
+    layer_cents: f64,
+) -> f64 {
+    tuned_pitch_ratio(base, common_cents, layer_cents)
+        .and_then(|ratio| sample_step(ratio, native_rate))
+        .unwrap_or(f64::INFINITY)
 }
 
 #[pyclass(frozen, skip_from_py_object)]

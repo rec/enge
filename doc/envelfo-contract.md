@@ -266,11 +266,19 @@ in 6,507 successful and seven failed callbacks. The generated report is
 
 The native sampler prepares a Rust uFor pitch mapping per slot. Each onset
 uses the resolved `pitch_hz`, the sample's reference frequency, and the voice's
-pitch variation. The sampler applies the native asset rate and live tuning in
-its existing playback path. The NumPy renderer uses Python's mapping.
+pitch variation. Native offline playback applies common and slot tuning to
+that ratio before converting it to cursor units with the decoded asset rate.
+The same calculation supplies its control batch bound. Live playback applies
+both tuning layers to the onset step, which already carries the asset rate.
+Both native paths use the checked Rust uFor mathematics and preserve their
+existing multiplication order. The NumPy renderer uses Python's mapping and
+array arithmetic.
 Pitch mapping passed 670 focused macOS tests with zero heap operations inside
 6,755 successful and seven failed callbacks. The generated report is
 `build/rust-ufor-sample-pitch-audit.xml`.
+Routed pitch and rate conversion passed 713 focused macOS tests with zero
+Rust heap operations in 6,507 successful and seven failed callbacks. The
+generated report is `build/rust-ufor-sample-routed-pitch-audit.xml`.
 
 Rust uFor also prepares slot playback overrides against instrument defaults.
 Enge uses the same prepared slot to calculate onset delays for offline and

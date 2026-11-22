@@ -317,6 +317,7 @@ class SampleVoiceRenderer(synth.VoiceEnvelopeRenderer):
                     if pitch_ratios is None
                     else pitch_ratios[:count],
                     self.release_frame,
+                    self.backend,
                 ),
                 self.release_frame,
                 self.definition.gain,
@@ -393,7 +394,7 @@ def sample_frames(
     An optional NumPy end_fades output receives final gains separately so a
     voice can apply them after its filters; otherwise they multiply the audio.
     """
-    steps = pitch_steps(definition, state, pitch_ratios, release_frame)
+    steps = pitch_steps(definition, state, pitch_ratios, release_frame, backend)
     if end_fades is not None and (backend != "numpy" or end_fades.shape != steps.shape):
         raise EngineError("End fade output requires a matching NumPy frame vector")
     if backend == "native":
@@ -480,18 +481,30 @@ def pitch_steps(
     state: SampleState,
     pitch_ratios: np.ndarray,
     release_frame: Fraction | None,
+    backend: Literal["numpy", "native"] = "numpy",
 ) -> np.ndarray:
     """Validate control inputs and convert ratios to output-rate cursor units."""
     if pitch_ratios.ndim != 1 or not np.all(
         np.isfinite(pitch_ratios) & (pitch_ratios > 0)
     ):
         raise EngineError("Sample pitch ratios must be a positive finite vector")
+    if release_frame is not None and release_frame < state.frame and not state.released:
+        raise EngineError("Sample release cannot precede the current cursor")
+    if backend == "native":
+        from . import _native
+
+        try:
+            return _native.sample_steps(
+                np.asarray(pitch_ratios, dtype=np.float64), definition.native_rate
+            )
+        except ValueError as error:
+            raise EngineError(
+                "Sample rate-adjusted pitch steps must be finite"
+            ) from error
     with np.errstate(over="ignore"):
         steps = pitch_ratios.astype(np.float64) * definition.native_rate
     if not np.all(np.isfinite(steps)):
         raise EngineError("Sample rate-adjusted pitch steps must be finite")
-    if release_frame is not None and release_frame < state.frame and not state.released:
-        raise EngineError("Sample release cannot precede the current cursor")
     return steps
 
 
