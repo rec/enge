@@ -222,6 +222,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_class::<live::LiveRuntime>()?;
     module.add_class::<performance::PreparedTuning>()?;
+    module.add_class::<performance::MidiFileClock>()?;
     module.add_class::<performance::PreparedVoiceEligibility>()?;
     module.add_class::<performance::PreparedOscillator>()?;
     module.add_function(wrap_pyfunction!(performance::tuned_frequencies, module)?)?;

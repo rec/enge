@@ -129,6 +129,33 @@ def test_midi_controls_keep_same_frame_order_and_channel_scope(
     assert events[0].ordinal < events[1].ordinal < events[2].ordinal
 
 
+def test_midi_rounds_half_frames_after_ordered_tempo_changes(
+    tmp_path: Path, converters: list[MidiConverter]
+) -> None:
+    path = tmp_path / "half-frames.mid"
+    writer = smf.Writer(path, header=smf.Header(format=0, tracks=1, division=1000))
+    for tick, record in [
+        (1, messages.NoteOn(channel=1, note=60, velocity=100)),
+        (3, smf.Meta(kind=0x51, data=(250000).to_bytes(3, "big"))),
+        (3, smf.Meta(kind=0x51, data=(1000000).to_bytes(3, "big"))),
+        (3, messages.NoteOn(channel=1, note=61, velocity=100)),
+        (4, smf.Meta(kind=0x51, data=(250000).to_bytes(3, "big"))),
+        (4, messages.NoteOff(channel=1, note=60, velocity=64)),
+        (6, messages.NoteOff(channel=1, note=61, velocity=64)),
+        (8, smf.Meta(kind=0x2F, data=b"")),
+    ]:
+        writer.write(smf.Event(track=0, tick=tick, record=record))
+    writer.finish()
+    performance = read_midi(path, converters=converters, sample_rate=1000)
+    assert [(e.tick, e.ordinal) for e in performance.parts["channel-1"]] == [
+        (0, 0),
+        (2, 3),
+        (2, 5),
+        (3, 6),
+    ]
+    assert performance.frames == 5
+
+
 @pytest.mark.parametrize(
     "message",
     [
@@ -205,11 +232,12 @@ def test_midi_rejects_asynchronous_or_smpte_timing(
         read_midi(path, converters=converters)
 
 
-def test_midi_rejects_nonpositive_sample_rate(
-    tmp_path: Path, converters: list[MidiConverter]
+@pytest.mark.parametrize("rate", [0, 2**63])
+def test_midi_rejects_sample_rate_outside_portable_range(
+    tmp_path: Path, converters: list[MidiConverter], rate: int
 ) -> None:
     with pytest.raises(ValueError, match="positive integer sample rate"):
-        read_midi(tmp_path / "unused.mid", converters=converters, sample_rate=0)
+        read_midi(tmp_path / "unused.mid", converters=converters, sample_rate=rate)
     assert converters[0].ready
 
 

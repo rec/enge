@@ -1,13 +1,14 @@
 """File and caller-polled live MIDI dispatch to uFor performance converters."""
 
 from contextlib import closing
-from fractions import Fraction
 from pathlib import Path
 
 from meedee import events, messages, midi, smf
 from pydantic import BaseModel
 from ufor.events import ControlChange, PerformanceEvent, Release, Trigger
+from ufor.number import MAX_INTEGER
 
+from . import _native
 from .performance import MidiConverter, converter_parts
 
 
@@ -102,35 +103,34 @@ def read_midi(
     names determine parts. All participants stop on success or become invalid
     on a failed read; the caller must explicitly restart them before reuse.
     """
-    if type(sample_rate) is not int or sample_rate <= 0:
-        raise ValueError("MIDI requires a positive integer sample rate")
+    if type(sample_rate) is not int or not 0 < sample_rate <= MAX_INTEGER:
+        raise ValueError(
+            "MIDI requires a positive integer sample rate in the signed 64-bit domain"
+        )
     parts: dict[str, list[PerformanceEvent]] = {
         n: [] for n in converter_parts(converters)
     }
-    tempo = 500000
-    elapsed = Fraction(0)
     frame = 0
     ordinal = -1
-    tick = 0
     completed = False
     try:
         with closing(smf.MergedReader(path)) as midi:
             if midi.header.division & 0x8000:
                 raise ValueError("MIDI requires synchronous PPQN timing")
+            clock = _native.MidiFileClock(midi.header.division, sample_rate)
             for event in midi:
-                elapsed += Fraction(
-                    (event.tick - tick) * tempo, midi.header.division * 1000000
-                )
-                tick = event.tick
-                frame = round(elapsed * sample_rate)
                 message = event.record
+                tempo = (
+                    int.from_bytes(message.data[:3], "big")
+                    if isinstance(message, smf.Meta) and message.kind == 0x51
+                    else None
+                )
+                frame = clock.advance(event.tick, tempo)
                 # Track ends contribute silence, not merged performance ordinals.
                 if isinstance(message, smf.Meta) and message.kind == 0x2F:
                     continue
                 ordinal += 1
                 if isinstance(message, smf.Meta):
-                    if message.kind == 0x51:
-                        tempo = int.from_bytes(message.data[:3], "big")
                     continue
                 if not isinstance(message, messages.Message):
                     raise ValueError("SMF SysEx/escape records are unsupported")

@@ -13,11 +13,32 @@ use ufor::samples::eligibility::VoiceEligibility;
 use ufor::samples::playback::{sample_step, tuned_pitch_ratio};
 use ufor::samples::routing::{ChannelRoute, channel_matrix, sampler_matrix};
 use ufor::synth_pitch;
+use ufor::time::PpqnClock;
 use ufor::tuning::Tuning;
 use ufor::voice_start;
 
 type CommandCoordinate = (i64, u64, Option<(i64, i64)>);
 type OperatorTuning<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>);
+
+#[pyclass(skip_from_py_object)]
+pub(crate) struct MidiFileClock(PpqnClock);
+
+#[pymethods]
+impl MidiFileClock {
+    #[new]
+    fn new(ticks_per_quarter: u16, sample_rate: i64) -> PyResult<Self> {
+        PpqnClock::new(ticks_per_quarter, sample_rate)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (tick, next_tempo=None))]
+    fn advance(&mut self, tick: i64, next_tempo: Option<u32>) -> PyResult<i64> {
+        self.0
+            .advance(tick, next_tempo)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
 
 #[pyfunction]
 pub(crate) fn integer_sample_rate(document: &str) -> PyResult<Option<i64>> {
