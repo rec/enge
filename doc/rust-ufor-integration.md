@@ -35,11 +35,11 @@ uses that machinery, including common/slot remapping.
 | enge | Supported audio profiles, parameter/source indices, frames/clocks, voice ownership, prepared storage, rendering and callback policy |
 | Python host | Authoring, resource/reference resolution and orchestration until explicitly migrated |
 
-Rust uFor's score codec currently supports Tuning and Envelfo scores. This does
-not provide a native decoder for complete instrument/effect documents. Existing
-Python document and target validation remain necessary. The partial binding
-validator reports unresolved reference, follower, event and target requirements;
-enge must discharge applicable requirements before building an executable plan.
+Rust uFor's score codec supports tuning, scale, oscillator, EnveLFO, sequence,
+and automation scores. Python validates complete instrument and effect documents
+and resolves their resources. The partial binding validator reports unresolved
+reference, follower, event and target requirements. Enge discharges applicable
+requirements before building an executable plan.
 
 ## Implementation stages
 
@@ -395,8 +395,10 @@ Python continues to resolve resources and references, build performance traces,
 and validate complete instrument and effect settings. The
 [native modulation contract](envelfo-contract.md#modulation-route-preparation-and-shared-mathematics)
 describes the later SoundSettings, FM, and initial effect target integration.
-Complete instrument and effect document loading and TempoMap remain separate
-milestones, as do changes to global modulation ordering and weighting.
+Native generator preparation and synth-family command scheduling decode the
+host's `TempoMap` in Rust. See the [clock preparation contract](envelfo-contract.md).
+Complete instrument and effect document loading and changes to global modulation
+ordering and weighting remain separate milestones.
 
 ## Approved decisions
 
