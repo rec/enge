@@ -4,9 +4,6 @@ on:
   workflow_dispatch:
   release:
     types: [published]
-  push:
-    branches: [main]
-    paths: [.github/workflows/test.yml]
 
 permissions:
   contents: read
@@ -15,11 +12,11 @@ jobs:
   test:
     name: ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'push' && '["windows-2025"]' || '["ubuntu-24.04", "windows-2025", "macos-15"]') }}
+        os: [ubuntu-24.04, windows-2025, macos-15]
         profile: [core, rubberband]
     defaults:
       run:
