@@ -254,6 +254,24 @@ def test_native_trace_retires_oldest_then_retires_repeated_key(kind: str) -> Non
     ]
 
 
+def test_native_sample_trace_preserves_authored_choke_fade() -> None:
+    raw = sample_score(frames=32).body.model_dump(mode="json")
+    raw["slots"][0].update(
+        choke_group="hit",
+        chokes=[{"group": "hit", "mode": "fade", "fade_seconds": "125 ms"}],
+    )
+    definition = instrument.SampleInstrument.model_validate(raw)
+    events: list[PerformanceEvent] = [
+        onset(i, f"note-{i}").model_copy(update={"controls": {}}) for i in range(2)
+    ]
+    prepared = sample_instrument.prepare_trace(definition, events, seed=0)
+    assert prepared == trace.prepare(definition, events, seed=0)
+    actions = [a for a in prepared.actions if isinstance(a, VoiceRetirement)]
+    assert [(a.tick, a.cause, a.action, a.fade_seconds) for a in actions] == [
+        (1, RetirementCause.choke, "fade", 0.125)
+    ]
+
+
 @pytest.mark.parametrize("kind", ["sample", "synth"])
 def test_native_trace_defers_releases_by_part_and_preserves_onset_order(
     kind: str,
